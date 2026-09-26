@@ -32,6 +32,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1
 .\target\release\iced-shell.exe --reader-poc-large
 ```
 
+## Interface
+
+Normal mode uses a shared graphite/sage palette and system Segoe UI, with
+semibold headings, restrained surfaces, thin scrollbars and explicit keyboard
+outlines. Welcome introduces the local-reader workflow before the bounded recent
+list; its introduction contracts below 500 logical pixels of window height.
+Long chrome titles/paths are clipped to their allocated space rather than covering
+actions. PDF navigation and zoom share one toolbar row at wider sizes and two
+rows below 700 logical pixels. The minimum window remains 540 × 360.
+
+`ui.rs` centralizes the styles and lazily constructs the custom theme once.
+There are no added dependencies, downloaded fonts, animation timers, blur effects,
+or changes to the tiny-skia backend, body virtualization, or PDF cache policy.
+Keyboard focus markers cover a recent row or help context where appropriate.
+A generation-checked, gated frame notification waits for the new widget layout;
+the reveal operation then adjusts only enclosing vertical scrollables. It does
+not scroll an unrelated reading viewport or keep idle redraws running. Reading
+and PDF scrollables retain stable sibling slots when auxiliary panels expand.
+
 ## Opening, recent files, and keyboard controls
 
 The normal picker, path argument and real file drop share one format dispatcher:
@@ -55,7 +74,7 @@ container-drawn keyboard indicator. This applies to both shared and PDF controls
 `%LOCALAPPDATA%\simPl\recent.json`, capped at 64 KiB / 12 entries, with bounded
 paths/titles and Windows ordinal path deduplication. Missing history is empty;
 invalid/inaccessible history warns, remains untouched on ordinary opens, and
-requires explicit **Reset recent history** before replacement. History loads
+requires explicit **Reset history** before replacement. History loads
 and serialized/coalesced writes run off the UI thread. Successful accepted loads
 update the MRU; failed/cancelled loads do not. Window close drains pending history
 writes, but history errors do not trap exit. Separate instances follow atomic
@@ -71,7 +90,7 @@ inherit a stale position.
 
 ## Local HTML reading
 
-Normal use needs no repository fixtures. Open one local file through **Open**,
+Normal use needs no repository fixtures. Open one local file through **Open file**,
 Ctrl+O, a path argument, or file drop. A canceled picker leaves the current book
 alone. Loading/parsing and position I/O run off the UI thread; obsolete open
 results cannot replace a newer document. An open failure leaves an existing

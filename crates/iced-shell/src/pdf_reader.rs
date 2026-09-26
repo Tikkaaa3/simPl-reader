@@ -14,6 +14,7 @@ use iced::{Element, Length, Point, Size, Task, mouse, window};
 use reader_document::position::{PdfReadingPosition, PdfZoom};
 use reader_pdf::{Document, Selection, TextLayer, TextPoint};
 
+use crate::ui::{self, ButtonTone};
 use iced_shell::virtual_reader::{HeightIndex, LayoutReports, VisibleRows};
 use pdf_page::Page;
 
@@ -27,9 +28,10 @@ const MAX_RENDER_EDGE: f32 = 8192.0;
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 4.0;
 const POINT_TO_DIP: f32 = 96.0 / 72.0;
-// Allow for the root toolbar, our toolbar and the status row. Actual on_scroll
-// bounds replace this conservative estimate on the first layout.
+// Allow for the root header, PDF controls and status. The first on_scroll
+// report replaces this conservative viewport estimate with its actual bounds.
 const INITIAL_CHROME: f32 = 184.0;
+const COMPACT_TOOLBAR_WIDTH: f32 = 700.0;
 
 pub fn page_input_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-page-input")
@@ -65,17 +67,12 @@ fn focus_button<'a>(
     label: impl Into<Element<'a, Message>>,
     action: Option<Message>,
     focused: bool,
+    selected: bool,
 ) -> Element<'a, Message> {
     button(label)
+        .padding([7, 10])
         .on_press_maybe(action)
-        .style(move |theme, status| {
-            let mut style = button::primary(theme, status);
-            if focused {
-                style.border.color = iced::Color::from_rgb8(110, 168, 254);
-                style.border.width = 2.0;
-            }
-            style
-        })
+        .style(move |_, status| ui::button_style(status, ButtonTone::Quiet, focused, selected))
         .into()
 }
 
@@ -821,79 +818,96 @@ impl Reader {
     pub fn view(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
         let zoom_label = match self.zoom {
-            PdfZoom::FitWidth => "Fit width".to_owned(),
+            PdfZoom::FitWidth => "Fit".to_owned(),
             PdfZoom::Scale(value) => format!("{:.0}%", value * 100.0),
         };
         let navigation = row![
             focus_button(
                 "Prev",
                 (page > 0).then_some(Message::Previous),
-                focused == Some(FocusControl::Previous)
+                focused == Some(FocusControl::Previous),
+                false,
             ),
-            container(
-                text_input("Page", &self.page_input)
-                    .id(page_input_id())
-                    .on_input(Message::PageInput)
-                    .on_submit(Message::PageSubmit)
-                    .width(65)
-            )
-            .style(move |_| container::Style {
-                border: iced::Border {
-                    color: if focused == Some(FocusControl::Page) {
-                        iced::Color::from_rgb8(110, 168, 254)
-                    } else {
-                        iced::Color::TRANSPARENT
-                    },
-                    width: 2.0,
-                    radius: 4.0.into(),
-                },
-                ..container::Style::default()
-            }),
-            text(format!("of {}", self.document.pages.len())).size(14),
+            text_input("Page", &self.page_input)
+                .id(page_input_id())
+                .on_input(Message::PageInput)
+                .on_submit(Message::PageSubmit)
+                .size(13)
+                .padding([6, 8])
+                .width(65)
+                .style(move |theme, status| {
+                    let mut style = ui::input_style(theme, status);
+                    if focused == Some(FocusControl::Page) {
+                        style.border.color = ui::ACCENT;
+                        style.border.width = 2.0;
+                    }
+                    style
+                }),
+            text(format!("of {}", self.document.pages.len()))
+                .size(13)
+                .color(ui::MUTED),
             focus_button(
                 "Next",
                 (page + 1 < self.document.pages.len()).then_some(Message::Next),
-                focused == Some(FocusControl::Next)
+                focused == Some(FocusControl::Next),
+                false,
             ),
         ]
-        .spacing(8)
+        .spacing(7)
         .align_y(iced::Alignment::Center);
         let zoom = row![
             focus_button(
                 "−",
                 Some(Message::ZoomOut),
-                focused == Some(FocusControl::ZoomOut)
+                focused == Some(FocusControl::ZoomOut),
+                false,
             ),
-            text(zoom_label).size(14),
+            text(zoom_label).size(13).color(ui::MUTED),
             focus_button(
                 "+",
                 Some(Message::ZoomIn),
-                focused == Some(FocusControl::ZoomIn)
+                focused == Some(FocusControl::ZoomIn),
+                false,
             ),
             focus_button(
                 "100%",
                 Some(Message::ActualSize),
-                focused == Some(FocusControl::ActualSize)
+                focused == Some(FocusControl::ActualSize),
+                self.zoom == PdfZoom::Scale(1.0),
             ),
             focus_button(
                 "Fit width",
                 Some(Message::FitWidth),
-                focused == Some(FocusControl::FitWidth)
+                focused == Some(FocusControl::FitWidth),
+                self.zoom == PdfZoom::FitWidth,
             ),
             iced::widget::Space::new().width(Length::Fill),
             focus_button(
                 "Copy",
                 self.copy_ready().then_some(Message::Copy),
-                focused == Some(FocusControl::Copy)
+                focused == Some(FocusControl::Copy),
+                false,
             ),
         ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+        .spacing(7)
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill);
+        // Keep one toolbar slot above the scrollable in both layouts. Only its
+        // children change when the window crosses the compact breakpoint.
+        let toolbar: Element<'_, Message> = if self.size.width < COMPACT_TOOLBAR_WIDTH {
+            column![navigation, zoom].spacing(5).into()
+        } else {
+            row![navigation, zoom]
+                .spacing(16)
+                .align_y(iced::Alignment::Center)
+                .into()
+        };
         let mut content = column![
-            container(navigation).padding([4, 12]),
-            container(zoom).padding([4, 12]),
-        ]
-        .spacing(4);
+            container(toolbar)
+                .width(Length::Fill)
+                .padding([7, 12])
+                .style(ui::header)
+        ];
         let range = self.visible_range();
         let selected = if self.select_all {
             Some(Selection {
@@ -945,9 +959,10 @@ impl Reader {
         content = content.push(
             scrollable(visible)
                 .id(scroll_id())
+                .style(ui::scroll_style)
                 .direction(scrollable::Direction::Both {
-                    vertical: scrollable::Scrollbar::default(),
-                    horizontal: scrollable::Scrollbar::default(),
+                    vertical: ui::scrollbar(),
+                    horizontal: ui::scrollbar(),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -965,26 +980,40 @@ impl Reader {
                 }),
         );
         let status = if let Some(error) = &self.error {
-            error.clone()
+            error.as_str()
         } else if self.copy_task.is_some() {
-            "Copying PDF text…".into()
+            "Copying PDF text…"
         } else if !self.document.can_copy {
-            "Text copying is not permitted by this PDF".into()
+            "Text copying is not permitted by this PDF"
+        } else if self.failed.contains(&(page as u32)) {
+            "Page is unavailable at this zoom; navigate or zoom to retry"
         } else if let Some(entry) = self.cached.get(&(page as u32)) {
             if entry.text.glyphs.is_empty() {
-                "No selectable text on this page (scanned pages need OCR)".into()
+                "No selectable text on this page (scanned pages need OCR)"
             } else {
-                "Drag over page text to select; Ctrl+A selects all text in the PDF".into()
+                ""
             }
-        } else if self.failed.contains(&(page as u32)) {
-            "Page is unavailable at this zoom; navigate or zoom to retry".into()
         } else {
-            "Rendering page and loading text…".into()
+            "Rendering page and loading text…"
         };
-        content = content.push(container(text(status).size(13)).padding([4, 14]));
+        let status_color = if self.error.is_some() || self.failed.contains(&(page as u32)) {
+            ui::DANGER
+        } else {
+            ui::MUTED
+        };
+        content = content.push(
+            container(text(status).size(12).color(status_color))
+                .width(Length::Fill)
+                .padding([5, 14])
+                .style(ui::header),
+        );
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(ui::BACKGROUND.into()),
+                ..container::Style::default()
+            })
             .into()
     }
 }

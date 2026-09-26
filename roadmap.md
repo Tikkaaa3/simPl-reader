@@ -361,6 +361,90 @@ and visible-startup captures/results). These are not committed or downloadable
 artifacts. The verified executable's SHA-256 is
 `8b1e4679b2a7491a7880be5bc39694bee18b20c3f6844d3a8ac002edbffc45e2`.
 
+### Modern reader UI
+
+The normal reader now uses shared graphite/sage chrome, system Segoe UI,
+semibold headings, restrained cards and thin scrollbars. Welcome contracts at
+small heights; PDF controls use one row above the compact breakpoint and two
+below it. Long labels cannot cover adjacent actions. No dependency, bundled font,
+animation timer, blur effect, GPU backend, or larger document/page cache was added.
+The custom theme is initialized once.
+
+Offline format/Clippy checks and **201 tests** passed, including four regressions
+for nested focus geometry, reverse traversal, already-visible controls and tall
+help context. Native verification used the copied complete folder, an unrelated
+working directory, a restricted PATH, isolated profiles, and 125% Windows scaling.
+It covered default and 540 × 360 minimum layouts; mouse/native-picker and command-
+line opening; exact 35,663-character Unicode-path HTML copy; all 12 recent rows,
+reverse Tab and Enter/Space; stacked help/contents; real EPUB chapter navigation;
+PDF page 100, page-field focus, actual size and fit width; resized position/font
+resume; rejected opens; and fingerprint-checked moved-file recovery. Screenshots
+were inspected. This UI pass did not re-qualify Winit's OLE drag/drop gesture.
+
+The small-window smoke exposed hidden focus in nested panels. Focus reveal now
+waits for the new widget layout, scrolls only ancestors of the target, and includes
+the recent row's metadata or the help context. Its frame notification is gated,
+not a continuous redraw subscription. With recent-list keyboard focus and help
+open, a separate 5.000-second observation recorded zero user/kernel CPU increase.
+
+**Paired warm visible-start measurements, same development host:**
+
+| Scenario | Previous UI | New UI | Observed difference |
+| --- | ---: | ---: | ---: |
+| Empty welcome | 75.1 ms | 77.7 ms | +2.5 ms |
+| Alice HTML, first view | 88.6 ms | 95.7 ms | +7.1 ms |
+| Adobe PDF, first page | 153.5 ms | 148.8 ms | −4.7 ms |
+| Alice EPUB, cover | 97.2 ms | 113.9 ms | +16.7 ms |
+
+Each number is a five-process median with fresh profiles and warm OS/file caches.
+Timing begins immediately before process creation and ends when two high-contrast
+desktop regions (header and welcome/document content) match settled references.
+Capture/polling overhead is included. The native picker responded after every
+capture; this does not measure input-to-display latency. The largest observed
+increase was 16.7 ms for EPUB; all medians remain under 200 ms. This small sample
+does not establish a speedup, percentile guarantee, or cold-start result.
+
+| First-view scenario | Previous private WS | New private WS | Previous private commit | New private commit |
+| --- | ---: | ---: | ---: | ---: |
+| Empty welcome | 8.15 MiB | 8.19 MiB | 9.25 MiB | 9.27 MiB |
+| Welcome, 12 recent entries | 9.02 MiB | 9.15 MiB | 10.12 MiB | 10.25 MiB |
+| Alice HTML, 18 px | 16.26 MiB | 16.39 MiB | 17.56 MiB | 17.55 MiB |
+| Adobe PDF, first page / fit width | 35.63 MiB | 35.71 MiB | 37.25 MiB | 37.30 MiB |
+| Alice EPUB, cover / 18 px | 15.11 MiB | 15.14 MiB | 16.30 MiB | 16.27 MiB |
+
+These are 30 valid root-process collections: three 12-second runs per scenario
+per binary, sampled every 250 ms, using final approximately five-second live
+windows (4.75–5.00 s). Memory is the median of the three per-run medians. CPU uses
+the corresponding cumulative user/kernel delta divided by QPC elapsed time and
+one logical core. All 15 new-UI windows recorded zero CPU increase. Previous-UI
+scenario CPU medians were also zero, with two individual windows at 0.99% and
+2.63%; this is not evidence of a CPU speedup. A previous-UI recent run exited
+naturally after about 3.3 seconds: its raw data was retained, excluded from the
+12-second comparison and replaced by a complete run. Included duration stops
+have exit 124 and zero required live-query failures.
+
+The largest private-working-set median increase was **0.14 MiB**. The portable
+folder is **18,951,233 bytes / 18.07 MiB / 345 files**, up **53.5 KiB**; it still
+contains notices for 176 shipped Rust dependencies and the same PDFium DLL.
+The executable is 9,588,224 bytes. These first-view comparisons are deliberately
+not compared with the earlier 20 px prose/chapter and page-100 memory figures.
+No active-scrolling frame-latency, peak-memory, long-session, cold-restart or
+independent clean-Windows claim is made. Unrelated sessions were not terminated
+and Windows was not restarted.
+
+Machine-local, untracked evidence is under
+`%TEMP%\simPl-ui-smoke-4a0673d3b49b485280b1b04385367c91\`: `bench-before/` and
+`bench-after/` contain startup captures, resource manifests/samples and summaries;
+`final-checks.json`, `focused-idle.json`, `entrypoints-checks.json`, saved profiles
+and `screenshots/final-*.png` record native checks. The standalone `WM_DROPFILES`
+probe in the entrypoint harness was not an OLE drop and is not counted as gesture
+verification. A compact comparison and selected previews are retained in
+`target/portable/ui-evidence/`.
+The baseline executable SHA-256 is
+`8b1e4679b2a7491a7880be5bc39694bee18b20c3f6844d3a8ac002edbffc45e2`;
+the measured new executable SHA-256 is
+`58ffc7c5992fa60f858a7d6d03b91a7d49c061b8b51c45bb52972c012db0c418`.
+
 ## Delivery order
 
 ### 1. HTML: first usable vertical slice

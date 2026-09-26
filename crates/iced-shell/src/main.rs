@@ -6,6 +6,7 @@ compile_error!("simPl currently supports Windows only");
 mod app;
 mod pdf_reader;
 mod platform;
+mod ui;
 
 use iced::event;
 use iced::keyboard::{self, Key, key};

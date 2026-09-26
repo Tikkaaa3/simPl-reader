@@ -14,6 +14,12 @@ explicit reopen. HTML and EPUB reflow with font and viewport changes; PDFs retai
 their page layout and use zoom or fit-width. The single UI path is **Iced with
 the tiny-skia CPU renderer**; WGPU is not the active backend.
 
+The reader has a minimal graphite-and-sage interface: system Segoe UI typography,
+quiet controls, a compact welcome screen, and recent-document cards with format
+badges. Narrow windows keep the reading controls available; keyboard focus reveals
+the full recent row or relevant panel instead of disappearing inside nested scroll
+areas. No new UI dependency, bundled font, animation, or GPU backend is required.
+
 The normal application needs no repository fixtures or bundled test fonts.
 The 1,000/10,000-paragraph fixture modes remain explicit diagnostics for
 virtualization, mixed-script layout, and native selection regressions.
@@ -99,7 +105,7 @@ diagnostic shell.
 - **Tab / Shift+Tab** moves the visible focus outline through available controls;
   **Enter / Space** activates the focused control. **F1** opens keyboard help.
   **Escape** dismisses auxiliary panels or an error and clears selection.
-- If a recent file is missing, use **Locate...** to choose its new path. Only the
+- If a recent file is missing, use **Locate** to choose its new path. Only the
   same format and exact SHA-256 fingerprint can inherit its reading position.
   A different book is rejected without replacing the old history entry. If the
   source moved while still open, the newer in-memory position is carried over.
@@ -108,7 +114,7 @@ diagnostic shell.
   remains available as recovery data.
 - History lives in `%LOCALAPPDATA%\simPl\recent.json`, with a 12-entry / 64 KiB
   bound and atomic replacement. History errors do not prevent reading. Unreadable
-  or corrupt history is not overwritten by ordinary opens; **Reset recent history**
+  or corrupt history is not overwritten by ordinary opens; **Reset history**
   explicitly replaces it with the current in-memory list.
 - Dialog, path argument and drop use the same case-insensitive extension rules:
   `.html`, `.htm`, `.xhtml`, `.pdf`, `.epub`. Other extensions are rejected instead
@@ -329,3 +335,22 @@ The copied folder was verified on this development host, not an independent clea
 Windows machine. That release-qualification item remains blocked by unavailable
 VM/test-host access. Cold launch after restart is unmeasured; Windows was not
 restarted and unrelated sessions were not terminated.
+
+### Modern UI verification
+
+The redesigned reader passed offline formatting, Clippy with warnings denied,
+and **201 Rust tests**, including four focus-visibility geometry regressions.
+The copied portable folder was exercised on the native Windows desktop at 125%
+scaling, including the 540 × 360 logical minimum: mouse/native-picker opening,
+Unicode HTML with exact full-text copy, forward/reverse recent-list focus,
+Enter/Space activation, stacked help/contents panels, PDF page 100 and actual-size/
+fit-width controls, and EPUB chapter navigation. HTML/EPUB item, fraction and font
+size survived resized reopen; PDF page/zoom did too. Failed opens retained the
+current location, and a moved Unicode-path file recovered its saved position.
+
+Screenshots exposed and then confirmed the fix for nested-panel focus clipping.
+Recent rows now reveal their metadata as well as the focused action, and opening
+help reveals its heading and shortcut text rather than only its Hide button.
+A separate five-second check with keyboard focus and help open recorded no
+user/kernel CPU-counter increase. The paired release measurements and their
+limits are in the [roadmap](roadmap.md#modern-reader-ui).
