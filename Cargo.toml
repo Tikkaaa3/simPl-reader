@@ -1,0 +1,27 @@
+# One active UI path; measurement tools are opt-in, not product prerequisites.
+[workspace]
+resolver = "3"
+default-members = ["crates/iced-shell"]
+members = [
+    "crates/reader-workload",
+    "crates/process-measure",
+    "crates/iced-shell",
+    "crates/shell-startup-markers",
+]
+
+# Keep the verified RTL rich-run placement fix until an upstream replacement
+# passes the retained visual/copy cases. See crates/iced-shell/README.md.
+[patch.crates-io]
+cosmic-text = { path = "patches/cosmic-text-0.15.0" }
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Preserve the existing release settings; tune only against actual reader runs.
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "unwind"
+strip = "symbols"
