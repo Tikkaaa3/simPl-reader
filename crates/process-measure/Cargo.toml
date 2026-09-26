@@ -1,0 +1,59 @@
+# Windows process resource measurement tool (initiative I-001 / W4, task T-004).
+#
+# A small command-line tool that launches one controlled executable without a
+# shell, samples its raw CPU (GetProcessTimes) and private memory
+# (GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2) usage, owns the whole
+# spawned process tree through a private kill-on-close job object, and writes a
+# versioned run manifest plus a JSONL sample stream. This is measurement
+# infrastructure for the framework feasibility experiments; it is not the
+# reader application and performs no UI, parsing, or fixture work.
+#
+# Dependencies are confined to this crate (see README for the approved
+# families, exact pinned versions, licenses, and rationale):
+# - `windows-sys`: one maintained Microsoft Win32 binding (raw bindings),
+#   feature-gated to the modules this tool actually calls.
+# - `serde` / `serde_json`: schema encoding for the manifest and sample rows
+#   (a hand-written JSON encoder is explicitly out of scope).
+[package]
+name = "process-measure"
+description = "Windows process CPU/private-memory measurement CLI with owned process-tree cleanup; not the reader application."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Raw Win32 bindings. Each feature is a call-site module; nothing broader is
+# enabled. `Win32_System_Memory` is used only by the disposable test child
+# (VirtualAlloc/VirtualFree for commit-versus-residency experiments).
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+# Schema encoding/decoding for manifest.json and samples.jsonl. Default
+# features retained (`std`, `derive` via serde's default) because the tool is
+# a std binary; no other serde features are enabled.
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151" }
+
+[[bin]]
+name = "process-measure"
+path = "src/bin/process-measure.rs"
+
+# Test-support child used only by this crate's integration tests. It is
+# calibration evidence for the tool's own tests, not a benchmark workload and
+# not a product component. It is built with the workspace (no feature gating)
+# so integration tests can locate it via CARGO_BIN_EXE.
+[[bin]]
+name = "process-measure-testchild"
+path = "src/bin/testchild.rs"
