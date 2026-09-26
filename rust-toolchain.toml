@@ -1,0 +1,5 @@
+# Reproducible Windows-first development; does not change rustup's global default.
+[toolchain]
+channel = "1.97.1-x86_64-pc-windows-msvc"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

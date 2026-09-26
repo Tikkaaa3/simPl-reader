@@ -1,0 +1,6 @@
+# Keep source and documentation consistent across Windows and Unix checkouts.
+* text=auto eol=lf
+
+# Vendored assets are small enough for ordinary Git; no Git LFS dependency.
+*.png binary
+*.ttf binary
