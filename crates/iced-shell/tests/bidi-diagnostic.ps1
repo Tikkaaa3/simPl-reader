@@ -42,7 +42,7 @@ public static class IcedBidiNative {
 "@
 
 $inheritedOverrides = Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(WGPU|WINIT)_' -or $_.Name -match '^ICED_' -or
+    $_.Name -match '^WINIT_' -or $_.Name -match '^ICED_' -or
     $_.Name -in @('GPUI_SHELL_STARTUP_MARKERS', 'GPUI_SHELL_NATIVE_TEST_STATUS')
 }
 if ($inheritedOverrides.Count -ne 0) {
@@ -197,7 +197,7 @@ try {
         "os=$([Environment]::OSVersion.VersionString)"
         "powershell=$($PSVersionTable.PSVersion)"
         'fixture_revision=reader-workload-fx-3'
-        'renderer=Iced 0.14.0 / WGPU; adapter diagnostics and startup markers disabled'
+        'renderer=Iced 0.14.0 / tiny-skia (CPU); startup markers disabled'
         'mode=--bidi-diagnostic; exact process gate enabled; matched native rich_text display plus public Iced Graphics paragraph reconstruction trace'
         "exe=$ExePath"
         "release_sha256=$releaseHash"
@@ -208,10 +208,9 @@ try {
 
     $env:ICED_SHELL_BIDI_DIAGNOSTICS = '1'
     $env:ICED_SHELL_BIDI_TRACE_PATH = $tracePath
-    'diagnostic shell-first phase: fixture/font access is deferred until after visible shell'
+    'diagnostic loads fixture immediately; wait for first ready condition'
     $reader = Start-Shell
-    Wait-Title $reader 'bidi=shell' 15
-    Capture-Client $reader 'diagnostic-shell-first.png'
+    Wait-Title $reader 'bidi=ready;case=p-00004;variant=styled-rlm;width=800' 90
     $dpi = [IcedBidiNative]::GetDpiForWindow($reader.MainWindowHandle)
     "host_dpi=$dpi" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
 
@@ -247,18 +246,18 @@ try {
     if ($conditionCount -ne 12 -or $dispositionCount -ne 12) {
         throw "Expected 12 bounded trace conditions/dispositions, found $conditionCount/$dispositionCount"
     }
-    if (Get-ChildItem Env: | Where-Object { $_.Name -eq 'ICED_SHELL_STARTUP_MARKERS' -or $_.Name -eq 'ICED_SHELL_ADAPTER_DIAGNOSTICS' }) {
-        throw 'A startup-marker or adapter-diagnostic gate leaked into the diagnostic process environment'
+    if (Get-ChildItem Env: | Where-Object { $_.Name -eq 'ICED_SHELL_STARTUP_MARKERS' }) {
+        throw 'A startup-marker gate leaked into the diagnostic process environment'
     }
     "trace_bytes=$($traceInfo.Length)" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
     "conditions=$conditionCount" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
 
-    'foreground guard negative: two owned default shells; background capture must throw'
-    $background = Start-Process -FilePath $ExePath -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
+    'foreground guard negative: two owned shell diagnostics; background capture must throw'
+    $background = Start-Process -FilePath $ExePath -ArgumentList '--shell-poc' -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
     $owned.Add($background)
     if (-not $background.WaitForInputIdle(10000)) { throw 'Background control was not input-idle' }
     Wait-Title $background 'Iced Shell PoC'
-    $cover = Start-Process -FilePath $ExePath -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
+    $cover = Start-Process -FilePath $ExePath -ArgumentList '--shell-poc' -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
     $owned.Add($cover)
     if (-not $cover.WaitForInputIdle(10000)) { throw 'Cover control was not input-idle' }
     Wait-Title $cover 'Iced Shell PoC'

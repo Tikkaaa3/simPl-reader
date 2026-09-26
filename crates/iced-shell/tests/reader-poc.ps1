@@ -51,10 +51,10 @@ public static class IcedReaderNative {
 "@
 
 $selectionOverrides = Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(WGPU|WINIT)_' -or $_.Name -match '^ICED_'
+    $_.Name -match '^WINIT_' -or $_.Name -match '^ICED_'
 }
 if ($selectionOverrides.Count -ne 0) {
-    throw "Refusing reader evidence with inherited Iced/WGPU/winit overrides: $($selectionOverrides.Name -join ', ')"
+    throw "Refusing reader evidence with inherited Iced/winit overrides: $($selectionOverrides.Name -join ', ')"
 }
 
 $owned = [Collections.Generic.List[Diagnostics.Process]]::new()
@@ -240,7 +240,7 @@ try {
         "os=$([Environment]::OSVersion.VersionString)"
         "powershell=$($PSVersionTable.PSVersion)"
         'fixture_revision=reader-workload-fx-3'
-        'renderer=Iced 0.14.0 / WGPU; adapter diagnostic disabled for normal-mode evidence'
+        'renderer=Iced 0.14.0 / tiny-skia (CPU)'
         'mode=--reader-poc; bounded reader/native status gates enabled only for this interactive driver; external screen captures are evidence, not app markers'
         "exe=$ExePath"
         "release_sha256=$releaseHash"
@@ -249,15 +249,11 @@ try {
         "cargo_lock_sha256=$lockHash"
     ) | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt') -Encoding UTF8
 
-    'default negative control: empty mode launched from OS TEMP does not read fixtures'
-    $empty = Start-Shell $env:TEMP
+    'explicit shell diagnostic does not read fixtures'
+    $empty = Start-Shell $env:TEMP @('--shell-poc')
     Wait-Title $empty 'panel=hidden;focus=info'
-    if ($empty.MainWindowTitle.Contains('reader=')) { throw "Default launch entered the opt-in reader path: $($empty.MainWindowTitle)" }
-    Capture-Client $empty 'default-empty-shell.png'
-    Start-Sleep -Milliseconds 500
-    if ($empty.MainWindowTitle.Contains('reader=') -or -not $empty.MainWindowTitle.Contains('panel=hidden;focus=info')) {
-        throw "Default shell changed unexpectedly: $($empty.MainWindowTitle)"
-    }
+    if ($empty.MainWindowTitle.Contains('reader=')) { throw "Shell diagnostic entered the fixture reader path: $($empty.MainWindowTitle)" }
+    Capture-Client $empty 'shell-poc.png'
     Mouse-At $empty 50 31
     Wait-Title $empty 'panel=visible;focus=info'
     Send-Key 0x1b
@@ -265,16 +261,13 @@ try {
     Send-Key 0x70
     Wait-Title $empty 'panel=visible;focus=info'
     Send-Key 0x1b
-    Close-Cleanly $empty 'default empty shell'
+    Close-Cleanly $empty 'shell diagnostic'
 
-    'reader shell-first: capture initial empty shell before deferred fixture access'
+    'reader loads fixture immediately; wait for ready status'
     $reader = Start-Shell $RepositoryRoot @('--reader-poc')
-    Wait-Title $reader 'reader=shell;width=800;body=0;items=0;error=none' 15
-    $dpi = [IcedReaderNative]::GetDpiForWindow($reader.MainWindowHandle)
-    Capture-Client $reader 'reader-shell-only.png'
-    "host_dpi=$dpi" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
-    "shell_only_title=$($reader.MainWindowTitle)" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
     Wait-Title $reader 'reader=ready;width=800;body=1000;items=1051;error=none' 90
+    $dpi = [IcedReaderNative]::GetDpiForWindow($reader.MainWindowHandle)
+    "host_dpi=$dpi" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
     Capture-Client $reader 'reader-wide-800-top.png'
     "reader_ready_title=$($reader.MainWindowTitle)" | Add-Content -LiteralPath (Join-Path $EvidenceDirectory 'run-context.txt')
 
@@ -381,9 +374,9 @@ try {
     Close-Cleanly $corruptImage 'corrupt image'
 
     'foreground guard negative: another owned shell covers a still-visible target'
-    $background = Start-Shell $env:TEMP
+    $background = Start-Shell $env:TEMP @('--shell-poc')
     Wait-Title $background 'panel=hidden;focus=info'
-    $cover = Start-Shell $env:TEMP
+    $cover = Start-Shell $env:TEMP @('--shell-poc')
     Wait-Title $cover 'panel=hidden;focus=info'
     Start-Sleep -Milliseconds 100
     if ($background.HasExited -or -not [IcedReaderNative]::IsWindowVisible($background.MainWindowHandle) -or

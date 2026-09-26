@@ -3,12 +3,13 @@ param(
     [ValidateSet('run', 'check', 'build')]
     [string]$Command = 'run',
     [switch]$Offline,
-    [switch]$Large
+    [switch]$Large,
+    [switch]$Fixture
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($Large -and $Command -ne 'run') { throw '-Large is only valid with run.' }
+if (($Large -or $Fixture) -and $Command -ne 'run') { throw '-Large and -Fixture are only valid with run.' }
 $root = Split-Path -Parent $PSScriptRoot
 
 # Git also ships a link.exe; finding any command named link is not sufficient.
@@ -58,8 +59,10 @@ try {
     if ($Offline) { $locked += '--offline' }
     switch ($Command) {
         'run' {
-            $mode = if ($Large) { '--reader-poc-large' } else { '--reader-poc' }
-            Invoke-Cargo (@('run', '-p', 'iced-shell', '--release') + $locked + @('--', $mode))
+            $cargoArgs = @('run', '-p', 'iced-shell', '--release') + $locked
+            if ($Large) { $cargoArgs += @('--', '--reader-poc-large') }
+            elseif ($Fixture) { $cargoArgs += @('--', '--reader-poc') }
+            Invoke-Cargo $cargoArgs
         }
         'build' { Invoke-Cargo (@('build', '--release') + $locked) }
         'check' {

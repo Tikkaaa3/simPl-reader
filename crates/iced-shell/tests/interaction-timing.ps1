@@ -12,7 +12,7 @@ $EvidenceDirectory = [IO.Path]::GetFullPath($EvidenceDirectory)
 if (-not [Environment]::UserInteractive) { throw 'Interactive desktop required' }
 if (Test-Path -LiteralPath $EvidenceDirectory) { throw 'Evidence directory must be fresh' }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw 'Release executable missing' }
-$overrides = @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(ICED_|WGPU_|WINIT_|RUST_LOG$)' })
+$overrides = @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(ICED_|WINIT_|RUST_LOG$)' })
 if ($overrides.Count) { throw "Inherited evidence/backend overrides: $($overrides.Name -join ',')" }
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -216,41 +216,6 @@ function CloseOwned($p,[bool]$RequestClean) {
   return [pscustomobject]@{intentional=$false;exit_code=$p.ExitCode}
  } finally { $p.Dispose() }
 }
-function Probe-Adapter([string]$path) {
- $probePath=Join-Path $path 'adapter-probe.stderr.txt'
- $p=$null
- try {
-  $info=New-Object Diagnostics.ProcessStartInfo
-  $info.FileName=$ExePath; $info.Arguments='--reader-poc'; $info.WorkingDirectory=$root
-  $info.UseShellExecute=$false; $info.RedirectStandardError=$true
-  $info.EnvironmentVariables['ICED_SHELL_ADAPTER_DIAGNOSTICS']='1'
-  $p=New-Object Diagnostics.Process; $p.StartInfo=$info
-  if (-not $p.Start() -or -not $p.WaitForInputIdle(15000)) { throw 'adapter probe did not become input idle' }
-  for ($attempt=0; $attempt -lt 8; $attempt++) {
-   $p.Refresh()
-   if ($p.MainWindowHandle -ne 0) { [void][W14Native]::SetForegroundWindow($p.MainWindowHandle) }
-   Start-Sleep -Milliseconds 180
-   if ([W14Native]::GetForegroundWindow() -eq $p.MainWindowHandle) { break }
-  }
-  Owned $p
-  Start-Sleep -Milliseconds 1800
-  if (-not $p.CloseMainWindow() -or -not $p.WaitForExit(5000)) { throw 'adapter probe failed clean close' }
-  $code=$p.ExitCode
-  $raw=$p.StandardError.ReadToEnd()
-  [IO.File]::WriteAllText($probePath,$raw)
-  $p.Dispose(); $p=$null
-  if ($code -ne 0) { throw "adapter probe nonzero exit $code" }
-  $pattern='(?s)\AICED_SHELL_ADAPTER_BEGIN target=iced_wgpu::window::compositor\r?\nSelected: AdapterInfo \{\s+name: "(?<name>[^"\r\n]+)",.*?\s+driver: "(?<driver>[^"\r\n]+)",\s+driver_info: "(?<version>[^"\r\n]+)",\s+backend: (?<backend>Dx12|Vulkan|Gl),\s+\}\r?\nICED_SHELL_ADAPTER_END\r?\n?\z'
-  $m=[regex]::Match($raw,$pattern)
-  if (-not $m.Success) { throw 'missing/invalid/duplicate adapter selection record' }
-  return [ordered]@{name=$m.Groups['name'].Value;driver=$m.Groups['driver'].Value;driver_info=$m.Groups['version'].Value;backend=$m.Groups['backend'].Value;exit_code=$code;exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant();mode='--reader-poc';gate='adapter only; interaction trace absent';attribution='separate diagnostic process on same binary/config; cannot prove per-run selection or its uninstrumented cost'}
- } finally {
-  if ($null -ne $p) {
-   if (-not $p.HasExited) { $p.Kill(); [void]$p.WaitForExit(5000) }
-   $p.Dispose()
-  }
- }
-}
 # Negative controls are executed before launching any child.
 try { Owned ([Diagnostics.Process]::GetCurrentProcess()); throw 'unowned negative control accepted' } catch { if ($_.Exception.Message -eq 'unowned negative control accepted') { throw } }
 $display=Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution -gt 0 -and $_.CurrentRefreshRate -gt 0 } | Select-Object -First 1
@@ -261,8 +226,9 @@ $exeHash=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant()
 $sourceFiles=@(
  Get-ChildItem (Join-Path $root 'crates\iced-shell\src') -Recurse -File -Filter '*.rs' | ForEach-Object { $_.FullName.Substring($root.Length+1).Replace('\','/') }
  Get-ChildItem (Join-Path $root 'crates\reader-workload\src') -Recurse -File -Filter '*.rs' | ForEach-Object { $_.FullName.Substring($root.Length+1).Replace('\','/') }
+ Get-ChildItem (Join-Path $root 'crates\reader-document\src') -Recurse -File -Filter '*.rs' | ForEach-Object { $_.FullName.Substring($root.Length+1).Replace('\','/') }
  Get-ChildItem (Join-Path $root 'patches\cosmic-text-0.15.0\src') -Recurse -File -Filter '*.rs' | ForEach-Object { $_.FullName.Substring($root.Length+1).Replace('\','/') }
- 'Cargo.toml'; 'Cargo.lock'; 'rust-toolchain.toml'; 'crates/iced-shell/Cargo.toml'; 'crates/reader-workload/Cargo.toml';
+ 'Cargo.toml'; 'Cargo.lock'; 'rust-toolchain.toml'; 'crates/iced-shell/Cargo.toml'; 'crates/reader-workload/Cargo.toml'; 'crates/reader-document/Cargo.toml';
  'patches/cosmic-text-0.15.0/Cargo.toml'; 'fixtures/reader-workload/manifest.txt';
  'crates/iced-shell/tests/interaction-timing.ps1'; 'crates/iced-shell/tests/interaction-trace.ps1';
  'crates/iced-shell/tests/interaction-trace-tests.ps1'; 'crates/iced-shell/tests/interaction-source.ps1';
@@ -279,13 +245,10 @@ $context=[ordered]@{
  fixture_manifest_sha256=(Get-FileHash (Join-Path $root 'fixtures\reader-workload\manifest.txt') -Algorithm SHA256).Hash.ToLowerInvariant();
  fixture_revision='reader-workload-fx-3'; source_identity_sha256=$sourceBefore.sha256; source_identity_file='source-manifest.json'; source_file_count=$sourceBefore.files.Count; os=[Environment]::OSVersion.VersionString;
  display="$($display.CurrentHorizontalResolution)x$($display.CurrentVerticalResolution)@$($display.CurrentRefreshRate)Hz (WMI reported)"; qpc_frequency=$frequency;
- gpu=@(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion);
  power=(powercfg /getactivescheme | Out-String).Trim(); ac=(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object BatteryStatus,EstimatedChargeRemaining);
- actual_timing_backend='unobserved (private WGPU state); separate same-executable reader adapter probe is supporting context, not a per-run identity attestation';
- note='Adapter probe is separately launched with a diagnostic gate on the same release executable; measurement processes have only exact W14 trace. Actual per-run adapter selection cannot be proven from private WGPU state. Input coordinates and capture ownership are guarded. Resize-only setup parks a short viewport using SetWindowPos before timed real mouse resize gestures.'
+ renderer='Iced 0.14.0 / tiny-skia (CPU)';
+ note='Measurement processes have only exact W14 trace. Input coordinates and capture ownership are guarded. Resize-only setup parks a short viewport using SetWindowPos before timed real mouse resize gestures.'
 }
-$context.adapter_probe=Probe-Adapter $EvidenceDirectory
-if ($context.adapter_probe.exe_sha256 -ne $exeHash) { throw 'adapter probe executable changed' }
 $context | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $EvidenceDirectory 'manifest.json')
 $report=[Collections.Generic.List[object]]::new()
 $negativePointChecked=$false

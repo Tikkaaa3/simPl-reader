@@ -1,8 +1,10 @@
 # Reader-workload fixture package
 
-This directory contains the pinned input package for the Iced reader prototype.
-It is a test workload, **not** a production document representation or a
-decision about the fonts/assets to ship in the final reader.
+This directory contains the pinned input package for the Iced fixture diagnostics.
+It is a test workload, **not** a production document or the product's font bundle.
+The normal HTML reader does not load these assets. Generic reflow items and
+selection endpoints live in `crates/reader-document`; fixture generation and
+reference checks remain in `crates/reader-workload`.
 
 ## Contents
 
@@ -57,8 +59,8 @@ repository root; consumers resolve it by walking up from any directory
 inside the repository until `fixtures/reader-workload/manifest.txt` is
 found (`reader_workload::manifest::find_fixture_root`). No committed
 file contains machine-specific absolute paths, and no asset loading
-happens implicitly: the Iced adapter explicitly loads fonts/images after its
-shell frame, using the manifest.
+happens implicitly: the Iced diagnostic mode explicitly loads fonts/images when
+requested, using the manifest. It no longer waits for an artificial loading delay.
 
 ## Offline behavior
 

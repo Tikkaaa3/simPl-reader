@@ -10,8 +10,8 @@
 //! never visually pre-reversed. Byte offsets are UTF-8 offsets
 //! computed once by the generator and verified by fixture tests.
 
-use crate::workload::{BaseDirection, InlineStyle, StyleRun};
 use PreludeItem::{Heading, Image, Paragraph};
+use reader_document::{BaseDirection, InlineStyle, StyleRun};
 
 /// Fixture revision stamped on the manifest and every workload.
 pub const FIXTURE_REVISION: &str = "reader-workload-fx-3";

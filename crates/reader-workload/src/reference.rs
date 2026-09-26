@@ -7,15 +7,7 @@
 //! helper, not a general selection engine.
 
 use crate::workload::Workload;
-
-/// A selection endpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Endpoint {
-    /// Stable text-item ID (must name a selectable item).
-    pub item_id: String,
-    /// Zero-based UTF-8 byte offset into the item's logical text.
-    pub byte_offset: usize,
-}
+use reader_document::Endpoint;
 
 /// Errors detected while resolving or validating selection references.
 /// Validation returns errors as data; nothing is silently truncated.

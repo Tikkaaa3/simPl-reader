@@ -36,8 +36,6 @@ Add-Type -AssemblyName System.Drawing
 
 $owned = [Collections.Generic.List[Diagnostics.Process]]::new()
 $oldDiagnostic = $env:ICED_SHELL_NATIVE_TEST_STATUS
-$oldAdapterDiagnostic = $env:ICED_SHELL_ADAPTER_DIAGNOSTICS
-Remove-Item Env:ICED_SHELL_ADAPTER_DIAGNOSTICS -ErrorAction SilentlyContinue
 $env:ICED_SHELL_NATIVE_TEST_STATUS = '1'
 
 function Wait-Status([Diagnostics.Process]$Process, [string]$Expected) {
@@ -67,7 +65,7 @@ function Set-OwnedForeground([Diagnostics.Process]$Process) {
 }
 
 function Start-Shell {
-    $process = Start-Process -FilePath $ExePath -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
+    $process = Start-Process -FilePath $ExePath -ArgumentList '--shell-poc' -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
     $owned.Add($process)
     if (-not $process.WaitForInputIdle(15000)) {
         throw 'Iced shell did not become input-idle within 15 seconds'
@@ -354,15 +352,15 @@ try {
     [void][IcedShellNativeInput]::SendMessage($shell.MainWindowHandle, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     Assert-CleanExit $shell 'native close request'
 
-    'case: ordinary outside-repository launch has no diagnostic status'
+    'case: shell diagnostic without native-status gate'
     Remove-Item Env:ICED_SHELL_NATIVE_TEST_STATUS -ErrorAction SilentlyContinue
-    $normal = Start-Process -FilePath $ExePath -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
+    $normal = Start-Process -FilePath $ExePath -ArgumentList '--shell-poc' -WorkingDirectory $env:TEMP -WindowStyle Normal -PassThru
     $owned.Add($normal)
-    if (-not $normal.WaitForInputIdle(15000)) { throw 'normal launch did not become input-idle' }
+    if (-not $normal.WaitForInputIdle(15000)) { throw 'shell diagnostic did not become input-idle' }
     Start-Sleep -Milliseconds 500
     $normal.Refresh()
     if ($normal.MainWindowTitle -ne 'Iced Shell PoC') {
-        throw "Normal title included unexpected diagnostics: '$($normal.MainWindowTitle)'"
+        throw "Shell title included unexpected diagnostics: '$($normal.MainWindowTitle)'"
     }
     Assert-NormalPalette $normal
     Set-OwnedForeground $normal
@@ -372,7 +370,7 @@ try {
     Mouse-At $normal 50 31 click
     Assert-PanelVisible $normal
     [void][IcedShellNativeInput]::SendMessage($normal.MainWindowHandle, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
-    Assert-CleanExit $normal 'ordinary launch native close'
+    Assert-CleanExit $normal 'shell diagnostic native close'
 
     'native-input: all real-input regressions passed'
 } finally {
@@ -380,11 +378,6 @@ try {
         Remove-Item Env:ICED_SHELL_NATIVE_TEST_STATUS -ErrorAction SilentlyContinue
     } else {
         $env:ICED_SHELL_NATIVE_TEST_STATUS = $oldDiagnostic
-    }
-    if ($null -eq $oldAdapterDiagnostic) {
-        Remove-Item Env:ICED_SHELL_ADAPTER_DIAGNOSTICS -ErrorAction SilentlyContinue
-    } else {
-        $env:ICED_SHELL_ADAPTER_DIAGNOSTICS = $oldAdapterDiagnostic
     }
     foreach ($process in $owned) {
         if (-not $process.HasExited) {

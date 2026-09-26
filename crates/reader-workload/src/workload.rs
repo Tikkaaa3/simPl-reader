@@ -9,6 +9,7 @@
 use crate::LayoutRecipe;
 use crate::curated::{IMAGE_ASSET_PATH, PRELUDE, PreludeItem};
 use crate::recipe::LAYOUT_RECIPE;
+use reader_document::{BaseDirection, InlineStyle, Item, StyleRun};
 
 /// Filler sentences for generated Latin paragraphs.
 const FILLER_SENTENCES: &[&str] = &[
@@ -82,88 +83,6 @@ impl WorkloadSize {
         match self {
             WorkloadSize::Small => BODY_PARAGRAPHS_SMALL,
             WorkloadSize::Large => BODY_PARAGRAPHS_LARGE,
-        }
-    }
-}
-
-/// Explicit base-direction intent for a paragraph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BaseDirection {
-    /// Left-to-right base direction.
-    Ltr,
-    /// Right-to-left base direction.
-    Rtl,
-}
-
-/// Inline style applied to a logical byte range of a paragraph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum InlineStyle {
-    /// Bold.
-    Bold,
-    /// Italic.
-    Italic,
-}
-
-/// A styled logical byte range. Ranges are UTF-8 byte offsets into the
-/// paragraph's logical text, start-inclusive and end-exclusive, always
-/// on character boundaries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StyleRun {
-    /// First UTF-8 byte offset (inclusive).
-    pub start_byte: usize,
-    /// One past the last UTF-8 byte offset (exclusive).
-    pub end_byte: usize,
-    /// Style to apply to the range.
-    pub style: InlineStyle,
-}
-
-/// One ordered workload item. Headings and image blocks are additional
-/// ordered items and are excluded from the body-paragraph count.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Item {
-    /// A heading.
-    Heading {
-        /// Stable unique ID.
-        id: String,
-        /// Heading text.
-        text: String,
-        /// Heading level (1 = top level).
-        level: u8,
-    },
-    /// A body paragraph.
-    Paragraph {
-        /// Stable unique ID.
-        id: String,
-        /// Paragraph text in logical Unicode order.
-        text: String,
-        /// Explicit base-direction intent.
-        base_direction: BaseDirection,
-        /// Inline styles over logical byte ranges.
-        style_runs: Vec<StyleRun>,
-    },
-    /// An image block referencing a manifest-listed asset.
-    Image {
-        /// Stable unique ID.
-        id: String,
-        /// Fixture-root-relative asset path.
-        asset_path: String,
-    },
-}
-
-impl Item {
-    /// Item ID.
-    pub fn id(&self) -> &str {
-        match self {
-            Item::Heading { id, .. } | Item::Paragraph { id, .. } | Item::Image { id, .. } => id,
-        }
-    }
-
-    /// Logical text for selectable items (`Paragraph`, `Heading`);
-    /// `None` for image blocks.
-    pub fn text(&self) -> Option<&str> {
-        match self {
-            Item::Heading { text, .. } | Item::Paragraph { text, .. } => Some(text),
-            Item::Image { .. } => None,
         }
     }
 }

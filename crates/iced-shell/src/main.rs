@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(not(target_os = "windows"))]
-compile_error!("iced-shell is a Windows-only proof of concept");
+compile_error!("simPl currently supports Windows only");
+
+mod html_app;
+mod platform;
 
 use iced::event;
 use iced::keyboard::{self, Key, key};
@@ -12,8 +15,8 @@ use iced::{
 };
 use iced_shell::{
     ActivationKey, CONTROL_HEIGHT, CONTROL_WIDTH, Command, Control, FocusDirection, HoverEvent,
-    ShellState, TOOLBAR_CONTENT_HEIGHT, TOOLBAR_SEPARATOR_HEIGHT, adapter_diagnostic,
-    bidi_diagnostic, hover_transition, interaction_trace, reader, selection, virtual_reader,
+    ShellState, TOOLBAR_CONTENT_HEIGHT, TOOLBAR_SEPARATOR_HEIGHT, bidi_diagnostic,
+    hover_transition, interaction_trace, reader, selection, virtual_reader,
 };
 use shell_startup_markers::{Emitter, Event};
 
@@ -44,7 +47,7 @@ struct Shell {
     native_test_status: bool,
     reader_test_status: bool,
     reader_selection_test_status: bool,
-    reader_last_hit: Option<(reader_workload::Endpoint, iced::Point)>,
+    reader_last_hit: Option<(reader_document::Endpoint, iced::Point)>,
     reader_last_pointer: Option<iced::Point>,
     reader_mode: bool,
     reader_large: bool,
@@ -82,7 +85,7 @@ struct Shell {
 enum ReaderPhase {
     Disabled,
     WaitingForWindowOpened,
-    Delaying,
+    Queued,
     Loading,
     LoadingFonts,
     Ready,
@@ -205,9 +208,9 @@ impl Shell {
 enum Message {
     Press(Control),
     Hover(HoverEvent),
-    ReaderSelectionStart(reader_workload::Endpoint),
+    ReaderSelectionStart(reader_document::Endpoint),
     ReaderSelectionMove {
-        endpoint: reader_workload::Endpoint,
+        endpoint: reader_document::Endpoint,
         point: iced::Point,
     },
     ToggleReaderWidth,
@@ -219,7 +222,7 @@ enum Message {
         maximum: f32,
         viewport: f32,
     },
-    ReaderDelayElapsed,
+    LoadReaderPackage,
     ToggleReaderContent,
     ReaderPackageLoaded(Result<std::sync::Arc<reader::ReaderPackage>, String>),
     ReaderFontLoaded(Result<(), iced::font::Error>),
@@ -352,22 +355,20 @@ fn update(shell: &mut Shell, message: Message) -> Task<Message> {
                 shell
                     .reader_end
                     .store(0, std::sync::atomic::Ordering::Relaxed);
-                if let Some(reports) = &shell.reader_measurements
-                    && let Ok(mut reports) = reports.lock()
-                {
-                    reports.clear();
+                if let Some(reports) = &shell.reader_measurements {
+                    reports.lock().clear();
                 }
             } else if matches!(shell.reader_phase, ReaderPhase::Closed) {
                 shell.reader_generation = shell.reader_generation.wrapping_add(1);
                 shell.reader_scroll_offset = 0.0;
                 shell.reader_scroll_maximum = 0.0;
                 shell.reader_viewport_height = 600.0;
-                shell.reader_phase = ReaderPhase::Delaying;
-                return Task::perform(async {}, |_| Message::ReaderDelayElapsed);
+                shell.reader_phase = ReaderPhase::Queued;
+                return Task::perform(async {}, |_| Message::LoadReaderPackage);
             }
         }
-        Message::ReaderDelayElapsed => {
-            if !matches!(shell.reader_phase, ReaderPhase::Delaying) {
+        Message::LoadReaderPackage => {
+            if !matches!(shell.reader_phase, ReaderPhase::Queued) {
                 return Task::none();
             }
             shell.reader_phase = ReaderPhase::Loading;
@@ -468,14 +469,8 @@ fn update(shell: &mut Shell, message: Message) -> Task<Message> {
             iced::Event::Window(window::Event::Opened { .. }) => {
                 shell.emit_marker(Event::WindowCreated);
                 if matches!(shell.reader_phase, ReaderPhase::WaitingForWindowOpened) {
-                    shell.reader_phase = ReaderPhase::Delaying;
-                    // Window::Opened is creation, not presentation. The fixed
-                    // opt-in staging interval gives the visible shell time to
-                    // present; the external driver captures desktop pixels.
-                    let delay = std::time::Duration::from_millis(1_200);
-                    task = Task::perform(async move { std::thread::sleep(delay) }, |_| {
-                        Message::ReaderDelayElapsed
-                    });
+                    shell.reader_phase = ReaderPhase::Queued;
+                    task = Task::perform(async {}, |_| Message::LoadReaderPackage);
                 }
             }
             iced::Event::Window(window::Event::RedrawRequested(_)) => {
@@ -670,7 +665,7 @@ fn view(shell: &Shell) -> Element<'_, Message> {
     let body = if (shell.reader_mode || shell.bidi_diagnostic_mode)
         && !matches!(
             shell.reader_phase,
-            ReaderPhase::Disabled | ReaderPhase::WaitingForWindowOpened | ReaderPhase::Delaying
+            ReaderPhase::Disabled | ReaderPhase::WaitingForWindowOpened | ReaderPhase::Queued
         ) {
         reader_body(shell)
     } else {
@@ -742,7 +737,7 @@ fn info_panel() -> Element<'static, Message> {
 
 fn reader_body(shell: &Shell) -> Element<'_, Message> {
     let reader_view: Element<'_, Message> = match &shell.reader_phase {
-        ReaderPhase::Disabled | ReaderPhase::WaitingForWindowOpened | ReaderPhase::Delaying => {
+        ReaderPhase::Disabled | ReaderPhase::WaitingForWindowOpened | ReaderPhase::Queued => {
             empty_shell_body(shell)
         }
         ReaderPhase::Loading => column![
@@ -848,7 +843,7 @@ fn ready_reader_body(shell: &Shell) -> Element<'_, Message> {
     let selection = shell
         .reader_selection
         .as_ref()
-        .and_then(|selection| selection.bounds(&content.workload));
+        .and_then(|selection| selection.bounds(content.workload.items()));
     let dragging = shell
         .reader_selection
         .as_ref()
@@ -956,7 +951,7 @@ fn refine_reader_heights(shell: &mut Shell) -> Option<f32> {
     if !matches!(shell.reader_phase, ReaderPhase::Ready) || !shell.reader_mode {
         return None;
     }
-    let mut reports = shell.reader_measurements.as_ref()?.lock().ok()?;
+    let mut reports = shell.reader_measurements.as_ref()?.lock();
     let pending = std::mem::take(&mut *reports);
     drop(reports);
     let index = shell.reader_heights.as_mut()?;
@@ -992,7 +987,7 @@ fn bidi_diagnostic_body(shell: &Shell) -> Element<'static, Message> {
     };
     let case_id = BIDI_DIAGNOSTIC_CASES[shell.bidi_case_index];
     let variant = reader::bidi_diagnostic_variants()[shell.bidi_variant_index];
-    let Some(reader_workload::Item::Paragraph {
+    let Some(reader_document::Item::Paragraph {
         text: logical_text,
         base_direction,
         style_runs,
@@ -1014,7 +1009,7 @@ fn bidi_diagnostic_body(shell: &Shell) -> Element<'static, Message> {
         Err(error) => return text(error).size(15).color(BRIGHT_TEXT).into(),
     };
     let width = shell.reader_width.width_dip();
-    let marker = if *base_direction == reader_workload::BaseDirection::Rtl {
+    let marker = if *base_direction == reader_document::BaseDirection::Rtl {
         if variant.leading_rlm {
             "present (U+200F)"
         } else {
@@ -1090,7 +1085,7 @@ fn bidi_diagnostic_body(shell: &Shell) -> Element<'static, Message> {
 }
 
 fn render_reader_item(
-    item: &reader_workload::Item,
+    item: &reader_document::Item,
     item_index: usize,
     content: &ReaderContent,
     recipe: &reader_workload::LayoutRecipe,
@@ -1099,16 +1094,16 @@ fn render_reader_item(
     track_hit_test: bool,
 ) -> Element<'static, Message> {
     match item {
-        reader_workload::Item::Heading {
+        reader_document::Item::Heading {
             id, text: heading, ..
         } => render_selectable_rich_text(SelectableParagraphView {
             item_id: id,
             logical_text: heading,
-            direction: reader_workload::BaseDirection::Ltr,
-            style_runs: &[reader_workload::StyleRun {
+            direction: reader_document::BaseDirection::Ltr,
+            style_runs: &[reader_document::StyleRun {
                 start_byte: 0,
                 end_byte: heading.len(),
-                style: reader_workload::InlineStyle::Bold,
+                style: reader_document::InlineStyle::Bold,
             }],
             font_size: recipe.heading_font_size_dip,
             line_height: recipe.heading_line_height_dip,
@@ -1116,7 +1111,7 @@ fn render_reader_item(
             dragging,
             track_hit_test,
         }),
-        reader_workload::Item::Paragraph {
+        reader_document::Item::Paragraph {
             id,
             text: paragraph,
             base_direction,
@@ -1133,7 +1128,7 @@ fn render_reader_item(
             dragging,
             track_hit_test,
         }),
-        reader_workload::Item::Image { .. } => container(
+        reader_document::Item::Image { .. } => container(
             iced::widget::image(content.image.clone())
                 .width(recipe.image_display_size_dip.0 as f32)
                 .height(recipe.image_display_size_dip.1 as f32)
@@ -1148,8 +1143,8 @@ fn render_reader_item(
 struct SelectableParagraphView<'a> {
     item_id: &'a str,
     logical_text: &'a str,
-    direction: reader_workload::BaseDirection,
-    style_runs: &'a [reader_workload::StyleRun],
+    direction: reader_document::BaseDirection,
+    style_runs: &'a [reader_document::StyleRun],
     font_size: f32,
     line_height: f32,
     selection: Option<std::ops::Range<usize>>,
@@ -1239,7 +1234,7 @@ fn bidi_diagnostic_title(shell: &Shell) -> String {
     let phase = match &shell.reader_phase {
         ReaderPhase::Disabled => "disabled",
         ReaderPhase::WaitingForWindowOpened => "waiting",
-        ReaderPhase::Delaying => "shell",
+        ReaderPhase::Queued => "shell",
         ReaderPhase::Loading | ReaderPhase::LoadingFonts => "loading",
         ReaderPhase::Ready => "ready",
         ReaderPhase::Closed => "closed",
@@ -1278,7 +1273,7 @@ fn selected_reader_copy(shell: &Shell) -> Option<String> {
     shell
         .reader_selection
         .as_ref()?
-        .copy_text(&shell.reader_content.as_ref()?.workload)
+        .copy_text(shell.reader_content.as_ref()?.workload.items())
         .filter(|text| !text.is_empty())
 }
 
@@ -1287,8 +1282,9 @@ fn reader_test_status(shell: &Shell) -> String {
     let (phase, body, items, error) = match &shell.reader_phase {
         ReaderPhase::Disabled => ("empty", 0, 0, "none"),
         ReaderPhase::WaitingForWindowOpened => ("waiting", 0, 0, "none"),
-        ReaderPhase::Delaying => ("shell", 0, 0, "none"),
-        ReaderPhase::Loading | ReaderPhase::LoadingFonts => ("loading", 0, 0, "none"),
+        ReaderPhase::Queued | ReaderPhase::Loading | ReaderPhase::LoadingFonts => {
+            ("loading", 0, 0, "none")
+        }
         ReaderPhase::Closed => ("closed", 0, 0, "none"),
         ReaderPhase::Ready => {
             shell
@@ -1332,10 +1328,10 @@ fn reader_test_status(shell: &Shell) -> String {
             .map(|content| content.workload.items());
         let first_id = ids
             .and_then(|items| items.get(first))
-            .map_or("none", reader_workload::Item::id);
+            .map_or("none", reader_document::Item::id);
         let last_id = ids
             .and_then(|items| items.get(end.saturating_sub(1)))
-            .map_or("none", reader_workload::Item::id);
+            .map_or("none", reader_document::Item::id);
         let anchor = shell
             .reader_heights
             .as_ref()
@@ -1343,7 +1339,7 @@ fn reader_test_status(shell: &Shell) -> String {
                 let row = index.window(shell.reader_scroll_offset, 0.0, 0.0).start;
                 (
                     ids.and_then(|items| items.get(row))
-                        .map_or("none", reader_workload::Item::id),
+                        .map_or("none", reader_document::Item::id),
                     shell.reader_scroll_offset - index.start(row),
                 )
             })
@@ -1386,7 +1382,10 @@ fn reader_test_status(shell: &Shell) -> String {
             .reader_content
             .as_ref()
             .and_then(|content| {
-                let bounds = shell.reader_selection.as_ref()?.bounds(&content.workload)?;
+                let bounds = shell
+                    .reader_selection
+                    .as_ref()?
+                    .bounds(content.workload.items())?;
                 let first = shell
                     .reader_first
                     .load(std::sync::atomic::Ordering::Relaxed);
@@ -1429,6 +1428,29 @@ fn main() {
     let reader_mode = reader::reader_poc_requested(&arguments);
     let reader_large = reader::reader_large_requested(&arguments);
     let bidi_diagnostic_mode = reader::bidi_diagnostic_requested(&arguments);
+    let shell_mode = arguments.iter().any(|argument| argument == "--shell-poc");
+    if !reader_mode && !reader_large && !bidi_diagnostic_mode && !shell_mode {
+        let (path, error) = match arguments.as_slice() {
+            [] => (None, None),
+            [path] if !path.to_string_lossy().starts_with("--") => {
+                (Some(std::path::PathBuf::from(path)), None)
+            }
+            [separator, path] if separator == "--" => (Some(std::path::PathBuf::from(path)), None),
+            _ => (
+                None,
+                Some("Pass one local HTML path, or use Open HTML to choose a file.".to_owned()),
+            ),
+        };
+        if let Err(error) = html_app::run(path, error) {
+            eprintln!("failed to run simPl: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if arguments.len() != 1 {
+        eprintln!("select one explicit diagnostic mode without extra arguments");
+        std::process::exit(2);
+    }
     if reader_mode && reader_large {
         eprintln!("select one reader workload size");
         std::process::exit(2);
@@ -1446,7 +1468,6 @@ fn main() {
         }
         for variable in [
             STARTUP_MARKERS_VARIABLE,
-            adapter_diagnostic::ENVIRONMENT_VARIABLE,
             "ICED_SHELL_NATIVE_TEST_STATUS",
             "ICED_SHELL_READER_TEST_STATUS",
         ] {
@@ -1479,11 +1500,6 @@ fn main() {
     };
     if let (Some(emitter), Some(qpc)) = (&entry_emitter, shell_startup_markers::qpc()) {
         emitter.emit(Event::ProcessEntry, qpc);
-    }
-
-    if let Err(error) = adapter_diagnostic::install_if_requested() {
-        eprintln!("failed to install Iced adapter diagnostic: {error}");
-        std::process::exit(1);
     }
 
     let result = iced::application(
@@ -1557,7 +1573,6 @@ mod reader_allocation_tests {
             .as_ref()
             .unwrap()
             .lock()
-            .unwrap()
             .push((0, 200.0, 800.0, old_generation));
         let _ = update(
             &mut shell,
@@ -1629,11 +1644,11 @@ mod reader_allocation_tests {
             workload: workload.clone(),
             image: iced::widget::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]),
         });
-        let start = reader_workload::Endpoint {
+        let start = reader_document::Endpoint {
             item_id: "p-00009".into(),
             byte_offset: 22,
         };
-        let end = reader_workload::Endpoint {
+        let end = reader_document::Endpoint {
             item_id: "p-00009".into(),
             byte_offset: 56,
         };
@@ -1651,7 +1666,7 @@ mod reader_allocation_tests {
         assert_eq!(selection.endpoints(), Some((&start, &end)));
         assert!(
             selection
-                .copy_text(&workload)
+                .copy_text(workload.items())
                 .is_some_and(|text| !text.is_empty())
         );
 
@@ -1675,11 +1690,11 @@ mod reader_allocation_tests {
         let mut shell = Shell::new(true, false, false, None);
         shell.reader_phase = ReaderPhase::Ready;
         let selection = shell.reader_selection.as_mut().expect("reader selection");
-        selection.begin(reader_workload::Endpoint {
+        selection.begin(reader_document::Endpoint {
             item_id: "p-00009".into(),
             byte_offset: 22,
         });
-        selection.extend(reader_workload::Endpoint {
+        selection.extend(reader_document::Endpoint {
             item_id: "p-00009".into(),
             byte_offset: 56,
         });
@@ -1689,12 +1704,12 @@ mod reader_allocation_tests {
         assert!(matches!(shell.reader_phase, ReaderPhase::Closed));
         let selection = shell.reader_selection.as_ref().expect("reader selection");
         assert!(!selection.is_dragging());
-        assert_eq!(selection.copy_text(&workload), None);
+        assert_eq!(selection.copy_text(workload.items()), None);
 
         let _ = update(&mut shell, Message::ToggleReaderContent);
         let selection = shell.reader_selection.as_ref().expect("reader selection");
         assert!(!selection.is_dragging());
-        assert_eq!(selection.copy_text(&workload), None);
+        assert_eq!(selection.copy_text(workload.items()), None);
     }
 
     #[test]

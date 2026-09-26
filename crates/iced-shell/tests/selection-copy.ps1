@@ -49,7 +49,7 @@ public static class IcedSelectionNative {
 "@
 
 $overrides = @(Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(WGPU|WINIT)_' -or ($_.Name -match '^ICED_' -and $_.Name -notmatch '^ICED_SHELL_(READER_TEST_STATUS|VIRTUAL_TEST_STATUS|SELECTION_TEST_STATUS|NATIVE_TEST_STATUS)$')
+    $_.Name -match '^WINIT_' -or ($_.Name -match '^ICED_' -and $_.Name -notmatch '^ICED_SHELL_(READER_TEST_STATUS|VIRTUAL_TEST_STATUS|SELECTION_TEST_STATUS|NATIVE_TEST_STATUS)$')
 })
 if ($overrides.Count -ne 0) {
     throw "Refusing selection evidence with inherited renderer/framework overrides: $($overrides.Name -join ', ')"
@@ -562,6 +562,7 @@ try {
         "powershell=$($PSVersionTable.PSVersion)"
         "apartment=$([Threading.Thread]::CurrentThread.GetApartmentState())"
         "fixture_revision=reader-workload-fx-3"
+        'renderer=Iced 0.14.0 / tiny-skia (CPU)'
         "fixture_manifest_sha256=$manifestHash"
         "exe=$ExePath"
         "release_sha256=$releaseHash"
@@ -574,12 +575,12 @@ try {
     Test-ClipboardTransportNormalization
     $script:records.Add('clipboard_transport_test=CRLF_only;bare_CR_preserved=true')
 
-    $default = Start-Shell $env:TEMP
+    $default = Start-Shell $env:TEMP @('--shell-poc')
     Wait-Title $default 'panel=hidden;focus=info'
     Write-ClipboardText $default '__ICED_SELECTION_SENTINEL__'
     Send-Key $default 0x43 -Control
-    if ((Read-ClipboardText $default) -cne '__ICED_SELECTION_SENTINEL__') { throw 'Ordinary shell Ctrl+C changed the OS clipboard sentinel' }
-    $script:records.Add('negative_control=ordinary-shell-ctrl-c;clipboard_sentinel_unchanged=true')
+    if ((Read-ClipboardText $default) -cne '__ICED_SELECTION_SENTINEL__') { throw 'Diagnostic shell Ctrl+C changed the OS clipboard sentinel' }
+    $script:records.Add('negative_control=shell-poc-ctrl-c;clipboard_sentinel_unchanged=true')
     $reader = Start-Shell $RepositoryRoot @('--reader-poc')
     Wait-Title $reader 'reader=ready;width=800;body=1000;items=1051;error=none'
     $dpi = [IcedSelectionNative]::GetDpiForWindow($reader.MainWindowHandle)
@@ -590,7 +591,7 @@ try {
     if ($idleBefore -cne $idleAfter) { throw "Opt-in reader status changed while idle: before=[$idleBefore] after=[$idleAfter]" }
     Test-InputTargetGuards $reader $default
     [void]$default.CloseMainWindow()
-    if (-not $default.WaitForExit(6000) -or $default.ExitCode -ne 0) { throw 'Ordinary shell did not close cleanly' }
+    if (-not $default.WaitForExit(6000) -or $default.ExitCode -ne 0) { throw 'Shell diagnostic did not close cleanly' }
     Assert-InputTarget $reader
 
     Test-ExceptionInputCleanup $reader 800

@@ -7,7 +7,8 @@
 //! to start at each endpoint (`None` = endpoint at end-of-text) so
 //! fixture tests detect text drift at the exact recorded coordinate.
 
-use crate::reference::{Endpoint, SelectionCase};
+use crate::reference::SelectionCase;
+use reader_document::Endpoint;
 
 /// The curated selection/copy reference cases, in fixture order.
 pub fn cases() -> Vec<SelectionCase> {

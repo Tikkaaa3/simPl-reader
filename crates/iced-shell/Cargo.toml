@@ -5,10 +5,13 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "thread-pool", "image-without-codecs"] }
+iced = { version = "=0.14.0", default-features = false, features = ["advanced", "tiny-skia", "thread-pool", "image-without-codecs"] }
+iced_futures = { version = "=0.14.0", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
-log = { version = "=0.4.34", default-features = false }
+reader-document = { path = "../reader-document" }
 reader-workload = { path = "../reader-workload" }
 sha2 = { version = "=0.10.9", default-features = false }
 unicode-segmentation = "=1.13.3"
 shell-startup-markers = { path = "../shell-startup-markers" }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs"] }
+parking_lot = "=0.12.5"

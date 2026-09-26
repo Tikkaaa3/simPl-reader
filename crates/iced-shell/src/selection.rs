@@ -11,7 +11,7 @@ use iced::advanced::{
     text::{Paragraph as _, Renderer as TextRenderer, Span},
     widget::{Tree, tree},
 };
-use reader_workload::{Endpoint, Workload};
+use reader_document::{Endpoint, Item};
 use unicode_segmentation::UnicodeSegmentation;
 
 const LEADING_RLM: &str = "\u{200f}";
@@ -112,10 +112,10 @@ impl SelectionState {
 
     /// Normalizes and validates selection endpoints against the loaded source.
     #[must_use]
-    pub fn bounds(&self, workload: &Workload) -> Option<SelectionBounds> {
+    pub fn bounds(&self, items: &[Item]) -> Option<SelectionBounds> {
         let (anchor, focus) = self.endpoints()?;
-        let (anchor_item, anchor_text) = resolve(workload, anchor)?;
-        let (focus_item, focus_text) = resolve(workload, focus)?;
+        let (anchor_item, anchor_text) = resolve(items, anchor)?;
+        let (focus_item, focus_text) = resolve(items, focus)?;
         if !is_grapheme_boundary(anchor_text, anchor.byte_offset)
             || !is_grapheme_boundary(focus_text, focus.byte_offset)
         {
@@ -154,15 +154,14 @@ impl SelectionState {
     /// A collapsed selection resolves to `Some("")`; callers must not write
     /// that empty result to the clipboard.
     #[must_use]
-    pub fn copy_text(&self, workload: &Workload) -> Option<String> {
-        let bounds = self.bounds(workload)?;
+    pub fn copy_text(&self, items: &[Item]) -> Option<String> {
+        let bounds = self.bounds(items)?;
         if bounds.start_item == bounds.end_item && bounds.start_byte == bounds.end_byte {
             return Some(String::new());
         }
 
         let mut parts = Vec::new();
-        for (index, item) in workload
-            .items()
+        for (index, item) in items
             .iter()
             .enumerate()
             .skip(bounds.start_item)
@@ -188,13 +187,13 @@ impl SelectionState {
 /// removes only the reader adapter's single leading RLM when present.
 #[must_use]
 pub fn map_native_hit(
-    workload: &Workload,
+    items: &[Item],
     item_id: &str,
     mapped_text: &str,
     native_byte_offset: usize,
     leading_rlm: bool,
 ) -> Option<Endpoint> {
-    let source = workload.item_by_id(item_id)?.text()?;
+    let source = items.iter().find(|item| item.id() == item_id)?.text()?;
     project_native_hit(
         item_id,
         source,
@@ -238,9 +237,8 @@ fn project_native_hit(
     })
 }
 
-fn resolve<'a>(workload: &'a Workload, endpoint: &Endpoint) -> Option<(usize, &'a str)> {
-    let (index, item) = workload
-        .items()
+fn resolve<'a>(items: &'a [Item], endpoint: &Endpoint) -> Option<(usize, &'a str)> {
+    let (index, item) = items
         .iter()
         .enumerate()
         .find(|(_, item)| item.id() == endpoint.item_id)?;
@@ -638,7 +636,8 @@ impl<Message: 'static> From<SelectableParagraph<Message>> for iced::Element<'sta
 mod tests {
     use std::{ops::Range, path::PathBuf};
 
-    use reader_workload::{Endpoint, Item, Workload, WorkloadSize, selection_cases, workload};
+    use reader_document::{Endpoint, Item};
+    use reader_workload::{Workload, WorkloadSize, selection_cases, workload};
     use unicode_segmentation::UnicodeSegmentation;
 
     use super::{SelectionState, map_native_hit, mapped_span_keys};
@@ -661,7 +660,7 @@ mod tests {
         if !active_rows.contains(&item_index) {
             return None;
         }
-        let reader_workload::Item::Paragraph {
+        let reader_document::Item::Paragraph {
             text,
             base_direction,
             style_runs,
@@ -704,7 +703,7 @@ mod tests {
             selection.extend(case.focus.clone());
             selection.end_drag();
             let actual = selection
-                .copy_text(&workload)
+                .copy_text(workload.items())
                 .unwrap_or_else(|| panic!("{} should resolve", case.name));
             let expected = std::fs::read(golden_path(case.name))
                 .unwrap_or_else(|error| panic!("{} golden readable: {error}", case.name));
@@ -715,7 +714,7 @@ mod tests {
     #[test]
     fn selected_span_splitting_preserves_mapped_text_and_fixture_style_roles() {
         let workload = workload(WorkloadSize::Small);
-        let reader_workload::Item::Paragraph {
+        let reader_document::Item::Paragraph {
             text,
             base_direction,
             style_runs,
@@ -760,7 +759,7 @@ mod tests {
         use iced::advanced::text::Paragraph as _;
 
         let workload = workload(WorkloadSize::Small);
-        let reader_workload::Item::Paragraph {
+        let reader_document::Item::Paragraph {
             text: source,
             base_direction,
             style_runs,
@@ -877,14 +876,21 @@ mod tests {
         let inner_scalar_boundary = cluster.0 + cluster.1.chars().next().unwrap().len_utf8();
         assert!(source.is_char_boundary(inner_scalar_boundary));
         assert!(
-            map_native_hit(&workload, "p-00007", source, inner_scalar_boundary, false).is_none()
+            map_native_hit(
+                workload.items(),
+                "p-00007",
+                source,
+                inner_scalar_boundary,
+                false
+            )
+            .is_none()
         );
 
         let rtl = workload.item_by_id("p-00002").expect("RTL case");
         let rtl_source = rtl.text().expect("text item");
         let mapped = format!("\u{200f}{rtl_source}");
         assert_eq!(
-            map_native_hit(&workload, "p-00002", &mapped, 0, true)
+            map_native_hit(workload.items(), "p-00002", &mapped, 0, true)
                 .expect("RLM start maps to source start"),
             Endpoint {
                 item_id: "p-00002".into(),
@@ -892,19 +898,19 @@ mod tests {
             }
         );
         assert_eq!(
-            map_native_hit(&workload, "p-00002", &mapped, 3, true)
+            map_native_hit(workload.items(), "p-00002", &mapped, 3, true)
                 .expect("RLM end maps to source start")
                 .byte_offset,
             0
         );
         assert_eq!(
-            map_native_hit(&workload, "p-00002", &mapped, 5, true)
+            map_native_hit(workload.items(), "p-00002", &mapped, 5, true)
                 .expect("first two-byte source scalar maps without RLM")
                 .byte_offset,
             2
         );
-        assert!(map_native_hit(&workload, "p-00002", &mapped, 1, true).is_none());
-        assert!(map_native_hit(&workload, "p-00002", rtl_source, 0, true).is_none());
+        assert!(map_native_hit(workload.items(), "p-00002", &mapped, 1, true).is_none());
+        assert!(map_native_hit(workload.items(), "p-00002", rtl_source, 0, true).is_none());
     }
 
     #[test]
@@ -915,10 +921,10 @@ mod tests {
             .iter()
             .find(|item| matches!(item, Item::Image { .. }))
             .expect("fixture image");
-        assert!(map_native_hit(&workload, image.id(), "", 0, false).is_none());
-        assert!(map_native_hit(&workload, "p-00001", "wrong source", 0, false).is_none());
+        assert!(map_native_hit(workload.items(), image.id(), "", 0, false).is_none());
+        assert!(map_native_hit(workload.items(), "p-00001", "wrong source", 0, false).is_none());
         let text = workload.item_by_id("p-00001").unwrap().text().unwrap();
-        assert!(map_native_hit(&workload, "p-00001", text, text.len() + 1, false).is_none());
+        assert!(map_native_hit(workload.items(), "p-00001", text, text.len() + 1, false).is_none());
     }
 
     #[test]
@@ -940,7 +946,9 @@ mod tests {
         }));
         selection.end_drag();
 
-        let initial = selection.bounds(&workload).expect("valid stable endpoints");
+        let initial = selection
+            .bounds(workload.items())
+            .expect("valid stable endpoints");
         let rtl_index = workload
             .items()
             .iter()
@@ -961,14 +969,17 @@ mod tests {
                 &evicted_rows,
                 rtl_index,
                 selection
-                    .bounds(&workload)
+                    .bounds(workload.items())
                     .expect("selection survives eviction"),
                 480.0,
             )
             .is_none()
         );
-        assert_eq!(selection.bounds(&workload), Some(initial));
-        assert_eq!(selection.copy_text(&workload).as_deref(), Some(rtl_text));
+        assert_eq!(selection.bounds(workload.items()), Some(initial));
+        assert_eq!(
+            selection.copy_text(workload.items()).as_deref(),
+            Some(rtl_text)
+        );
 
         let reentered_rows = 0..16;
         assert!(reentered_rows.contains(&rtl_index));
@@ -976,7 +987,9 @@ mod tests {
             &workload,
             &reentered_rows,
             rtl_index,
-            selection.bounds(&workload).expect("stable source range"),
+            selection
+                .bounds(workload.items())
+                .expect("stable source range"),
             480.0,
         )
         .expect("re-entered RTL row rematerializes its highlight");
@@ -987,13 +1000,13 @@ mod tests {
             &reentered_rows,
             rtl_index,
             selection
-                .bounds(&workload)
+                .bounds(workload.items())
                 .expect("stable source range at wide width"),
             800.0,
         )
         .expect("width change rematerializes RTL highlight");
         assert!(!wide.is_empty());
-        assert_eq!(selection.bounds(&workload), Some(initial));
+        assert_eq!(selection.bounds(workload.items()), Some(initial));
     }
 
     #[test]
@@ -1004,7 +1017,7 @@ mod tests {
             item_id: "p-00010".into(),
             byte_offset: 217,
         });
-        assert_eq!(selection.copy_text(&workload).as_deref(), Some(""));
+        assert_eq!(selection.copy_text(workload.items()).as_deref(), Some(""));
 
         selection.begin(Endpoint {
             item_id: "p-00005".into(),
@@ -1019,7 +1032,7 @@ mod tests {
             item_id: "p-00006".into(),
             byte_offset: 0,
         });
-        assert_eq!(selection.copy_text(&workload).as_deref(), Some(""));
+        assert_eq!(selection.copy_text(workload.items()).as_deref(), Some(""));
     }
 
     #[test]
@@ -1038,11 +1051,11 @@ mod tests {
         selection.end_drag();
         assert!(!selection.is_dragging());
         assert_eq!(
-            selection.copy_text(&workload).as_deref(),
+            selection.copy_text(workload.items()).as_deref(),
             Some("bold emphasis and an italic aside ")
         );
         selection.clear();
-        assert_eq!(selection.copy_text(&workload), None);
+        assert_eq!(selection.copy_text(workload.items()), None);
         assert!(!selection.is_dragging());
     }
 }

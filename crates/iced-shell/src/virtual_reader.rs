@@ -1,18 +1,19 @@
-//! Bounded viewport geometry for the disposable Iced reader experiment.
+//! Bounded native viewport geometry shared by document and fixture readers.
 
 use iced::{
     Element, Length, Point, Rectangle, Size, Theme,
     advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree},
 };
+use parking_lot::Mutex;
 use std::{
     ops::Range,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
-/// Native layout reports, not source item counts. One record per laid-out row.
+/// Native layout corrections. Unchanged rows do not keep the application redrawing.
 pub type Measurements = Arc<Mutex<Vec<(usize, f32, f32, u64)>>>;
 
 /// Native measurement sink; diagnostic counters are gated separately.
@@ -27,7 +28,7 @@ pub struct LayoutReports {
 /// actual text/image layout; the remaining extent is metadata, not widgets.
 pub struct VisibleRows<'a, Message> {
     first: usize,
-    starts: Vec<f32>,
+    geometry: Vec<(f32, f32)>,
     total: f32,
     width: f32,
     gap: f32,
@@ -47,7 +48,9 @@ impl<'a, Message> VisibleRows<'a, Message> {
     ) -> Self {
         Self {
             first: range.start,
-            starts: range.map(|row| index.start(row)).collect(),
+            geometry: range
+                .map(|row| (index.start(row), index.height(row)))
+                .collect(),
             total: index.total(),
             width,
             gap,
@@ -82,28 +85,27 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
         }
         // Only the most recent native layout pass is useful: a scrollbar
         // negotiation can layout twice before the app consumes the report.
-        if let Ok(mut reports) = self.reports.measurements.lock() {
-            reports.clear();
-        }
+        self.reports.measurements.lock().clear();
         let limits = layout::Limits::new(Size::ZERO, Size::new(self.width, f32::INFINITY));
         let mut nodes = Vec::with_capacity(self.rows.len());
         for (local, (row, state)) in self.rows.iter_mut().zip(&mut tree.children).enumerate() {
             let node = row.as_widget_mut().layout(state, renderer, &limits);
-            let height = node.size().height;
-            if let Ok(mut reports) = self.reports.measurements.lock() {
-                reports.push((
+            let height = node.size().height
+                + if self.first + local + 1 == self.item_count {
+                    0.0
+                } else {
+                    self.gap
+                };
+            let (start, expected_height) = self.geometry[local];
+            if (height - expected_height).abs() > 0.01 {
+                self.reports.measurements.lock().push((
                     self.first + local,
-                    height
-                        + if self.first + local + 1 == self.item_count {
-                            0.0
-                        } else {
-                            self.gap
-                        },
+                    height,
                     self.width,
                     self.reports.generation,
                 ));
             }
-            nodes.push(node.move_to(Point::new(0.0, self.starts[local])));
+            nodes.push(node.move_to(Point::new(0.0, start)));
         }
         layout::Node::with_children(Size::new(self.width, self.total), nodes)
     }
@@ -241,19 +243,19 @@ impl HeightIndex {
                     recipe.paragraph_gap_dip
                 };
                 let estimated = match item {
-                    reader_workload::Item::Heading { text, .. } => {
+                    reader_document::Item::Heading { text, .. } => {
                         let lines = (text.chars().count() as f32 * 15.0 / width as f32)
                             .ceil()
                             .max(1.0);
                         lines * recipe.heading_line_height_dip
                     }
-                    reader_workload::Item::Paragraph { text, .. } => {
+                    reader_document::Item::Paragraph { text, .. } => {
                         let lines = (text.chars().count() as f32 * 9.0 / width as f32)
                             .ceil()
                             .max(1.0);
                         lines * recipe.body_line_height_dip
                     }
-                    reader_workload::Item::Image { .. } => recipe.image_display_size_dip.1 as f32,
+                    reader_document::Item::Image { .. } => recipe.image_display_size_dip.1 as f32,
                 };
                 estimated + gap
             })

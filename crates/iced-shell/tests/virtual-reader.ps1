@@ -8,7 +8,7 @@ $EvidenceDirectory = [IO.Path]::GetFullPath($EvidenceDirectory)
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 if (Test-Path -LiteralPath $EvidenceDirectory) { throw "Evidence directory must not exist: $EvidenceDirectory" }
 if (-not [Environment]::UserInteractive) { throw 'Interactive desktop required' }
-$overrides = Get-ChildItem Env: | Where-Object { $_.Name -match '^(ICED_|WGPU_|WINIT_)' }
+$overrides = Get-ChildItem Env: | Where-Object { $_.Name -match '^(ICED_|WINIT_)' }
 if ($overrides) { throw "Refusing inherited framework/evidence overrides: $($overrides.Name -join ',')" }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "Missing release executable: $ExePath" }
 New-Item -ItemType Directory -Path $EvidenceDirectory | Out-Null
@@ -226,7 +226,7 @@ try {
         $blankGraphics.Clear([Drawing.Color]::FromArgb(22,27,34))
         if (Reader-PixelFingerprint $blank) { throw 'Blank-reader pixel negative control was incorrectly accepted' }
     } finally { $blankGraphics.Dispose(); $blank.Dispose() }
-    @("exe=$ExePath", "release_sha256=$hash", "release_bytes=$((Get-Item $ExePath).Length)", "patch_shape_sha256=$patch", "cargo_lock_sha256=$lock", 'fixture_revision=reader-workload-fx-3', "os=$([Environment]::OSVersion.VersionString)", 'native release WGPU; opt-in reader/virtual status only; no adapter/startup/BiDi diagnostics') | Set-Content (Join-Path $EvidenceDirectory 'context.txt')
+    @("exe=$ExePath", "release_sha256=$hash", "release_bytes=$((Get-Item $ExePath).Length)", "patch_shape_sha256=$patch", "cargo_lock_sha256=$lock", 'fixture_revision=reader-workload-fx-3', "os=$([Environment]::OSVersion.VersionString)", 'native release tiny-skia (CPU); opt-in reader/virtual status only; no startup/BiDi diagnostics') | Set-Content (Join-Path $EvidenceDirectory 'context.txt')
     foreach ($case in @(@('--reader-poc','1000','1051'), @('--reader-poc-large','10000','10501'))) {
         $script:expectedItems = [int]$case[2]
         $p = Start-Reader $case[0]

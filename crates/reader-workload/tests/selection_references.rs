@@ -6,9 +6,10 @@
 //! authoring script from the documented copy semantics — independently
 //! of the extraction logic under test.
 
+use reader_document::Endpoint;
 use reader_workload::{
-    Endpoint, ReferenceError, WorkloadSize, extract_copy_text, manifest, reference,
-    selection_cases, validate_selection_cases, workload,
+    ReferenceError, WorkloadSize, extract_copy_text, manifest, reference, selection_cases,
+    validate_selection_cases, workload,
 };
 
 fn case_named(name: &str) -> reference::SelectionCase {

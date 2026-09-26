@@ -11,67 +11,13 @@ if (-not [Environment]::UserInteractive) {
     throw 'runtime-evidence.ps1 requires an interactive Windows desktop'
 }
 
-function Read-AdapterEvidence([string]$Text) {
-    if ($Text.Contains('ICED_SHELL_ADAPTER_INVALID')) {
-        throw "Adapter diagnostic reported invalid evidence: $Text"
-    }
-
-    $pattern = '(?s)\AICED_SHELL_ADAPTER_BEGIN target=iced_wgpu::window::compositor\r?\n' +
-        'Selected: AdapterInfo \{\r?\n' +
-        '\s+name: "(?<name>[^"\r\n]+)",\r?\n' +
-        '\s+vendor: (?<vendor>\d+),\r?\n' +
-        '\s+device: (?<device>\d+),\r?\n' +
-        '\s+device_type: (?<type>IntegratedGpu|DiscreteGpu),\r?\n' +
-        '\s+driver: "(?<driver>[^"\r\n]+)",\r?\n' +
-        '\s+driver_info: "(?<driverInfo>[^"\r\n]+)",\r?\n' +
-        '\s+backend: (?<backend>Dx12|Vulkan|Gl),\r?\n' +
-        '\}\r?\nICED_SHELL_ADAPTER_END\r?\n?\z'
-    $match = [regex]::Match($Text, $pattern)
-    if (-not $match.Success) {
-        throw "Expected one complete, unambiguous selected-adapter record: $Text"
-    }
-
-    [pscustomobject]@{
-        Name = $match.Groups['name'].Value
-        Vendor = [uint32]$match.Groups['vendor'].Value
-        Device = [uint32]$match.Groups['device'].Value
-        DeviceType = $match.Groups['type'].Value
-        Driver = $match.Groups['driver'].Value
-        DriverInfo = $match.Groups['driverInfo'].Value
-        Backend = $match.Groups['backend'].Value
-        Raw = $match.Value
-    }
-}
-
 function Assert-ZeroExit([int]$ExitCode) {
     if ($ExitCode -ne 0) { throw "Diagnostic shell exited $ExitCode, expected zero" }
 }
 
-function Assert-Rejected([scriptblock]$Case, [string]$Name) {
-    try {
-        & $Case
-    } catch {
-        return
-    }
-    throw "Negative evidence self-test '$Name' did not reject"
-}
-
-$sample = "ICED_SHELL_ADAPTER_BEGIN target=iced_wgpu::window::compositor`nSelected: AdapterInfo {`n    name: `"GPU`",`n    vendor: 1,`n    device: 2,`n    device_type: DiscreteGpu,`n    driver: `"driver`",`n    driver_info: `"1.0`",`n    backend: Vulkan,`n}`nICED_SHELL_ADAPTER_END`n"
-[void](Read-AdapterEvidence $sample)
-Assert-Rejected { Read-AdapterEvidence '' } 'missing'
-Assert-Rejected { Read-AdapterEvidence ($sample + $sample) } 'duplicate'
-Assert-Rejected { Read-AdapterEvidence ($sample.Replace('name: "GPU"', 'name: ""')) } 'malformed'
-Assert-Rejected { Read-AdapterEvidence "ICED_SHELL_ADAPTER_INVALID duplicate-selected-record`n" } 'invalid-signal'
-Assert-Rejected { Assert-ZeroExit 7 } 'nonzero-exit'
-
-$selectionOverrides = Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(WGPU|WINIT)_' -or
-    ($_.Name -match '^ICED_' -and $_.Name -notin @(
-        'ICED_SHELL_NATIVE_TEST_STATUS',
-        'ICED_SHELL_ADAPTER_DIAGNOSTICS'))
-}
+$selectionOverrides = Get-ChildItem Env: | Where-Object { $_.Name -match '^(ICED_|WINIT_)' }
 if ($selectionOverrides.Count -ne 0) {
-    throw "Inherited Iced/WGPU/winit override(s) are not allowed: $(($selectionOverrides.Name | Sort-Object) -join ',')"
+    throw "Inherited Iced/winit override(s) are not allowed: $(($selectionOverrides.Name | Sort-Object) -join ',')"
 }
 
 Add-Type -AssemblyName UIAutomationClient
@@ -101,17 +47,13 @@ function Assert-Color([Drawing.Color]$Actual, [int]$Red, [int]$Green, [int]$Blue
     }
 }
 
-$oldNativeDiagnostic = $env:ICED_SHELL_NATIVE_TEST_STATUS
-$oldAdapterDiagnostic = $env:ICED_SHELL_ADAPTER_DIAGNOSTICS
-Remove-Item Env:ICED_SHELL_NATIVE_TEST_STATUS -ErrorAction SilentlyContinue
-$env:ICED_SHELL_ADAPTER_DIAGNOSTICS = '1'
 $process = $null
 try {
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = $ExePath
     $startInfo.WorkingDirectory = $env:TEMP
+    $startInfo.Arguments = '--shell-poc'
     $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardError = $true
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
     if (-not $process.Start()) { throw 'Could not start Iced shell' }
@@ -119,6 +61,7 @@ try {
     Start-Sleep -Milliseconds 750
     $process.Refresh()
     if ($process.MainWindowHandle -eq 0) { throw 'Iced shell has no top-level window' }
+    'renderer=Iced 0.14.0 / tiny-skia (CPU); mode=--shell-poc'
 
     $virtualRect = New-Object IcedShellEvidenceNative+Rect
     if (-not [IcedShellEvidenceNative]::GetClientRect($process.MainWindowHandle, [ref]$virtualRect)) {
@@ -198,23 +141,10 @@ try {
 
     [void][IcedShellEvidenceNative]::SendMessage($process.MainWindowHandle, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     if (-not $process.WaitForExit(5000)) { throw 'Diagnostic shell did not close within five seconds' }
-    $adapterOutput = $process.StandardError.ReadToEnd()
     Assert-ZeroExit $process.ExitCode
-    $adapter = Read-AdapterEvidence $adapterOutput
-    "adapter-record: $($adapter.Raw.TrimEnd())"
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         [void][IcedShellEvidenceNative]::SendMessage($process.MainWindowHandle, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
         if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
-    }
-    if ($null -eq $oldNativeDiagnostic) {
-        Remove-Item Env:ICED_SHELL_NATIVE_TEST_STATUS -ErrorAction SilentlyContinue
-    } else {
-        $env:ICED_SHELL_NATIVE_TEST_STATUS = $oldNativeDiagnostic
-    }
-    if ($null -eq $oldAdapterDiagnostic) {
-        Remove-Item Env:ICED_SHELL_ADAPTER_DIAGNOSTICS -ErrorAction SilentlyContinue
-    } else {
-        $env:ICED_SHELL_ADAPTER_DIAGNOSTICS = $oldAdapterDiagnostic
     }
 }

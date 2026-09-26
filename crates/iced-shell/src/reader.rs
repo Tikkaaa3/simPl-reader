@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 
-use reader_workload::{BaseDirection, InlineStyle, StyleRun};
+use reader_document::{BaseDirection, InlineStyle, StyleRun};
 
 /// Whether the process explicitly requested the disposable reader experiment.
 #[must_use]
@@ -77,6 +77,11 @@ pub enum FontRole {
     Hebrew,
     /// Noto Sans JP variable face at the Iced weight corresponding to 400.
     Japanese,
+    /// Platform font selection with native glyph fallback for product HTML.
+    SystemRegular,
+    SystemBold,
+    SystemItalic,
+    SystemBoldItalic,
 }
 
 impl FontRole {
@@ -102,6 +107,20 @@ impl FontRole {
                 // Iced maps Normal to cosmic-text weight 400. This requests
                 // that variable-font instance but does not expose axis control.
                 weight: Weight::Normal,
+                ..Font::DEFAULT
+            },
+            Self::SystemRegular => Font::DEFAULT,
+            Self::SystemBold => Font {
+                weight: Weight::Bold,
+                ..Font::DEFAULT
+            },
+            Self::SystemItalic => Font {
+                style: Style::Italic,
+                ..Font::DEFAULT
+            },
+            Self::SystemBoldItalic => Font {
+                weight: Weight::Bold,
+                style: Style::Italic,
                 ..Font::DEFAULT
             },
         }
@@ -202,6 +221,21 @@ pub fn map_paragraph(
     )
 }
 
+/// Maps product document text with system font fallback and unchanged RTL offset policy.
+pub fn map_document_paragraph(
+    text: &str,
+    base_direction: BaseDirection,
+    style_runs: &[StyleRun],
+) -> Result<MappedParagraph, String> {
+    map_paragraph_with_fonts(
+        text,
+        base_direction,
+        style_runs,
+        base_direction == BaseDirection::Rtl,
+        true,
+    )
+}
+
 /// Applies one diagnostic condition while retaining the logical fixture text.
 pub fn map_diagnostic_paragraph(
     text: &str,
@@ -224,6 +258,16 @@ fn map_paragraph_with_rlm(
     base_direction: BaseDirection,
     style_runs: &[StyleRun],
     leading_rlm: bool,
+) -> Result<MappedParagraph, String> {
+    map_paragraph_with_fonts(text, base_direction, style_runs, leading_rlm, false)
+}
+
+fn map_paragraph_with_fonts(
+    text: &str,
+    base_direction: BaseDirection,
+    style_runs: &[StyleRun],
+    leading_rlm: bool,
+    system_fonts: bool,
 ) -> Result<MappedParagraph, String> {
     let mut previous_end = 0;
     for style_run in style_runs {
@@ -257,7 +301,11 @@ fn map_paragraph_with_rlm(
             .iter()
             .find(|run| run.start_byte <= source_start && source_end <= run.end_byte)
             .map(|run| run.style);
-        let role = font_role(character, style);
+        let role = if system_fonts {
+            system_font_role(style)
+        } else {
+            font_role(character, style)
+        };
         let mapped_start = mapped_text.len();
         mapped_text.push(character);
         let mapped_end = mapped_text.len();
@@ -281,7 +329,11 @@ fn map_paragraph_with_rlm(
         } else {
             runs.push(MappedRun {
                 bytes: 0..mapped_text.len(),
-                role: FontRole::LatinRegular,
+                role: if system_fonts {
+                    FontRole::SystemRegular
+                } else {
+                    FontRole::LatinRegular
+                },
             });
         }
     }
@@ -499,9 +551,18 @@ fn font_role(character: char, style: Option<InlineStyle>) -> FontRole {
         return FontRole::Japanese;
     }
     match style {
-        Some(InlineStyle::Bold) => FontRole::LatinBold,
+        Some(InlineStyle::Bold | InlineStyle::BoldItalic) => FontRole::LatinBold,
         Some(InlineStyle::Italic) => FontRole::LatinItalic,
         None => FontRole::LatinRegular,
+    }
+}
+
+fn system_font_role(style: Option<InlineStyle>) -> FontRole {
+    match style {
+        Some(InlineStyle::Bold) => FontRole::SystemBold,
+        Some(InlineStyle::Italic) => FontRole::SystemItalic,
+        Some(InlineStyle::BoldItalic) => FontRole::SystemBoldItalic,
+        None => FontRole::SystemRegular,
     }
 }
 
@@ -619,8 +680,8 @@ pub fn load_reader_package_from_size(
     }
 
     let image_paths = workload.items().iter().filter_map(|item| match item {
-        reader_workload::Item::Image { asset_path, .. } => Some(asset_path.as_str()),
-        reader_workload::Item::Heading { .. } | reader_workload::Item::Paragraph { .. } => None,
+        reader_document::Item::Image { asset_path, .. } => Some(asset_path.as_str()),
+        reader_document::Item::Heading { .. } | reader_document::Item::Paragraph { .. } => None,
     });
     let mut image_paths = image_paths.peekable();
     let image_path = image_paths
@@ -722,7 +783,8 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use reader_workload::{BaseDirection, InlineStyle, Item, StyleRun, WorkloadSize, workload};
+    use reader_document::{BaseDirection, InlineStyle, Item, StyleRun};
+    use reader_workload::{WorkloadSize, workload};
 
     struct TestDirectory(PathBuf);
 
@@ -878,6 +940,31 @@ mod tests {
         assert!(mapped.runs.iter().any(|run| {
             run.role == super::FontRole::LatinBold && run.bytes.end <= mapped.text.len()
         }));
+    }
+
+    #[test]
+    fn document_mapping_uses_system_fonts_for_mixed_script_nested_style_and_preserves_offsets() {
+        let source = "ا bold λ";
+        let mapped = super::map_document_paragraph(
+            source,
+            BaseDirection::Rtl,
+            &[StyleRun {
+                start_byte: 3,
+                end_byte: source.len(),
+                style: InlineStyle::BoldItalic,
+            }],
+        )
+        .unwrap();
+        assert_eq!(mapped.text, format!("\u{200f}{source}"));
+        assert_eq!(&mapped.text['\u{200f}'.len_utf8()..], source);
+        assert!(mapped.runs.iter().any(|run| {
+            run.role == super::FontRole::SystemBoldItalic
+                && &mapped.text[run.bytes.clone()] == "bold λ"
+        }));
+        assert!(mapped.runs.iter().all(|run| matches!(
+            run.role,
+            super::FontRole::SystemRegular | super::FontRole::SystemBoldItalic
+        )));
     }
 
     #[test]

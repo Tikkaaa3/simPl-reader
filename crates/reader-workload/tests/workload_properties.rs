@@ -1,10 +1,8 @@
 //! Behavioral tests for the generated benchmark workloads, exercised
 //! through the library's public interface.
 
-use reader_workload::{
-    BODY_PARAGRAPHS_LARGE, BODY_PARAGRAPHS_SMALL, BaseDirection, InlineStyle, Item, WorkloadSize,
-    workload,
-};
+use reader_document::{BaseDirection, InlineStyle, Item};
+use reader_workload::{BODY_PARAGRAPHS_LARGE, BODY_PARAGRAPHS_SMALL, WorkloadSize, workload};
 
 #[test]
 fn body_counts_are_exactly_the_two_supported_sizes() {
@@ -256,7 +254,7 @@ fn styled_generated_paragraphs_preserve_all_words() {
     );
     assert_eq!(style_runs.len(), 1);
     let run = &style_runs[0];
-    assert_eq!(run.style, reader_workload::InlineStyle::Italic);
+    assert_eq!(run.style, InlineStyle::Italic);
     assert_eq!(&text[run.start_byte..run.end_byte], "The");
     assert!(text.is_char_boundary(run.start_byte));
     assert!(text.is_char_boundary(run.end_byte));

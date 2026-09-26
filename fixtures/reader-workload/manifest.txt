@@ -126,7 +126,7 @@ license-path: licenses/PROJECT-AUTHORED-NOTICE.txt
 role: PNG generator provenance record
 
 path: tools/build_fixture_data.py
-sha256: 233f38cf447ae16acef288cf0f752b310c9967c423736fee8eff4f42abe9edde
+sha256: f0c2c2560b6339d0170d55e749210f3120016336044e1a4f8111d96be53c2253
 version: fixture revision reader-workload-fx-3
 provenance: project-authored for initiative I-001 / W3 (T-003)
 source: project-authored: fixtures/reader-workload/tools/ (and the hand-authored docs in this package)
@@ -153,7 +153,7 @@ license-path: licenses/PROJECT-AUTHORED-NOTICE.txt
 role: visual/BiDi correctness reference table (pinned Unicode sources)
 
 path: README.md
-sha256: d2b82ddb4670378e7379d65b15196202131a38ede441fc43ce8bc694e4af25d8
+sha256: a91ac79504b939e3c89ed75e9f62fd2c36130d59e6b66cf28815ebd1dc4aebb4
 version: fixture revision reader-workload-fx-3
 provenance: project-authored for initiative I-001 / W3 (T-003)
 source: project-authored: fixtures/reader-workload/tools/ (and the hand-authored docs in this package)

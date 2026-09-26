@@ -14,7 +14,8 @@ use crate::reader::{
     self, BidiDiagnosticVariant, DiagnosticDisposition, DiagnosticPresentation,
     PositionedSourceCluster,
 };
-use reader_workload::{BaseDirection, Item, Workload};
+use reader_document::{BaseDirection, Item};
+use reader_workload::Workload;
 
 const TRACE_HEADER: &str = "iced-cosmic-bidi-trace/v1\n";
 const MAX_TRACE_BYTES: usize = 256 * 1024;

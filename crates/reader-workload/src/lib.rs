@@ -9,8 +9,8 @@
 //! touches neither the filesystem, the clock, randomness, locale, nor
 //! the network.
 //!
-//! The Iced reader adapter and tests call [`workload`], inspect
-//! ordered [`Item`] content, consult [`recipe::LAYOUT_RECIPE`] and the
+//! The Iced reader adapter and tests call [`workload`], inspect ordered
+//! `reader_document::Item` content, consult [`recipe::LAYOUT_RECIPE`] and the
 //! [`manifest`] records, and load assets explicitly after their shell
 //! frame using [`manifest::find_fixture_root`].
 
@@ -27,12 +27,10 @@ pub mod workload;
 pub use manifest::{AssetRecord, AssetValidationError, Manifest, ManifestError};
 pub use recipe::{LAYOUT_RECIPE, LayoutRecipe};
 pub use reference::{
-    Endpoint, ReferenceError, SelectionCase, extract_copy_text, selection_cases,
-    validate_selection_cases,
+    ReferenceError, SelectionCase, extract_copy_text, selection_cases, validate_selection_cases,
 };
 pub use workload::{
-    BODY_PARAGRAPHS_LARGE, BODY_PARAGRAPHS_SMALL, BaseDirection, InlineStyle, Item, StyleRun,
-    Workload, WorkloadSize, workload,
+    BODY_PARAGRAPHS_LARGE, BODY_PARAGRAPHS_SMALL, Workload, WorkloadSize, workload,
 };
 
 /// Fixture revision shared by the manifest and every generated workload.
