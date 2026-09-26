@@ -1,0 +1,3 @@
+# Store the vendored binary assets directly; this repository does not use LFS.
+*.png binary
+*.ttf binary
