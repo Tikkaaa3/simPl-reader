@@ -31,6 +31,10 @@ const POINT_TO_DIP: f32 = 96.0 / 72.0;
 // bounds replace this conservative estimate on the first layout.
 const INITIAL_CHROME: f32 = 184.0;
 
+pub fn page_input_id() -> iced::advanced::widget::Id {
+    iced::advanced::widget::Id::new("pdf-page-input")
+}
+
 fn scroll_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-document")
 }
@@ -43,6 +47,36 @@ fn scroll_to(x: f32, y: f32) -> Task<Message> {
             y: Some(y),
         },
     ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusControl {
+    Previous,
+    Page,
+    Next,
+    ZoomOut,
+    ZoomIn,
+    ActualSize,
+    FitWidth,
+    Copy,
+}
+
+fn focus_button<'a>(
+    label: impl Into<Element<'a, Message>>,
+    action: Option<Message>,
+    focused: bool,
+) -> Element<'a, Message> {
+    button(label)
+        .on_press_maybe(action)
+        .style(move |theme, status| {
+            let mut style = button::primary(theme, status);
+            if focused {
+                style.border.color = iced::Color::from_rgb8(110, 168, 254);
+                style.border.width = 2.0;
+            }
+            style
+        })
+        .into()
 }
 
 #[derive(Debug)]
@@ -212,6 +246,16 @@ impl Reader {
         &self.document
     }
 
+    pub fn page_index(&self) -> usize {
+        self.anchor().page as usize
+    }
+
+    pub fn copy_ready(&self) -> bool {
+        self.copy_task.is_none()
+            && self.document.can_copy
+            && (self.select_all || self.selection_ready)
+    }
+
     pub fn position(&self) -> PdfReadingPosition {
         let anchor = self.anchor();
         PdfReadingPosition {
@@ -221,6 +265,11 @@ impl Reader {
             horizontal: anchor.horizontal,
             zoom: self.zoom,
         }
+    }
+
+    /// Reassert the actual native scroll offset after shell chrome changes.
+    pub fn restore_scroll(&self) -> Task<Message> {
+        scroll_to(self.offset.x, self.offset.y)
     }
 
     fn scale_for(&self, page_width: f32) -> f32 {
@@ -728,6 +777,7 @@ impl Reader {
                             "+" | "=" => self.update(Message::ZoomIn),
                             "-" => self.update(Message::ZoomOut),
                             "0" => self.update(Message::ActualSize),
+                            "f" => self.update(Message::FitWidth),
                             "c" => self.update(Message::Copy),
                             "a" => {
                                 self.select_all = true;
@@ -768,36 +818,73 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
         let zoom_label = match self.zoom {
             PdfZoom::FitWidth => "Fit width".to_owned(),
             PdfZoom::Scale(value) => format!("{:.0}%", value * 100.0),
         };
         let navigation = row![
-            button("Prev").on_press_maybe((page > 0).then_some(Message::Previous)),
-            text_input("Page", &self.page_input)
-                .on_input(Message::PageInput)
-                .on_submit(Message::PageSubmit)
-                .width(65),
+            focus_button(
+                "Prev",
+                (page > 0).then_some(Message::Previous),
+                focused == Some(FocusControl::Previous)
+            ),
+            container(
+                text_input("Page", &self.page_input)
+                    .id(page_input_id())
+                    .on_input(Message::PageInput)
+                    .on_submit(Message::PageSubmit)
+                    .width(65)
+            )
+            .style(move |_| container::Style {
+                border: iced::Border {
+                    color: if focused == Some(FocusControl::Page) {
+                        iced::Color::from_rgb8(110, 168, 254)
+                    } else {
+                        iced::Color::TRANSPARENT
+                    },
+                    width: 2.0,
+                    radius: 4.0.into(),
+                },
+                ..container::Style::default()
+            }),
             text(format!("of {}", self.document.pages.len())).size(14),
-            button("Next")
-                .on_press_maybe((page + 1 < self.document.pages.len()).then_some(Message::Next)),
+            focus_button(
+                "Next",
+                (page + 1 < self.document.pages.len()).then_some(Message::Next),
+                focused == Some(FocusControl::Next)
+            ),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
         let zoom = row![
-            button("−").on_press(Message::ZoomOut),
+            focus_button(
+                "−",
+                Some(Message::ZoomOut),
+                focused == Some(FocusControl::ZoomOut)
+            ),
             text(zoom_label).size(14),
-            button("+").on_press(Message::ZoomIn),
-            button("100%").on_press(Message::ActualSize),
-            button("Fit width").on_press(Message::FitWidth),
+            focus_button(
+                "+",
+                Some(Message::ZoomIn),
+                focused == Some(FocusControl::ZoomIn)
+            ),
+            focus_button(
+                "100%",
+                Some(Message::ActualSize),
+                focused == Some(FocusControl::ActualSize)
+            ),
+            focus_button(
+                "Fit width",
+                Some(Message::FitWidth),
+                focused == Some(FocusControl::FitWidth)
+            ),
             iced::widget::Space::new().width(Length::Fill),
-            button("Copy").on_press_maybe(
-                (self.copy_task.is_none()
-                    && self.document.can_copy
-                    && (self.select_all || self.selection_ready))
-                    .then_some(Message::Copy)
+            focus_button(
+                "Copy",
+                self.copy_ready().then_some(Message::Copy),
+                focused == Some(FocusControl::Copy)
             ),
         ]
         .spacing(8)

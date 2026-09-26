@@ -7,6 +7,7 @@ use std::{collections::HashMap, path::PathBuf};
 pub mod epub;
 mod html;
 pub mod position;
+pub mod recent;
 pub use html::load_html;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

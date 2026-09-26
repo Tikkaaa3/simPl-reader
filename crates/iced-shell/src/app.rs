@@ -1,7 +1,7 @@
 //! The normal, fixture-independent local HTML, PDF and EPUB reader.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::pdf_reader;
@@ -10,6 +10,7 @@ use iced::widget::{button, column, container, image, row, scrollable, text};
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme, mouse, window};
 use iced_shell::{reader, selection, virtual_reader};
 use reader_document::position::{self, EpubReadingPosition, PdfReadingPosition, ReadingPosition};
+use reader_document::recent::{self, DocumentKind, Entry};
 use reader_document::{BaseDirection, Endpoint, Item};
 
 const DEFAULT_FONT_SIZE: f32 = 18.0;
@@ -17,6 +18,9 @@ const MIN_FONT_SIZE: f32 = 12.0;
 const MAX_FONT_SIZE: f32 = 36.0;
 const GAP: f32 = 14.0;
 const OVERSCAN: f32 = 600.0;
+const CONTENT_ROW_HEIGHT: f32 = 34.0;
+const RECENT_ROW_HEIGHT: f32 = 52.0;
+const RECENT_ROW_SPACING: f32 = 8.0;
 
 #[derive(Debug)]
 struct DisplayImage {
@@ -44,8 +48,26 @@ struct Book {
     epub: Option<EpubChapter>,
 }
 
-fn load_book(path: PathBuf) -> Result<Book, String> {
+fn load_book(
+    path: PathBuf,
+    locate: Option<&Entry>,
+    carried: Option<&SavedPosition>,
+) -> Result<Book, String> {
     let mut document = reader_document::load_html(&path)?;
+    if let Some(old) = locate {
+        recent::relocate(
+            old,
+            &Entry {
+                path: document.path.clone(),
+                title: document.title.clone(),
+                fingerprint: document.fingerprint.clone(),
+                kind: DocumentKind::Html,
+            },
+        )?;
+    }
+    if let Some(position) = carried {
+        position.save_at(&document.path)?;
+    }
     let restored = match position::load(&document.path) {
         Ok(position) => position.filter(|position| position.fingerprint == document.fingerprint),
         Err(error) => {
@@ -96,29 +118,73 @@ fn display_book(
     }
 }
 
-fn load_epub(path: PathBuf) -> Result<Book, String> {
+fn load_epub(
+    path: PathBuf,
+    locate: Option<&Entry>,
+    carried: Option<&SavedPosition>,
+) -> Result<Book, String> {
     let document = Arc::new(reader_document::epub::open(&path)?);
+    if let Some(old) = locate
+        && (old.kind != DocumentKind::Epub
+            || !old.fingerprint.eq_ignore_ascii_case(&document.fingerprint))
+    {
+        return Err(
+            "Cannot locate document: selected EPUB does not match the saved fingerprint".into(),
+        );
+    }
     let mut warnings = Vec::new();
-    let restored = match position::load_epub(&document.path) {
-        Ok(position) => position.filter(|position| position.fingerprint == document.fingerprint),
-        Err(error) => {
-            warnings.push(format!("Could not restore the reading position: {error}"));
-            None
+    let current = match carried {
+        Some(SavedPosition::Epub(_, position)) => Some(position),
+        _ => None,
+    };
+    let stored = if current.is_some() {
+        None
+    } else {
+        let old_position = locate
+            .map(recent::saved_epub_for_relocation)
+            .transpose()?
+            .flatten();
+        match old_position.map_or_else(
+            || position::load_epub(&document.path),
+            |position| Ok(Some(position)),
+        ) {
+            Ok(position) => position,
+            Err(error) => {
+                warnings.push(format!("Could not restore the reading position: {error}"));
+                None
+            }
         }
     };
-    let index = restored.as_ref().and_then(|position| {
+    let restored = current
+        .or(stored.as_ref())
+        .filter(|position| position.fingerprint == document.fingerprint);
+    let index = restored.and_then(|position| {
         document
             .chapters
             .iter()
             .position(|chapter| chapter.href == position.chapter)
     });
     let restored = index.and(restored).map(|position| ReadingPosition {
-        fingerprint: position.fingerprint,
-        item_id: position.item_id,
+        fingerprint: position.fingerprint.clone(),
+        item_id: position.item_id.clone(),
         within: position.within,
         font_size: position.font_size,
     });
-    let mut book = load_epub_chapter(document, index.unwrap_or(0), restored)?;
+    let mut book = load_epub_chapter(document.clone(), index.unwrap_or(0), restored)?;
+    if let Some(old) = locate {
+        recent::relocate(
+            old,
+            &Entry {
+                path: document.path.clone(),
+                title: document.title.clone(),
+                fingerprint: document.fingerprint.clone(),
+                kind: DocumentKind::Epub,
+            },
+        )?;
+    }
+    if let Some(position) = carried {
+        position.save_at(&document.path)?;
+    }
     book.warnings.extend(warnings);
     Ok(book)
 }
@@ -161,11 +227,77 @@ enum SavedPosition {
 }
 
 impl SavedPosition {
-    fn save(self) -> Result<(), String> {
+    fn save(&self) -> Result<(), String> {
         match self {
-            Self::Html(path, position) => position::save(&path, &position),
-            Self::Pdf(path, position) => position::save_pdf(&path, &position),
-            Self::Epub(path, position) => position::save_epub(&path, &position),
+            Self::Html(path, _) | Self::Pdf(path, _) | Self::Epub(path, _) => self.save_at(path),
+        }
+    }
+
+    fn save_at(&self, path: &Path) -> Result<(), String> {
+        match self {
+            Self::Html(_, position) => position::save(path, position),
+            Self::Pdf(_, position) => position::save_pdf(path, position),
+            Self::Epub(_, position) => position::save_epub(path, position),
+        }
+    }
+
+    fn matches_entry(&self, old: &Entry) -> bool {
+        match self {
+            Self::Html(path, position) => {
+                old.kind == DocumentKind::Html
+                    && *path == old.path
+                    && position.fingerprint.eq_ignore_ascii_case(&old.fingerprint)
+            }
+            Self::Pdf(path, position) => {
+                old.kind == DocumentKind::Pdf
+                    && *path == old.path
+                    && position.fingerprint.eq_ignore_ascii_case(&old.fingerprint)
+            }
+            Self::Epub(path, position) => {
+                old.kind == DocumentKind::Epub
+                    && *path == old.path
+                    && position.fingerprint.eq_ignore_ascii_case(&old.fingerprint)
+            }
+        }
+    }
+}
+
+fn document_kind(path: &Path) -> Result<DocumentKind, String> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("html" | "htm" | "xhtml") => Ok(DocumentKind::Html),
+        Some("pdf") => Ok(DocumentKind::Pdf),
+        Some("epub") => Ok(DocumentKind::Epub),
+        _ => Err(format!(
+            "Unsupported document format: {}. Open an HTML, XHTML, PDF or EPUB file.",
+            path.display()
+        )),
+    }
+}
+
+impl LoadedDocument {
+    fn recent_entry(&self) -> Entry {
+        match self {
+            Self::Reflow(book) => Entry {
+                path: book.path.clone(),
+                title: book.title.clone(),
+                fingerprint: book.fingerprint.clone(),
+                kind: if book.epub.is_some() {
+                    DocumentKind::Epub
+                } else {
+                    DocumentKind::Html
+                },
+            },
+            Self::Pdf { document, .. } => Entry {
+                path: document.path.clone(),
+                title: document.title.clone(),
+                fingerprint: document.fingerprint.clone(),
+                kind: DocumentKind::Pdf,
+            },
         }
     }
 }
@@ -173,13 +305,43 @@ impl SavedPosition {
 async fn load_document(
     path: PathBuf,
     previous: Option<SavedPosition>,
+    locate: Option<Entry>,
 ) -> Result<LoadedDocument, String> {
-    let save_warning = previous.and_then(|position| position.save().err());
-    if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    let kind = document_kind(&path)?;
+    if let Some(old) = &locate
+        && kind != old.kind
     {
+        return Err(format!(
+            "Selected file is not the same format as {}.",
+            old.path.display()
+        ));
+    }
+    let carried = previous.as_ref().filter(|position| {
+        locate
+            .as_ref()
+            .is_some_and(|old| position.matches_entry(old))
+    });
+    let save_warning = if carried.is_none() {
+        previous.as_ref().and_then(|position| position.save().err())
+    } else {
+        None
+    };
+    if kind == DocumentKind::Pdf {
         let document = reader_pdf::open(path).await?;
+        if let Some(old) = &locate {
+            recent::relocate(
+                old,
+                &Entry {
+                    path: document.path.clone(),
+                    title: document.title.clone(),
+                    fingerprint: document.fingerprint.clone(),
+                    kind,
+                },
+            )?;
+        }
+        if let Some(position) = carried {
+            position.save_at(&document.path)?;
+        }
         let mut warnings = Vec::new();
         if let Some(error) = save_warning {
             warnings.push(format!(
@@ -202,13 +364,10 @@ async fn load_document(
             warnings,
         })
     } else {
-        let mut book = if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"))
-        {
-            load_epub(path)?
+        let mut book = if kind == DocumentKind::Epub {
+            load_epub(path, locate.as_ref(), carried)?
         } else {
-            load_book(path)?
+            load_book(path, locate.as_ref(), carried)?
         };
         if let Some(error) = save_warning {
             book.warnings.push(format!(
@@ -238,6 +397,21 @@ struct Reader {
     scale_factor: f64,
     opening_task: Option<iced::task::Handle>,
     opening: Option<PathBuf>,
+    recent: Vec<Entry>,
+    recent_loading: bool,
+    recent_pending: Vec<(Entry, Option<Entry>)>,
+    recent_saving: bool,
+    recent_dirty: bool,
+    history_corrupt: bool,
+    pending_exit: bool,
+    history_notice: Option<String>,
+    recent_open: Option<Entry>,
+    missing_recent: Option<Entry>,
+    dialog_locate: Option<Entry>,
+    pending_locate: Option<Entry>,
+    show_recent: bool,
+    show_help: bool,
+    focused: Option<Control>,
     error: Option<String>,
     dialog_open: bool,
     show_warnings: bool,
@@ -268,6 +442,21 @@ impl Default for Reader {
             scale_factor: 1.0,
             opening_task: None,
             opening: None,
+            recent: Vec::new(),
+            recent_loading: true,
+            recent_pending: Vec::new(),
+            recent_saving: false,
+            recent_dirty: false,
+            history_corrupt: false,
+            pending_exit: false,
+            history_notice: None,
+            recent_open: None,
+            missing_recent: None,
+            dialog_locate: None,
+            pending_locate: None,
+            show_recent: false,
+            show_help: false,
+            focused: None,
             error: None,
             dialog_open: false,
             show_warnings: false,
@@ -295,10 +484,45 @@ enum CloseAction {
     Document,
     Window,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Control {
+    Open,
+    Recent,
+    Close,
+    Help,
+    FontDown,
+    FontUp,
+    Copy,
+    Pdf(pdf_reader::FocusControl),
+    PreviousChapter,
+    NextChapter,
+    Contents,
+    ContentsEntry(usize),
+    DismissError,
+    LocateMissing,
+    CloseWithoutSaving,
+    Warnings,
+    ResetRecent,
+    HideRecent,
+    OpenRecent(usize),
+    LocateRecent(usize),
+    RemoveRecent(usize),
+    HideHelp,
+}
 
 #[derive(Clone, Debug)]
 enum Message {
     OpenDialog,
+    RecentLoaded(Result<Vec<Entry>, String>),
+    RecentSaved(Result<(), String>),
+    ToggleRecent,
+    ToggleHelp,
+    OpenRecent(usize),
+    LocateRecent(usize),
+    LocateMissing,
+    RemoveRecent(usize),
+    ResetRecent,
+    DismissError,
     DialogChosen(Result<Option<PathBuf>, String>),
     Loaded {
         request: u64,
@@ -435,6 +659,8 @@ impl Reader {
         }
         self.request = self.request.wrapping_add(1);
         self.opening = None;
+        self.pending_locate = None;
+        self.recent_open = None;
     }
 
     fn clear_content(&mut self) {
@@ -529,23 +755,211 @@ impl Reader {
         }
     }
 
-    fn open(&mut self, path: PathBuf) -> Task<Message> {
-        if self.saving {
+    fn open(&mut self, path: PathBuf, locate: Option<Entry>) -> Task<Message> {
+        if self.saving || self.dialog_open || self.failed_close.is_some() {
             return Task::none();
         }
         let previous = self.document_position();
         self.cancel_open();
         let request = self.request;
         self.opening = Some(path.clone());
+        self.pending_locate = locate.clone();
+        self.recent_open = if locate.is_some() {
+            None
+        } else {
+            self.recent.iter().find(|entry| entry.path == path).cloned()
+        };
         self.error = None;
-        self.failed_close = None;
+        self.missing_recent = None;
         self.selection.end_drag();
-        let (task, handle) = Task::perform(load_document(path, previous), move |result| {
+        let (task, handle) = Task::perform(load_document(path, previous, locate), move |result| {
             Message::Loaded { request, result }
         })
         .abortable();
         self.opening_task = Some(handle.abort_on_drop());
         task
+    }
+
+    fn persist_recent(&mut self) -> Task<Message> {
+        if self.recent_loading || self.recent_saving || self.history_corrupt || !self.recent_dirty {
+            return Task::none();
+        }
+        self.recent_saving = true;
+        self.recent_dirty = false;
+        let entries = self.recent.clone();
+        Task::perform(async move { recent::save(&entries) }, Message::RecentSaved)
+    }
+
+    fn remember_recent(&mut self, entry: Entry, old: Option<&Entry>) -> Task<Message> {
+        if self.recent_loading {
+            self.recent_pending.push((entry, old.cloned()));
+            return Task::none();
+        }
+        if let Some(old) = old {
+            recent::remove(&mut self.recent, &old.path);
+        }
+        recent::remember(&mut self.recent, entry);
+        self.recent_dirty = true;
+        self.persist_recent()
+    }
+
+    fn contents_range(&self) -> std::ops::Range<usize> {
+        let Some(chapter) = self
+            .book
+            .as_ref()
+            .and_then(|book| book.epub.as_ref())
+            .filter(|_| self.show_contents)
+        else {
+            return 0..0;
+        };
+        let count = chapter.document.contents.len();
+        let height = (self.window_size.height * 0.35).clamp(100.0, 240.0);
+        let start = ((self.contents_offset / CONTENT_ROW_HEIGHT) as usize)
+            .saturating_sub(1)
+            .min(count);
+        start..(start + (height / CONTENT_ROW_HEIGHT).ceil() as usize + 3).min(count)
+    }
+
+    fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
+        let book = self.book.as_ref();
+        let chapter = book.and_then(|book| book.epub.as_ref());
+        let history = self.show_recent || (book.is_none() && self.pdf.is_none());
+        let pdf_page = self.pdf.as_ref().map(pdf_reader::Reader::page_index);
+        let primary = [
+            Some(Control::Open),
+            Some(Control::Recent),
+            (book.is_some() || self.pdf.is_some()).then_some(Control::Close),
+            Some(Control::Help),
+            book.is_some_and(|_| self.font_size > MIN_FONT_SIZE)
+                .then_some(Control::FontDown),
+            book.is_some_and(|_| self.font_size < MAX_FONT_SIZE)
+                .then_some(Control::FontUp),
+            book.is_some_and(|_| self.selection.endpoints().is_some())
+                .then_some(Control::Copy),
+            pdf_page
+                .filter(|page| *page > 0)
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::Previous)),
+            self.pdf
+                .as_ref()
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::Page)),
+            pdf_page
+                .filter(|page| {
+                    self.pdf
+                        .as_ref()
+                        .is_some_and(|pdf| *page + 1 < pdf.document().pages.len())
+                })
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::Next)),
+            self.pdf
+                .as_ref()
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomOut)),
+            self.pdf
+                .as_ref()
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomIn)),
+            self.pdf
+                .as_ref()
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::ActualSize)),
+            self.pdf
+                .as_ref()
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::FitWidth)),
+            self.pdf
+                .as_ref()
+                .filter(|pdf| pdf.copy_ready())
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::Copy)),
+            chapter
+                .filter(|chapter| chapter.index > 0)
+                .map(|_| Control::PreviousChapter),
+            chapter
+                .filter(|chapter| chapter.index + 1 < chapter.document.chapters.len())
+                .map(|_| Control::NextChapter),
+            chapter.map(|_| Control::Contents),
+        ];
+        let secondary = [
+            self.error.as_ref().map(|_| Control::DismissError),
+            self.missing_recent.as_ref().map(|_| Control::LocateMissing),
+            self.failed_close.map(|_| Control::CloseWithoutSaving),
+            self.history_corrupt.then_some(Control::ResetRecent),
+            (book.is_some_and(|book| !book.warnings.is_empty()) || !self.pdf_warnings.is_empty())
+                .then_some(Control::Warnings),
+            (history && (book.is_some() || self.pdf.is_some())).then_some(Control::HideRecent),
+        ];
+        primary
+            .into_iter()
+            .flatten()
+            .chain(self.contents_range().map(Control::ContentsEntry))
+            .chain(secondary.into_iter().flatten())
+            .chain(
+                (0..self.recent.len())
+                    .filter(move |_| history)
+                    .flat_map(|index| {
+                        [
+                            Control::OpenRecent(index),
+                            Control::LocateRecent(index),
+                            Control::RemoveRecent(index),
+                        ]
+                    }),
+            )
+            .chain(self.show_help.then_some(Control::HideHelp))
+    }
+
+    fn activate(&mut self, control: Control) -> Task<Message> {
+        if !self.controls().any(|visible| visible == control) {
+            return Task::none();
+        }
+        let message = match control {
+            Control::Open => Message::OpenDialog,
+            Control::Recent | Control::HideRecent => Message::ToggleRecent,
+            Control::Close => Message::Close(CloseAction::Document),
+            Control::Help | Control::HideHelp => Message::ToggleHelp,
+            Control::FontDown => Message::FontSize(self.font_size - 2.0),
+            Control::FontUp => Message::FontSize(self.font_size + 2.0),
+            Control::Copy => Message::Copy,
+            Control::Pdf(action) => {
+                if action == pdf_reader::FocusControl::Page {
+                    return iced::widget::operation::focus(pdf_reader::page_input_id());
+                }
+                let Some(pdf) = &self.pdf else {
+                    return Task::none();
+                };
+                let document = pdf.document().id;
+                let message = match action {
+                    pdf_reader::FocusControl::Previous => pdf_reader::Message::Previous,
+                    pdf_reader::FocusControl::Next => pdf_reader::Message::Next,
+                    pdf_reader::FocusControl::ZoomOut => pdf_reader::Message::ZoomOut,
+                    pdf_reader::FocusControl::ZoomIn => pdf_reader::Message::ZoomIn,
+                    pdf_reader::FocusControl::ActualSize => pdf_reader::Message::ActualSize,
+                    pdf_reader::FocusControl::FitWidth => pdf_reader::Message::FitWidth,
+                    pdf_reader::FocusControl::Copy => pdf_reader::Message::Copy,
+                    pdf_reader::FocusControl::Page => unreachable!(),
+                };
+                return update(self, Message::Pdf { document, message });
+            }
+            Control::PreviousChapter => return self.adjacent_chapter(false),
+            Control::NextChapter => return self.adjacent_chapter(true),
+            Control::Contents => Message::ToggleContents,
+            Control::ContentsEntry(index) => {
+                let Some(entry) = self
+                    .book
+                    .as_ref()
+                    .and_then(|book| book.epub.as_ref())
+                    .and_then(|chapter| chapter.document.contents.get(index))
+                else {
+                    return Task::none();
+                };
+                Message::EpubChapter {
+                    index: entry.chapter,
+                    fragment: entry.fragment.clone(),
+                }
+            }
+            Control::DismissError => Message::DismissError,
+            Control::LocateMissing => Message::LocateMissing,
+            Control::CloseWithoutSaving => Message::CloseWithoutSaving,
+            Control::Warnings => Message::ToggleWarnings,
+            Control::ResetRecent => Message::ResetRecent,
+            Control::OpenRecent(index) => Message::OpenRecent(index),
+            Control::LocateRecent(index) => Message::LocateRecent(index),
+            Control::RemoveRecent(index) => Message::RemoveRecent(index),
+        };
+        update(self, message)
     }
 
     fn open_chapter(&mut self, index: usize, fragment: Option<String>) -> Task<Message> {
@@ -634,7 +1048,17 @@ impl Reader {
     fn finish_close(&mut self, action: CloseAction) -> Task<Message> {
         self.failed_close = None;
         match action {
-            CloseAction::Window => iced::exit(),
+            CloseAction::Window => {
+                if self.recent_loading
+                    || self.recent_saving
+                    || (self.recent_dirty && !self.history_corrupt)
+                {
+                    self.pending_exit = true;
+                    self.persist_recent()
+                } else {
+                    iced::exit()
+                }
+            }
             CloseAction::Document => {
                 self.cancel_open();
                 self.clear_content();
@@ -645,9 +1069,10 @@ impl Reader {
     }
 
     fn close(&mut self, action: CloseAction) -> Task<Message> {
-        if self.saving {
+        if self.saving || self.dialog_open {
             return Task::none();
         }
+        self.failed_close = None;
         self.cancel_open();
         self.selection.end_drag();
         if let Some(position) = self.document_position() {
@@ -672,18 +1097,131 @@ impl Reader {
 
 fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     match message {
+        Message::RecentLoaded(result) => {
+            reader.recent_loading = false;
+            match result {
+                Ok(entries) => reader.recent = entries,
+                Err(error) => {
+                    reader.history_corrupt = true;
+                    reader.history_notice = Some(format!(
+                        "Recent history could not be read: {error}. Its original file will remain untouched until you choose Reset recent history."
+                    ));
+                }
+            }
+            for (entry, old) in std::mem::take(&mut reader.recent_pending) {
+                if let Some(old) = old {
+                    recent::remove(&mut reader.recent, &old.path);
+                }
+                recent::remember(&mut reader.recent, entry);
+                reader.recent_dirty = true;
+            }
+            let task = reader.persist_recent();
+            if reader.pending_exit && !reader.recent_saving {
+                iced::exit()
+            } else {
+                task
+            }
+        }
+        Message::RecentSaved(result) => {
+            reader.recent_saving = false;
+            match result {
+                Ok(()) => reader.history_notice = None,
+                Err(error) => {
+                    reader.history_notice = Some(format!("Could not save recent history: {error}"));
+                }
+            }
+            let task = reader.persist_recent();
+            if reader.pending_exit && !reader.recent_saving {
+                iced::exit()
+            } else {
+                task
+            }
+        }
+        Message::ResetRecent if reader.interactive() && reader.history_corrupt => {
+            reader.history_corrupt = false;
+            reader.recent_dirty = true;
+            reader.persist_recent()
+        }
+        Message::ToggleRecent if reader.interactive() => {
+            reader.show_recent = !reader.show_recent;
+            reader.focused =
+                if reader.show_recent || (reader.book.is_none() && reader.pdf.is_none()) {
+                    Some(if reader.recent.is_empty() {
+                        Control::Recent
+                    } else {
+                        Control::OpenRecent(0)
+                    })
+                } else {
+                    Some(Control::Recent)
+                };
+            restore_viewport(reader)
+        }
+        Message::ToggleHelp if reader.interactive() => {
+            reader.show_help = !reader.show_help;
+            reader.focused = Some(if reader.show_help {
+                Control::HideHelp
+            } else {
+                Control::Help
+            });
+            restore_viewport(reader)
+        }
+        Message::OpenRecent(index) if reader.interactive() => {
+            let Some(entry) = reader.recent.get(index).cloned() else {
+                return Task::none();
+            };
+            reader.show_recent = false;
+            reader.open(entry.path, None)
+        }
+        Message::LocateRecent(index) if reader.interactive() => {
+            let Some(entry) = reader.recent.get(index).cloned() else {
+                return Task::none();
+            };
+            reader.dialog_locate = Some(entry);
+            reader.dialog_open = true;
+            reader.selection.end_drag();
+            Task::perform(
+                async { crate::platform::open_document_dialog(true) },
+                Message::DialogChosen,
+            )
+        }
+        Message::LocateMissing if reader.interactive() => {
+            let Some(entry) = reader.missing_recent.clone() else {
+                return Task::none();
+            };
+            reader.dialog_locate = Some(entry);
+            reader.dialog_open = true;
+            Task::perform(
+                async { crate::platform::open_document_dialog(true) },
+                Message::DialogChosen,
+            )
+        }
+        Message::RemoveRecent(index) if reader.interactive() => {
+            let Some(entry) = reader.recent.get(index).cloned() else {
+                return Task::none();
+            };
+            recent::remove(&mut reader.recent, &entry.path);
+            reader.recent_dirty = true;
+            reader.persist_recent()
+        }
+        Message::DismissError => {
+            reader.error = None;
+            reader.missing_recent = None;
+            reader.failed_close = None;
+            restore_viewport(reader)
+        }
         Message::OpenDialog if reader.interactive() => {
             reader.dialog_open = true;
             reader.selection.end_drag();
             Task::perform(
-                async { crate::platform::open_document_dialog() },
+                async { crate::platform::open_document_dialog(false) },
                 Message::DialogChosen,
             )
         }
         Message::DialogChosen(result) => {
             reader.dialog_open = false;
+            let locate = reader.dialog_locate.take();
             let task = match result {
-                Ok(Some(path)) => reader.open(path),
+                Ok(Some(path)) => reader.open(path, locate),
                 Ok(None) => Task::none(),
                 Err(error) => {
                     reader.error = Some(error);
@@ -699,7 +1237,13 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Loaded { request, result } if request == reader.request && !reader.saving => {
             reader.opening = None;
             reader.opening_task = None;
-            match result {
+            let relocated = reader.pending_locate.take();
+            let recent_open = reader.recent_open.take();
+            let history_task = result.as_ref().ok().map_or_else(Task::none, |document| {
+                reader.missing_recent = None;
+                reader.remember_recent(document.recent_entry(), relocated.as_ref())
+            });
+            let content_task = match result {
                 Ok(LoadedDocument::Reflow(book)) => {
                     reader.clear_content();
                     reader.font_size = book
@@ -749,16 +1293,19 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                     forward_pdf(id, task)
                 }
                 Err(error) => {
-                    reader.error = Some(error);
-                    // The loading view replaced the scroll widget. Restore its
-                    // native offset as well as retaining the document model.
-                    if reader.book.is_some() {
-                        scroll_to(reader.offset)
+                    reader.missing_recent = relocated.or(recent_open);
+                    reader.error = Some(if let Some(entry) = &reader.missing_recent {
+                        format!(
+                            "Could not open {}: {error}. Use Locate... to select its new location, or Remove it from Recent.",
+                            entry.path.display()
+                        )
                     } else {
-                        Task::none()
-                    }
+                        error
+                    });
+                    restore_viewport(reader)
                 }
-            }
+            };
+            Task::batch([content_task, history_task])
         }
         Message::Pdf { document, message } => {
             if let Some(pdf) = &mut reader.pdf
@@ -774,8 +1321,13 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             if reader.book.as_ref().is_some_and(|book| book.epub.is_some()) {
                 reader.show_contents = !reader.show_contents;
                 reader.contents_offset = 0.0;
+                reader.focused = if reader.show_contents && !reader.contents_range().is_empty() {
+                    Some(Control::ContentsEntry(0))
+                } else {
+                    Some(Control::Contents)
+                };
                 return Task::batch([
-                    scroll_to(reader.offset),
+                    restore_viewport(reader),
                     scroll_to_widget(iced::advanced::widget::Id::new("epub-contents"), 0.0),
                 ]);
             }
@@ -822,7 +1374,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             generation,
             offset,
             viewport,
-        } if generation == reader.generation && reader.interactive() => {
+        } if generation == reader.generation => {
             reader.viewport = viewport;
             if reader.pending_anchor.is_none() {
                 reader.offset = offset;
@@ -844,11 +1396,130 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::CloseWithoutSaving => reader
             .failed_close
             .map_or_else(Task::none, |action| reader.finish_close(action)),
-        Message::ToggleWarnings => {
+        Message::ToggleWarnings if reader.interactive() => {
             reader.show_warnings = !reader.show_warnings;
-            Task::none()
+            restore_viewport(reader)
         }
         Message::Event(event, id) => {
+            if let iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                repeat,
+                ..
+            }) = &event
+                && reader.interactive()
+            {
+                match key.as_ref() {
+                    Key::Named(key::Named::Tab) if !repeat => {
+                        let mut controls = reader.controls();
+                        let count = controls.clone().count();
+                        let current = reader.focused.and_then(|focused| {
+                            controls.clone().position(|control| control == focused)
+                        });
+                        let next = if modifiers.shift() {
+                            current.map_or(count - 1, |index| (index + count - 1) % count)
+                        } else {
+                            current.map_or(0, |index| (index + 1) % count)
+                        };
+                        let selected = controls.nth(next);
+                        drop(controls);
+                        reader.focused = selected;
+                        let unfocus = iced::advanced::widget::operate(
+                            iced::advanced::widget::operation::focusable::unfocus(),
+                        );
+                        return match reader.focused {
+                            Some(Control::Pdf(pdf_reader::FocusControl::Page)) => {
+                                iced::widget::operation::focus(pdf_reader::page_input_id())
+                            }
+                            Some(
+                                Control::OpenRecent(index)
+                                | Control::LocateRecent(index)
+                                | Control::RemoveRecent(index),
+                            ) => Task::batch([
+                                unfocus,
+                                scroll_to_widget(
+                                    iced::advanced::widget::Id::new("recent-documents"),
+                                    index as f32 * (RECENT_ROW_HEIGHT + RECENT_ROW_SPACING),
+                                ),
+                            ]),
+                            _ => unfocus,
+                        };
+                    }
+                    Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
+                        if matches!(reader.focused, Some(Control::ContentsEntry(_))) =>
+                    {
+                        let Control::ContentsEntry(index) = reader.focused.unwrap() else {
+                            unreachable!()
+                        };
+                        let count = reader
+                            .book
+                            .as_ref()
+                            .and_then(|book| book.epub.as_ref())
+                            .map_or(0, |chapter| chapter.document.contents.len());
+                        let next = if matches!(key.as_ref(), Key::Named(key::Named::ArrowDown)) {
+                            (index + 1).min(count.saturating_sub(1))
+                        } else {
+                            index.saturating_sub(1)
+                        };
+                        reader.focused = Some(Control::ContentsEntry(next));
+                        reader.contents_offset = next as f32 * CONTENT_ROW_HEIGHT;
+                        return Task::batch([
+                            scroll_to_widget(
+                                iced::advanced::widget::Id::new("epub-contents"),
+                                reader.contents_offset,
+                            ),
+                            restore_viewport(reader),
+                        ]);
+                    }
+                    Key::Named(key::Named::Enter | key::Named::Space)
+                        if reader.focused.is_some() && !repeat && !modifiers.control() =>
+                    {
+                        return reader.activate(reader.focused.unwrap());
+                    }
+                    Key::Named(key::Named::F1) if !repeat => {
+                        return update(reader, Message::ToggleHelp);
+                    }
+                    Key::Named(key::Named::Escape) if !repeat => {
+                        reader.focused = None;
+                        if reader.show_help {
+                            return update(reader, Message::ToggleHelp);
+                        }
+                        if reader.show_recent {
+                            return update(reader, Message::ToggleRecent);
+                        }
+                        if reader.show_contents {
+                            return update(reader, Message::ToggleContents);
+                        }
+                        if reader.show_warnings {
+                            reader.show_warnings = false;
+                            return restore_viewport(reader);
+                        }
+                        if reader.error.is_some() {
+                            return update(reader, Message::DismissError);
+                        }
+                    }
+                    Key::Character(value)
+                        if modifiers.control() && value.eq_ignore_ascii_case("r") && !repeat =>
+                    {
+                        return update(reader, Message::ToggleRecent);
+                    }
+                    Key::Character(value)
+                        if modifiers.control()
+                            && value.eq_ignore_ascii_case("l")
+                            && reader.pdf.is_some() =>
+                    {
+                        reader.focused = Some(Control::Pdf(pdf_reader::FocusControl::Page));
+                        return iced::widget::operation::focus(pdf_reader::page_input_id());
+                    }
+                    _ => {}
+                }
+            }
+            if matches!(
+                &event,
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            ) {
+                reader.focused = None;
+            }
             let pdf_input = matches!(
                 &event,
                 iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
@@ -861,7 +1532,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             let global_shortcut = matches!(&event,
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: Key::Character(value), modifiers, ..
-                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w")));
+                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l")));
             if pdf_input && !global_shortcut {
                 let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
                 if let Some(pdf) = &mut reader.pdf {
@@ -895,8 +1566,9 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                     let width = content_width(size.width);
                     let width_changed = (width - reader.width).abs() > 0.5;
                     reader.width = width;
+                    reader.viewport =
+                        (reader.viewport + size.height - reader.window_size.height).max(1.0);
                     reader.window_size = size;
-                    reader.viewport = (size.height - 100.0).max(100.0);
                     let task = if let Some(pdf) = &mut reader.pdf {
                         forward_pdf(pdf.document().id, pdf.resize(size, reader.scale_factor))
                     } else if width_changed && reader.book.is_some() {
@@ -912,7 +1584,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                 iced::Event::Window(window::Event::CloseRequested) => {
                     reader.close(CloseAction::Window)
                 }
-                iced::Event::Window(window::Event::FileDropped(path)) => reader.open(path),
+                iced::Event::Window(window::Event::FileDropped(path)) => reader.open(path, None),
                 iced::Event::Window(window::Event::Unfocused)
                 | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                     reader.selection.end_drag();
@@ -993,6 +1665,16 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             }
         }
         _ => Task::none(),
+    }
+}
+
+fn restore_viewport(reader: &Reader) -> Task<Message> {
+    if let Some(pdf) = &reader.pdf {
+        forward_pdf(pdf.document().id, pdf.restore_scroll())
+    } else if reader.book.is_some() {
+        scroll_to(reader.offset)
+    } else {
+        Task::none()
     }
 }
 
@@ -1079,95 +1761,151 @@ fn render_item(
     )
 }
 
+fn control_button<'a>(
+    reader: &Reader,
+    control: Control,
+    label: impl Into<Element<'a, Message>>,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    let focused = reader.focused == Some(control);
+    button(label)
+        .on_press_maybe(message)
+        .style(move |theme, status| {
+            let mut style = button::primary(theme, status);
+            if focused {
+                style.border.color = iced::Color::from_rgb8(110, 168, 254);
+                style.border.width = 2.0;
+            }
+            style
+        })
+        .into()
+}
+
 fn view(reader: &Reader) -> Element<'_, Message> {
     let active = reader.interactive();
     let loaded = (reader.book.is_some() || reader.pdf.is_some()) && active;
     let mut toolbar = row![
-        button("Open...").on_press_maybe(active.then_some(Message::OpenDialog)),
-        button("Close").on_press_maybe(loaded.then_some(Message::Close(CloseAction::Document))),
+        control_button(
+            reader,
+            Control::Open,
+            "Open...",
+            active.then_some(Message::OpenDialog)
+        ),
+        control_button(
+            reader,
+            Control::Recent,
+            "Recent",
+            active.then_some(Message::ToggleRecent)
+        ),
+        control_button(
+            reader,
+            Control::Close,
+            "Close",
+            loaded.then_some(Message::Close(CloseAction::Document))
+        ),
+        control_button(
+            reader,
+            Control::Help,
+            "Keyboard",
+            active.then_some(Message::ToggleHelp)
+        ),
         iced::widget::Space::new().width(Length::Fill),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
     if reader.pdf.is_none() {
         toolbar = toolbar
-            .push(
-                button("A-").on_press_maybe(
-                    (loaded && reader.font_size > MIN_FONT_SIZE)
-                        .then_some(Message::FontSize(reader.font_size - 2.0)),
-                ),
-            )
+            .push(control_button(
+                reader,
+                Control::FontDown,
+                "A-",
+                (loaded && reader.font_size > MIN_FONT_SIZE)
+                    .then_some(Message::FontSize(reader.font_size - 2.0)),
+            ))
             .push(text(format!("{:.0} px", reader.font_size)).size(14))
-            .push(
-                button("A+").on_press_maybe(
-                    (loaded && reader.font_size < MAX_FONT_SIZE)
-                        .then_some(Message::FontSize(reader.font_size + 2.0)),
-                ),
-            )
-            .push(button("Copy").on_press_maybe(
+            .push(control_button(
+                reader,
+                Control::FontUp,
+                "A+",
+                (loaded && reader.font_size < MAX_FONT_SIZE)
+                    .then_some(Message::FontSize(reader.font_size + 2.0)),
+            ))
+            .push(control_button(
+                reader,
+                Control::Copy,
+                "Copy",
                 (loaded && reader.selection.endpoints().is_some()).then_some(Message::Copy),
             ));
     }
-    let mut page = column![container(toolbar).padding(12)].spacing(8);
+    // This slot is always present, so expanding any panel never replaces the
+    // reading scrollable's widget-tree position or its native scroll state.
+    let mut auxiliary = column![].spacing(8);
     if let Some(chapter) = reader.book.as_ref().and_then(|book| book.epub.as_ref()) {
         let count = chapter.document.chapters.len();
         let navigation = row![
-            button("Prev chapter").on_press_maybe((active && chapter.index > 0).then(|| {
-                Message::EpubChapter {
+            control_button(
+                reader,
+                Control::PreviousChapter,
+                "Prev chapter",
+                (active && chapter.index > 0).then_some(Message::EpubChapter {
                     index: chapter.index - 1,
                     fragment: None,
-                }
-            })),
+                })
+            ),
             text(format!("Chapter {} / {}", chapter.index + 1, count)).size(14),
-            button("Next chapter").on_press_maybe((active && chapter.index + 1 < count).then_some(
-                Message::EpubChapter {
+            control_button(
+                reader,
+                Control::NextChapter,
+                "Next chapter",
+                (active && chapter.index + 1 < count).then_some(Message::EpubChapter {
                     index: chapter.index + 1,
-                    fragment: None
-                }
-            )),
-            button(if reader.show_contents {
-                "Hide contents"
-            } else {
-                "Contents"
-            })
-            .on_press_maybe(active.then_some(Message::ToggleContents)),
+                    fragment: None,
+                })
+            ),
+            control_button(
+                reader,
+                Control::Contents,
+                if reader.show_contents {
+                    "Hide contents"
+                } else {
+                    "Contents"
+                },
+                active.then_some(Message::ToggleContents)
+            ),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
-        page = page.push(
-            container(
-                column![
-                    navigation,
-                    text(&chapter.document.chapters[chapter.index].title).size(15),
-                    text("Selection and copy apply to the current chapter.").size(12),
-                ]
-                .spacing(6),
-            )
-            .padding([0, 20]),
+        auxiliary = auxiliary.push(
+            column![
+                navigation,
+                text(&chapter.document.chapters[chapter.index].title).size(15),
+                text("Selection and copy apply to the current chapter.").size(12),
+            ]
+            .spacing(6),
         );
         if reader.show_contents {
-            const ROW_HEIGHT: f32 = 34.0;
             let contents = &chapter.document.contents;
             let height = (reader.window_size.height * 0.35).clamp(100.0, 240.0);
-            let start = ((reader.contents_offset / ROW_HEIGHT) as usize)
-                .saturating_sub(1)
-                .min(contents.len());
-            let end = (start + (height / ROW_HEIGHT).ceil() as usize + 3).min(contents.len());
-            let mut entries = column![iced::widget::Space::new().height(start as f32 * ROW_HEIGHT)];
-            for entry in &contents[start..end] {
+            let range = reader.contents_range();
+            let start = range.start;
+            let end = range.end;
+            let mut entries =
+                column![iced::widget::Space::new().height(start as f32 * CONTENT_ROW_HEIGHT)];
+            for (relative, entry) in contents[start..end].iter().enumerate() {
                 let label = text(&entry.label)
                     .size(14)
                     .wrapping(iced::widget::text::Wrapping::None);
                 entries = entries.push(
-                    container(
-                        button(label)
-                            .height(ROW_HEIGHT)
-                            .width(Length::Fill)
-                            .on_press_maybe(active.then(|| Message::EpubChapter {
-                                index: entry.chapter,
-                                fragment: entry.fragment.clone(),
-                            })),
-                    )
+                    container(control_button(
+                        reader,
+                        Control::ContentsEntry(start + relative),
+                        label,
+                        active.then(|| Message::EpubChapter {
+                            index: entry.chapter,
+                            fragment: entry.fragment.clone(),
+                        }),
+                    ))
+                    .height(CONTENT_ROW_HEIGHT)
                     .padding(iced::Padding {
                         left: entry.depth.min(8) as f32 * 14.0,
                         ..iced::Padding::default()
@@ -1175,33 +1913,72 @@ fn view(reader: &Reader) -> Element<'_, Message> {
                 );
             }
             entries = entries.push(
-                iced::widget::Space::new().height((contents.len() - end) as f32 * ROW_HEIGHT),
+                iced::widget::Space::new()
+                    .height((contents.len() - end) as f32 * CONTENT_ROW_HEIGHT),
             );
-            page = page.push(
-                container(
-                    scrollable(entries)
-                        .id(iced::advanced::widget::Id::new("epub-contents"))
-                        .height(height)
-                        .on_scroll(|viewport| {
-                            Message::ContentsScrolled(viewport.absolute_offset().y)
-                        }),
-                )
-                .padding([0, 20]),
+            auxiliary = auxiliary.push(
+                scrollable(entries)
+                    .id(iced::advanced::widget::Id::new("epub-contents"))
+                    .height(height)
+                    .on_scroll(|viewport| Message::ContentsScrolled(viewport.absolute_offset().y)),
             );
         }
     }
     if let Some(error) = &reader.error {
-        let mut notice = column![
+        let mut notice = row![
             text(error)
                 .size(14)
-                .color(iced::Color::from_rgb8(255, 170, 145))
+                .width(Length::Fill)
+                .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
+                .color(iced::Color::from_rgb8(255, 170, 145)),
+            control_button(
+                reader,
+                Control::DismissError,
+                "Dismiss",
+                Some(Message::DismissError)
+            ),
         ]
-        .spacing(8);
-        if reader.failed_close.is_some() {
-            notice =
-                notice.push(button("Close without saving").on_press(Message::CloseWithoutSaving));
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        if reader.missing_recent.is_some() {
+            notice = notice.push(control_button(
+                reader,
+                Control::LocateMissing,
+                "Locate...",
+                active.then_some(Message::LocateMissing),
+            ));
         }
-        page = page.push(container(notice).padding([0, 20]));
+        if reader.failed_close.is_some() {
+            notice = notice.push(control_button(
+                reader,
+                Control::CloseWithoutSaving,
+                "Close without saving",
+                Some(Message::CloseWithoutSaving),
+            ));
+        }
+        auxiliary = auxiliary.push(notice);
+    }
+    if let Some(notice) = &reader.history_notice {
+        let label = text(notice)
+            .size(13)
+            .color(iced::Color::from_rgb8(255, 170, 145));
+        auxiliary = if reader.history_corrupt {
+            auxiliary.push(
+                row![
+                    label.width(Length::Fill),
+                    control_button(
+                        reader,
+                        Control::ResetRecent,
+                        "Reset recent history",
+                        active.then_some(Message::ResetRecent)
+                    ),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            )
+        } else {
+            auxiliary.push(label)
+        };
     }
     let warnings = reader
         .book
@@ -1210,40 +1987,123 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             book.warnings.as_slice()
         });
     if !warnings.is_empty() {
-        page = page.push(
-            container(
-                button(
-                    text(format!(
-                        "{} document warning(s) — {}",
-                        warnings.len(),
-                        if reader.show_warnings {
-                            "hide"
-                        } else {
-                            "details"
-                        },
-                    ))
-                    .size(13),
-                )
-                .on_press(Message::ToggleWarnings),
-            )
-            .padding([0, 20]),
-        );
+        auxiliary = auxiliary.push(control_button(
+            reader,
+            Control::Warnings,
+            text(format!(
+                "{} document warning(s) — {}",
+                warnings.len(),
+                if reader.show_warnings {
+                    "hide"
+                } else {
+                    "details"
+                }
+            ))
+            .size(13),
+            active.then_some(Message::ToggleWarnings),
+        ));
         if reader.show_warnings {
-            page = page.push(
-                container(scrollable(text(warnings.join("\n")).size(13)).height(110))
-                    .padding([0, 20]),
-            );
+            auxiliary = auxiliary.push(scrollable(text(warnings.join("\n")).size(13)).height(110));
         }
     }
+    let show_history = reader.show_recent || (reader.book.is_none() && reader.pdf.is_none());
+    if show_history {
+        let mut heading = row![text("Recent documents").size(17)].spacing(12);
+        if reader.book.is_some() || reader.pdf.is_some() {
+            heading = heading.push(control_button(
+                reader,
+                Control::HideRecent,
+                "Hide",
+                active.then_some(Message::ToggleRecent),
+            ));
+        }
+        let mut history = column![heading].spacing(8);
+        if reader.recent_loading {
+            history = history.push(text("Loading recent documents…").size(13));
+        } else if reader.recent.is_empty() {
+            history = history.push(text("No recent documents.").size(13));
+        }
+        let mut entries = column![].spacing(RECENT_ROW_SPACING);
+        for (index, entry) in reader.recent.iter().enumerate() {
+            entries = entries.push(
+                container(
+                    row![
+                        column![
+                            text(&entry.title)
+                                .size(14)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                            text(entry.path.display().to_string())
+                                .size(12)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .width(Length::Fill),
+                        control_button(
+                            reader,
+                            Control::OpenRecent(index),
+                            "Open",
+                            active.then_some(Message::OpenRecent(index))
+                        ),
+                        control_button(
+                            reader,
+                            Control::LocateRecent(index),
+                            "Locate...",
+                            active.then_some(Message::LocateRecent(index))
+                        ),
+                        control_button(
+                            reader,
+                            Control::RemoveRecent(index),
+                            "Remove",
+                            active.then_some(Message::RemoveRecent(index))
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                )
+                .height(RECENT_ROW_HEIGHT),
+            );
+        }
+        history = history.push(
+            scrollable(entries)
+                .id(iced::advanced::widget::Id::new("recent-documents"))
+                .height((reader.window_size.height * 0.35).clamp(100.0, 250.0)),
+        );
+        auxiliary = auxiliary.push(history);
+    }
+    if reader.show_help {
+        auxiliary = auxiliary.push(column![
+            row![
+                text("Keyboard").size(17),
+                control_button(reader, Control::HideHelp, "Hide",
+                    Some(Message::ToggleHelp)),
+            ].spacing(12),
+            text("Tab / Shift+Tab: controls; Enter / Space: activate; Escape: dismiss. F1: keyboard help.").size(13),
+            text("Ctrl+O: open; Ctrl+R: recent; Ctrl+W: close; Ctrl+C: copy; Ctrl+A: select all.").size(13),
+            text("Page Up / Down: read; Ctrl+Home / End: ends; Ctrl+plus / minus / 0: text size or PDF zoom.").size(13),
+            text("EPUB: Ctrl+T contents; Ctrl+Page Up / Down chapters. PDF: Ctrl+L page number; Ctrl+F fit width.").size(13),
+        ].spacing(5));
+    }
     if reader.saving {
-        page = page.push(container(text("Saving reading position...")).padding(24));
+        auxiliary = auxiliary.push(text("Saving reading position…").size(13));
     } else if let Some(path) = &reader.opening {
-        page = page.push(container(text(format!("Opening {}...", path.display()))).padding(24));
-    } else if let Some(pdf) = &reader.pdf {
+        auxiliary = auxiliary.push(text(format!("Opening {}…", path.display())).size(13));
+    }
+    let mut page = column![
+        container(toolbar).padding(12),
+        container(auxiliary).padding([0, 20]),
+    ]
+    .spacing(8);
+    if let Some(pdf) = &reader.pdf {
         let document = pdf.document().id;
         page = page.push(
-            pdf.view()
-                .map(move |message| Message::Pdf { document, message }),
+            pdf.view(reader.focused.and_then(|control| {
+                if let Control::Pdf(control) = control {
+                    Some(control)
+                } else {
+                    None
+                }
+            }))
+            .map(move |message| Message::Pdf { document, message }),
         );
     } else if let Some(book) = &reader.book {
         let range = reader
@@ -1341,7 +2201,14 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                 status: iced::event::Status::Captured,
                 ..
             } if !matches!(&key, Key::Character(value)
-                if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w"))) =>
+                if modifiers.control() && (value.eq_ignore_ascii_case("o")
+                    || value.eq_ignore_ascii_case("w")
+                    || value.eq_ignore_ascii_case("r")
+                    || value.eq_ignore_ascii_case("l")))
+                && !matches!(
+                    &key,
+                    Key::Named(key::Named::Tab | key::Named::F1 | key::Named::Escape)
+                ) =>
             {
                 None
             }
@@ -1358,10 +2225,12 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 error: error.clone(),
                 ..Reader::default()
             };
-            let task = path
-                .clone()
-                .map_or_else(Task::none, |path| reader.open(path));
-            (reader, task)
+            let tasks = [
+                Task::perform(async { recent::load() }, Message::RecentLoaded),
+                path.clone()
+                    .map_or_else(Task::none, |path| reader.open(path, None)),
+            ];
+            (reader, Task::batch(tasks))
         },
         update,
         view,
@@ -1402,6 +2271,50 @@ mod tests {
             restored: None,
             epub: None,
         })
+    }
+
+    #[test]
+    fn failed_save_can_be_retried_without_losing_the_reading_anchor() {
+        let mut reader = Reader {
+            book: Some(book("current")),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 3,
+            fraction: 0.4,
+        });
+        let _ = update(
+            &mut reader,
+            Message::Saved {
+                action: CloseAction::Document,
+                result: Err("storage unavailable".into()),
+            },
+        );
+        let _ = reader.close(CloseAction::Document);
+        assert!(reader.saving);
+        assert!(reader.failed_close.is_none());
+        let position = reader.saved_position().unwrap().1;
+        assert_eq!(position.item_id, "paragraph-3");
+        assert!((position.within - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn dismissing_a_save_error_cancels_the_pending_close() {
+        let mut reader = Reader {
+            book: Some(book("current")),
+            ..Reader::default()
+        };
+        let _ = update(
+            &mut reader,
+            Message::Saved {
+                action: CloseAction::Document,
+                result: Err("storage unavailable".into()),
+            },
+        );
+        let _ = update(&mut reader, Message::DismissError);
+        assert!(reader.failed_close.is_none());
+        assert!(reader.error.is_none());
+        assert_eq!(reader.book.as_ref().unwrap().title, "current");
     }
 
     #[test]

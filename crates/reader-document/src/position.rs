@@ -98,6 +98,11 @@ pub fn load_epub(path: &Path) -> Result<Option<EpubReadingPosition>, String> {
     load_epub_record(&record_path(path)?.with_extension("epub.json"))
 }
 
+/// Read a typed record by the historical canonical path even if the file moved.
+pub(crate) fn load_saved_epub(path: &Path) -> Result<Option<EpubReadingPosition>, String> {
+    load_epub_record(&saved_record_path(path).with_extension("epub.json"))
+}
+
 pub fn save_epub(path: &Path, position: &EpubReadingPosition) -> Result<(), String> {
     save_epub_record(&record_path(path)?.with_extension("epub.json"), position)
 }
@@ -113,6 +118,52 @@ fn load_epub_record(path: &Path) -> Result<Option<EpubReadingPosition>, String> 
 fn save_epub_record(path: &Path, position: &EpubReadingPosition) -> Result<(), String> {
     validate_epub(position)?;
     write_record(path, position)
+}
+
+/// The saved source path is already canonical and may no longer exist.
+/// Only a record for the same content can be carried to the new document.
+pub(crate) fn transfer_saved_position(
+    old_path: &Path,
+    new_path: &Path,
+    fingerprint: &str,
+    kind: crate::recent::DocumentKind,
+) -> Result<(), String> {
+    let old_record = saved_record_path(old_path);
+    let new_record = record_path(new_path)?;
+    transfer_records(&old_record, &new_record, fingerprint, kind)
+}
+
+fn transfer_records(
+    old_record: &Path,
+    new_record: &Path,
+    fingerprint: &str,
+    kind: crate::recent::DocumentKind,
+) -> Result<(), String> {
+    use crate::recent::DocumentKind;
+    match kind {
+        DocumentKind::Html => {
+            if let Some(position) = load_record(old_record)?
+                && position.fingerprint.eq_ignore_ascii_case(fingerprint)
+            {
+                save_record(new_record, &position)?;
+            }
+        }
+        DocumentKind::Pdf => {
+            if let Some(position) = load_pdf_record(&old_record.with_extension("pdf.json"))?
+                && position.fingerprint.eq_ignore_ascii_case(fingerprint)
+            {
+                save_pdf_record(&new_record.with_extension("pdf.json"), &position)?;
+            }
+        }
+        DocumentKind::Epub => {
+            if let Some(position) = load_epub_record(&old_record.with_extension("epub.json"))?
+                && position.fingerprint.eq_ignore_ascii_case(fingerprint)
+            {
+                save_epub_record(&new_record.with_extension("epub.json"), &position)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_epub(position: &EpubReadingPosition) -> Result<(), String> {
@@ -192,14 +243,27 @@ fn record_path(document: &Path) -> Result<PathBuf, String> {
     let canonical = document
         .canonicalize()
         .map_err(|error| format!("cannot resolve document {}: {error}", document.display()))?;
-    let base = std::env::var_os("LOCALAPPDATA")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = storage_base();
     Ok(base
         .join("simPl")
         .join("positions")
         .join(format!("{}.json", path_key(&canonical))))
+}
+
+pub(crate) fn storage_base() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+// Recent history keeps the path captured on the last successful open. A moved
+// source cannot be canonicalized again, but its original position key remains.
+pub(crate) fn saved_record_path(document: &Path) -> PathBuf {
+    storage_base()
+        .join("simPl")
+        .join("positions")
+        .join(format!("{}.json", path_key(document)))
 }
 
 fn path_key(path: &Path) -> String {
@@ -273,36 +337,52 @@ fn write_record<T: Serialize>(path: &Path, position: &T) -> Result<(), String> {
     if bytes.len() as u64 > MAX_RECORD_BYTES {
         return Err("reading position exceeds size limit".into());
     }
-    let parent = path.parent().ok_or("reading position path has no parent")?;
+    atomic_write(
+        path,
+        &bytes,
+        "reading position",
+        "reading positions",
+        ".position",
+    )
+}
+
+pub(crate) fn atomic_write(
+    path: &Path,
+    bytes: &[u8],
+    label: &str,
+    directory_label: &str,
+    temporary_prefix: &str,
+) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{label} path has no parent"))?;
     fs::create_dir_all(parent).map_err(|error| {
         format!(
-            "cannot create reading positions directory {}: {error}",
+            "cannot create {directory_label} directory {}: {error}",
             parent.display()
         )
     })?;
     let suffix = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    let temporary = parent.join(format!(".position-{}-{suffix}.tmp", std::process::id()));
+    let temporary = parent.join(format!(
+        "{temporary_prefix}-{}-{suffix}.tmp",
+        std::process::id()
+    ));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&temporary)
         .map_err(|error| {
             format!(
-                "cannot create temporary reading position {}: {error}",
+                "cannot create temporary {label} {}: {error}",
                 temporary.display()
             )
         })?;
     let result = (|| {
-        file.write_all(&bytes)
+        file.write_all(bytes)
             .and_then(|()| file.sync_all())
-            .map_err(|error| {
-                format!(
-                    "cannot write reading position {}: {error}",
-                    temporary.display()
-                )
-            })?;
+            .map_err(|error| format!("cannot write {label} {}: {error}", temporary.display()))?;
         drop(file);
-        replace_file(&temporary, path)
+        replace_file(&temporary, path, label)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -311,7 +391,7 @@ fn write_record<T: Serialize>(path: &Path, position: &T) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+fn replace_file(temporary: &Path, destination: &Path, label: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -333,7 +413,7 @@ fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
     } == 0
     {
         return Err(format!(
-            "cannot replace reading position {}: {}",
+            "cannot replace {label} {}: {}",
             destination.display(),
             std::io::Error::last_os_error()
         ));
@@ -342,13 +422,9 @@ fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
-    fs::rename(temporary, destination).map_err(|error| {
-        format!(
-            "cannot replace reading position {}: {error}",
-            destination.display()
-        )
-    })
+fn replace_file(temporary: &Path, destination: &Path, label: &str) -> Result<(), String> {
+    fs::rename(temporary, destination)
+        .map_err(|error| format!("cannot replace {label} {}: {error}", destination.display()))
 }
 
 #[cfg(test)]
@@ -479,6 +555,101 @@ mod tests {
             restored.chapter
         );
         assert_eq!(load_record(&html).unwrap().unwrap().item_id, "html-item");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn transfer_carries_only_matching_typed_positions_and_retains_sources() {
+        use crate::recent::DocumentKind;
+
+        let dir = scratch();
+        let old = dir.join("old.json");
+        let new = dir.join("new.json");
+        let fingerprint = "a".repeat(64);
+        let other = "b".repeat(64);
+
+        save_record(&old, &sample("original-html")).unwrap();
+        save_record(&new, &sample("unrelated-html")).unwrap();
+        let old_bytes = fs::read(&old).unwrap();
+        transfer_records(&old, &new, &fingerprint, DocumentKind::Html).unwrap();
+        assert_eq!(load_record(&new).unwrap().unwrap().item_id, "original-html");
+        assert_eq!(fs::read(&old).unwrap(), old_bytes);
+
+        let pdf_old = old.with_extension("pdf.json");
+        let pdf_new = new.with_extension("pdf.json");
+        save_pdf_record(
+            &pdf_old,
+            &PdfReadingPosition {
+                fingerprint: fingerprint.clone(),
+                page: 53,
+                within: 0.25,
+                horizontal: 0.75,
+                zoom: PdfZoom::Scale(1.75),
+            },
+        )
+        .unwrap();
+        save_pdf_record(
+            &pdf_new,
+            &PdfReadingPosition {
+                fingerprint: fingerprint.clone(),
+                page: 2,
+                within: 0.0,
+                horizontal: 0.0,
+                zoom: PdfZoom::FitWidth,
+            },
+        )
+        .unwrap();
+        let old_bytes = fs::read(&pdf_old).unwrap();
+        transfer_records(&old, &new, &fingerprint, DocumentKind::Pdf).unwrap();
+        let restored = load_pdf_record(&pdf_new).unwrap().unwrap();
+        assert_eq!(restored.page, 53);
+        assert_eq!(restored.within, 0.25);
+        assert_eq!(restored.horizontal, 0.75);
+        assert_eq!(restored.zoom, PdfZoom::Scale(1.75));
+        assert_eq!(fs::read(&pdf_old).unwrap(), old_bytes);
+
+        let epub_old = old.with_extension("epub.json");
+        let epub_new = new.with_extension("epub.json");
+        save_epub_record(
+            &epub_old,
+            &EpubReadingPosition {
+                fingerprint: fingerprint.clone(),
+                chapter: "OPS/chapter-7.xhtml".into(),
+                item_id: "paragraph-8".into(),
+                within: 0.625,
+                font_size: 22.0,
+            },
+        )
+        .unwrap();
+        save_epub_record(
+            &epub_new,
+            &EpubReadingPosition {
+                fingerprint: fingerprint.clone(),
+                chapter: "OPS/chapter-1.xhtml".into(),
+                item_id: "paragraph-1".into(),
+                within: 0.0,
+                font_size: 16.0,
+            },
+        )
+        .unwrap();
+        let old_bytes = fs::read(&epub_old).unwrap();
+        transfer_records(&old, &new, &fingerprint, DocumentKind::Epub).unwrap();
+        let restored = load_epub_record(&epub_new).unwrap().unwrap();
+        assert_eq!(restored.chapter, "OPS/chapter-7.xhtml");
+        assert_eq!(restored.item_id, "paragraph-8");
+        assert_eq!(restored.within, 0.625);
+        assert_eq!(restored.font_size, 22.0);
+        assert_eq!(fs::read(&epub_old).unwrap(), old_bytes);
+
+        for (kind, target) in [
+            (DocumentKind::Html, &new),
+            (DocumentKind::Pdf, &pdf_new),
+            (DocumentKind::Epub, &epub_new),
+        ] {
+            let before = fs::read(target).unwrap();
+            transfer_records(&old, &new, &other, kind).unwrap();
+            assert_eq!(fs::read(target).unwrap(), before);
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

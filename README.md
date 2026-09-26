@@ -18,11 +18,21 @@ The normal application needs no repository fixtures or bundled test fonts.
 The 1,000/10,000-paragraph fixture modes remain explicit diagnostics for
 virtualization, mixed-script layout, and native selection regressions.
 
-Recent files are not implemented. A portable-folder build is available;
-clean-machine qualification is still pending. The [roadmap](roadmap.md) records
-the boundaries, measurements, and remaining work.
+The local-reading MVP now includes recent files, keyboard-accessible controls,
+and fingerprint-checked moved-file recovery. A portable-folder build is available;
+clean-Windows qualification remains environment-blocked. The [roadmap](roadmap.md)
+records the boundaries, measurements, and remaining release qualification.
 
 ## Run the reader
+
+### Portable folder
+
+Run `target\portable\simPl\simPl.exe`, or copy its **entire folder** elsewhere.
+The packaged executable does not require Rust, Visual Studio, repository files,
+or a separate VC++ redistributable. Keep the adjacent PDFium DLL and third-party
+notices. Validation on an independent clean Windows installation is still pending.
+
+### Build from source
 
 Requirements: Windows x64, Windows PowerShell 5.1+, [rustup](https://rustup.rs/),
 Visual Studio C++ Build Tools, and the Windows SDK. `rust-toolchain.toml` pins
@@ -81,6 +91,33 @@ another working directory without repository fixtures. Only `--reader-poc` /
 `--reader-poc-large` need repository fixtures; `--shell-poc` opens the old empty
 diagnostic shell.
 
+## Recent files, moved books, and keyboard access
+
+- **Recent / Ctrl+R** opens the list; it is also visible on the welcome screen.
+  The 12 most recently opened documents are retained, without automatically
+  reopening a book at startup. Open a row to resume it.
+- **Tab / Shift+Tab** moves the visible focus outline through available controls;
+  **Enter / Space** activates the focused control. **F1** opens keyboard help.
+  **Escape** dismisses auxiliary panels or an error and clears selection.
+- If a recent file is missing, use **Locate...** to choose its new path. Only the
+  same format and exact SHA-256 fingerprint can inherit its reading position.
+  A different book is rejected without replacing the old history entry. If the
+  source moved while still open, the newer in-memory position is carried over.
+- **Remove** forgets a recent entry, not its saved reading-position record.
+  Successful relocation replaces the old recent path; its old position record
+  remains available as recovery data.
+- History lives in `%LOCALAPPDATA%\simPl\recent.json`, with a 12-entry / 64 KiB
+  bound and atomic replacement. History errors do not prevent reading. Unreadable
+  or corrupt history is not overwritten by ordinary opens; **Reset recent history**
+  explicitly replaces it with the current in-memory list.
+- Dialog, path argument and drop use the same case-insensitive extension rules:
+  `.html`, `.htm`, `.xhtml`, `.pdf`, `.epub`. Other extensions are rejected instead
+  of being treated as HTML. A failed replacement keeps the current book and view.
+- If saving a reading position fails, the book stays open. After fixing the
+  storage problem, use **Close / Ctrl+W** again to retry. **Dismiss / Escape**
+  cancels that close request and returns to reading; **Close without saving**
+  explicitly discards the unsaved position.
+
 ## Reading HTML
 
 - **Open / Ctrl+O:** native file picker. **Ctrl+W / Close:** close the document.
@@ -107,6 +144,7 @@ implemented. Only UTF-8 input is supported. See the
   (Enter to jump), wheel/Page Up/Page Down/Space, and Ctrl+Home/End.
 - **− / +** or Ctrl+−/+ zooms; **100% / Ctrl+0** resets zoom; **Fit width**
   fits each page to the reading area.
+- **Ctrl+L** focuses the page-number field; **Ctrl+F** selects fit-width.
 - Drag over actual PDF text to select it. Ctrl+A selects document text;
   **Copy / Ctrl+C** copies it. Selection remains source-relative through
   scrolling, page-cache eviction, and zoom. Focused page-number input keeps
@@ -142,6 +180,8 @@ and [pdfium-render](https://github.com/ajrcarey/pdfium-render).
   or file-drop path. ZIP members stay in the archive; nothing is extracted to disk.
 - **Prev chapter / Next chapter** or **Ctrl+Page Up / Ctrl+Page Down** follows
   the linear spine order. Chapters load on demand into the existing HTML view.
+  With contents open, Up/Down moves through its keyboard targets; Enter/Space
+  opens the focused target.
 - **Contents / Ctrl+T** opens the nested EPUB3 navigation or EPUB2 NCX contents.
   Entries can target a specific heading/paragraph inside a chapter. Escape
   closes contents. Books without a contents document use the spine list.
@@ -266,3 +306,26 @@ Screenshots of selection, exact contents targets, cover and restored text were
 inspected. This is not general EPUB/CSS/SVG conformance, accessibility validation,
 or clean-machine/startup-latency proof. Measurements and evidence are recorded in
 the [roadmap](roadmap.md).
+
+### Portable MVP verification
+
+The final offline format/Clippy check and **197 tests** passed. The complete
+portable folder is **18.02 MiB / 345 files**, including PDFium and all notices.
+Native tests exercised all three opening methods and formats, recent-list limits
+and keyboard access, exact moved-file recovery, real-book resized resume, and
+corrupt/unwritable history. A locked position file also verified save-error retry
+and cancellation. Shared and PDF focus outlines were inspected on the desktop.
+
+Five-run warm visible-start medians were **85.9 ms** for welcome, **91.2 ms** for
+Alice HTML, **149.9 ms** for the Adobe PDF, and **101.8 ms** for the Alice EPUB
+cover. These use actual desktop pixels, not startup callbacks; native picker
+response was checked separately. Reading-view private working set medians were
+**14.71 MiB HTML / 43.85 MiB PDF / 10.27 MiB EPUB**. All 15 measured idle windows
+had no CPU-counter increase. The [roadmap](roadmap.md#portable-mvp-qualification)
+records private commit, sampling methods, repeated-cycle observations, build
+identity, and evidence locations.
+
+The copied folder was verified on this development host, not an independent clean
+Windows machine. That release-qualification item remains blocked by unavailable
+VM/test-host access. Cold launch after restart is unmeasured; Windows was not
+restarted and unrelated sessions were not terminated.

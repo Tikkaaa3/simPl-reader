@@ -3,7 +3,7 @@ use std::path::PathBuf;
 /// Display the native Windows picker. Call this from an application worker task,
 /// not from the UI update/view thread. Cancellation is not an error.
 #[cfg(windows)]
-pub fn open_document_dialog() -> Result<Option<PathBuf>, String> {
+pub fn open_document_dialog(locate: bool) -> Result<Option<PathBuf>, String> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -16,7 +16,13 @@ pub fn open_document_dialog() -> Result<Option<PathBuf>, String> {
         "Documents (*.html;*.htm;*.xhtml;*.pdf;*.epub)\0*.html;*.htm;*.xhtml;*.pdf;*.epub\0EPUB books (*.epub)\0*.epub\0PDF files (*.pdf)\0*.pdf\0HTML files (*.html;*.htm;*.xhtml)\0*.html;*.htm;*.xhtml\0All files (*.*)\0*.*\0\0"
             .encode_utf16()
             .collect();
-    let title: Vec<u16> = "Open document\0".encode_utf16().collect();
+    let title: Vec<u16> = if locate {
+        "Locate moved document\0"
+    } else {
+        "Open document\0"
+    }
+    .encode_utf16()
+    .collect();
     let mut filename = vec![0_u16; 32_768];
     let mut options = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
@@ -57,6 +63,6 @@ pub fn open_document_dialog() -> Result<Option<PathBuf>, String> {
 }
 
 #[cfg(not(windows))]
-pub fn open_document_dialog() -> Result<Option<PathBuf>, String> {
+pub fn open_document_dialog(_locate: bool) -> Result<Option<PathBuf>, String> {
     Err("the native document picker requires Windows".into())
 }

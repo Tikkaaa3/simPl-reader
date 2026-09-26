@@ -16,9 +16,10 @@ Iced's tiny-skia CPU renderer remains the only UI backend. The normal path works
 outside the repo. Explicit fixture diagnostics, the Cosmic Text RTL correction,
 and optional process RAM/CPU measurement remain available.
 
-Recent files and clean-machine qualification are still pending. A complete
-licensed-dependency portable folder can be assembled. These completed reading
-slices are not completion of the whole MVP.
+The core local-reading MVP now includes a bounded recent-files list, keyboard
+access to its controls, and fingerprint-checked moved-file recovery. A complete
+licensed-dependency portable folder can be assembled. Independent clean-Windows
+qualification is still blocked by the available environment.
 
 The MVP sequence is **real HTML reading and resume → PDF → EPUB → small
 portable release**. Keep one active UI implementation and add only the code
@@ -33,7 +34,7 @@ needed by the next usable slice.
 | PDF | Original page layout, scrolling/page navigation, zoom, and fit-to-width |
 | EPUB | DRM-free reflowable books with chapter order, table of contents, text, and images |
 | Reading | Keyboard navigation; readable width and font size for reflowed text; selection/copy |
-| Resume | Per-file content location on explicit reopen; a small recent-files list is still planned |
+| Resume | Per-file content location on explicit reopen, a 12-entry recent list, and verified moved-file recovery |
 | Errors | Explain missing, corrupt, or unsupported files without freezing the UI |
 
 HTML is not a browser: no JavaScript, network resources, remote fonts/images,
@@ -74,9 +75,14 @@ fixture samples are not retained.
 - HTML positions are small atomically replaced per-file JSON records, keyed by
   canonical path with a source fingerprint, content item, intra-item fraction,
   and font size. Corrupt state warns without blocking the book; source edits
-  invalidate an old position. Recent files are not implemented. PDF has separate
-  page/offset/zoom records; EPUB adds chapter href plus content item/font size.
-  A raw scroll pixel or percentage alone remains insufficient.
+  invalidate an old position. PDF has separate page/offset/zoom records; EPUB
+  adds chapter href plus content item/font size. A raw scroll pixel or percentage
+  alone remains insufficient.
+- Recent history is a bounded, versioned atomic JSON file, loaded asynchronously
+  and saved through a serialized/coalesced UI queue. It records successful
+  accepted opens only. Locate verifies kind/fingerprint before transferring a
+  position, preferring a currently open book's newer live position. Unreadable
+  history requires an explicit reset, not silent replacement.
 
 ## Performance targets
 
@@ -266,6 +272,95 @@ inputs, position records, result and inspected screenshots). These are not
 committed or downloadable artifacts. The final executable's SHA-256 is
 `3d1c87f2370b6010d0af8c6ffc089da01c526e6a2e9ec41509a63ae4ba5b75a5`.
 
+### Portable MVP qualification
+
+The recent-files build keeps the same CPU renderer and lazy PDFium engine.
+Its complete portable folder contains **345 files / 18,896,449 bytes (18.02 MiB)**:
+the executable is **9,533,440 bytes**, and PDFium is **7,380,992 bytes**.
+The folder includes the required native notices and notices for 176 shipped Rust
+dependencies, with no bundled fonts or additional VC++ runtime DLL imports.
+The offline format check, workspace Clippy with warnings denied, and all **197
+tests** passed. Two added state-transition regressions failed before the
+save-error correction and pass afterward.
+
+The copied folder passed native desktop verification outside the repository,
+with a fresh profile, an unrelated working directory, a System32/Windows-only
+PATH, and 125% display scaling. HTML/PDF/EPUB opened by real command-line
+arguments, native picker, and OLE file drop, including Unicode names and uppercase
+extensions. Recent ordering/deduplication, the 12-entry limit, keyboard traversal
+through the last row, missing-file Locate, rejection of a different book, and
+relocation of a file moved while still open all passed. Rejected opens retained
+the current source text and reading anchor. A real locked position record proved
+save-failure retention, explicit retry, and Escape cancellation; corrupt history
+remained untouched until native Reset, and unwritable history did not trap exit.
+Shared and PDF keyboard focus borders were checked on the actual desktop.
+
+Real-book round trips used a local UTF-8 snapshot of
+[Gutenberg's Alice HTML](https://www.gutenberg.org/cache/epub/11/pg11-images.html),
+the Alice EPUB identified above, and the 756-page Adobe specification. HTML
+prose at 20 px, EPUB chapter III at 20 px, and PDF page 100 at 100% zoom survived
+close/recent/reopen and resizing. Native Tab/Shift+Tab, Enter/Space, F1/Escape,
+EPUB contents arrows, PDF page editing, and fit-width were exercised.
+
+| Warm launch scenario | Median to visible toolbar and content |
+| --- | ---: |
+| Empty welcome window | 85.9 ms |
+| Alice HTML, initial view | 91.2 ms |
+| Adobe PDF, first page | 149.9 ms |
+| Alice EPUB, raster cover | 101.8 ms |
+
+Each median uses five fresh processes/profiles with warm OS/file caches.
+QPC timing starts immediately before process creation and stops when two
+desktop-pixel regions match stable references: the enabled Open control and
+welcome/document content. Polling/capture overhead is included; no app callback,
+startup marker, or forced offscreen paint substitutes for visible output.
+The native picker responded after every capture, but input-to-response latency
+was not timed. These visible-start medians are below the 200 ms warm-window and
+1 s content budgets; they do not establish a cold-start or percentile result.
+
+| Reading scenario | Private working set | Private commit | Observed idle CPU |
+| --- | ---: | ---: | ---: |
+| Empty welcome window | 8.18 MiB | 9.28 MiB | 0.00% |
+| Welcome with 12 recent entries | 8.85 MiB | 9.94 MiB | 0.00% |
+| Alice HTML prose, restored 20 px | 14.71 MiB | 16.20 MiB | 0.00% |
+| Adobe PDF page 100, restored 100% zoom | 43.85 MiB | 45.50 MiB | 0.00% |
+| Alice EPUB chapter III, restored 20 px | 10.27 MiB | 11.55 MiB | 0.00% |
+
+These are 15 valid root-process collections on Windows build 26200.9457:
+three 12-second runs per scenario, sampled every 250 ms. Each profile was fresh;
+reading/recent cases were seeded from the native smoke's real saved records.
+Memory uses each run's final approximately five-second live-sample median,
+then the median of three runs. CPU is the cumulative user/kernel time delta
+over the same QPC window (4.75–5.00 s), normalized to one logical core.
+All 15 windows had zero CPU-time increase at the counter's resolution.
+Terminal samples are excluded; exit 124 is the intentional duration stop.
+A launcher-status anomaly prompted an extra PDF collection; it is retained
+separately, and the table uses the original three runs for every scenario.
+The measured memory, idle-CPU and package-size cases meet their targets.
+Neither private metric is total-system/GPU memory or a peak-memory bound.
+
+Six mixed-format open/read/close cycles ended at **25.91–27.48 MiB private
+working set / 30.11–32.70 MiB private commit**. This short sequence did not show
+monotonic growth; it is not a long-session leak or peak-memory bound.
+
+**Environment-limited qualification:** an independent clean Windows run remains
+blocked. Windows Sandbox is disabled and its executable is absent; Hyper-V
+management access is denied, and non-admin virtualization enumeration exposes
+only the host. No configured SSH test host or installed alternate VM tool was
+available. No feature installation, elevation, OS restart, or termination of
+unrelated processes was attempted. A separate accessible clean Windows machine
+or VM is required to close that acceptance item. The cold-launch-after-restart
+target is also unmeasured under the no-restart constraint.
+
+Machine-local, untracked evidence: `target/portable/mvp-package-facts.json`,
+`target/mvp-measure-9dedaeeff9bc4a14984d012de86594b3/` (manifests, samples,
+summary), and
+`%TEMP%\simPl-mvp-smoke-eb62081ca08c48719a390d41f998ec25\` (copied runtime,
+inputs, native results, position records, inspected screenshots, focus evidence,
+and visible-startup captures/results). These are not committed or downloadable
+artifacts. The verified executable's SHA-256 is
+`8b1e4679b2a7491a7880be5bc39694bee18b20c3f6844d3a8ac002edbffc45e2`.
+
 ## Delivery order
 
 ### 1. HTML: first usable vertical slice
@@ -302,9 +397,9 @@ without building a second HTML/layout system.
 
 ### 4. Portable MVP
 
-- [ ] Make opening by dialog, path, and drag/drop consistent across all three formats.
-- [ ] Finish recent files/resume, keyboard navigation, and missing/moved-file handling.
-- [ ] Exercise open/read/close/resume on real HTML, PDF, and EPUB files.
+- [x] Make opening by dialog, path, and drag/drop consistent across all three formats.
+- [x] Finish recent files/resume, keyboard navigation, and missing/moved-file handling.
+- [x] Exercise open/read/close/resume on real HTML, PDF, and EPUB files.
 - [ ] Run the portable release on a clean Windows machine without the repo or build tools.
-- [ ] Measure startup, RAM, idle CPU, and full package size; resolve or explicitly
+- [x] Measure startup, RAM, idle CPU, and full package size; resolve or explicitly
       account for deviations from the targets above.

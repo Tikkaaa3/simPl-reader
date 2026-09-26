@@ -32,6 +32,43 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1
 .\target\release\iced-shell.exe --reader-poc-large
 ```
 
+## Opening, recent files, and keyboard controls
+
+The normal picker, path argument and real file drop share one format dispatcher:
+HTML/HTM/XHTML, PDF and EPUB, case-insensitive. Unsupported extensions are not
+passed to the HTML parser. Cancelled/failed opens and auxiliary panels retain
+the current document and native viewport; a modal picker or pending save cannot
+be abandoned by a dropped file.
+A failed position save keeps the document and anchor alive. A fresh close request
+retries the save; Dismiss/Escape cancels the pending close instead of leaving an
+invisible input guard. Close without saving is an explicit alternative.
+
+**Recent / Ctrl+R** exposes up to 12 successful opens and is visible on welcome.
+Each row has Open, Locate and Remove. **Tab / Shift+Tab** cycles an outlined
+control; **Enter / Space** activates it. Keyboard traversal scrolls recent rows
+and EPUB contents targets into view. **F1** shows help; Escape dismisses panels
+and errors. PDF **Ctrl+L** focuses its page field and **Ctrl+F** fits width.
+Focus borders belong to the button styles, so an opaque button cannot cover a
+container-drawn keyboard indicator. This applies to both shared and PDF controls.
+
+`reader-document::recent` owns versioned, atomically replaced
+`%LOCALAPPDATA%\simPl\recent.json`, capped at 64 KiB / 12 entries, with bounded
+paths/titles and Windows ordinal path deduplication. Missing history is empty;
+invalid/inaccessible history warns, remains untouched on ordinary opens, and
+requires explicit **Reset recent history** before replacement. History loads
+and serialized/coalesced writes run off the UI thread. Successful accepted loads
+update the MRU; failed/cancelled loads do not. Window close drains pending history
+writes, but history errors do not trap exit. Separate instances follow atomic
+last-writer behavior, not cross-process history merging.
+
+Locate requires identical document kind and SHA-256 before transferring a typed
+reading position to the new canonical path. A currently open matching document
+supplies its newer live position; EPUB loads the saved chapter before committing
+relocation. On success the recent path is replaced. Old position records remain
+as recovery data; Remove only forgets history, and does not delete book files or
+reading-position records. An edited source may be opened normally, but does not
+inherit a stale position.
+
 ## Local HTML reading
 
 Normal use needs no repository fixtures. Open one local file through **Open**,
