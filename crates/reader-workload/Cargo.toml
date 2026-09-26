@@ -1,0 +1,6 @@
+[package]
+name = "reader-workload"
+description = "Fixture-only shared reader workload and correctness references; not a document model."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
