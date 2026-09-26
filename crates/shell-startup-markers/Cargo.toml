@@ -1,0 +1,10 @@
+# Optional QPC startup markers and interaction timing for the Iced prototype.
+[package]
+name = "shell-startup-markers"
+description = "Bounded opt-in QPC startup markers for the reader prototype."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_Performance"] }
