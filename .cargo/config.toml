@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-msvc]
+# Keep the portable reader independent of an installed VC++ redistributable.
+rustflags = ["-C", "target-feature=+crt-static"]

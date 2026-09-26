@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 const VERSION: u32 = 1;
@@ -23,16 +23,31 @@ pub struct ReadingPosition {
     pub font_size: f32,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub enum PdfZoom {
+    FitWidth,
+    Scale(f32),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PdfReadingPosition {
+    pub fingerprint: String,
+    pub page: u32,
+    pub within: f32,
+    pub horizontal: f32,
+    pub zoom: PdfZoom,
+}
+
 #[derive(Serialize, Deserialize)]
-struct Record {
+struct Record<T = ReadingPosition> {
     version: u32,
-    position: ReadingPosition,
+    position: T,
 }
 
 #[derive(Serialize)]
-struct RecordRef<'a> {
+struct RecordRef<'a, T> {
     version: u32,
-    position: &'a ReadingPosition,
+    position: &'a T,
 }
 
 /// A missing record is normal. Corrupt, oversized or inaccessible records are errors.
@@ -47,15 +62,56 @@ pub fn save(path: &Path, position: &ReadingPosition) -> Result<(), String> {
     save_record(&record, position)
 }
 
-fn validate(position: &ReadingPosition) -> Result<(), String> {
-    if position.fingerprint.len() != 64
-        || !position
-            .fingerprint
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
+/// PDF records use a separate suffix; existing HTML records remain unchanged.
+pub fn load_pdf(path: &Path) -> Result<Option<PdfReadingPosition>, String> {
+    load_pdf_record(&record_path(path)?.with_extension("pdf.json"))
+}
+
+pub fn save_pdf(path: &Path, position: &PdfReadingPosition) -> Result<(), String> {
+    save_pdf_record(&record_path(path)?.with_extension("pdf.json"), position)
+}
+
+fn load_pdf_record(path: &Path) -> Result<Option<PdfReadingPosition>, String> {
+    let position = read_record::<PdfReadingPosition>(path)?;
+    if let Some(position) = &position {
+        validate_pdf(position)?;
+    }
+    Ok(position)
+}
+
+fn save_pdf_record(path: &Path, position: &PdfReadingPosition) -> Result<(), String> {
+    validate_pdf(position)?;
+    write_record(path, position)
+}
+
+fn validate_pdf(position: &PdfReadingPosition) -> Result<(), String> {
+    validate_fingerprint(&position.fingerprint)?;
+    if position.page >= 100_000 {
+        return Err("PDF reading position has an invalid page index".into());
+    }
+    if [position.within, position.horizontal]
+        .into_iter()
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
     {
+        return Err("PDF reading position has an invalid page offset".into());
+    }
+    if let PdfZoom::Scale(scale) = position.zoom
+        && (!scale.is_finite() || !(0.25..=4.0).contains(&scale))
+    {
+        return Err("PDF reading position has an invalid zoom".into());
+    }
+    Ok(())
+}
+
+fn validate_fingerprint(fingerprint: &str) -> Result<(), String> {
+    if fingerprint.len() != 64 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("reading position has an invalid SHA-256 fingerprint".into());
     }
+    Ok(())
+}
+
+fn validate(position: &ReadingPosition) -> Result<(), String> {
+    validate_fingerprint(&position.fingerprint)?;
     if position.item_id.is_empty() || position.item_id.len() > MAX_ITEM_ID_BYTES {
         return Err("reading position has an invalid item ID".into());
     }
@@ -103,6 +159,14 @@ fn path_key(path: &Path) -> String {
 }
 
 fn load_record(path: &Path) -> Result<Option<ReadingPosition>, String> {
+    let position = read_record::<ReadingPosition>(path)?;
+    if let Some(position) = &position {
+        validate(position)?;
+    }
+    Ok(position)
+}
+
+fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -123,7 +187,7 @@ fn load_record(path: &Path) -> Result<Option<ReadingPosition>, String> {
             path.display()
         ));
     }
-    let record: Record = serde_json::from_slice(&bytes)
+    let record: Record<T> = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid reading position {}: {error}", path.display()))?;
     if record.version != VERSION {
         return Err(format!(
@@ -131,12 +195,15 @@ fn load_record(path: &Path) -> Result<Option<ReadingPosition>, String> {
             record.version
         ));
     }
-    validate(&record.position)?;
     Ok(Some(record.position))
 }
 
 fn save_record(path: &Path, position: &ReadingPosition) -> Result<(), String> {
     validate(position)?;
+    write_record(path, position)
+}
+
+fn write_record<T: Serialize>(path: &Path, position: &T) -> Result<(), String> {
     let bytes = serde_json::to_vec(&RecordRef {
         version: VERSION,
         position,
@@ -286,6 +353,37 @@ mod tests {
         assert!(save_record(&path, &invalid).is_err());
         invalid.within = -0.1;
         assert!(save_record(&path, &invalid).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pdf_zoom_and_page_offsets_survive_replacement_without_touching_html() {
+        let dir = scratch();
+        let html = dir.join("book.json");
+        let pdf = dir.join("book.pdf.json");
+        save_record(&html, &sample("chapter")).unwrap();
+        let mut position = PdfReadingPosition {
+            fingerprint: "b".repeat(64),
+            page: 37,
+            within: 0.375,
+            horizontal: 0.2,
+            zoom: PdfZoom::Scale(1.5),
+        };
+        save_pdf_record(&pdf, &position).unwrap();
+        let restored = load_pdf_record(&pdf).unwrap().unwrap();
+        assert_eq!(restored.page, 37);
+        assert_eq!(restored.within, 0.375);
+        assert_eq!(restored.horizontal, 0.2);
+        assert_eq!(restored.zoom, PdfZoom::Scale(1.5));
+        position.zoom = PdfZoom::FitWidth;
+        save_pdf_record(&pdf, &position).unwrap();
+        position.horizontal = f32::NAN;
+        assert!(save_pdf_record(&pdf, &position).is_err());
+        assert_eq!(
+            load_pdf_record(&pdf).unwrap().unwrap().zoom,
+            PdfZoom::FitWidth
+        );
+        assert_eq!(load_record(&html).unwrap().unwrap().item_id, "chapter");
         fs::remove_dir_all(dir).unwrap();
     }
 

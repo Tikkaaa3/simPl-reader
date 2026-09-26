@@ -59,12 +59,16 @@ try {
     if ($Offline) { $locked += '--offline' }
     switch ($Command) {
         'run' {
+            & (Join-Path $PSScriptRoot 'pdfium.ps1') -Offline:$Offline
             $cargoArgs = @('run', '-p', 'iced-shell', '--release') + $locked
             if ($Large) { $cargoArgs += @('--', '--reader-poc-large') }
             elseif ($Fixture) { $cargoArgs += @('--', '--reader-poc') }
             Invoke-Cargo $cargoArgs
         }
-        'build' { Invoke-Cargo (@('build', '--release') + $locked) }
+        'build' {
+            & (Join-Path $PSScriptRoot 'pdfium.ps1') -Offline:$Offline
+            Invoke-Cargo (@('build', '--release') + $locked)
+        }
         'check' {
             Invoke-Cargo @('fmt', '--all', '--', '--check')
             Invoke-Cargo (@('clippy', '--workspace', '--all-targets') + $locked + @('--', '-D', 'warnings'))

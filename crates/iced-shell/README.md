@@ -1,7 +1,7 @@
 # Iced reader
 
-The only active UI path in simPl: a Windows local HTML reader using Iced's
-tiny-skia CPU renderer. PDF and EPUB are not implemented. See
+The only active UI path in simPl: a Windows local HTML/PDF reader using Iced's
+tiny-skia CPU renderer. EPUB is not implemented. See
 [the roadmap](../../roadmap.md) for product scope and measurements. The old
 fixture and empty-shell modes remain explicit diagnostics, not the normal app.
 
@@ -22,8 +22,10 @@ Direct commands from an x64 Native Tools prompt:
 
 ```powershell
 cargo build -p iced-shell --release --locked
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1
 .\target\release\iced-shell.exe                    # welcome screen / native picker
 .\target\release\iced-shell.exe "C:\Books\book.html"
+.\target\release\iced-shell.exe "C:\Books\book.pdf"
 .\target\release\iced-shell.exe --shell-poc        # empty diagnostic shell
 .\target\release\iced-shell.exe --reader-poc       # fixture diagnostic
 .\target\release\iced-shell.exe --reader-poc-large
@@ -31,7 +33,7 @@ cargo build -p iced-shell --release --locked
 
 ## Local HTML reading
 
-Normal use needs no repository assets. Open one local file through **Open HTML**,
+Normal use needs no repository fixtures. Open one local file through **Open**,
 Ctrl+O, a path argument, or file drop. A canceled picker leaves the current book
 alone. Loading/parsing and position I/O run off the UI thread; obsolete open
 results cannot replace a newer document. An open failure leaves an existing
@@ -68,6 +70,79 @@ traversal, file/remote URLs, and UNC paths are rejected. The HTML source and eac
 encoded image are limited to 32 MiB, each decoded image to 24 million pixels,
 retained decoded RGBA to 128 MiB, and DOM nesting to 512 levels. These are input
 safety limits, not a promise of constant total process memory.
+
+## Local PDF reading
+
+`reader-pdf` loads `pdfium.dll` only on first PDF use, by absolute path beside
+the executable. It does not search the current directory or fall back to a
+system installation. A missing DLL gives an open error without breaking HTML.
+After staging a previously missing runtime, restart the reader.
+
+The pinned runtime is non-V8 Windows x64 PDFium **156.0.8066.0**, Chromium
+`8066`, from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries).
+`pdfium-render 0.9.4` uses its `pdfium_7881` bindings without the default image
+or thread-safe features; one serial worker owns all native handles.
+
+- Continuous fixed-layout pages, virtualized to the viewport plus overscan.
+  Prev/Next and the page field (Enter) navigate; wheel, Page Up/Down, Space,
+  and Ctrl+Home/End work without reflowing PDF content.
+- Zoom is 25–400%; 100% means 96 logical pixels per 72 PDF points.
+  −/+, Ctrl+−/+, 100%/Ctrl+0, and Fit width preserve the page-relative anchor.
+  Raster requests account for Windows display scaling.
+- PDFium transforms glyph bounds through the same page-to-device mapping as
+  rendering, including page crop and rotation. Mouse selection uses source
+  glyph indices, survives raster eviction/zoom, and can extend across pages.
+  Ctrl+A selects document text; Ctrl+C/Copy runs extraction off the UI thread.
+  A focused page-number field owns its own editing shortcuts.
+- Image-only pages display normally and explicitly report unavailable text.
+  There is no OCR. Copy permissions are enforced. Extraction order is PDFium's;
+  arbitrary column order, absent Unicode maps, and complex BiDi are not
+  universally reconstructed.
+- PDF position records use `*.pdf.json`: source fingerprint, zero-based page,
+  page-relative vertical offset, relative horizontal scroll, and fit/explicit
+  zoom. Normal close/exit/replacement saves them; explicit reopen restores them.
+
+The application LRU holds at most **32 MiB** of RGBA and text-layer capacity,
+with a secondary 128-page entry limit. Only one render and one copy request per
+reader are in flight; closing it aborts those tasks and releases its cache.
+Stale document/geometry replies cannot replace the active view. Cancellation
+does not interrupt a native call already executing; queued/copy-page work checks
+for canceled receivers. No timer polls or continuously redraws the idle PDF view.
+PDFium and Iced's internal/transient allocations are outside the application
+cache budget; 32 MiB is not a process-memory cap.
+
+Input limits: 512 MiB source, 100,000 pages, 200,000 text glyphs per page, and
+16 MiB copied text. Each raster is capped at 4,000,000 pixels and 8,192 pixels
+per edge, proportionally reducing resolution rather than clipping the page.
+At high zoom this can reduce sharpness. Invalid dimensions, parse failures,
+and exceeded limits produce errors, not silent truncation. Password-required
+PDFs are rejected. Form data and annotations are not rendered; JavaScript,
+external actions, editing, and OCR are not enabled. PDFium is native code
+running in-process, **not a sandbox or a total resource-limit boundary**.
+
+## Portable folder
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
+# Once Cargo, PDFium and notice caches are populated:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -Offline
+```
+
+The output is `target\portable\simPl\`: `simPl.exe`, `pdfium.dll`, and
+`third-party\` notices. No fixture fonts or books are shipped. `.cargo/config.toml`
+statically links the Windows x64 MSVC runtime. The app uses system fonts and
+the document's own PDF fonts. Clean-machine/minimum-OS qualification remains
+separate from same-host portable-folder smoke.
+
+`pdfium.ps1` verifies a pinned archive length and SHA-256 even on cache hits;
+`-Offline` never downloads. The notice collector uses the actual Windows
+normal/build Cargo graph, preserves package notices, and retrieves omitted
+upstream notices at their recorded revisions into an offline cache. For
+`mac 0.1.1`, its original author/dual-license declarations accompany the
+canonical text of its declared Apache-2.0 option. The pinned Rust standard
+library's complete notice document and toolchain provenance are included.
+Unresolved notices fail packaging; there is no silent incomplete-package mode.
+The project's own license remains unspecified.
 
 ## Fixture diagnostics
 
@@ -146,7 +221,7 @@ it is regression input, not a current performance report.
 In explicit diagnostic modes, `ICED_SHELL_STARTUP_MARKERS=<path>` emits bounded
 QPC markers; `ICED_SHELL_INTERACTION_TRACE=<new-path>` records optional reader
 callbacks. These are **not** presented-frame timestamps or startup-budget proof,
-and they do not instrument the normal HTML path. Other `ICED_SHELL_*`
+and they do not instrument the normal HTML/PDF path. Other `ICED_SHELL_*`
 test-status/BiDi variables are explicit diagnostics; leave them absent in
 ordinary use and resource measurements. The former adapter logger and its
 environment gate have been removed.
@@ -162,5 +237,5 @@ The earlier diagnostic shell's UI Automation observation found no client control
 descendants. Keyboard operation is not screen-reader support; product
 accessibility has not been validated. Cross-DPI/multi-monitor and other-host
 behavior remain unverified. The roadmap distinguishes the old WGPU baseline
-from current CPU/HTML measurements. Timing diagnostics do not establish
+from current CPU HTML/PDF measurements. Timing diagnostics do not establish
 presented-frame percentiles, dropped frames, or input-to-display latency.

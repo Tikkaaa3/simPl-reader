@@ -7,15 +7,17 @@ should appear quickly, use little disk and memory, remain idle while you read,
 and work without a network connection. Start on Windows x64; add other desktop
 platforms only in response to real demand.
 
-The Windows application now reads local UTF-8 HTML/XHTML files with text and
-local images, selection/copy, font/viewport reflow, and per-file reading-position
-restore after an explicit reopen. The UI uses Iced's tiny-skia CPU renderer.
-The normal path works outside the repository without fixture assets. Explicit
-1,000/10,000-paragraph diagnostics, the narrow Cosmic Text RTL correction, and
-optional process RAM/CPU measurement remain available.
+The Windows application now reads local UTF-8 HTML/XHTML and PDF files.
+HTML supports local images, selection/copy, reflow, and per-file resume.
+PDF preserves page layout with continuous scrolling, navigation, zoom/fit-width,
+text-layer selection/copy, and page-relative resume. Iced's tiny-skia CPU
+renderer remains the only UI backend. The normal path works outside the repo.
+Explicit fixture diagnostics, the Cosmic Text RTL correction, and optional
+process RAM/CPU measurement remain available.
 
-PDF, EPUB, recent files, and a clean-machine portable distribution are not yet
-implemented. A working HTML slice is not completion of the whole MVP.
+EPUB and recent files are not implemented. A licensed-dependency portable folder
+can now be assembled; clean-machine qualification is still pending. These
+completed reading slices are not completion of the whole MVP.
 
 The MVP sequence is **real HTML reading and resume → PDF → EPUB → small
 portable release**. Keep one active UI implementation and add only the code
@@ -58,9 +60,9 @@ fixture samples are not retained.
   Fixture workload generation is not the production loader. Reuse the real HTML
   path for EPUB, but give PDF its own page model rather than a universal AST.
 - HTML5 parsing uses html5ever. EPUB needs ZIP package/spine parsing feeding the
-  HTML path. PDFium is a candidate, **not an integrated dependency**; its native
-  binaries, redistribution licenses, and
-  full package size must be addressed in the PDF slice.
+  HTML path. `reader-pdf` now integrates PDFium through a lazy serial worker:
+  non-V8 Windows x64 Chromium 8066 with `pdfium-render 0.9.4`. Native binaries,
+  license notices, and the complete portable folder are part of this slice.
 - Load a PDF engine or EPUB chapter when needed; bound decoded image/page
   caches by bytes. Keep costly work off the UI thread, and discard outdated
   results when opening another file. Limit archive expansion and image decoding;
@@ -70,9 +72,9 @@ fixture samples are not retained.
 - HTML positions are small atomically replaced per-file JSON records, keyed by
   canonical path with a source fingerprint, content item, intra-item fraction,
   and font size. Corrupt state warns without blocking the book; source edits
-  invalidate an old position. Recent files are not implemented. PDF will need
-  page plus offset; EPUB will need chapter plus content position. A raw scroll
-  pixel or percentage alone remains insufficient.
+  invalidate an old position. Recent files are not implemented. PDF has separate
+  page/offset/zoom records; EPUB will need chapter plus content position.
+  A raw scroll pixel or percentage alone remains insufficient.
 
 ## Performance targets
 
@@ -146,6 +148,67 @@ Machine-local, untracked evidence is under `target/cpu-html-measure/`,
 `target/cpu-html-virtual-release/`. The measured executable's SHA-256 was
 `8cd8ad0dd4ffc6d5ceae5c7646017217f3d048d8ceaa3fdbe4ebed6d8d1c89f1`.
 
+### PDF portable-release observation
+
+The static-CRT Windows x64 portable folder contains **333 files / 17.49 MiB**
+(18,335,781 bytes), including `simPl.exe` (9,033,728 bytes), `pdfium.dll`
+(7,380,992 bytes), and Rust, standard-library, and native dependency notices.
+There are no bundled fixture fonts or books. PE imports were inspected: the
+executable needs no separate VC++ runtime DLL. This is a same-host measurement,
+not clean-machine qualification.
+
+The complete folder was copied to an OS temporary directory outside the repo.
+Native mouse/keyboard and clipboard checks at 125% display scaling exercised
+text selection in both directions, crop/rotation, full-document text extraction,
+page navigation, zoom/fit-width, resize-aware resume, cache-evicted selection,
+wheel-extended cross-page selection, copy cancellation, scanned pages, corrupt
+input, and switching back to HTML. A 5,000-page generated PDF reached its final
+page; the real book was Adobe's 756-page
+[PDF 32000-1:2008 specification](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf).
+Rendered screenshots were inspected rather than treating a successful open as
+rendering proof. The empty application was checked not to load PDFium.
+The real PDF was also read across pages 99–101, zoomed to 125%, closed, and
+resumed at the same page-relative location after resizing. A missing adjacent
+DLL left HTML readable and did not load a DLL placed in the working directory.
+
+| Normal application scenario | Private working set | Private commit | Observed idle CPU, one logical core |
+|---|---:|---:|---:|
+| Welcome screen, no document | 8.07 MiB | 9.16 MiB | 0.00% |
+| Tiny HTML switching-smoke file | 8.05 MiB | 9.13 MiB | 0.00% |
+| Generated text PDF, 12 pages | 23.77 MiB | 25.22 MiB | 0.00% |
+| Generated image-only PDF, 3 pages | 22.36 MiB | 23.58 MiB | 0.00% |
+| Generated long PDF, 5,000 pages | 33.16 MiB | 34.73 MiB | 0.00% |
+| Adobe specification, 756 pages | 35.71 MiB | 37.32 MiB | 0.00% |
+
+All documents were measured at the first reading view with default fit-width
+and a fresh measurement profile. Each scenario had three 12-second root-process
+runs, sampled every 250 ms on Windows build 26200.9457, x86_64. Memory is the
+median over each run's final approximately five seconds, then the median across
+three runs. CPU is the cumulative process-time delta over the same live-sample
+window (4.74–5.00 seconds), normalized to one logical core. All 18 windows had
+no CPU-time increase at the counter's resolution. Terminal teardown samples
+were excluded. All collections were valid; exit code 124 was the sampler's
+intentional duration-limit stop, not an application crash. The tiny HTML input
+is not the earlier 100-paragraph sample or a typical-book benchmark.
+
+These cases meet the PDF memory, empty-window, package-size, and idle-CPU
+targets, so **retain PDFium; no alternative-engine investigation is triggered**.
+The 32 MiB application cache does not bound native or renderer memory.
+Startup-to-visible-content latency, cold/warm launch budgets, GPU/compositor
+memory, long-session/repeated-cycle growth, broad PDF fidelity, and clean-machine
+compatibility remain unmeasured; this is not proof that every performance
+target or every PDF is covered.
+
+Machine-local, untracked evidence: `target/portable/package-facts.json`,
+`target/pdf-measure-51c3e4ee1e3d40e2811d666a7fce6527/` (manifests, samples,
+summary), and the external smoke directory
+`%TEMP%\simPl-pdf-smoke-6b670af1066d4bcbb075b67a1820515b\`
+(copied runtime, inputs, position records, result, screenshots). Supplemental
+real-book resume and DLL-isolation screenshots/results are in
+`%TEMP%\simPl-pdf-smoke-da578ee508a640b78fea2ff2be25fc31\`. These are not
+committed or downloadable artifacts. The measured executable's SHA-256 was
+`5180dfc183d23a5384642245de5f2d10b0e195a3bb772021587cfc1c3ab6315c`.
+
 ## Delivery order
 
 ### 1. HTML: first usable vertical slice
@@ -163,10 +226,10 @@ read, closed, and resumed. A standalone parser or AST is not the deliverable.
 
 ### 2. PDF: read a real book early
 
-- [ ] Load the PDF engine on demand; show the first page, navigation, and zoom.
-- [ ] Bound page cache; save position; handle long, scanned, and corrupt files.
-- [ ] Copy/select actual text where available and state when it is not.
-- [ ] Include licensed native components in the portable package and measure it.
+- [x] Load the PDF engine on demand; show the first page, navigation, and zoom.
+- [x] Bound page cache; save position; handle long, scanned, and corrupt files.
+- [x] Copy/select actual text where available and state when it is not.
+- [x] Include licensed native components in the portable package and measure it.
 
 **Done when:** a real PDF book can be read for several pages, zoomed, closed,
 and resumed in the same place.

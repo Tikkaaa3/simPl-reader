@@ -9,6 +9,7 @@ iced = { version = "=0.14.0", default-features = false, features = ["advanced", 
 iced_futures = { version = "=0.14.0", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 reader-document = { path = "../reader-document" }
+reader-pdf = { path = "../reader-pdf" }
 reader-workload = { path = "../reader-workload" }
 sha2 = { version = "=0.10.9", default-features = false }
 unicode-segmentation = "=1.13.3"

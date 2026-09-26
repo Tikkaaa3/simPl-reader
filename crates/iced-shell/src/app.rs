@@ -1,14 +1,15 @@
-//! The normal, fixture-independent local HTML reader.
+//! The normal, fixture-independent local HTML and PDF reader.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::pdf_reader;
 use iced::keyboard::{self, Key, key};
 use iced::widget::{button, column, container, image, row, scrollable, text};
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme, mouse, window};
 use iced_shell::{reader, selection, virtual_reader};
-use reader_document::position::{self, ReadingPosition};
+use reader_document::position::{self, PdfReadingPosition, ReadingPosition};
 use reader_document::{BaseDirection, Endpoint, Item};
 
 const DEFAULT_FONT_SIZE: f32 = 18.0;
@@ -35,11 +36,7 @@ struct Book {
     restored: Option<ReadingPosition>,
 }
 
-fn load_book(
-    path: PathBuf,
-    previous: Option<(PathBuf, ReadingPosition)>,
-) -> Result<Arc<Book>, String> {
-    let save_warning = previous.and_then(|(path, position)| position::save(&path, &position).err());
+fn load_book(path: PathBuf) -> Result<Book, String> {
     let reader_document::Document {
         path,
         title,
@@ -48,11 +45,6 @@ fn load_book(
         images,
         mut warnings,
     } = reader_document::load_html(&path)?;
-    if let Some(error) = save_warning {
-        warnings.push(format!(
-            "Could not save the previous reading position: {error}"
-        ));
-    }
     let restored = match position::load(&path) {
         Ok(position) => position.filter(|position| position.fingerprint == fingerprint),
         Err(error) => {
@@ -71,7 +63,7 @@ fn load_book(
             (key, image)
         })
         .collect();
-    Ok(Arc::new(Book {
+    Ok(Book {
         path,
         title,
         fingerprint,
@@ -79,7 +71,77 @@ fn load_book(
         images,
         warnings,
         restored,
-    }))
+    })
+}
+
+#[derive(Clone, Debug)]
+enum LoadedDocument {
+    Html(Arc<Book>),
+    Pdf {
+        document: Arc<reader_pdf::Document>,
+        restored: Option<PdfReadingPosition>,
+        warnings: Vec<String>,
+    },
+}
+
+enum SavedPosition {
+    Html(PathBuf, ReadingPosition),
+    Pdf(PathBuf, PdfReadingPosition),
+}
+
+impl SavedPosition {
+    fn save(self) -> Result<(), String> {
+        match self {
+            Self::Html(path, position) => position::save(&path, &position),
+            Self::Pdf(path, position) => position::save_pdf(&path, &position),
+        }
+    }
+}
+
+async fn load_document(
+    path: PathBuf,
+    previous: Option<SavedPosition>,
+) -> Result<LoadedDocument, String> {
+    let save_warning = previous.and_then(|position| position.save().err());
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    {
+        let document = reader_pdf::open(path).await?;
+        let mut warnings = Vec::new();
+        if let Some(error) = save_warning {
+            warnings.push(format!(
+                "Could not save the previous reading position: {error}"
+            ));
+        }
+        let restored = match position::load_pdf(&document.path) {
+            Ok(position) => position.filter(|position| {
+                position.fingerprint == document.fingerprint
+                    && (position.page as usize) < document.pages.len()
+            }),
+            Err(error) => {
+                warnings.push(format!("Could not restore the reading position: {error}"));
+                None
+            }
+        };
+        Ok(LoadedDocument::Pdf {
+            document,
+            restored,
+            warnings,
+        })
+    } else {
+        let mut book = load_book(path)?;
+        if let Some(error) = save_warning {
+            book.warnings.push(format!(
+                "Could not save the previous reading position: {error}"
+            ));
+        }
+        Ok(LoadedDocument::Html(Arc::new(book)))
+    }
+}
+
+fn forward_pdf(document: u64, task: Task<pdf_reader::Message>) -> Task<Message> {
+    task.map(move |message| Message::Pdf { document, message })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +153,11 @@ struct Anchor {
 #[derive(Debug)]
 struct Reader {
     book: Option<Arc<Book>>,
+    pdf: Option<pdf_reader::Reader>,
+    pdf_warnings: Vec<String>,
+    window_size: Size,
+    scale_factor: f64,
+    opening_task: Option<iced::task::Handle>,
     opening: Option<PathBuf>,
     error: Option<String>,
     dialog_open: bool,
@@ -114,6 +181,11 @@ impl Default for Reader {
     fn default() -> Self {
         Self {
             book: None,
+            pdf: None,
+            pdf_warnings: Vec::new(),
+            window_size: Size::new(1000.0, 720.0),
+            scale_factor: 1.0,
+            opening_task: None,
             opening: None,
             error: None,
             dialog_open: false,
@@ -147,8 +219,13 @@ enum Message {
     DialogChosen(Result<Option<PathBuf>, String>),
     Loaded {
         request: u64,
-        result: Result<Arc<Book>, String>,
+        result: Result<LoadedDocument, String>,
     },
+    Pdf {
+        document: u64,
+        message: pdf_reader::Message,
+    },
+    ScaleFactor(f64),
     FontSize(f32),
     SelectStart(Endpoint),
     SelectMove(Endpoint),
@@ -238,6 +315,39 @@ impl Reader {
         ))
     }
 
+    fn document_position(&self) -> Option<SavedPosition> {
+        if let Some(pdf) = &self.pdf {
+            Some(SavedPosition::Pdf(
+                pdf.document().path.clone(),
+                pdf.position(),
+            ))
+        } else {
+            self.saved_position()
+                .map(|(path, position)| SavedPosition::Html(path, position))
+        }
+    }
+
+    fn cancel_open(&mut self) {
+        if let Some(task) = self.opening_task.take() {
+            task.abort();
+        }
+        self.request = self.request.wrapping_add(1);
+        self.opening = None;
+    }
+
+    fn clear_content(&mut self) {
+        self.book = None;
+        self.pdf = None;
+        self.pdf_warnings.clear();
+        self.selection.clear();
+        self.heights = virtual_reader::HeightIndex::new(Vec::new());
+        self.measurements.lock().clear();
+        self.pending_anchor = None;
+        self.offset = 0.0;
+        self.generation = self.generation.wrapping_add(1);
+        self.show_warnings = false;
+    }
+
     fn rebuild_geometry(&mut self, anchor: Anchor) -> Task<Message> {
         self.generation = self.generation.wrapping_add(1);
         self.measurements.lock().clear();
@@ -319,16 +429,19 @@ impl Reader {
         if self.saving {
             return Task::none();
         }
-        let previous = self.saved_position();
-        self.request = self.request.wrapping_add(1);
+        let previous = self.document_position();
+        self.cancel_open();
         let request = self.request;
         self.opening = Some(path.clone());
         self.error = None;
         self.failed_close = None;
         self.selection.end_drag();
-        Task::perform(async move { load_book(path, previous) }, move |result| {
+        let (task, handle) = Task::perform(load_document(path, previous), move |result| {
             Message::Loaded { request, result }
         })
+        .abortable();
+        self.opening_task = Some(handle.abort_on_drop());
+        task
     }
 
     fn finish_close(&mut self, action: CloseAction) -> Task<Message> {
@@ -336,15 +449,9 @@ impl Reader {
         match action {
             CloseAction::Window => iced::exit(),
             CloseAction::Document => {
-                self.request = self.request.wrapping_add(1);
-                self.opening = None;
-                self.book = None;
+                self.cancel_open();
+                self.clear_content();
                 self.error = None;
-                self.selection.clear();
-                self.heights = virtual_reader::HeightIndex::new(Vec::new());
-                self.pending_anchor = None;
-                self.offset = 0.0;
-                self.generation = self.generation.wrapping_add(1);
                 Task::none()
             }
         }
@@ -354,13 +461,13 @@ impl Reader {
         if self.saving {
             return Task::none();
         }
+        self.cancel_open();
         self.selection.end_drag();
-        if let Some((path, position)) = self.saved_position() {
+        if let Some(position) = self.document_position() {
             self.saving = true;
-            Task::perform(
-                async move { position::save(&path, &position) },
-                move |result| Message::Saved { action, result },
-            )
+            Task::perform(async move { position.save() }, move |result| {
+                Message::Saved { action, result }
+            })
         } else {
             self.finish_close(action)
         }
@@ -382,7 +489,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.dialog_open = true;
             reader.selection.end_drag();
             Task::perform(
-                async { crate::platform::open_html_dialog() },
+                async { crate::platform::open_document_dialog() },
                 Message::DialogChosen,
             )
         }
@@ -404,8 +511,10 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::Loaded { request, result } if request == reader.request && !reader.saving => {
             reader.opening = None;
+            reader.opening_task = None;
             match result {
-                Ok(book) => {
+                Ok(LoadedDocument::Html(book)) => {
+                    reader.clear_content();
                     reader.font_size = book
                         .restored
                         .as_ref()
@@ -434,10 +543,48 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.selection.clear();
                     reader.rebuild_geometry(anchor)
                 }
+                Ok(LoadedDocument::Pdf {
+                    document,
+                    restored,
+                    warnings,
+                }) => {
+                    reader.clear_content();
+                    let id = document.id;
+                    let (pdf, task) = pdf_reader::Reader::new(
+                        document,
+                        restored,
+                        reader.window_size,
+                        reader.scale_factor,
+                    );
+                    reader.pdf = Some(pdf);
+                    reader.pdf_warnings = warnings;
+                    reader.error = None;
+                    forward_pdf(id, task)
+                }
                 Err(error) => {
                     reader.error = Some(error);
                     Task::none()
                 }
+            }
+        }
+        Message::Pdf { document, message } => {
+            if let Some(pdf) = &mut reader.pdf
+                && pdf.document().id == document
+            {
+                forward_pdf(document, pdf.update(message))
+            } else {
+                Task::none()
+            }
+        }
+        Message::ScaleFactor(scale) => {
+            if !scale.is_finite() || scale <= 0.0 || scale == reader.scale_factor {
+                return Task::none();
+            }
+            reader.scale_factor = scale;
+            if let Some(pdf) = &mut reader.pdf {
+                forward_pdf(pdf.document().id, pdf.resize(reader.window_size, scale))
+            } else {
+                Task::none()
             }
         }
         Message::FontSize(size) if reader.interactive() && reader.book.is_some() => {
@@ -492,89 +639,133 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.show_warnings = !reader.show_warnings;
             Task::none()
         }
-        Message::Event(event, id) => match event {
-            iced::Event::Window(window::Event::Opened { size, .. }) => {
-                reader.window = Some(id);
-                reader.width = content_width(size.width);
-                reader.viewport = (size.height - 100.0).max(100.0);
-                if reader.book.is_some() {
-                    reader.rebuild_geometry(reader.anchor())
-                } else {
-                    Task::none()
-                }
-            }
-            iced::Event::Window(window::Event::Resized(size)) => {
-                let anchor = reader.anchor();
-                let width = content_width(size.width);
-                reader.viewport = (size.height - 100.0).max(100.0);
-                if (width - reader.width).abs() > 0.5 {
-                    reader.width = width;
-                    reader.rebuild_geometry(anchor)
-                } else {
-                    Task::none()
-                }
-            }
-            iced::Event::Window(window::Event::CloseRequested) => reader.close(CloseAction::Window),
-            iced::Event::Window(window::Event::FileDropped(path)) => reader.open(path),
-            iced::Event::Window(window::Event::Unfocused)
-            | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                reader.selection.end_drag();
-                Task::none()
-            }
-            iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                match key.as_ref() {
-                    Key::Character(value) if modifiers.control() => {
-                        match value.to_ascii_lowercase().as_str() {
-                            "o" => update(reader, Message::OpenDialog),
-                            "w" => reader.close(CloseAction::Document),
-                            "c" => update(reader, Message::Copy),
-                            "a" if reader.interactive() => {
-                                if let Some(book) = &reader.book {
-                                    let first = book.items.iter().find(|item| {
-                                        item.text().is_some_and(|text| !text.is_empty())
-                                    });
-                                    let last = book.items.iter().rfind(|item| {
-                                        item.text().is_some_and(|text| !text.is_empty())
-                                    });
-                                    if let (Some(first), Some(last)) = (first, last) {
-                                        reader.selection.begin(Endpoint {
-                                            item_id: first.id().to_owned(),
-                                            byte_offset: 0,
-                                        });
-                                        reader.selection.extend(Endpoint {
-                                            item_id: last.id().to_owned(),
-                                            byte_offset: last.text().map_or(0, str::len),
-                                        });
-                                        reader.selection.end_drag();
-                                    }
-                                }
-                                Task::none()
-                            }
-                            "+" | "=" => update(reader, Message::FontSize(reader.font_size + 2.0)),
-                            "-" => update(reader, Message::FontSize(reader.font_size - 2.0)),
-                            "0" => update(reader, Message::FontSize(DEFAULT_FONT_SIZE)),
-                            _ => Task::none(),
-                        }
-                    }
-                    Key::Named(key::Named::PageDown | key::Named::Space) => {
-                        reader.jump(reader.offset + reader.viewport * 0.9)
-                    }
-                    Key::Named(key::Named::PageUp) => {
-                        reader.jump(reader.offset - reader.viewport * 0.9)
-                    }
-                    Key::Named(key::Named::Home) if modifiers.control() => reader.jump(0.0),
-                    Key::Named(key::Named::End) if modifiers.control() => {
-                        reader.jump(reader.heights.total())
-                    }
-                    Key::Named(key::Named::Escape) => {
-                        reader.selection.clear();
+        Message::Event(event, id) => {
+            let pdf_input = matches!(
+                &event,
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+                    | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                    | iced::Event::Mouse(
+                        mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft
+                    )
+                    | iced::Event::Window(window::Event::Unfocused)
+            );
+            let global_shortcut = matches!(&event,
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: Key::Character(value), modifiers, ..
+                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w")));
+            if pdf_input && !global_shortcut {
+                let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
+                if let Some(pdf) = &mut reader.pdf {
+                    return if accepted {
+                        forward_pdf(pdf.document().id, pdf.event(&event))
+                    } else {
                         Task::none()
-                    }
-                    _ => Task::none(),
+                    };
                 }
             }
-            _ => Task::none(),
-        },
+            match event {
+                iced::Event::Window(window::Event::Opened { size, .. }) => {
+                    reader.window = Some(id);
+                    reader.window_size = size;
+                    reader.width = content_width(size.width);
+                    reader.viewport = (size.height - 100.0).max(100.0);
+                    let task = if let Some(pdf) = &mut reader.pdf {
+                        forward_pdf(pdf.document().id, pdf.resize(size, reader.scale_factor))
+                    } else if reader.book.is_some() {
+                        reader.rebuild_geometry(reader.anchor())
+                    } else {
+                        Task::none()
+                    };
+                    Task::batch([
+                        task,
+                        window::scale_factor(id).map(|scale| Message::ScaleFactor(scale.into())),
+                    ])
+                }
+                iced::Event::Window(window::Event::Resized(size)) => {
+                    let anchor = reader.anchor();
+                    let width = content_width(size.width);
+                    let width_changed = (width - reader.width).abs() > 0.5;
+                    reader.width = width;
+                    reader.window_size = size;
+                    reader.viewport = (size.height - 100.0).max(100.0);
+                    let task = if let Some(pdf) = &mut reader.pdf {
+                        forward_pdf(pdf.document().id, pdf.resize(size, reader.scale_factor))
+                    } else if width_changed && reader.book.is_some() {
+                        reader.rebuild_geometry(anchor)
+                    } else {
+                        Task::none()
+                    };
+                    Task::batch([
+                        task,
+                        window::scale_factor(id).map(|scale| Message::ScaleFactor(scale.into())),
+                    ])
+                }
+                iced::Event::Window(window::Event::CloseRequested) => {
+                    reader.close(CloseAction::Window)
+                }
+                iced::Event::Window(window::Event::FileDropped(path)) => reader.open(path),
+                iced::Event::Window(window::Event::Unfocused)
+                | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    reader.selection.end_drag();
+                    Task::none()
+                }
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                    match key.as_ref() {
+                        Key::Character(value) if modifiers.control() => {
+                            match value.to_ascii_lowercase().as_str() {
+                                "o" => update(reader, Message::OpenDialog),
+                                "w" => reader.close(CloseAction::Document),
+                                "c" => update(reader, Message::Copy),
+                                "a" if reader.interactive() => {
+                                    if let Some(book) = &reader.book {
+                                        let first = book.items.iter().find(|item| {
+                                            item.text().is_some_and(|text| !text.is_empty())
+                                        });
+                                        let last = book.items.iter().rfind(|item| {
+                                            item.text().is_some_and(|text| !text.is_empty())
+                                        });
+                                        if let (Some(first), Some(last)) = (first, last) {
+                                            reader.selection.begin(Endpoint {
+                                                item_id: first.id().to_owned(),
+                                                byte_offset: 0,
+                                            });
+                                            reader.selection.extend(Endpoint {
+                                                item_id: last.id().to_owned(),
+                                                byte_offset: last.text().map_or(0, str::len),
+                                            });
+                                            reader.selection.end_drag();
+                                        }
+                                    }
+                                    Task::none()
+                                }
+                                "+" | "=" => {
+                                    update(reader, Message::FontSize(reader.font_size + 2.0))
+                                }
+                                "-" => update(reader, Message::FontSize(reader.font_size - 2.0)),
+                                "0" => update(reader, Message::FontSize(DEFAULT_FONT_SIZE)),
+                                _ => Task::none(),
+                            }
+                        }
+                        Key::Named(key::Named::PageDown | key::Named::Space) => {
+                            reader.jump(reader.offset + reader.viewport * 0.9)
+                        }
+                        Key::Named(key::Named::PageUp) => {
+                            reader.jump(reader.offset - reader.viewport * 0.9)
+                        }
+                        Key::Named(key::Named::Home) if modifiers.control() => reader.jump(0.0),
+                        Key::Named(key::Named::End) if modifiers.control() => {
+                            reader.jump(reader.heights.total())
+                        }
+                        Key::Named(key::Named::Escape) => {
+                            reader.selection.clear();
+                            Task::none()
+                        }
+                        _ => Task::none(),
+                    }
+                }
+                _ => Task::none(),
+            }
+        }
         _ => Task::none(),
     }
 }
@@ -660,26 +851,33 @@ fn render_item(
 
 fn view(reader: &Reader) -> Element<'_, Message> {
     let active = reader.interactive();
-    let loaded = reader.book.is_some() && active;
-    let toolbar = row![
-        button("Open HTML...").on_press_maybe(active.then_some(Message::OpenDialog)),
+    let loaded = (reader.book.is_some() || reader.pdf.is_some()) && active;
+    let mut toolbar = row![
+        button("Open...").on_press_maybe(active.then_some(Message::OpenDialog)),
         button("Close").on_press_maybe(loaded.then_some(Message::Close(CloseAction::Document))),
         iced::widget::Space::new().width(Length::Fill),
-        button("A-").on_press_maybe(
-            (loaded && reader.font_size > MIN_FONT_SIZE)
-                .then_some(Message::FontSize(reader.font_size - 2.0))
-        ),
-        text(format!("{:.0} px", reader.font_size)).size(14),
-        button("A+").on_press_maybe(
-            (loaded && reader.font_size < MAX_FONT_SIZE)
-                .then_some(Message::FontSize(reader.font_size + 2.0))
-        ),
-        button("Copy").on_press_maybe(
-            (loaded && reader.selection.endpoints().is_some()).then_some(Message::Copy)
-        ),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
+    if reader.pdf.is_none() {
+        toolbar = toolbar
+            .push(
+                button("A-").on_press_maybe(
+                    (loaded && reader.font_size > MIN_FONT_SIZE)
+                        .then_some(Message::FontSize(reader.font_size - 2.0)),
+                ),
+            )
+            .push(text(format!("{:.0} px", reader.font_size)).size(14))
+            .push(
+                button("A+").on_press_maybe(
+                    (loaded && reader.font_size < MAX_FONT_SIZE)
+                        .then_some(Message::FontSize(reader.font_size + 2.0)),
+                ),
+            )
+            .push(button("Copy").on_press_maybe(
+                (loaded && reader.selection.endpoints().is_some()).then_some(Message::Copy),
+            ));
+    }
     let mut page = column![container(toolbar).padding(12)].spacing(8);
     if let Some(error) = &reader.error {
         let mut notice = column![
@@ -694,37 +892,49 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         }
         page = page.push(container(notice).padding([0, 20]));
     }
+    let warnings = reader
+        .book
+        .as_ref()
+        .map_or(reader.pdf_warnings.as_slice(), |book| {
+            book.warnings.as_slice()
+        });
+    if !warnings.is_empty() {
+        page = page.push(
+            container(
+                button(
+                    text(format!(
+                        "{} document warning(s) — {}",
+                        warnings.len(),
+                        if reader.show_warnings {
+                            "hide"
+                        } else {
+                            "details"
+                        },
+                    ))
+                    .size(13),
+                )
+                .on_press(Message::ToggleWarnings),
+            )
+            .padding([0, 20]),
+        );
+        if reader.show_warnings {
+            page = page.push(
+                container(scrollable(text(warnings.join("\n")).size(13)).height(110))
+                    .padding([0, 20]),
+            );
+        }
+    }
     if reader.saving {
         page = page.push(container(text("Saving reading position...")).padding(24));
     } else if let Some(path) = &reader.opening {
         page = page.push(container(text(format!("Opening {}...", path.display()))).padding(24));
+    } else if let Some(pdf) = &reader.pdf {
+        let document = pdf.document().id;
+        page = page.push(
+            pdf.view()
+                .map(move |message| Message::Pdf { document, message }),
+        );
     } else if let Some(book) = &reader.book {
-        if !book.warnings.is_empty() {
-            page = page.push(
-                container(
-                    button(
-                        text(format!(
-                            "{} document warning(s) — {}",
-                            book.warnings.len(),
-                            if reader.show_warnings {
-                                "hide"
-                            } else {
-                                "details"
-                            }
-                        ))
-                        .size(13),
-                    )
-                    .on_press(Message::ToggleWarnings),
-                )
-                .padding([0, 20]),
-            );
-            if reader.show_warnings {
-                page = page.push(
-                    container(scrollable(text(book.warnings.join("\n")).size(13)).height(110))
-                        .padding([0, 20]),
-                );
-            }
-        }
         let range = reader
             .heights
             .window(reader.offset, reader.viewport, OVERSCAN);
@@ -766,7 +976,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             container(
                 column![
                     text("simPl").size(30),
-                    text("Open a local HTML or XHTML document to start reading.").size(18),
+                    text("Open a local HTML, XHTML or PDF document to start reading.").size(18),
                     text("Ctrl+O opens a file. You can also drop a file here.").size(14),
                     text("Local content only. Scripts and remote resources are not loaded.")
                         .size(14),
@@ -783,6 +993,9 @@ fn view(reader: &Reader) -> Element<'_, Message> {
 }
 
 fn title(reader: &Reader) -> String {
+    if let Some(pdf) = &reader.pdf {
+        return format!("{} — simPl", pdf.document().title);
+    }
     reader.book.as_ref().map_or_else(
         || "simPl".to_owned(),
         |book| format!("{} — simPl", book.title),
@@ -810,6 +1023,15 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                 // would redraw forever. Wake only for a new layout or correction.
                 (active && (pending || !measurements.lock().is_empty()))
                     .then_some(Message::LayoutReady(generation))
+            }
+            Event::Interaction {
+                event: iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }),
+                status: iced::event::Status::Captured,
+                ..
+            } if !matches!(&key, Key::Character(value)
+                if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w"))) =>
+            {
+                None
             }
             Event::Interaction { event, window, .. } => Some(Message::Event(event, window)),
             Event::SystemThemeChanged(_) => None,
@@ -879,14 +1101,14 @@ mod tests {
             &mut reader,
             Message::Loaded {
                 request: 2,
-                result: Ok(book("latest")),
+                result: Ok(LoadedDocument::Html(book("latest"))),
             },
         );
         let _ = update(
             &mut reader,
             Message::Loaded {
                 request: 1,
-                result: Ok(book("old")),
+                result: Ok(LoadedDocument::Html(book("old"))),
             },
         );
         assert_eq!(reader.book.as_ref().unwrap().title, "latest");
