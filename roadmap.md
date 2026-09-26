@@ -7,17 +7,18 @@ should appear quickly, use little disk and memory, remain idle while you read,
 and work without a network connection. Start on Windows x64; add other desktop
 platforms only in response to real demand.
 
-The Windows application now reads local UTF-8 HTML/XHTML and PDF files.
-HTML supports local images, selection/copy, reflow, and per-file resume.
-PDF preserves page layout with continuous scrolling, navigation, zoom/fit-width,
-text-layer selection/copy, and page-relative resume. Iced's tiny-skia CPU
-renderer remains the only UI backend. The normal path works outside the repo.
-Explicit fixture diagnostics, the Cosmic Text RTL correction, and optional
-process RAM/CPU measurement remain available.
+The Windows application now reads local UTF-8 HTML/XHTML, PDF, and reflowable
+EPUB 2/3 files. HTML supports local images, selection/copy, reflow, and per-file
+resume. EPUB reuses that view with on-demand chapters, nested contents and
+chapter-relative resume. PDF preserves page layout with continuous scrolling,
+navigation, zoom/fit-width, text-layer selection/copy, and page-relative resume.
+Iced's tiny-skia CPU renderer remains the only UI backend. The normal path works
+outside the repo. Explicit fixture diagnostics, the Cosmic Text RTL correction,
+and optional process RAM/CPU measurement remain available.
 
-EPUB and recent files are not implemented. A licensed-dependency portable folder
-can now be assembled; clean-machine qualification is still pending. These
-completed reading slices are not completion of the whole MVP.
+Recent files and clean-machine qualification are still pending. A complete
+licensed-dependency portable folder can be assembled. These completed reading
+slices are not completion of the whole MVP.
 
 The MVP sequence is **real HTML reading and resume → PDF → EPUB → small
 portable release**. Keep one active UI implementation and add only the code
@@ -57,12 +58,13 @@ fixture samples are not retained.
   scrolling, RTL placement, copy, and idle CPU as real document support grows.
 - The small reflow types, HTML parser, and position storage now live in
   `reader-document`; the application owns presentation and native file dialogs.
-  Fixture workload generation is not the production loader. Reuse the real HTML
-  path for EPUB, but give PDF its own page model rather than a universal AST.
-- HTML5 parsing uses html5ever. EPUB needs ZIP package/spine parsing feeding the
-  HTML path. `reader-pdf` now integrates PDFium through a lazy serial worker:
-  non-V8 Windows x64 Chromium 8066 with `pdfium-render 0.9.4`. Native binaries,
-  license notices, and the complete portable folder are part of this slice.
+  Fixture workload generation is not the production loader. EPUB now reuses
+  the HTML extractor/resource decoder; PDF retains its own page model.
+- HTML5 parsing uses html5ever. EPUB uses file-backed `zip 8.6.0` and bounded
+  `roxmltree 0.21.1` package/navigation parsing; one chapter is loaded at a time.
+  `reader-pdf` integrates PDFium through a lazy serial worker: non-V8 Windows x64
+  Chromium 8066 with `pdfium-render 0.9.4`. The portable folder includes native
+  binaries and the complete shipped dependency notices.
 - Load a PDF engine or EPUB chapter when needed; bound decoded image/page
   caches by bytes. Keep costly work off the UI thread, and discard outdated
   results when opening another file. Limit archive expansion and image decoding;
@@ -73,7 +75,7 @@ fixture samples are not retained.
   canonical path with a source fingerprint, content item, intra-item fraction,
   and font size. Corrupt state warns without blocking the book; source edits
   invalidate an old position. Recent files are not implemented. PDF has separate
-  page/offset/zoom records; EPUB will need chapter plus content position.
+  page/offset/zoom records; EPUB adds chapter href plus content item/font size.
   A raw scroll pixel or percentage alone remains insufficient.
 
 ## Performance targets
@@ -209,6 +211,61 @@ real-book resume and DLL-isolation screenshots/results are in
 committed or downloadable artifacts. The measured executable's SHA-256 was
 `5180dfc183d23a5384642245de5f2d10b0e195a3bb772021587cfc1c3ab6315c`.
 
+### EPUB portable-release observation
+
+The EPUB release keeps the shared CPU reflow renderer and loads one spine chapter
+at a time. Its offline portable folder contains **345 files / 18,802,241 bytes
+(17.93 MiB)**, including the **9,439,232-byte executable (9.00 MiB)**, PDFium,
+and all required notices for 176 shipped Rust dependencies and native components.
+There are no bundled font files or additional VC++ runtime imports.
+
+Native verification of the copied folder outside the repository passed at 125%
+display scaling: EPUB3 nested contents and EPUB2 NCX fragments, source-order
+chapter navigation, Unicode picker paths, local images, exact selection/copy,
+20 px font and resized resume, and HTML/PDF switching. Failed opens preserve both
+the existing chapter and its item/fraction position; a smoke-discovered native
+scroll-widget reset was fixed and rechecked for each rejected input. EPUB-only
+reading did not load PDFium. All 190 workspace tests and Clippy passed.
+
+The real book was [Project Gutenberg's Alice](https://www.gutenberg.org/ebooks/11),
+downloaded from [the EPUB3 images endpoint](https://www.gutenberg.org/ebooks/11.epub3.images):
+188,960 bytes, SHA-256
+`12cbc3610260503383ad7ecf800beb0d885a6011e15900b2bf61cecfc571d6c8`.
+Its SVG-wrapped raster cover displayed, all 15 linear spine sections were
+traversed, and chapter III text was copied and resumed after resizing.
+
+Nine valid root-process collections used three 12-second runs per scenario,
+sampled every 250 ms. Each row is the median of three per-run memory medians in
+the last approximately five seconds of live samples (actual windows 4.74–5.00 s).
+CPU uses cumulative user/kernel time over that same window, normalized to one
+logical processor. Terminal samples are excluded; exit code 124 is the sampler's
+intentional duration stop, not an application crash.
+
+| Scenario | Private working set | Private commit | Idle CPU |
+| --- | ---: | ---: | ---: |
+| Empty welcome window | 8.10 MiB | 9.19 MiB | 0.00% observed |
+| Alice raster cover, default 18 px | 14.95 MiB | 16.25 MiB | 0.00% observed |
+| Alice chapter III, restored 20 px | 9.57 MiB | 10.75 MiB | 0.00% observed |
+
+Each run used a fresh profile; chapter III profiles were seeded from the native
+smoke's actual saved position records for that same book path. All nine idle
+windows had no CPU-time counter increase at the available counter resolution.
+These observations meet the current empty-window, typical-EPUB, idle-CPU and
+package-size targets; they do not measure peak, total-system or GPU memory.
+
+This is not arbitrary EPUB/CSS/SVG fidelity, a hostile-file sandbox, startup
+latency, long-session memory, accessibility, or clean-machine compatibility
+proof. Publisher CSS/fonts, vector SVG rendering, non-linear auxiliary sections,
+general internal links/footnotes, DRM and fixed-layout books remain unsupported.
+
+Machine-local, untracked evidence: `target/portable/epub-package-facts.json`,
+`target/epub-measure-7dfea3f69b3646098b3435897c3c288a/` (manifests, samples,
+summary), and
+`%TEMP%\simPl-epub-smoke-9c2c2dba5af54b228c2e281322df1bff\` (copied runtime,
+inputs, position records, result and inspected screenshots). These are not
+committed or downloadable artifacts. The final executable's SHA-256 is
+`3d1c87f2370b6010d0af8c6ffc089da01c526e6a2e9ec41509a63ae4ba5b75a5`.
+
 ## Delivery order
 
 ### 1. HTML: first usable vertical slice
@@ -236,9 +293,9 @@ and resumed in the same place.
 
 ### 3. EPUB: reuse reflow reading
 
-- [ ] Parse ZIP package/spine, navigate chapters and contents, display local images.
-- [ ] Load chapters on demand and preserve position across font/viewport changes.
-- [ ] Clearly reject unsupported DRM/fixed-layout books and bound hostile archives.
+- [x] Parse ZIP package/spine, navigate chapters and contents, display local images.
+- [x] Load chapters on demand and preserve position across font/viewport changes.
+- [x] Clearly reject unsupported DRM/fixed-layout books and bound hostile archives.
 
 **Done when:** a multichapter EPUB can be navigated end to end and resumed
 without building a second HTML/layout system.

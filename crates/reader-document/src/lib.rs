@@ -1,9 +1,10 @@
-//! UI-independent reader document model and local HTML loader.
+//! UI-independent reflow model, local HTML/EPUB loading, and reading positions.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::{collections::HashMap, path::PathBuf};
 
+pub mod epub;
 mod html;
 pub mod position;
 pub use html::load_html;

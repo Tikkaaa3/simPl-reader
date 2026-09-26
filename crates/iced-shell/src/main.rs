@@ -1439,7 +1439,10 @@ fn main() {
             [separator, path] if separator == "--" => (Some(std::path::PathBuf::from(path)), None),
             _ => (
                 None,
-                Some("Pass one local HTML or PDF path, or use Open to choose a file.".to_owned()),
+                Some(
+                    "Pass one local HTML, PDF or EPUB path, or use Open to choose a file."
+                        .to_owned(),
+                ),
             ),
         };
         if let Err(error) = app::run(path, error) {

@@ -1,7 +1,7 @@
 # Iced reader
 
-The only active UI path in simPl: a Windows local HTML/PDF reader using Iced's
-tiny-skia CPU renderer. EPUB is not implemented. See
+The only active UI path in simPl: a Windows local HTML/PDF/EPUB reader using Iced's
+tiny-skia CPU renderer. See
 [the roadmap](../../roadmap.md) for product scope and measurements. The old
 fixture and empty-shell modes remain explicit diagnostics, not the normal app.
 
@@ -26,6 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1
 .\target\release\iced-shell.exe                    # welcome screen / native picker
 .\target\release\iced-shell.exe "C:\Books\book.html"
 .\target\release\iced-shell.exe "C:\Books\book.pdf"
+.\target\release\iced-shell.exe "C:\Books\book.epub"
 .\target\release\iced-shell.exe --shell-poc        # empty diagnostic shell
 .\target\release\iced-shell.exe --reader-poc       # fixture diagnostic
 .\target\release\iced-shell.exe --reader-poc-large
@@ -119,6 +120,47 @@ and exceeded limits produce errors, not silent truncation. Password-required
 PDFs are rejected. Form data and annotations are not rendered; JavaScript,
 external actions, editing, and OCR are not enabled. PDFium is native code
 running in-process, **not a sandbox or a total resource-limit boundary**.
+
+## Local EPUB reading
+
+`reader-document::epub` reads a retained ZIP file through `zip 8.6.0`, with
+bounded OPF/container/navigation XML parsing through `roxmltree 0.21.1`.
+EPUB 2 NCX and EPUB 3 navigation documents feed one contents model. Only the
+linear spine is included; unsupported required spine media needs a supported
+HTML/XHTML fallback or fails explicitly. Missing contents uses spine entries.
+
+- **Prev chapter / Next chapter**, Ctrl+Page Up/Down: navigate the reading order.
+- **Contents / Ctrl+T**: nested contents, virtualized to visible rows; targets
+  preserve chapter and fragment identity. Escape closes the panel.
+- The current chapter reuses HTML text layout, raster decoding, selection,
+  copy and font controls. Ctrl+A/C selects/copies **only that chapter**.
+- One chapter is retained by the UI. Loading/decompression runs on the task
+  executor; archive access is serialized. Replaced or canceled load results
+  cannot change the current book. Failed chapter loads retain the old chapter.
+- Separate `*.epub.json` records contain whole-source SHA-256, canonical chapter
+  href, item ID, intra-item fraction and font size. Close/exit/replacement and
+  chapter navigation save them; reopening changed bytes discards the old anchor.
+- Assets can use sibling paths such as `../Images/cover.jpg` inside the archive.
+  This does not relax standalone HTML's document-directory confinement.
+  Inline SVG wrappers expose raster image references through the same decoder;
+  vector artwork, scripts, foreign-object content and hidden SVG text are not
+  rendered. Publisher CSS/custom fonts and general links/footnotes are not applied.
+
+Limits are checked before expensive parsing where applicable: **512 MiB encoded
+archive**, **20,000 ZIP records**, **8 MiB central-directory metadata**, **512 MiB
+total declared uncompressed data**, **8 MiB combined package/navigation XML**,
+**100,000 nodes per XML document**, **4,096 linear chapters**, **10,000 contents
+entries**, **64 contents nesting levels**, and **32 MiB per chapter/encoded asset**.
+Decoded images share the HTML limits (24 million pixels each, 128 MiB aggregate
+RGBA per chapter). These are bounds on inputs/application data, not total process
+memory or native crash isolation.
+
+Stored/deflated ZIP and UTF-8 XML/XHTML are supported. Unsafe paths, duplicate
+members/aliases, encrypted ZIP members, decompressed-size mismatches, internal
+DTD/entity declarations, DRM and fixed-layout content produce explicit errors.
+Standard external DOCTYPE declarations do not trigger a network fetch. Known
+font obfuscation is ignored with a warning because custom fonts are not loaded.
+There is no filesystem extraction or current-directory/network asset fallback.
 
 ## Portable folder
 
@@ -221,7 +263,7 @@ it is regression input, not a current performance report.
 In explicit diagnostic modes, `ICED_SHELL_STARTUP_MARKERS=<path>` emits bounded
 QPC markers; `ICED_SHELL_INTERACTION_TRACE=<new-path>` records optional reader
 callbacks. These are **not** presented-frame timestamps or startup-budget proof,
-and they do not instrument the normal HTML/PDF path. Other `ICED_SHELL_*`
+and they do not instrument the normal HTML/PDF/EPUB path. Other `ICED_SHELL_*`
 test-status/BiDi variables are explicit diagnostics; leave them absent in
 ordinary use and resource measurements. The former adapter logger and its
 environment gate have been removed.
@@ -237,5 +279,5 @@ The earlier diagnostic shell's UI Automation observation found no client control
 descendants. Keyboard operation is not screen-reader support; product
 accessibility has not been validated. Cross-DPI/multi-monitor and other-host
 behavior remain unverified. The roadmap distinguishes the old WGPU baseline
-from current CPU HTML/PDF measurements. Timing diagnostics do not establish
+from current CPU HTML/PDF/EPUB measurements. Timing diagnostics do not establish
 presented-frame percentiles, dropped frames, or input-to-display latency.

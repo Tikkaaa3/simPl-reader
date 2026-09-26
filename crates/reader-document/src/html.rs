@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fs, io::Read, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use html5ever::{parse_document, tendril::TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
@@ -23,6 +28,84 @@ fn is_unc_path(path: &Path) -> bool {
     {
         let bytes = path.as_os_str().as_encoded_bytes();
         bytes.starts_with(b"//") || bytes.starts_with(b"\\\\")
+    }
+}
+
+pub(crate) trait ResourceLoader {
+    fn resolve(&self, source: &str) -> Result<String, String>;
+    fn load(&mut self, key: &str) -> Result<Vec<u8>, String>;
+}
+
+pub(crate) struct ParsedHtml {
+    pub document: Document,
+    pub anchors: HashMap<String, String>,
+}
+
+struct LocalResources {
+    parent: PathBuf,
+}
+
+impl ResourceLoader for LocalResources {
+    fn resolve(&self, src: &str) -> Result<String, String> {
+        let url_path = src.split(['?', '#']).next().unwrap_or("");
+        if url_path.is_empty()
+            || url_path.starts_with('/')
+            || url_path.starts_with('\\')
+            || url_path.contains('\\')
+            || url_path.contains(':')
+        {
+            return Err("blocked non-local or absolute image URL".into());
+        }
+        let decoded = percent_encoding::percent_decode_str(url_path)
+            .decode_utf8()
+            .map_err(|_| "invalid image filename encoding")?;
+        if decoded.starts_with('/')
+            || decoded.contains('\\')
+            || decoded.contains(':')
+            || decoded.contains('\0')
+            || Path::new(decoded.as_ref()).components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::Prefix(_)
+                        | std::path::Component::RootDir
+                )
+            })
+        {
+            return Err("blocked image path outside document directory".into());
+        }
+        let requested = self.parent.join(decoded.as_ref());
+        let actual = fs::canonicalize(&requested).map_err(|e| {
+            format!(
+                "missing/unreadable local asset {}: {e}",
+                requested.display()
+            )
+        })?;
+        if is_unc_path(&actual) {
+            return Err("blocked network/UNC image asset".into());
+        }
+        if !actual.starts_with(&self.parent) {
+            return Err("blocked image outside document directory".into());
+        }
+        Ok(actual
+            .strip_prefix(&self.parent)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/"))
+    }
+
+    fn load(&mut self, key: &str) -> Result<Vec<u8>, String> {
+        let actual = self.parent.join(key);
+        let file = fs::File::open(&actual).map_err(|e| e.to_string())?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.len() > MAX_IMAGE_BYTES {
+            return Err("image exceeds encoded size limit or is not a file".into());
+        }
+        let mut encoded = Vec::with_capacity(meta.len() as usize);
+        file.take(MAX_IMAGE_BYTES + 1)
+            .read_to_end(&mut encoded)
+            .map_err(|e| format!("cannot read image: {e}"))?;
+        Ok(encoded)
     }
 }
 
@@ -56,6 +139,26 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
             path.display()
         ));
     }
+    let mut resources = LocalResources {
+        parent: path
+            .parent()
+            .ok_or("HTML file has no parent directory")?
+            .to_path_buf(),
+    };
+    Ok(parse_html(path, &bytes, &mut resources)?.document)
+}
+
+pub(crate) fn parse_html(
+    path: PathBuf,
+    bytes: &[u8],
+    resources: &mut dyn ResourceLoader,
+) -> Result<ParsedHtml, String> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_HTML_BYTES {
+        return Err(format!(
+            "HTML file is empty or exceeds {MAX_HTML_BYTES} bytes: {}",
+            path.display()
+        ));
+    }
     if bytes.contains(&0) {
         return Err("HTML contains NUL bytes (binary or unsupported encoding)".into());
     }
@@ -65,7 +168,7 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
     {
         return Err("HTML contains binary control bytes".into());
     }
-    let source = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes))
+    let source = std::str::from_utf8(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
         .map_err(|_| "HTML must be UTF-8 (legacy encodings are unsupported)".to_owned())?;
     if source.trim().is_empty() {
         return Err("HTML contains no content".into());
@@ -76,7 +179,7 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
         check_charset(&head)?;
     }
     let mut extractor = Extractor {
-        parent: path.parent().ok_or("HTML file has no parent directory")?,
+        resources,
         items: Vec::new(),
         images: HashMap::new(),
         warnings: Vec::new(),
@@ -84,6 +187,8 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
         kind: BlockKind::Paragraph,
         next_id: 0,
         total_rgba_bytes: 0,
+        anchors: HashMap::new(),
+        pending_anchors: Vec::new(),
     };
     let mut title = String::new();
     find_title(&dom.document, &mut title);
@@ -101,6 +206,16 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
                 .unwrap_or_default()
         ));
     }
+    // Trailing empty targets point to the last readable item, not a nonexistent item.
+    if !extractor.pending_anchors.is_empty() {
+        let last = extractor
+            .items
+            .last()
+            .expect("nonempty document")
+            .id()
+            .to_owned();
+        extractor.bind_anchors(&last, true, 0);
+    }
     let title = if title.trim().is_empty() {
         path.file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -112,15 +227,19 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
         items,
         images,
         warnings,
+        anchors,
         ..
     } = extractor;
-    Ok(Document {
-        path,
-        title,
-        fingerprint: format!("{:x}", Sha256::digest(&bytes)),
-        items,
-        images,
-        warnings,
+    Ok(ParsedHtml {
+        document: Document {
+            path,
+            title,
+            fingerprint: format!("{:x}", Sha256::digest(bytes)),
+            items,
+            images,
+            warnings,
+        },
+        anchors,
     })
 }
 
@@ -315,7 +434,7 @@ impl TextBlock {
 }
 
 struct Extractor<'a> {
-    parent: &'a Path,
+    resources: &'a mut dyn ResourceLoader,
     items: Vec<Item>,
     images: HashMap<String, ImageAsset>,
     warnings: Vec<String>,
@@ -323,6 +442,8 @@ struct Extractor<'a> {
     kind: BlockKind,
     next_id: usize,
     total_rgba_bytes: usize,
+    anchors: HashMap<String, String>,
+    pending_anchors: Vec<(String, usize)>,
 }
 
 impl Extractor<'_> {
@@ -332,6 +453,30 @@ impl Extractor<'_> {
     }
 
     fn flush(&mut self) {
+        self.flush_with_anchors(true);
+    }
+
+    fn bind_anchors(&mut self, id: &str, include_unchanged: bool, length: usize) {
+        self.pending_anchors.retain(|(fragment, previous_length)| {
+            if include_unchanged || length > *previous_length {
+                self.anchors
+                    .entry(fragment.clone())
+                    .or_insert_with(|| id.to_owned());
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn queue_anchor(&mut self, fragment: String) {
+        if !fragment.is_empty() && !self.anchors.contains_key(&fragment) {
+            self.pending_anchors
+                .push((fragment, self.current.text.len()));
+        }
+    }
+
+    fn flush_with_anchors(&mut self, include_unchanged: bool) {
         let mut block = std::mem::take(&mut self.current);
         let trimmed = if block.pre {
             block.text.len()
@@ -350,6 +495,7 @@ impl Extractor<'_> {
             return;
         }
         let id = self.id();
+        self.bind_anchors(&id, include_unchanged, block.text.len());
         match self.kind {
             BlockKind::Heading(level) => self.items.push(Item::Heading {
                 id,
@@ -381,7 +527,6 @@ impl Extractor<'_> {
                 | "style"
                 | "template"
                 | "noscript"
-                | "svg"
                 | "canvas"
                 | "iframe"
                 | "object"
@@ -392,6 +537,19 @@ impl Extractor<'_> {
             || attr(node, "aria-hidden").as_deref() == Some("true")
             || attr(node, "style").is_some_and(|s| hidden_inline_style(&s))
         {
+            return;
+        }
+        if tag == "svg" {
+            self.warnings.push(
+                "SVG vector artwork is not rendered; referenced raster images are displayed".into(),
+            );
+            if let Some(fragment) = attr(node, "id") {
+                self.queue_anchor(fragment);
+            }
+            let alt = attr(node, "aria-label").unwrap_or_default();
+            for child in node.children.borrow().iter() {
+                self.walk_svg(child, context, &alt);
+            }
             return;
         }
         match attr(node, "dir").as_deref() {
@@ -441,6 +599,18 @@ impl Extractor<'_> {
             );
         if block {
             self.flush();
+        }
+        // A block's fragment belongs to its first readable descendant, not
+        // the paragraph that happened to precede the block.
+        if tag != "img" {
+            if let Some(fragment) = attr(node, "id") {
+                self.queue_anchor(fragment);
+            }
+            if tag == "a"
+                && let Some(fragment) = attr(node, "name")
+            {
+                self.queue_anchor(fragment);
+            }
         }
         let old_kind = self.kind;
         if let Some(level) = heading {
@@ -496,17 +666,72 @@ impl Extractor<'_> {
         }
     }
 
+    // SVG is not rendered as vectors. Only referenced raster <image> elements
+    // pass through the same bounded decoder used by HTML <img>.
+    fn walk_svg(&mut self, node: &Handle, context: Context, svg_alt: &str) {
+        let NodeData::Element { name, .. } = &node.data else {
+            return;
+        };
+        let tag = name.local.as_ref();
+        if matches!(
+            tag,
+            "script"
+                | "style"
+                | "foreignObject"
+                | "defs"
+                | "symbol"
+                | "mask"
+                | "clipPath"
+                | "pattern"
+                | "filter"
+                | "metadata"
+        ) || attr(node, "hidden").is_some()
+            || attr(node, "aria-hidden").as_deref() == Some("true")
+            || attr(node, "style").is_some_and(|s| hidden_inline_style(&s))
+        {
+            return;
+        }
+        if tag == "image" {
+            let src = attr(node, "href").unwrap_or_default();
+            let alt = attr(node, "alt").or_else(|| attr(node, "aria-label"));
+            self.raster_image(
+                &src,
+                alt.as_deref().unwrap_or(svg_alt),
+                attr(node, "id"),
+                context,
+            );
+            return;
+        }
+        if !matches!(tag, "svg" | "g" | "a" | "switch") {
+            return;
+        }
+        if let Some(fragment) = attr(node, "id") {
+            self.queue_anchor(fragment);
+        }
+        for child in node.children.borrow().iter() {
+            self.walk_svg(child, context, svg_alt);
+        }
+    }
+
     fn image(&mut self, node: &Handle, context: Context) {
-        self.flush();
         let src = attr(node, "src").unwrap_or_default();
         let alt = attr(node, "alt").unwrap_or_default();
-        let result = self.resolve_image(&src);
+        self.raster_image(&src, &alt, attr(node, "id"), context);
+    }
+
+    fn raster_image(&mut self, src: &str, alt: &str, fragment: Option<String>, context: Context) {
+        self.flush_with_anchors(false);
+        if let Some(fragment) = fragment {
+            self.queue_anchor(fragment);
+        }
+        let result = self.resolve_image(src);
         match result {
             Ok((key, pixels)) => {
                 if let Some(pixels) = pixels {
                     self.images.insert(key.clone(), pixels);
                 }
                 let id = self.id();
+                self.bind_anchors(&id, true, 0);
                 self.items.push(Item::Image {
                     id,
                     asset_path: key,
@@ -515,7 +740,7 @@ impl Extractor<'_> {
             Err(error) => {
                 self.warnings.push(format!("Image {src:?}: {error}"));
                 if !alt.trim().is_empty() {
-                    self.current.append(&alt, context);
+                    self.current.append(alt, context);
                     self.flush();
                 }
             }
@@ -523,63 +748,11 @@ impl Extractor<'_> {
     }
 
     fn resolve_image(&mut self, src: &str) -> Result<(String, Option<ImageAsset>), String> {
-        let url_path = src.split(['?', '#']).next().unwrap_or("");
-        if url_path.is_empty()
-            || url_path.starts_with('/')
-            || url_path.starts_with('\\')
-            || url_path.contains('\\')
-            || url_path.contains(':')
-        {
-            return Err("blocked non-local or absolute image URL".into());
-        }
-        let decoded = percent_encoding::percent_decode_str(url_path)
-            .decode_utf8()
-            .map_err(|_| "invalid image filename encoding")?;
-        if decoded.starts_with('/')
-            || decoded.contains('\\')
-            || decoded.contains(':')
-            || decoded.contains('\0')
-            || Path::new(decoded.as_ref()).components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::ParentDir
-                        | std::path::Component::Prefix(_)
-                        | std::path::Component::RootDir
-                )
-            })
-        {
-            return Err("blocked image path outside document directory".into());
-        }
-        let requested = self.parent.join(decoded.as_ref());
-        let actual = fs::canonicalize(&requested).map_err(|e| {
-            format!(
-                "missing/unreadable local asset {}: {e}",
-                requested.display()
-            )
-        })?;
-        if is_unc_path(&actual) {
-            return Err("blocked network/UNC image asset".into());
-        }
-        if !actual.starts_with(self.parent) {
-            return Err("blocked image outside document directory".into());
-        }
-        let key = actual
-            .strip_prefix(self.parent)
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let key = self.resources.resolve(src)?;
         if self.images.contains_key(&key) {
             return Ok((key, None));
         }
-        let file = fs::File::open(&actual).map_err(|e| e.to_string())?;
-        let meta = file.metadata().map_err(|e| e.to_string())?;
-        if !meta.is_file() || meta.len() > MAX_IMAGE_BYTES {
-            return Err("image exceeds encoded size limit or is not a file".into());
-        }
-        let mut encoded = Vec::with_capacity(meta.len() as usize);
-        file.take(MAX_IMAGE_BYTES + 1)
-            .read_to_end(&mut encoded)
-            .map_err(|e| format!("cannot read image: {e}"))?;
+        let encoded = self.resources.load(&key)?;
         if encoded.len() as u64 > MAX_IMAGE_BYTES {
             return Err("image exceeds encoded size limit".into());
         }
@@ -646,7 +819,7 @@ fn detect_direction(text: &str) -> BaseDirection {
 
 #[cfg(test)]
 mod tests {
-    use super::load_html;
+    use super::{ResourceLoader, load_html, parse_html};
     use crate::{BaseDirection, InlineStyle, Item};
     use std::{
         fs,
@@ -805,5 +978,156 @@ mod tests {
                 "Visible"
             ]
         );
+    }
+
+    struct PackageImages {
+        bytes: Vec<u8>,
+        reads: usize,
+    }
+
+    impl ResourceLoader for PackageImages {
+        fn resolve(&self, source: &str) -> Result<String, String> {
+            if source == "../Images/cover.png" {
+                Ok("OPS/Images/cover.png".into())
+            } else {
+                Err("missing package image".into())
+            }
+        }
+
+        fn load(&mut self, key: &str) -> Result<Vec<u8>, String> {
+            assert_eq!(key, "OPS/Images/cover.png");
+            self.reads += 1;
+            Ok(self.bytes.clone())
+        }
+    }
+
+    #[test]
+    fn package_sibling_images_share_decoder_and_local_html_stays_confined() {
+        let dir = TempDir::new();
+        let image = dir.0.join("cover.png");
+        image::RgbaImage::from_pixel(2, 1, image::Rgba([7, 8, 9, 255]))
+            .save(&image)
+            .unwrap();
+        let markup = "<p>Introduction</p><img src='../Images/cover.png' id='cover'>\
+                      <img src='../Images/cover.png'>";
+        let mut resources = PackageImages {
+            bytes: fs::read(image).unwrap(),
+            reads: 0,
+        };
+        let parsed = parse_html(
+            dir.0.join("chapter.xhtml"),
+            markup.as_bytes(),
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(resources.reads, 1);
+        assert!(parsed.document.warnings.is_empty());
+        assert_eq!(
+            parsed.document.images["OPS/Images/cover.png"].rgba,
+            [7, 8, 9, 255, 7, 8, 9, 255]
+        );
+        assert_eq!(parsed.anchors["cover"], parsed.document.items[1].id());
+        assert_eq!(parsed.document.items.len(), 3);
+
+        let path = dir.html(markup);
+        let local = load_html(&path).unwrap();
+        assert!(local.images.is_empty());
+        assert_eq!(local.warnings.len(), 2);
+        assert!(
+            local
+                .warnings
+                .iter()
+                .all(|warning| warning.contains("blocked image path"))
+        );
+    }
+
+    #[test]
+    fn fragments_target_nested_heading_inline_and_empty_elements() {
+        let dir = TempDir::new();
+        let markup = "<p>First</p><section id='section'><div><h2 id='heading'>Target</h2></div>\
+                      <p>Some <em id='inline'>emphasis</em> here</p>\
+                      <a name='legacy'></a><h3 id='next'>Next</h3>\
+                      <a id='trailing'></a><script id='hidden'>discard</script></section>";
+        let path = dir.html(markup);
+        let mut resources = PackageImages {
+            bytes: Vec::new(),
+            reads: 0,
+        };
+        let parsed = parse_html(path, markup.as_bytes(), &mut resources).unwrap();
+        let items = &parsed.document.items;
+        assert_eq!(
+            items.iter().filter_map(Item::text).collect::<Vec<_>>(),
+            ["First", "Target", "Some emphasis here", "Next"]
+        );
+        for fragment in ["section", "heading"] {
+            assert_eq!(parsed.anchors[fragment], items[1].id());
+        }
+        assert_eq!(parsed.anchors["inline"], items[2].id());
+        for fragment in ["legacy", "next", "trailing"] {
+            assert_eq!(parsed.anchors[fragment], items[3].id());
+        }
+        assert!(!parsed.anchors.contains_key("hidden"));
+    }
+
+    #[test]
+    fn svg_image_wrapper_extracts_raster_without_vector_or_hidden_text() {
+        let dir = TempDir::new();
+        let image = dir.0.join("cover.png");
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([12, 34, 56, 255]))
+            .save(&image)
+            .unwrap();
+        let mut resources = PackageImages {
+            bytes: fs::read(image).unwrap(),
+            reads: 0,
+        };
+        // Image-only SVG is a complete readable chapter (as in EPUB cover spines).
+        let cover = "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' id='wrapper'>\
+                     <image id='raster' xlink:href='../Images/cover.png'/></svg>";
+        let parsed =
+            parse_html(dir.0.join("cover.xhtml"), cover.as_bytes(), &mut resources).unwrap();
+        assert_eq!(parsed.document.items.len(), 1);
+        assert!(
+            matches!(&parsed.document.items[0], Item::Image { asset_path, .. } if asset_path == "OPS/Images/cover.png")
+        );
+        assert_eq!(
+            parsed.document.images["OPS/Images/cover.png"].rgba,
+            [12, 34, 56, 255]
+        );
+        for target in ["wrapper", "raster"] {
+            assert_eq!(parsed.anchors[target], parsed.document.items[0].id());
+        }
+        assert!(
+            parsed
+                .document
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("vector artwork is not rendered"))
+        );
+        assert_eq!(resources.reads, 1);
+
+        let hidden = "<svg xmlns='http://www.w3.org/2000/svg' id='drawing'>\
+                      <text id='vector'>not body text</text><title>not body title</title>\
+                      <script>not body script</script><foreignObject><p>not HTML</p></foreignObject>\
+                      <defs><image href='../Images/cover.png'/></defs>\
+                      <image id='missing' href='missing.png' alt='Cover unavailable'/></svg>";
+        let parsed = parse_html(
+            dir.0.join("vector.xhtml"),
+            hidden.as_bytes(),
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed
+                .document
+                .items
+                .iter()
+                .filter_map(Item::text)
+                .collect::<Vec<_>>(),
+            ["Cover unavailable"]
+        );
+        assert_eq!(parsed.anchors["drawing"], parsed.document.items[0].id());
+        assert_eq!(parsed.anchors["missing"], parsed.document.items[0].id());
+        assert!(!parsed.anchors.contains_key("vector"));
+        assert_eq!(resources.reads, 1);
     }
 }

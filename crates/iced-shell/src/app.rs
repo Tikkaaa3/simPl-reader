@@ -1,4 +1,4 @@
-//! The normal, fixture-independent local HTML and PDF reader.
+//! The normal, fixture-independent local HTML, PDF and EPUB reader.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use iced::keyboard::{self, Key, key};
 use iced::widget::{button, column, container, image, row, scrollable, text};
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme, mouse, window};
 use iced_shell::{reader, selection, virtual_reader};
-use reader_document::position::{self, PdfReadingPosition, ReadingPosition};
+use reader_document::position::{self, EpubReadingPosition, PdfReadingPosition, ReadingPosition};
 use reader_document::{BaseDirection, Endpoint, Item};
 
 const DEFAULT_FONT_SIZE: f32 = 18.0;
@@ -26,6 +26,13 @@ struct DisplayImage {
 }
 
 #[derive(Debug)]
+struct EpubChapter {
+    document: Arc<reader_document::epub::Epub>,
+    index: usize,
+    anchors: HashMap<String, String>,
+}
+
+#[derive(Debug)]
 struct Book {
     path: PathBuf,
     title: String,
@@ -34,24 +41,36 @@ struct Book {
     images: HashMap<String, DisplayImage>,
     warnings: Vec<String>,
     restored: Option<ReadingPosition>,
+    epub: Option<EpubChapter>,
 }
 
 fn load_book(path: PathBuf) -> Result<Book, String> {
+    let mut document = reader_document::load_html(&path)?;
+    let restored = match position::load(&document.path) {
+        Ok(position) => position.filter(|position| position.fingerprint == document.fingerprint),
+        Err(error) => {
+            document
+                .warnings
+                .push(format!("Could not restore the reading position: {error}"));
+            None
+        }
+    };
+    Ok(display_book(document, restored, None))
+}
+
+fn display_book(
+    document: reader_document::Document,
+    restored: Option<ReadingPosition>,
+    epub: Option<EpubChapter>,
+) -> Book {
     let reader_document::Document {
         path,
         title,
         fingerprint,
         items,
         images,
-        mut warnings,
-    } = reader_document::load_html(&path)?;
-    let restored = match position::load(&path) {
-        Ok(position) => position.filter(|position| position.fingerprint == fingerprint),
-        Err(error) => {
-            warnings.push(format!("Could not restore the reading position: {error}"));
-            None
-        }
-    };
+        warnings,
+    } = document;
     let images = images
         .into_iter()
         .map(|(key, asset)| {
@@ -63,20 +82,71 @@ fn load_book(path: PathBuf) -> Result<Book, String> {
             (key, image)
         })
         .collect();
-    Ok(Book {
+    Book {
         path,
-        title,
+        title: epub
+            .as_ref()
+            .map_or(title, |chapter| chapter.document.title.clone()),
         fingerprint,
         items,
         images,
         warnings,
         restored,
-    })
+        epub,
+    }
+}
+
+fn load_epub(path: PathBuf) -> Result<Book, String> {
+    let document = Arc::new(reader_document::epub::open(&path)?);
+    let mut warnings = Vec::new();
+    let restored = match position::load_epub(&document.path) {
+        Ok(position) => position.filter(|position| position.fingerprint == document.fingerprint),
+        Err(error) => {
+            warnings.push(format!("Could not restore the reading position: {error}"));
+            None
+        }
+    };
+    let index = restored.as_ref().and_then(|position| {
+        document
+            .chapters
+            .iter()
+            .position(|chapter| chapter.href == position.chapter)
+    });
+    let restored = index.and(restored).map(|position| ReadingPosition {
+        fingerprint: position.fingerprint,
+        item_id: position.item_id,
+        within: position.within,
+        font_size: position.font_size,
+    });
+    let mut book = load_epub_chapter(document, index.unwrap_or(0), restored)?;
+    book.warnings.extend(warnings);
+    Ok(book)
+}
+
+fn load_epub_chapter(
+    document: Arc<reader_document::epub::Epub>,
+    index: usize,
+    restored: Option<ReadingPosition>,
+) -> Result<Book, String> {
+    let mut chapter = document.load_chapter(index)?;
+    chapter
+        .document
+        .warnings
+        .extend(document.warnings.iter().cloned());
+    Ok(display_book(
+        chapter.document,
+        restored,
+        Some(EpubChapter {
+            document,
+            index,
+            anchors: chapter.anchors,
+        }),
+    ))
 }
 
 #[derive(Clone, Debug)]
 enum LoadedDocument {
-    Html(Arc<Book>),
+    Reflow(Arc<Book>),
     Pdf {
         document: Arc<reader_pdf::Document>,
         restored: Option<PdfReadingPosition>,
@@ -87,6 +157,7 @@ enum LoadedDocument {
 enum SavedPosition {
     Html(PathBuf, ReadingPosition),
     Pdf(PathBuf, PdfReadingPosition),
+    Epub(PathBuf, EpubReadingPosition),
 }
 
 impl SavedPosition {
@@ -94,6 +165,7 @@ impl SavedPosition {
         match self {
             Self::Html(path, position) => position::save(&path, &position),
             Self::Pdf(path, position) => position::save_pdf(&path, &position),
+            Self::Epub(path, position) => position::save_epub(&path, &position),
         }
     }
 }
@@ -130,13 +202,20 @@ async fn load_document(
             warnings,
         })
     } else {
-        let mut book = load_book(path)?;
+        let mut book = if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"))
+        {
+            load_epub(path)?
+        } else {
+            load_book(path)?
+        };
         if let Some(error) = save_warning {
             book.warnings.push(format!(
                 "Could not save the previous reading position: {error}"
             ));
         }
-        Ok(LoadedDocument::Html(Arc::new(book)))
+        Ok(LoadedDocument::Reflow(Arc::new(book)))
     }
 }
 
@@ -162,6 +241,8 @@ struct Reader {
     error: Option<String>,
     dialog_open: bool,
     show_warnings: bool,
+    show_contents: bool,
+    contents_offset: f32,
     request: u64,
     generation: u64,
     font_size: f32,
@@ -190,6 +271,8 @@ impl Default for Reader {
             error: None,
             dialog_open: false,
             show_warnings: false,
+            show_contents: false,
+            contents_offset: 0.0,
             request: 0,
             generation: 0,
             font_size: DEFAULT_FONT_SIZE,
@@ -225,6 +308,12 @@ enum Message {
         document: u64,
         message: pdf_reader::Message,
     },
+    EpubChapter {
+        index: usize,
+        fragment: Option<String>,
+    },
+    ToggleContents,
+    ContentsScrolled(f32),
     ScaleFactor(f64),
     FontSize(f32),
     SelectStart(Endpoint),
@@ -322,8 +411,21 @@ impl Reader {
                 pdf.position(),
             ))
         } else {
-            self.saved_position()
-                .map(|(path, position)| SavedPosition::Html(path, position))
+            let (path, position) = self.saved_position()?;
+            if let Some(chapter) = self.book.as_ref()?.epub.as_ref() {
+                Some(SavedPosition::Epub(
+                    path,
+                    EpubReadingPosition {
+                        fingerprint: position.fingerprint,
+                        chapter: chapter.document.chapters[chapter.index].href.clone(),
+                        item_id: position.item_id,
+                        within: position.within,
+                        font_size: position.font_size,
+                    },
+                ))
+            } else {
+                Some(SavedPosition::Html(path, position))
+            }
         }
     }
 
@@ -346,6 +448,8 @@ impl Reader {
         self.offset = 0.0;
         self.generation = self.generation.wrapping_add(1);
         self.show_warnings = false;
+        self.show_contents = false;
+        self.contents_offset = 0.0;
     }
 
     fn rebuild_geometry(&mut self, anchor: Anchor) -> Task<Message> {
@@ -444,6 +548,89 @@ impl Reader {
         task
     }
 
+    fn open_chapter(&mut self, index: usize, fragment: Option<String>) -> Task<Message> {
+        if !self.interactive() {
+            return Task::none();
+        }
+        let Some(book) = &self.book else {
+            return Task::none();
+        };
+        let Some(chapter) = &book.epub else {
+            return Task::none();
+        };
+        if index >= chapter.document.chapters.len() {
+            return Task::none();
+        }
+        if index == chapter.index {
+            let row = fragment
+                .as_ref()
+                .and_then(|fragment| chapter.anchors.get(fragment))
+                .and_then(|id| book.items.iter().position(|item| item.id() == id));
+            if fragment.is_some() && row.is_none() {
+                self.error = Some("The contents target is absent from this chapter.".into());
+                return Task::none();
+            }
+            self.show_contents = false;
+            self.selection.clear();
+            self.error = None;
+            return self.rebuild_geometry(Anchor {
+                row: row.unwrap_or(0),
+                fraction: 0.0,
+            });
+        }
+        let document = chapter.document.clone();
+        let path = book.path.clone();
+        let font_size = self.font_size;
+        let previous = self.document_position();
+        self.cancel_open();
+        let request = self.request;
+        self.opening = Some(path);
+        self.error = None;
+        self.failed_close = None;
+        self.selection.end_drag();
+        let (task, handle) = Task::perform(
+            async move {
+                let warning = previous.and_then(|position| position.save().err());
+                let mut book = load_epub_chapter(document, index, None)?;
+                let target = fragment
+                    .as_ref()
+                    .and_then(|fragment| book.epub.as_ref()?.anchors.get(fragment));
+                if fragment.is_some() && target.is_none() {
+                    book.warnings
+                        .push("The contents target is absent; showing the chapter start.".into());
+                }
+                book.restored = book.items.first().map(|first| ReadingPosition {
+                    fingerprint: book.fingerprint.clone(),
+                    item_id: target.cloned().unwrap_or_else(|| first.id().to_owned()),
+                    within: 0.0,
+                    font_size,
+                });
+                if let Some(error) = warning {
+                    book.warnings.push(format!(
+                        "Could not save the previous reading position: {error}"
+                    ));
+                }
+                Ok(LoadedDocument::Reflow(Arc::new(book)))
+            },
+            move |result| Message::Loaded { request, result },
+        )
+        .abortable();
+        self.opening_task = Some(handle.abort_on_drop());
+        task
+    }
+
+    fn adjacent_chapter(&mut self, next: bool) -> Task<Message> {
+        let Some(chapter) = self.book.as_ref().and_then(|book| book.epub.as_ref()) else {
+            return Task::none();
+        };
+        let index = if next {
+            chapter.index.checked_add(1)
+        } else {
+            chapter.index.checked_sub(1)
+        };
+        index.map_or_else(Task::none, |index| self.open_chapter(index, None))
+    }
+
     fn finish_close(&mut self, action: CloseAction) -> Task<Message> {
         self.failed_close = None;
         match action {
@@ -513,7 +700,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.opening = None;
             reader.opening_task = None;
             match result {
-                Ok(LoadedDocument::Html(book)) => {
+                Ok(LoadedDocument::Reflow(book)) => {
                     reader.clear_content();
                     reader.font_size = book
                         .restored
@@ -563,7 +750,13 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
                 Err(error) => {
                     reader.error = Some(error);
-                    Task::none()
+                    // The loading view replaced the scroll widget. Restore its
+                    // native offset as well as retaining the document model.
+                    if reader.book.is_some() {
+                        scroll_to(reader.offset)
+                    } else {
+                        Task::none()
+                    }
                 }
             }
         }
@@ -575,6 +768,22 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
             } else {
                 Task::none()
             }
+        }
+        Message::EpubChapter { index, fragment } => reader.open_chapter(index, fragment),
+        Message::ToggleContents if reader.interactive() => {
+            if reader.book.as_ref().is_some_and(|book| book.epub.is_some()) {
+                reader.show_contents = !reader.show_contents;
+                reader.contents_offset = 0.0;
+                return Task::batch([
+                    scroll_to(reader.offset),
+                    scroll_to_widget(iced::advanced::widget::Id::new("epub-contents"), 0.0),
+                ]);
+            }
+            Task::none()
+        }
+        Message::ContentsScrolled(offset) => {
+            reader.contents_offset = offset;
+            Task::none()
         }
         Message::ScaleFactor(scale) => {
             if !scale.is_finite() || scale <= 0.0 || scale == reader.scale_factor {
@@ -743,8 +952,21 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                                 }
                                 "-" => update(reader, Message::FontSize(reader.font_size - 2.0)),
                                 "0" => update(reader, Message::FontSize(DEFAULT_FONT_SIZE)),
+                                "t" => update(reader, Message::ToggleContents),
                                 _ => Task::none(),
                             }
+                        }
+                        Key::Named(key::Named::PageDown)
+                            if modifiers.control()
+                                && reader.book.as_ref().is_some_and(|book| book.epub.is_some()) =>
+                        {
+                            reader.adjacent_chapter(true)
+                        }
+                        Key::Named(key::Named::PageUp)
+                            if modifiers.control()
+                                && reader.book.as_ref().is_some_and(|book| book.epub.is_some()) =>
+                        {
+                            reader.adjacent_chapter(false)
                         }
                         Key::Named(key::Named::PageDown | key::Named::Space) => {
                             reader.jump(reader.offset + reader.viewport * 0.9)
@@ -758,7 +980,11 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                         }
                         Key::Named(key::Named::Escape) => {
                             reader.selection.clear();
-                            Task::none()
+                            if reader.show_contents {
+                                update(reader, Message::ToggleContents)
+                            } else {
+                                Task::none()
+                            }
                         }
                         _ => Task::none(),
                     }
@@ -775,12 +1001,16 @@ fn scroll_id() -> iced::advanced::widget::Id {
 }
 
 fn scroll_to(offset: f32) -> Task<Message> {
+    scroll_to_widget(scroll_id(), offset)
+}
+
+fn scroll_to_widget(id: iced::advanced::widget::Id, offset: f32) -> Task<Message> {
     use iced::advanced::widget::{
         operate,
         operation::scrollable::{self, AbsoluteOffset},
     };
     operate(scrollable::scroll_to(
-        scroll_id(),
+        id,
         AbsoluteOffset {
             x: None,
             y: Some(offset),
@@ -879,6 +1109,87 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             ));
     }
     let mut page = column![container(toolbar).padding(12)].spacing(8);
+    if let Some(chapter) = reader.book.as_ref().and_then(|book| book.epub.as_ref()) {
+        let count = chapter.document.chapters.len();
+        let navigation = row![
+            button("Prev chapter").on_press_maybe((active && chapter.index > 0).then(|| {
+                Message::EpubChapter {
+                    index: chapter.index - 1,
+                    fragment: None,
+                }
+            })),
+            text(format!("Chapter {} / {}", chapter.index + 1, count)).size(14),
+            button("Next chapter").on_press_maybe((active && chapter.index + 1 < count).then_some(
+                Message::EpubChapter {
+                    index: chapter.index + 1,
+                    fragment: None
+                }
+            )),
+            button(if reader.show_contents {
+                "Hide contents"
+            } else {
+                "Contents"
+            })
+            .on_press_maybe(active.then_some(Message::ToggleContents)),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        page = page.push(
+            container(
+                column![
+                    navigation,
+                    text(&chapter.document.chapters[chapter.index].title).size(15),
+                    text("Selection and copy apply to the current chapter.").size(12),
+                ]
+                .spacing(6),
+            )
+            .padding([0, 20]),
+        );
+        if reader.show_contents {
+            const ROW_HEIGHT: f32 = 34.0;
+            let contents = &chapter.document.contents;
+            let height = (reader.window_size.height * 0.35).clamp(100.0, 240.0);
+            let start = ((reader.contents_offset / ROW_HEIGHT) as usize)
+                .saturating_sub(1)
+                .min(contents.len());
+            let end = (start + (height / ROW_HEIGHT).ceil() as usize + 3).min(contents.len());
+            let mut entries = column![iced::widget::Space::new().height(start as f32 * ROW_HEIGHT)];
+            for entry in &contents[start..end] {
+                let label = text(&entry.label)
+                    .size(14)
+                    .wrapping(iced::widget::text::Wrapping::None);
+                entries = entries.push(
+                    container(
+                        button(label)
+                            .height(ROW_HEIGHT)
+                            .width(Length::Fill)
+                            .on_press_maybe(active.then(|| Message::EpubChapter {
+                                index: entry.chapter,
+                                fragment: entry.fragment.clone(),
+                            })),
+                    )
+                    .padding(iced::Padding {
+                        left: entry.depth.min(8) as f32 * 14.0,
+                        ..iced::Padding::default()
+                    }),
+                );
+            }
+            entries = entries.push(
+                iced::widget::Space::new().height((contents.len() - end) as f32 * ROW_HEIGHT),
+            );
+            page = page.push(
+                container(
+                    scrollable(entries)
+                        .id(iced::advanced::widget::Id::new("epub-contents"))
+                        .height(height)
+                        .on_scroll(|viewport| {
+                            Message::ContentsScrolled(viewport.absolute_offset().y)
+                        }),
+                )
+                .padding([0, 20]),
+            );
+        }
+    }
     if let Some(error) = &reader.error {
         let mut notice = column![
             text(error)
@@ -976,7 +1287,8 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             container(
                 column![
                     text("simPl").size(30),
-                    text("Open a local HTML, XHTML or PDF document to start reading.").size(18),
+                    text("Open a local HTML, XHTML, PDF or EPUB document to start reading.")
+                        .size(18),
                     text("Ctrl+O opens a file. You can also drop a file here.").size(14),
                     text("Local content only. Scripts and remote resources are not loaded.")
                         .size(14),
@@ -1088,6 +1400,7 @@ mod tests {
             images: HashMap::new(),
             warnings: Vec::new(),
             restored: None,
+            epub: None,
         })
     }
 
@@ -1101,14 +1414,14 @@ mod tests {
             &mut reader,
             Message::Loaded {
                 request: 2,
-                result: Ok(LoadedDocument::Html(book("latest"))),
+                result: Ok(LoadedDocument::Reflow(book("latest"))),
             },
         );
         let _ = update(
             &mut reader,
             Message::Loaded {
                 request: 1,
-                result: Ok(LoadedDocument::Html(book("old"))),
+                result: Ok(LoadedDocument::Reflow(book("old"))),
             },
         );
         assert_eq!(reader.book.as_ref().unwrap().title, "latest");

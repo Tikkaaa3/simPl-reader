@@ -8,17 +8,17 @@ it is not a library platform, cloud service, or browser engine.
 
 ## Current state
 
-The Windows reader opens **local UTF-8 HTML/XHTML and PDF files**, supports
-selection/copy, and resumes an unchanged document after an explicit reopen.
-HTML reflows with font and viewport changes; PDFs retain their page layout and
-use zoom or fit-width. The single UI path is **Iced with the tiny-skia CPU
-renderer**; WGPU is not the active backend.
+The Windows reader opens **local UTF-8 HTML/XHTML, PDF, and reflowable EPUB 2/3
+files**, supports selection/copy, and resumes an unchanged document after an
+explicit reopen. HTML and EPUB reflow with font and viewport changes; PDFs retain
+their page layout and use zoom or fit-width. The single UI path is **Iced with
+the tiny-skia CPU renderer**; WGPU is not the active backend.
 
 The normal application needs no repository fixtures or bundled test fonts.
 The 1,000/10,000-paragraph fixture modes remain explicit diagnostics for
 virtualization, mixed-script layout, and native selection regressions.
 
-EPUB and recent files are not implemented. A portable-folder build is available;
+Recent files are not implemented. A portable-folder build is available;
 clean-machine qualification is still pending. The [roadmap](roadmap.md) records
 the boundaries, measurements, and remaining work.
 
@@ -36,7 +36,7 @@ rustup toolchain install 1.97.1-x86_64-pc-windows-msvc --profile minimal --compo
 From the repository root:
 
 ```powershell
-# Release build and normal reader; Open chooses a local HTML or PDF file.
+# Release build and normal reader; Open chooses a local HTML, PDF or EPUB file.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 run
 
 # Optional diagnostics, not the product's document-loading path.
@@ -69,16 +69,17 @@ cargo run --release --locked -- "C:\Books\book.html"
 # Direct Cargo does not fetch PDFium; this stages it beside the release binary.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1
 .\target\release\iced-shell.exe "C:\Books\book.pdf"
+.\target\release\iced-shell.exe "C:\Books\book.epub"
 cargo test --workspace --all-targets --locked
 ```
 
 Without arguments, `target\release\iced-shell.exe` opens the welcome screen.
-You can also run the executable with one HTML or PDF path, or drop a local file
-onto its window. Keep `pdfium.dll` beside the executable for PDF support; HTML
-and the welcome screen do not load it. The portable folder works from another
-working directory without repository fixtures. Only `--reader-poc` /
-`--reader-poc-large` need repository
-fixtures; `--shell-poc` opens the old empty diagnostic shell.
+You can also run the executable with one HTML, PDF or EPUB path, or drop a local
+file onto its window. Keep `pdfium.dll` beside the executable for PDF support;
+HTML, EPUB and the welcome screen do not load it. The portable folder works from
+another working directory without repository fixtures. Only `--reader-poc` /
+`--reader-poc-large` need repository fixtures; `--shell-poc` opens the old empty
+diagnostic shell.
 
 ## Reading HTML
 
@@ -135,12 +136,34 @@ license has not been chosen; no open-source license for simPl is asserted.
 Upstream sources: [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)
 and [pdfium-render](https://github.com/ajrcarey/pdfium-render).
 
+## Reading EPUB
+
+- Open DRM-free reflowable EPUB 2/3 books through the same picker, path argument,
+  or file-drop path. ZIP members stay in the archive; nothing is extracted to disk.
+- **Prev chapter / Next chapter** or **Ctrl+Page Up / Ctrl+Page Down** follows
+  the linear spine order. Chapters load on demand into the existing HTML view.
+- **Contents / Ctrl+T** opens the nested EPUB3 navigation or EPUB2 NCX contents.
+  Entries can target a specific heading/paragraph inside a chapter. Escape
+  closes contents. Books without a contents document use the spine list.
+- Font controls, scrolling and mouse selection work as for HTML.
+  **Ctrl+A and Ctrl+C apply to the current chapter**, not the entire book.
+- Close, exit, replacement and chapter changes save the chapter href, content
+  item, intra-item fraction and font size in a separate `*.epub.json` record.
+  Reopening unchanged source restores that location after viewport changes.
+
+Publisher stylesheets/custom fonts, general link/footnote navigation, non-linear
+auxiliary sections, DRM and fixed-layout EPUB are not supported. The shared HTML
+extractor displays local raster images, including raster references inside SVG
+cover wrappers; it does not render SVG vector artwork. Scripts, remote resources
+and external XML entities are not loaded. UTF-8 XML/XHTML is required.
+See the [reader README](crates/iced-shell/README.md) for archive and decoding bounds.
+
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
 | `crates/iced-shell/` | Windows reader UI and explicit fixture diagnostics |
-| `crates/reader-document/` | Small reflow model, HTML extraction, and per-file position storage |
+| `crates/reader-document/` | Shared HTML extraction, bounded EPUB packages, and per-file position storage |
 | `crates/reader-pdf/` | Lazy, serial PDFium worker, bounded rasters, text geometry, and copy |
 | `crates/reader-workload/` | Fixture generation and reference checks using the shared item types |
 | `fixtures/reader-workload/` | Local test fonts, image, text, and licenses |
@@ -216,3 +239,30 @@ The real PDF's first reading view used **35.71 MiB private working set /
 method, executable hash, and evidence locations. These results support keeping
 PDFium; they do not establish cold/warm startup budgets, long-session memory
 behavior, arbitrary PDF fidelity, or clean-machine compatibility.
+
+### EPUB slice verification
+
+The final workspace format/Clippy check and **190 Rust tests** passed. One earlier
+run encountered a PID-publication timeout in the existing native sampler fault
+test; its isolated run and the final full workspace run passed without changing
+the sampler. Offline packaging included notices for **176 shipped Rust
+dependencies**, PDFium/native components, and the Rust standard library.
+
+Native desktop verification ran the copied complete folder outside the repo at
+125% display scaling. It covered a Unicode picker path, local sibling images,
+visible mouse selection and exact chapter clipboard text, spine order differing
+from manifest order, EPUB3 nested contents and EPUB2 NCX fragment targets,
+font/viewport changes, wheel scrolling, chapter/item/fraction resume, and
+corrupt/DRM/fixed-layout/traversal errors retaining the current chapter and location.
+HTML/PDF switching also passed. PDFium stayed unloaded during EPUB-only use.
+The failed-open smoke caught a native scroll-widget reset while the document model
+was retained; restoring the widget offset fixed it. The final run checked the
+saved item/fraction after each rejected file and visually retained the same text.
+
+The real [Project Gutenberg Alice EPUB](https://www.gutenberg.org/ebooks/11)
+displayed its SVG-wrapped raster cover, traversed all 15 reading-order sections,
+copied chapter III text, and restored its location and 20 px font after resizing.
+Screenshots of selection, exact contents targets, cover and restored text were
+inspected. This is not general EPUB/CSS/SVG conformance, accessibility validation,
+or clean-machine/startup-latency proof. Measurements and evidence are recorded in
+the [roadmap](roadmap.md).

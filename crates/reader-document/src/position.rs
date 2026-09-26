@@ -38,6 +38,16 @@ pub struct PdfReadingPosition {
     pub zoom: PdfZoom,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EpubReadingPosition {
+    pub fingerprint: String,
+    /// Canonical package-relative spine href, not a temporary filesystem path.
+    pub chapter: String,
+    pub item_id: String,
+    pub within: f32,
+    pub font_size: f32,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Record<T = ReadingPosition> {
     version: u32,
@@ -84,6 +94,46 @@ fn save_pdf_record(path: &Path, position: &PdfReadingPosition) -> Result<(), Str
     write_record(path, position)
 }
 
+pub fn load_epub(path: &Path) -> Result<Option<EpubReadingPosition>, String> {
+    load_epub_record(&record_path(path)?.with_extension("epub.json"))
+}
+
+pub fn save_epub(path: &Path, position: &EpubReadingPosition) -> Result<(), String> {
+    save_epub_record(&record_path(path)?.with_extension("epub.json"), position)
+}
+
+fn load_epub_record(path: &Path) -> Result<Option<EpubReadingPosition>, String> {
+    let position = read_record::<EpubReadingPosition>(path)?;
+    if let Some(position) = &position {
+        validate_epub(position)?;
+    }
+    Ok(position)
+}
+
+fn save_epub_record(path: &Path, position: &EpubReadingPosition) -> Result<(), String> {
+    validate_epub(position)?;
+    write_record(path, position)
+}
+
+fn validate_epub(position: &EpubReadingPosition) -> Result<(), String> {
+    if position.chapter.is_empty()
+        || position.chapter.len() > 4096
+        || position.chapter.contains(['\\', ':', '\0'])
+        || position
+            .chapter
+            .split('/')
+            .any(|part| matches!(part, "" | "." | ".."))
+    {
+        return Err("EPUB reading position has an invalid chapter href".into());
+    }
+    validate_reflow(
+        &position.fingerprint,
+        &position.item_id,
+        position.within,
+        position.font_size,
+    )
+}
+
 fn validate_pdf(position: &PdfReadingPosition) -> Result<(), String> {
     validate_fingerprint(&position.fingerprint)?;
     if position.page >= 100_000 {
@@ -111,17 +161,28 @@ fn validate_fingerprint(fingerprint: &str) -> Result<(), String> {
 }
 
 fn validate(position: &ReadingPosition) -> Result<(), String> {
-    validate_fingerprint(&position.fingerprint)?;
-    if position.item_id.is_empty() || position.item_id.len() > MAX_ITEM_ID_BYTES {
+    validate_reflow(
+        &position.fingerprint,
+        &position.item_id,
+        position.within,
+        position.font_size,
+    )
+}
+
+fn validate_reflow(
+    fingerprint: &str,
+    item_id: &str,
+    within: f32,
+    font_size: f32,
+) -> Result<(), String> {
+    validate_fingerprint(fingerprint)?;
+    if item_id.is_empty() || item_id.len() > MAX_ITEM_ID_BYTES {
         return Err("reading position has an invalid item ID".into());
     }
-    if !position.within.is_finite() || !(0.0..=1.0).contains(&position.within) {
+    if !within.is_finite() || !(0.0..=1.0).contains(&within) {
         return Err("reading position has an invalid intra-item fraction".into());
     }
-    if !position.font_size.is_finite()
-        || !(0.0..=256.0).contains(&position.font_size)
-        || position.font_size == 0.0
-    {
+    if !font_size.is_finite() || !(0.0..=256.0).contains(&font_size) || font_size == 0.0 {
         return Err("reading position has an invalid font size".into());
     }
     Ok(())
@@ -384,6 +445,40 @@ mod tests {
             PdfZoom::FitWidth
         );
         assert_eq!(load_record(&html).unwrap().unwrap().item_id, "chapter");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn epub_chapter_resume_rejects_invalid_replacement_without_clobbering_records() {
+        let dir = scratch();
+        let epub = dir.join("book.epub.json");
+        let html = dir.join("book.json");
+        save_record(&html, &sample("html-item")).unwrap();
+        let mut position = EpubReadingPosition {
+            fingerprint: "c".repeat(64),
+            chapter: "OEBPS/Text/日本語.xhtml".into(),
+            item_id: "item-000017".into(),
+            within: 0.375,
+            font_size: 24.0,
+        };
+        save_epub_record(&epub, &position).unwrap();
+        let restored = load_epub_record(&epub).unwrap().unwrap();
+        assert_eq!(restored.chapter, position.chapter);
+        assert_eq!(restored.item_id, "item-000017");
+        assert_eq!(restored.within, 0.375);
+        assert_eq!(restored.font_size, 24.0);
+        for chapter in ["../outside.xhtml", "/absolute.xhtml", "C:/book.xhtml", ""] {
+            position.chapter = chapter.into();
+            assert!(save_epub_record(&epub, &position).is_err());
+        }
+        position.chapter = "OEBPS/Text/next.xhtml".into();
+        position.within = f32::NAN;
+        assert!(save_epub_record(&epub, &position).is_err());
+        assert_eq!(
+            load_epub_record(&epub).unwrap().unwrap().chapter,
+            restored.chapter
+        );
+        assert_eq!(load_record(&html).unwrap().unwrap().item_id, "html-item");
         fs::remove_dir_all(dir).unwrap();
     }
 
