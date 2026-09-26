@@ -1,0 +1,27 @@
+{
+  "id": "1000-scroll-800-1",
+  "kind": "scroll",
+  "status": "VALID",
+  "start": 1122647093886,
+  "end": 1122741403881,
+  "ended": 1122757034973,
+  "idle": {
+    "start": 1122743665598,
+    "end": 1122753666423
+  },
+  "close": {
+    "intentional": true,
+    "exit_code": 0
+  },
+  "capture": [
+    {
+      "content_sha256": "a7124fbdad305c9b610779b808e70c6733075ec18b4b1d09ec5c9fd800b89627"
+    },
+    {
+      "content_sha256": "52a432bb54c6675f5be17328d3d2e2fe9809e4f930be6c9299f990f7d46955f9"
+    },
+    {
+      "content_sha256": "a7124fbdad305c9b610779b808e70c6733075ec18b4b1d09ec5c9fd800b89627"
+    }
+  ]
+}
