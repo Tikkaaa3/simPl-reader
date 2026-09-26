@@ -1,0 +1,176 @@
+﻿adler2 v2.0.1 | 0BSD OR MIT OR Apache-2.0
+arrayvec v0.7.8 | MIT OR Apache-2.0
+ash v0.38.0+1.3.281 | MIT OR Apache-2.0
+autocfg v1.5.1 | Apache-2.0 OR MIT
+bitflags v2.13.2 | MIT OR Apache-2.0
+bit-set v0.8.0 | Apache-2.0 OR MIT
+bit-vec v0.8.0 | Apache-2.0 OR MIT
+block-buffer v0.10.4 | MIT OR Apache-2.0
+bytemuck v1.25.2 | Zlib OR Apache-2.0 OR MIT
+bytemuck_derive v1.12.1 (proc-macro) | Zlib OR Apache-2.0 OR MIT
+byteorder-lite v0.1.0 | Unlicense OR MIT
+bytes v1.12.1 | MIT
+cfg_aliases v0.2.2 | MIT
+cfg-if v1.0.5 | MIT OR Apache-2.0
+clipboard-win v5.4.1 | BSL-1.0
+codespan-reporting v0.12.0 | Apache-2.0
+core_maths v0.1.1 | MIT
+cosmic-text v0.15.0 | MIT OR Apache-2.0
+cpufeatures v0.2.17 | MIT OR Apache-2.0
+crc32fast v1.5.2 | MIT OR Apache-2.0
+cryoglyph v0.1.0 | MIT OR Apache-2.0 OR Zlib
+crypto-common v0.1.7 | MIT OR Apache-2.0
+cursor-icon v1.2.0 | MIT OR Apache-2.0 OR Zlib
+digest v0.10.7 | MIT OR Apache-2.0
+document-features v0.2.12 (proc-macro) | MIT OR Apache-2.0
+dpi v0.1.2 | Apache-2.0 AND MIT
+equivalent v1.0.2 | Apache-2.0 OR MIT
+error-code v3.4.0 | BSL-1.0
+etagere v0.2.15 | MIT/Apache-2.0
+euclid v0.22.14 | MIT OR Apache-2.0
+fdeflate v0.3.7 | MIT OR Apache-2.0
+flate2 v1.1.10 | MIT OR Apache-2.0
+foldhash v0.1.5 | Zlib
+foldhash v0.2.0 | Zlib
+fontdb v0.23.0 | MIT
+font-types v0.10.1 | MIT OR Apache-2.0
+font-types v0.12.5 | MIT OR Apache-2.0
+futures v0.3.34 | MIT OR Apache-2.0
+futures-channel v0.3.34 | MIT OR Apache-2.0
+futures-core v0.3.34 | MIT OR Apache-2.0
+futures-executor v0.3.34 | MIT OR Apache-2.0
+futures-io v0.3.34 | MIT OR Apache-2.0
+futures-macro v0.3.34 (proc-macro) | MIT OR Apache-2.0
+futures-sink v0.3.34 | MIT OR Apache-2.0
+futures-task v0.3.34 | MIT OR Apache-2.0
+futures-util v0.3.34 | MIT OR Apache-2.0
+generic-array v0.14.7 | MIT
+gl_generator v0.14.0 | Apache-2.0
+glam v0.25.0 | MIT OR Apache-2.0
+glow v0.16.0 | MIT OR Apache-2.0 OR Zlib
+glutin_wgl_sys v0.6.1 | Apache-2.0
+gpu-alloc v0.6.2 | MIT OR Apache-2.0
+gpu-allocator v0.27.0 | MIT OR Apache-2.0
+gpu-alloc-types v0.3.1 | MIT OR Apache-2.0
+gpu-descriptor v0.3.2 | MIT OR Apache-2.0
+gpu-descriptor-types v0.2.0 | MIT OR Apache-2.0
+guillotiere v0.6.2 | MIT/Apache-2.0
+half v2.7.1 | MIT OR Apache-2.0
+harfrust v0.3.2 | MIT
+hashbrown v0.15.5 | MIT OR Apache-2.0
+hashbrown v0.16.1 | MIT OR Apache-2.0
+hashbrown v0.17.1 | MIT OR Apache-2.0
+hexf-parse v0.2.1 | CC0-1.0
+iced v0.14.0 | MIT
+iced_core v0.14.0 | MIT
+iced_debug v0.14.0 | MIT
+iced_futures v0.14.0 | MIT
+iced_graphics v0.14.0 | MIT
+iced_program v0.14.0 | MIT
+iced_renderer v0.14.0 | MIT
+iced_runtime v0.14.0 | MIT
+iced_wgpu v0.14.0 | MIT
+iced_widget v0.14.2 | MIT
+iced_winit v0.14.1 | MIT
+iced-shell v0.0.0 (C:\Users\tikka\Workspace\simPl\crates\iced-shell) |
+image v0.25.10 | MIT OR Apache-2.0
+indexmap v2.14.2 | Apache-2.0 OR MIT
+kamadak-exif v0.6.1 | BSD-2-Clause
+khronos_api v3.1.0 | Apache-2.0
+khronos-egl v6.0.0 | MIT/Apache-2.0
+libc v0.2.189 | MIT OR Apache-2.0
+libloading v0.8.9 | ISC
+libm v0.2.16 | MIT
+lilt v0.8.2 | MIT
+linebender_resource_handle v0.1.1 | Apache-2.0 OR MIT
+litrs v1.0.0 | MIT OR Apache-2.0
+lock_api v0.4.14 | MIT OR Apache-2.0
+log v0.4.34 | MIT OR Apache-2.0
+lru v0.16.4 | MIT
+memchr v2.8.3 | Unlicense OR MIT
+memmap2 v0.9.11 | MIT OR Apache-2.0
+miniz_oxide v0.8.9 | MIT OR Zlib OR Apache-2.0
+miniz_oxide v0.9.1 | MIT OR Zlib OR Apache-2.0
+moxcms v0.8.1 | BSD-3-Clause OR Apache-2.0
+mutate_once v0.1.2 | BSD-2-Clause
+naga v27.0.3 | MIT OR Apache-2.0
+num-traits v0.2.19 | MIT OR Apache-2.0
+once_cell v1.21.4 | MIT OR Apache-2.0
+ordered-float v5.5.0 | MIT
+parking_lot v0.12.5 | MIT OR Apache-2.0
+parking_lot_core v0.9.12 | MIT OR Apache-2.0
+pin-project-lite v0.2.17 | Apache-2.0 OR MIT
+png v0.18.1 | MIT OR Apache-2.0
+presser v0.3.1 | MIT OR Apache-2.0
+proc-macro2 v1.0.107 | MIT OR Apache-2.0
+profiling v1.0.18 | MIT OR Apache-2.0
+pxfm v0.1.30 | BSD-3-Clause OR Apache-2.0
+quote v1.0.47 | MIT OR Apache-2.0
+range-alloc v0.1.5 | MIT OR Apache-2.0
+rangemap v1.8.0 | MIT/Apache-2.0
+raw-window-handle v0.6.2 | MIT OR Apache-2.0 OR Zlib
+reader-workload v0.0.0 (C:\Users\tikka\Workspace\simPl\crates\reader-workload) |
+read-fonts v0.35.0 | MIT OR Apache-2.0
+read-fonts v0.41.0 | MIT OR Apache-2.0
+renderdoc-sys v1.1.0 | MIT OR Apache-2.0
+rustc-hash v1.1.0 | Apache-2.0/MIT
+rustc-hash v2.1.3 | Apache-2.0 OR MIT
+scopeguard v1.2.0 | MIT OR Apache-2.0
+self_cell v1.3.0 | Apache-2.0 OR GPL-2.0-only
+sha2 v0.10.9 | MIT OR Apache-2.0
+shell-startup-markers v0.0.0 (C:\Users\tikka\Workspace\simPl\crates\shell-startup-markers) |
+simd-adler32 v0.3.10 | MIT
+skrifa v0.37.0 | MIT OR Apache-2.0
+skrifa v0.44.0 | MIT OR Apache-2.0
+slab v0.4.12 | MIT
+slotmap v1.1.1 | Zlib
+smallvec v1.16.1 | MIT OR Apache-2.0
+smol_str v0.2.2 | MIT OR Apache-2.0
+spirv v0.3.0+sdk-1.3.268.0 | Apache-2.0
+static_assertions v1.1.0 | MIT OR Apache-2.0
+svg_fmt v0.4.5 | MIT/Apache-2.0
+swash v0.2.10 | Apache-2.0 OR MIT
+syn v2.0.119 | MIT OR Apache-2.0
+syn v3.0.6 | MIT OR Apache-2.0
+sys-locale v0.3.2 | MIT OR Apache-2.0
+thiserror v1.0.69 | MIT OR Apache-2.0
+thiserror v2.0.20 | MIT OR Apache-2.0
+thiserror-impl v1.0.69 (proc-macro) | MIT OR Apache-2.0
+thiserror-impl v2.0.20 (proc-macro) | MIT OR Apache-2.0
+tinyvec v1.13.3 | Zlib OR Apache-2.0 OR MIT
+tracing v0.1.44 | MIT
+tracing-attributes v0.1.31 (proc-macro) | MIT
+tracing-core v0.1.36 | MIT
+ttf-parser v0.25.1 | MIT OR Apache-2.0
+typenum v1.20.1 | MIT OR Apache-2.0
+unicode-bidi v0.3.18 | MIT OR Apache-2.0
+unicode-ident v1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0
+unicode-linebreak v0.1.5 | Apache-2.0
+unicode-script v0.5.8 | MIT OR Apache-2.0
+unicode-segmentation v1.13.3 | MIT OR Apache-2.0
+unicode-width v0.2.2 | MIT OR Apache-2.0
+version_check v0.9.5 | MIT/Apache-2.0
+web-time v1.1.0 | MIT OR Apache-2.0
+wgpu v27.0.1 | MIT OR Apache-2.0
+wgpu-core v27.0.3 | MIT OR Apache-2.0
+wgpu-core-deps-windows-linux-android v27.0.0 | MIT OR Apache-2.0
+wgpu-hal v27.0.4 | MIT OR Apache-2.0
+wgpu-types v27.0.1 | MIT OR Apache-2.0
+window_clipboard v0.5.1 | MIT
+windows v0.58.0 | MIT OR Apache-2.0
+windows_x86_64_msvc v0.52.6 | MIT OR Apache-2.0
+windows-core v0.58.0 | MIT OR Apache-2.0
+windows-implement v0.58.0 (proc-macro) | MIT OR Apache-2.0
+windows-interface v0.58.0 (proc-macro) | MIT OR Apache-2.0
+windows-link v0.2.1 | MIT OR Apache-2.0
+windows-result v0.2.0 | MIT OR Apache-2.0
+windows-strings v0.1.0 | MIT OR Apache-2.0
+windows-sys v0.52.0 | MIT OR Apache-2.0
+windows-sys v0.61.2 | MIT OR Apache-2.0
+windows-targets v0.52.6 | MIT OR Apache-2.0
+winit v0.30.13 | Apache-2.0
+xml-rs v0.8.29 | MIT
+yazi v0.2.1 | Apache-2.0 OR MIT
+zeno v0.3.3 | Apache-2.0 OR MIT
+zerocopy v0.8.57 | BSD-2-Clause OR Apache-2.0 OR MIT
+zerocopy-derive v0.8.57 (proc-macro) | BSD-2-Clause OR Apache-2.0 OR MIT
