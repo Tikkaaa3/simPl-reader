@@ -1,0 +1,1 @@
+Selection should be able to start inside the first wrapped line and end after the last one. Nothing in this paragraph depends on the renderer that will draw it later. The words stay in logical order from the first byte to the last. Wrapped line count is a layout observation for the UI tasks, 

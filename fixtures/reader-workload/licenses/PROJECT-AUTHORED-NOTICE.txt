@@ -1,0 +1,4 @@
+Project-authored fixture material for initiative I-001 / W3 (T-003).
+No product license has been chosen yet; this file identifies authorship
+without inventing or claiming a product license. Third-party assets are
+licensed separately; see each manifest record's license-path.

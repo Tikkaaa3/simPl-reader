@@ -1,0 +1,11 @@
+# Canonical byte policy for this fixture package (narrowly scoped to
+# fixtures/reader-workload and everything below it).
+#
+# Exact file hashes and LF-only golden strings are part of the fixture
+# contract, so text files are stored and checked out with LF regardless
+# of core.autocrlf; fonts and the PNG are binary and never normalized.
+# Nothing outside this directory is affected.
+
+* text=auto eol=lf
+*.ttf binary
+*.png binary

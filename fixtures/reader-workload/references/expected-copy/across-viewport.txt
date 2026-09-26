@@ -1,0 +1,13 @@
+The little stationery shop glowed beside the rain-soaked street as evening readers passed by.
+هذا نص تجريبي بالعربية، وفي وسطه الرقم 42 ومصطلح Latin، والكلمة مدرّسة تحمل علامة شدة.
+(اא) 1-2
+אבג (def ابج) abc
+קטע עברית לבדיקה: מספרים 123 וגם English בתוך הטקסט.
+日本語のテキストは横書きで表示され、Latin や数字 123 と混在します。折り返しは単語の境界に限定されません。
+The words café and naïve remain decomposed in logical order.
+The efficient staff finished the difficult briefing in the office.
+Styled Passages
+Normal text carries a bold emphasis and an italic aside before it continues normally.
+The reader opens a long paragraph that will wrap across several lines at the narrow content width. Selection should be able to start inside the first wrapped line and end after the last one. Nothing in this paragraph depends on the renderer that will draw it later. The words stay in logical order from the first byte to the last. Wrapped line count is a layout observation for the UI tasks, not a property of this text. Copying this paragraph must reproduce these sentences exactly as stored.
+Glyph probes: musical clef (U+1D11E) 𝄞, smiling face (U+1F642) 🙂; both are non-gating for the baseline font set.
+Digit probes: Arabic-Indic ١-1 beside ASCII 6-6, mixed with Latin.

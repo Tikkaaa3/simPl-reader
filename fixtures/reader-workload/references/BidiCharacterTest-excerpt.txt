@@ -1,0 +1,29 @@
+# BidiCharacterTest excerpt — pinned reference for reader-workload BiDi cases.
+#
+# Source (immutable): Unicode 17.0.0 UCD file BidiCharacterTest.txt,
+#   https://www.unicode.org/Public/17.0.0/ucd/BidiCharacterTest.txt
+# Date 2025-07-30; © 2025 Unicode®, Inc.; Unicode License Agreement for
+# Data Files (see ../licenses/Unicode-License.txt in this fixture).
+#
+# Lines below are copied verbatim (unmodified) from the source file.
+# Format (five semicolon-separated fields):
+#   0: hexadecimal code point values separated by space
+#   1: paragraph direction (0 = LTR, 1 = RTL, 2 = auto-LTR)
+#   2: resolved paragraph embedding level
+#   3: resolved levels per character ('x' = removed by rule X9)
+#   4: resulting visual ordering from left to right (0-based source
+#      indices; level-'x' characters skipped)
+#
+# Selected original line numbers in BidiCharacterTest.txt:
+#   47, 48, 49, 142, 144, 230, 231, 250, 251, 252, 253
+0061 0062 0063 0020 0028 0064 0065 0066 0020 0627 0628 062C 0029 0020 05D0 05D1 05D2;1;1;2 2 2 1 1 2 2 2 1 1 1 1 1 1 1 1 1;16 15 14 13 12 11 10 9 8 5 6 7 4 3 0 1 2
+05D0 05D1 05D2 0020 0028 0064 0065 0066 0020 0627 0628 062C 0029 0020 0061 0062 0063;0;0;1 1 1 0 0 0 0 0 0 1 1 1 0 0 0 0 0;2 1 0 3 4 5 6 7 8 11 10 9 12 13 14 15 16
+05D0 05D1 05D2 0020 0028 0064 0065 0066 0020 0627 0628 062C 0029 0020 0061 0062 0063;1;1;1 1 1 1 1 2 2 2 1 1 1 1 1 1 2 2 2;14 15 16 13 12 11 10 9 8 5 6 7 4 3 2 1 0
+0661 002D 0031;0;0;2 0 0;0 1 2
+05D0 0020 0031 002D 0032;0;0;1 1 2 2 2;2 3 4 1 0
+0028 05D0 0627 0029 0020 0031 002D 0032;0;0;0 1 1 0 0 2 1 2;0 2 1 3 4 7 6 5
+0028 05D0 0627 0029 0020 0031 002D 0032;1;1;1 1 1 1 1 2 1 2;7 6 5 4 3 2 1 0
+0028 0627 0029 0020 0031 002D 0032;0;0;0 1 0 0 2 1 2;0 1 2 3 6 5 4
+0028 0627 05D0 0029 0020 0031 002D 0032;0;0;0 1 1 0 0 2 2 2;0 2 1 3 4 5 6 7
+0028 0627 05D0 0029 0020 0031 002D 0032;1;1;1 1 1 1 1 2 2 2;5 6 7 4 3 2 1 0
+0031 0661 0028 0627 0029;0;0;0 2 1 1 1;0 4 3 2 1
