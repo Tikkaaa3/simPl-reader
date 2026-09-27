@@ -1,5 +1,16 @@
 # simPl roadmap: a small local reader
 
+> Planning and implementation history. For current product behavior and setup,
+> see the [README](README.md). Later follow-ups supersede earlier milestone notes.
+
+## Current reading model
+
+Book view now uses one visible page and a stable global page map. Zoom does not
+repaginate; PDF Document/Book switches retain the source page. PDF prose and
+illustrations are reconstructed separately and cached across reopenings. Managed
+imports, favourites, light/dark themes and a fully collapsible toolbar are implemented.
+Independent clean-Windows and accessibility qualification remain open.
+
 ## Product goal and present reality
 
 Open a local book, read it, close it, and resume where you stopped. The reader
@@ -520,7 +531,83 @@ Final evidence: `target/portable/design-evidence/run-06/outcomes.json` and
 `screenshots/`, `window-final/` for modal/frame checks, and
 `resources-final/<scenario>/{manifest.json,samples.jsonl}` for raw measurements.
 
+### Reader interaction refinement
+
+- Continue Reading documents remain in the full Library under every sort, rather
+  than disappearing from its grid; completion only removes the resume shortcut.
+- The document title replaces SIMPL in the draggable header. Library navigation
+  and format controls share one toolbar; its chevron collapses to a small
+  keyboard-focusable button. Ctrl+O/Ctrl+R/F1 retain their actions without the old
+  action strip. Ctrl+L and EPUB Ctrl+T reveal their controls when needed.
+- Main PDF/HTML/EPUB scrollables keep Iced's scrolling physics with middle-button
+  hold-to-scroll and a minimal 14-logical-pixel origin marker. Release stops the
+  gesture without toggling a mode. A 40-logical-pixel minimum thumb maps against
+  its actual remaining track, so long documents still reach both ends. No
+  dependency fork is required.
+- PDF selection starts near ink as well as directly on it; distant blank areas
+  do not select unrelated text. Text extraction is scheduled independently before
+  rasters, and a cached vertical-bin index replaces ordinary full-page hit scans.
+  Source glyph indices and the 32 MiB application cache bound remain intact.
+  An executing PDFium call still runs to completion on the serialized worker.
+
+Native before/after evidence reproduced the ink-only first-drag rejection and
+verified the corrected clipboard result, ten fast drags, and selection on a new
+page. A 120-page thumb drag reached page 120; header, collapse, keyboard page input,
+middle-click start/stop, focus-loss cancellation, and 540 × 360 compact controls
+were exercised. PDF/HTML/EPUB anchors survived collapse and reopen. The full
+Library showed nine entries alongside its three Continue Reading cards, and a
+continuing EPUB opened from the grid. A two-second stopped-autoscroll PDF idle
+check recorded zero user/kernel CPU-counter growth.
+
+Offline workspace Clippy with warnings denied passed. The reader-specific run
+passed 107 tests, and the workspace run excluding `process-measure` passed 157.
+The complete workspace attempt failed the separate measurement test
+`production_output_and_query_faults_finalize_and_cleanup` while waiting eight
+seconds for its target PID to appear. No measurement-test source was changed,
+and that full-suite attempt is not claimed green.
+
+The exercised portable executable SHA-256 is
+`3203171d6a7770ca8e638fa2ad190f30ed24b60c9a9dde2954b1cc62cbea4cff`.
+Machine-local evidence is under `target/portable/interaction-evidence/`, including
+`baseline.json`, `checks.json`, `summary.json`, screenshots, generated input
+documents and isolated saved profiles. This is a targeted interaction check, not
+an Adobe comparison, broad latency benchmark, or clean-Windows qualification.
+
+### Minimal Book appearance
+
+The first [book parser milestone](book-parser-roadmap.md) implements simPl Minimal
+for EPUB/HTML, upper-right font −/+ and light/dark controls, and persistent global
+appearance. Existing per-document font size and content anchors are retained.
+Both palettes use the same geometry; PDF pages preserve their original colors.
+Automated tests and production CPU-rendered previews are verified. Live desktop
+interaction checks remain pending because the Windows helper was unavailable;
+see the linked roadmap for the evidence and remaining conversion/theme stages.
+
 ## Delivery order
+
+### Richer Book structure
+
+[Book parser milestone 2](book-parser-roadmap.md#2-richer-book-structure) is
+implemented: semantic lists/quotes/captions/code/notes, internal text links,
+on-demand auxiliary EPUB sections, and a return-to-passage toolbar action
+(Alt+Left). Tables and MathML have explicit selectable text/source fallbacks.
+231 workspace tests, Clippy and formatting pass; native offscreen previews cover
+both palettes, narrow/wide layouts and the maximum font size. Live desktop and
+cross-DPI qualification remain separate follow-ups. Evidence is recorded in the
+book parser roadmap and `target/book-milestone2*`.
+
+### PDF Book conversion
+
+[Book parser milestone 3](book-parser-roadmap.md#3-pdf-to-book-conversion) is
+implemented: explicit text-only conversion for single-column PDFs, source-page
+navigation, independent Book/Document positions and a remembered mode choice.
+Source pages have visible paper boundaries, footer numbers and previous/next
+controls (Left/Right keys); text size changes reflow within each source page.
+Permission/resource limits, cancellation and conversion failures preserve the
+original reader. 246 workspace tests, Clippy and formatting pass; native PDFium
+and Iced offscreen checks cover two full books, authored edge cases, both
+palettes and isolated save/reopen. See the book parser roadmap for evidence,
+conversion limits and pending live desktop qualification.
 
 ### 1. HTML: first usable vertical slice
 
