@@ -867,8 +867,11 @@ dependencies = [
  "reader-document",
  "reader-pdf",
  "reader-workload",
+ "serde",
+ "serde_json",
  "sha2",
  "shell-startup-markers",
+ "tiny-skia",
  "unicode-segmentation",
  "windows-sys 0.61.2",
 ]
@@ -2073,6 +2076,8 @@ version = "0.0.0"
 dependencies = [
  "futures-channel",
  "pdfium-render",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 

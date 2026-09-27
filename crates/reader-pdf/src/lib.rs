@@ -3,16 +3,20 @@
 
 use futures_channel::oneshot;
 use pdfium_render::prelude::{
-    PdfDocument, PdfDocumentMetadataTagType, PdfPage, PdfRenderConfig, Pdfium, PdfiumError,
-    PdfiumInternalError,
+    PdfDocument, PdfDocumentMetadataTagType, PdfPage, PdfPageObjectCommon, PdfPageObjectsCommon,
+    PdfRenderConfig, Pdfium, PdfiumError, PdfiumInternalError,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek};
+use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, mpsc};
+
+pub mod book;
+mod book_cache;
 
 const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PAGES: usize = 100_000;
@@ -27,7 +31,7 @@ pub struct PageInfo {
     pub height: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub left: f32,
     pub top: f32,
@@ -46,6 +50,101 @@ pub struct Glyph {
 pub struct TextLayer {
     pub text: String,
     pub glyphs: Vec<Glyph>,
+    // Vertical bins are built once during extraction, never during mouse motion.
+    hit_rows: Vec<Vec<usize>>,
+    tall_glyphs: Vec<usize>,
+}
+
+impl TextLayer {
+    const HIT_ROWS: usize = 128;
+
+    pub fn new(text: String, glyphs: Vec<Glyph>) -> Self {
+        let mut rows = Vec::new();
+        let mut tall = Vec::new();
+        for (index, glyph) in glyphs.iter().enumerate() {
+            let Some(rect) = glyph.bounds else { continue };
+            if rows.is_empty() {
+                rows = vec![Vec::new(); Self::HIT_ROWS];
+            }
+            let first = ((rect.top.clamp(0.0, 1.0) * Self::HIT_ROWS as f32) as usize)
+                .min(Self::HIT_ROWS - 1);
+            let last = ((rect.bottom.clamp(0.0, 1.0) * Self::HIT_ROWS as f32) as usize)
+                .min(Self::HIT_ROWS - 1);
+            if last.saturating_sub(first) > 4 {
+                tall.push(index);
+            } else {
+                for row in &mut rows[first..=last] {
+                    row.push(index);
+                }
+            }
+        }
+        Self {
+            text,
+            glyphs,
+            hit_rows: rows,
+            tall_glyphs: tall,
+        }
+    }
+
+    pub fn hit_bytes(&self) -> usize {
+        self.hit_rows.capacity() * size_of::<Vec<usize>>()
+            + self
+                .hit_rows
+                .iter()
+                .map(|row| row.capacity() * size_of::<usize>())
+                .sum::<usize>()
+            + self.tall_glyphs.capacity() * size_of::<usize>()
+    }
+
+    /// Nearest source character and horizontal/vertical distance to its ink in pixels.
+    pub fn closest(&self, x: f32, y: f32, width: f32, height: f32) -> Option<(usize, f32, f32)> {
+        if self.hit_rows.is_empty() {
+            return None;
+        }
+        let mut best = None;
+        let mut score = f32::INFINITY;
+        let consider = |index: usize, score: &mut f32, best: &mut Option<(usize, f32, f32)>| {
+            let rect = self.glyphs[index].bounds.expect("indexed glyph has bounds");
+            let dx = (rect.left - x).max(x - rect.right).max(0.0) * width;
+            let dy = (rect.top - y).max(y - rect.bottom).max(0.0) * height;
+            let candidate = dy * dy * 4.0 + dx * dx;
+            if candidate < *score {
+                *score = candidate;
+                *best = Some((index, dx, dy));
+            }
+        };
+        for &index in &self.tall_glyphs {
+            consider(index, &mut score, &mut best);
+        }
+        let center = ((y.clamp(0.0, 1.0) * Self::HIT_ROWS as f32) as usize).min(Self::HIT_ROWS - 1);
+        for step in 0..Self::HIT_ROWS {
+            let mut searched = false;
+            if let Some(row) = center.checked_sub(step) {
+                let lower_bound =
+                    (y - (row + 1) as f32 / Self::HIT_ROWS as f32).max(0.0) * height * 2.0;
+                if lower_bound * lower_bound <= score {
+                    for &index in &self.hit_rows[row] {
+                        consider(index, &mut score, &mut best);
+                    }
+                    searched = true;
+                }
+            }
+            if step > 0 && center + step < Self::HIT_ROWS {
+                let row = center + step;
+                let lower_bound = (row as f32 / Self::HIT_ROWS as f32 - y).max(0.0) * height * 2.0;
+                if lower_bound * lower_bound <= score {
+                    for &index in &self.hit_rows[row] {
+                        consider(index, &mut score, &mut best);
+                    }
+                    searched = true;
+                }
+            }
+            if !searched {
+                break;
+            }
+        }
+        best
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,7 +165,6 @@ pub struct RenderedPage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
-    pub text: Arc<TextLayer>,
 }
 
 #[derive(Debug)]
@@ -115,11 +213,13 @@ struct OpenData {
 enum Command {
     Open(u64, PathBuf, oneshot::Sender<Result<OpenData, String>>),
     Render(u64, u32, u32, oneshot::Sender<Result<RenderedPage, String>>),
+    Text(u64, u32, u32, oneshot::Sender<Result<TextLayer, String>>),
     Copy(
         u64,
         Option<Selection>,
         oneshot::Sender<Result<String, String>>,
     ),
+    Book(u64, oneshot::Sender<Result<book::Conversion, String>>),
     Close(u64),
 }
 
@@ -167,6 +267,17 @@ pub async fn open(path: PathBuf) -> Result<Arc<Document>, String> {
 }
 
 impl Session {
+    pub async fn book(&self) -> Result<book::Conversion, String> {
+        let (reply, result) = oneshot::channel();
+        self.0
+            .worker
+            .send(Command::Book(self.0.id, reply))
+            .map_err(|_| "PDF reader worker stopped".to_owned())?;
+        result
+            .await
+            .map_err(|_| "PDF reader worker stopped".to_owned())?
+    }
+
     pub async fn render(&self, page: u32, target_width: u32) -> Result<RenderedPage, String> {
         let (reply, result) = oneshot::channel();
         self.0
@@ -178,6 +289,16 @@ impl Session {
             .map_err(|_| "PDF reader worker stopped".to_string())?
     }
 
+    pub async fn text(&self, page: u32, target_width: u32) -> Result<TextLayer, String> {
+        let (reply, result) = oneshot::channel();
+        self.0
+            .worker
+            .send(Command::Text(self.0.id, page, target_width, reply))
+            .map_err(|_| "PDF reader worker stopped".to_string())?;
+        result
+            .await
+            .map_err(|_| "PDF reader worker stopped".to_string())?
+    }
     pub async fn copy(&self, selection: Selection) -> Result<String, String> {
         self.copy_impl(Some(selection)).await
     }
@@ -226,7 +347,13 @@ fn run_worker(receiver: mpsc::Receiver<Command>) {
                     Command::Render(_, _, _, reply) => {
                         let _ = reply.send(Err(error.clone()));
                     }
+                    Command::Text(_, _, _, reply) => {
+                        let _ = reply.send(Err(error.clone()));
+                    }
                     Command::Copy(_, _, reply) => {
+                        let _ = reply.send(Err(error.clone()));
+                    }
+                    Command::Book(_, reply) => {
                         let _ = reply.send(Err(error.clone()));
                     }
                     Command::Close(_) => {}
@@ -238,6 +365,9 @@ fn run_worker(receiver: mpsc::Receiver<Command>) {
 
 fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
     let mut documents: HashMap<u64, PdfDocument<'a>> = HashMap::new();
+    let mut fingerprints = HashMap::new();
+    // Only the most recently read book stays resident; disk cache survives closing it.
+    let mut last_book: Option<(u64, book::Conversion)> = None;
     for command in receiver {
         match command {
             Command::Open(id, path, reply) => {
@@ -247,7 +377,9 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                 match open_on_worker(pdfium, id, path, &reply) {
                     Ok((data, document)) => {
                         let id = data.id;
+                        let fingerprint = data.fingerprint.clone();
                         if reply.send(Ok(data)).is_ok() {
+                            fingerprints.insert(id, fingerprint);
                             documents.insert(id, document);
                         }
                     }
@@ -266,6 +398,16 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                     .and_then(|document| render_page(document, page, target_width));
                 let _ = reply.send(result);
             }
+            Command::Text(id, page, target_width, reply) => {
+                if reply.is_canceled() {
+                    continue;
+                }
+                let result = documents
+                    .get(&id)
+                    .ok_or_else(|| "PDF document is closed".to_string())
+                    .and_then(|document| text_page(document, page, target_width));
+                let _ = reply.send(result);
+            }
             Command::Copy(id, selection, reply) => {
                 if reply.is_canceled() {
                     continue;
@@ -276,8 +418,46 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                     .and_then(|document| copy_text(document, selection, &reply));
                 let _ = reply.send(result);
             }
+            Command::Book(id, reply) => {
+                if reply.is_canceled() {
+                    continue;
+                }
+                if let Some((cached_id, conversion)) = &last_book
+                    && *cached_id == id
+                {
+                    let _ = reply.send(Ok(conversion.clone()));
+                    continue;
+                }
+                let result = documents
+                    .get(&id)
+                    .ok_or_else(|| "PDF document is closed".to_owned())
+                    .and_then(|document| {
+                        let key = fingerprints.get(&id).expect("open document fingerprint");
+                        if let Some(conversion) =
+                            book_cache::load(key, document.pages().len() as usize)
+                        {
+                            return Ok(conversion);
+                        }
+                        let conversion = convert_book(document, &reply)?;
+                        if !reply.is_canceled() {
+                            book_cache::save(key, &conversion);
+                        }
+                        Ok(conversion)
+                    });
+                if let Ok(conversion) = &result {
+                    last_book = Some((id, conversion.clone()));
+                }
+                let _ = reply.send(result);
+            }
             Command::Close(id) => {
                 documents.remove(&id);
+                fingerprints.remove(&id);
+                if last_book
+                    .as_ref()
+                    .is_some_and(|(cached_id, _)| *cached_id == id)
+                {
+                    last_book = None;
+                }
             }
         }
     }
@@ -460,7 +640,15 @@ fn render_page(
     target_width: u32,
 ) -> Result<RenderedPage, String> {
     let page = page_at(document, page_index)?;
-    let (width, height) = raster_size(&page, target_width)?;
+    render_source(&page, page_index, target_width)
+}
+
+fn render_source(
+    page: &PdfPage<'_>,
+    page_index: u32,
+    target_width: u32,
+) -> Result<RenderedPage, String> {
+    let (width, height) = raster_size(page, target_width)?;
     let config = PdfRenderConfig::new()
         .set_target_size(width as i32, height as i32)
         .render_annotations(false)
@@ -478,26 +666,33 @@ fn render_page(
     if rgba.len() != width as usize * height as usize * 4 {
         return Err("PDF raster has invalid RGBA byte count".into());
     }
-    drop(bitmap);
-    let permitted = document
-        .permissions()
-        .can_extract_text_and_graphics()
-        .map_err(|error| format!("Cannot inspect PDF copy permissions: {error}"))?;
-    let text = if permitted {
-        Arc::new(extract_text(&page, Some((&config, width, height)))?)
-    } else {
-        Arc::new(TextLayer {
-            text: String::new(),
-            glyphs: Vec::new(),
-        })
-    };
     Ok(RenderedPage {
         page: page_index,
         width,
         height,
         rgba,
-        text,
     })
+}
+
+fn text_page(
+    document: &PdfDocument<'_>,
+    page_index: u32,
+    target_width: u32,
+) -> Result<TextLayer, String> {
+    if !document
+        .permissions()
+        .can_extract_text_and_graphics()
+        .map_err(|error| format!("Cannot inspect PDF copy permissions: {error}"))?
+    {
+        return Ok(TextLayer::new(String::new(), Vec::new()));
+    }
+    let page = page_at(document, page_index)?;
+    let (width, height) = raster_size(&page, target_width)?;
+    let config = PdfRenderConfig::new()
+        .set_target_size(width as i32, height as i32)
+        .render_annotations(false)
+        .render_form_data(false);
+    extract_text(&page, Some((&config, width, height)))
 }
 
 fn extract_text(
@@ -526,6 +721,13 @@ fn extract_text(
             .unicode_char()
             .filter(|ch| *ch != '\0')
             .unwrap_or('\u{FFFD}');
+        // PDFium exposes a recognized line-end hyphen as U+0002 in some fonts.
+        // Restore only explicitly identified hyphens, never arbitrary controls.
+        let unicode = if unicode == '\u{2}' && character.is_hyphen().unwrap_or(false) {
+            '-'
+        } else {
+            unicode
+        };
         text.push(unicode);
         let character_bounds = if geometry.is_some() && !unicode.is_whitespace() {
             character.loose_bounds().ok()
@@ -586,7 +788,78 @@ fn extract_text(
             bounds,
         });
     }
-    Ok(TextLayer { text, glyphs })
+    Ok(TextLayer::new(text, glyphs))
+}
+
+fn convert_book(
+    document: &PdfDocument<'_>,
+    reply: &oneshot::Sender<Result<book::Conversion, String>>,
+) -> Result<book::Conversion, String> {
+    if !document
+        .permissions()
+        .can_extract_text_and_graphics()
+        .map_err(|e| format!("Cannot inspect PDF permissions: {e}"))?
+    {
+        return Err("PDF permissions prohibit Book text extraction".into());
+    }
+    let count = document.pages().len() as usize;
+    if count > book::MAX_PAGES {
+        return Err(
+            "PDF Book supports at most 2,000 pages; use Document mode for this file.".into(),
+        );
+    }
+    let mut builder = book::Builder::default();
+    let mut timings = [std::time::Duration::ZERO; 4];
+    for page in 0..count {
+        if reply.is_canceled() {
+            return Err("PDF Book conversion canceled".into());
+        }
+        let stage = std::time::Instant::now();
+        let source = page_at(document, page as u32)?;
+        let (width, height) = raster_size(&source, 1600)?;
+        let config = PdfRenderConfig::new()
+            .set_target_size(width as i32, height as i32)
+            .render_annotations(false)
+            .render_form_data(false);
+        let layer = extract_text(&source, Some((&config, width, height)))?;
+        timings[0] += stage.elapsed();
+        let stage = std::time::Instant::now();
+        let mut regions = Vec::new();
+        let mut scanned = false;
+        for object in source.objects().iter() {
+            if object.as_image_object().is_none() {
+                continue;
+            }
+            let bounds = object.bounds().map_err(|e| e.to_string())?;
+            let rect = Rect {
+                left: (bounds.left().value / source.width().value).clamp(0.0, 1.0),
+                right: (bounds.right().value / source.width().value).clamp(0.0, 1.0),
+                top: (1.0 - bounds.top().value / source.height().value).clamp(0.0, 1.0),
+                bottom: (1.0 - bounds.bottom().value / source.height().value).clamp(0.0, 1.0),
+            };
+            let area = (rect.right - rect.left) * (rect.bottom - rect.top);
+            if area > 0.65 {
+                scanned = true;
+            } else if area > 0.003 {
+                regions.push(rect);
+            }
+        }
+        timings[1] += stage.elapsed();
+        if scanned {
+            let stage = std::time::Instant::now();
+            let raster = render_source(&source, page as u32, 400)?;
+            timings[2] += stage.elapsed();
+            let stage = std::time::Instant::now();
+            regions = book::scan_regions(&raster, &layer);
+            timings[3] += stage.elapsed();
+        }
+        builder.illustrations(page as u32, regions);
+        builder.push(page as u32, layer)?;
+    }
+    if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
+        eprintln!("PDF book text/objects/raster/regions: {timings:?}");
+    }
+    builder.finish(|| reply.is_canceled())
 }
 
 fn copy_text(
