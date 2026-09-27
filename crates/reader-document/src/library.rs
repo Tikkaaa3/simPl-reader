@@ -34,6 +34,16 @@ pub struct Entry {
     pub current: u32,
     pub total: u32,
     pub cover: bool,
+    #[serde(default)]
+    pub favourite: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<recent::DocumentKind>,
+}
+
+impl Entry {
+    pub fn format(&self) -> recent::DocumentKind {
+        self.source_kind.unwrap_or(self.document.kind)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,6 +129,7 @@ pub fn load() -> Result<Vec<Entry>, String> {
             let entries = recent::load()?
                 .into_iter()
                 .map(|document| Entry {
+                    source_kind: crate::managed::source_kind(&document.path),
                     document,
                     author: None,
                     byte_len: 0,
@@ -127,6 +138,7 @@ pub fn load() -> Result<Vec<Entry>, String> {
                     current: 0,
                     total: 0,
                     cover: false,
+                    favourite: false,
                 })
                 .collect::<Vec<_>>();
             validate(&entries)?;
@@ -154,12 +166,17 @@ fn load_file(file: File, path: &Path) -> Result<Vec<Entry>, String> {
     if bytes.len() as u64 > MAX_LIBRARY_BYTES {
         return Err("library exceeds size limit".into());
     }
-    let library: Library = serde_json::from_slice(&bytes)
+    let mut library: Library = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid library {}: {error}", path.display()))?;
     if library.version != VERSION {
         return Err(format!("unsupported library version {}", library.version));
     }
     validate(&library.entries)?;
+    for entry in &mut library.entries {
+        if entry.source_kind.is_none() {
+            entry.source_kind = crate::managed::source_kind(&entry.document.path);
+        }
+    }
     Ok(library.entries)
 }
 
@@ -198,6 +215,8 @@ pub fn remember(
                 .position(|entry| recent::same_path(&entry.document.path, path))
         })
         .filter(|index| Some(*index) != existing);
+    let mut entry = entry;
+    entry.favourite |= existing.or(old).is_some_and(|i| entries[i].favourite);
     let retained = entries.len() - usize::from(old.is_some());
     if entries.len() > MAX_ENTRIES || (existing.is_none() && retained == MAX_ENTRIES) {
         return Err(format!("library exceeds {MAX_ENTRIES} entries"));
@@ -349,6 +368,8 @@ mod tests {
             current: 1,
             total: 1,
             cover: false,
+            favourite: false,
+            source_kind: None,
         }
     }
 
@@ -397,6 +418,27 @@ mod tests {
             vec![entry(1).document.path, entry(2).document.path]
         );
         assert_eq!(entries[0].progress, 0.5);
+    }
+
+    #[test]
+    fn favourite_survives_reopen_update_and_legacy_records_default_to_false() {
+        let mut original = entry(7);
+        original.favourite = true;
+        let encoded = serde_json::to_vec(&original).unwrap();
+        let decoded: Entry = serde_json::from_slice(&encoded).unwrap();
+        assert!(decoded.favourite);
+        let mut entries = vec![decoded];
+        remember(&mut entries, entry(7), None).unwrap();
+        assert!(entries[0].favourite);
+        let old = entries[0].document.path.clone();
+        let mut moved = entry(7);
+        moved.document.path = std::env::temp_dir().join("moved-favourite.epub");
+        remember(&mut entries, moved, Some(&old)).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].favourite);
+        let mut legacy = serde_json::to_value(original).unwrap();
+        legacy.as_object_mut().unwrap().remove("favourite");
+        assert!(!serde_json::from_value::<Entry>(legacy).unwrap().favourite);
     }
 
     #[test]

@@ -61,7 +61,9 @@ pub struct Epub {
     pub author: Option<String>,
     pub fingerprint: String,
     pub chapters: Vec<ChapterInfo>,
+    pub auxiliary: Vec<ChapterInfo>,
     pub contents: Vec<TocEntry>,
+    pub page_list: Vec<TocEntry>,
     pub warnings: Vec<String>,
     archive: Mutex<ZipArchive<File>>,
     cover_path: Option<(String, String)>,
@@ -81,6 +83,7 @@ struct Package {
     author: Option<String>,
     cover_path: Option<(String, String)>,
     chapters: Vec<String>,
+    auxiliary: Vec<String>,
     ncx: Option<String>,
     nav: Option<String>,
 }
@@ -257,15 +260,22 @@ pub fn open(path: &Path) -> Result<Epub, String> {
         });
     }
     let mut contents = Vec::new();
+    let mut page_list = Vec::new();
     if let Some(nav) = package.nav {
         let xml = read_xml(&mut archive, &entries, &nav, &mut metadata_budget)?;
         contents = parse_nav(&xml, &nav, &chapter_indices)?;
+        page_list = parse_page_list(&xml, &nav, &chapter_indices, false)?;
     }
-    if contents.is_empty()
+    if (contents.is_empty() || page_list.is_empty())
         && let Some(ncx) = package.ncx
     {
         let xml = read_xml(&mut archive, &entries, &ncx, &mut metadata_budget)?;
-        contents = parse_ncx(&xml, &ncx, &chapter_indices)?;
+        if contents.is_empty() {
+            contents = parse_ncx(&xml, &ncx, &chapter_indices)?;
+        }
+        if page_list.is_empty() {
+            page_list = parse_page_list(&xml, &ncx, &chapter_indices, true)?;
+        }
     }
     if contents.is_empty() {
         contents = chapters
@@ -287,13 +297,23 @@ pub fn open(path: &Path) -> Result<Epub, String> {
             labeled[toc.chapter] = true;
         }
     }
+    let auxiliary = package
+        .auxiliary
+        .into_iter()
+        .map(|href| ChapterInfo {
+            title: file_label(&href),
+            href,
+        })
+        .collect();
     Ok(Epub {
         path,
         title: package.title,
         author: package.author,
         fingerprint: format!("{:x}", hash.finalize()),
         chapters,
+        auxiliary,
         contents,
+        page_list,
         warnings,
         archive: Mutex::new(archive),
         cover_path: package.cover_path,
@@ -302,10 +322,37 @@ pub fn open(path: &Path) -> Result<Epub, String> {
 }
 
 impl Epub {
+    /// Linear chapters retain their indices. Auxiliary notes follow them, outside next/previous order.
+    pub fn section(&self, index: usize) -> Option<&ChapterInfo> {
+        if index < self.chapters.len() {
+            self.chapters.get(index)
+        } else {
+            self.auxiliary.get(index - self.chapters.len())
+        }
+    }
+
+    pub fn section_index(&self, href: &str) -> Option<usize> {
+        self.chapters
+            .iter()
+            .chain(&self.auxiliary)
+            .position(|section| section.href == href)
+    }
+
+    pub fn resolve_link(&self, from: usize, href: &str) -> Result<(usize, Option<String>), String> {
+        if href.len() > 4096 {
+            return Err("Link target is too long".into());
+        }
+        let base = self.section(from).ok_or("Source section is unavailable")?;
+        let (path, fragment) = resolve_uri(&base.href, href)?;
+        let index = self
+            .section_index(&path)
+            .ok_or("Link target is not a supported book section")?;
+        Ok((index, fragment))
+    }
+
     pub fn load_chapter(&self, index: usize) -> Result<Chapter, String> {
         let info = self
-            .chapters
-            .get(index)
+            .section(index)
             .ok_or("EPUB chapter index out of bounds")?;
         let mut archive = self.archive.lock();
         let bytes = read_named(&mut archive, &self.entries, &info.href, MAX_RESOURCE)?;
@@ -314,7 +361,14 @@ impl Epub {
             entries: &self.entries,
             archive: &mut archive,
         };
-        let mut parsed = html::parse_html(self.path.clone(), &bytes, &mut resources)?;
+        let page_targets = self
+            .page_list
+            .iter()
+            .filter(|p| p.chapter == index)
+            .filter_map(|p| p.fragment.as_ref().map(|id| (p.label.clone(), id.clone())))
+            .collect::<Vec<_>>();
+        let mut parsed =
+            html::parse_html_pages(self.path.clone(), &bytes, &mut resources, &page_targets)?;
         parsed.document.fingerprint.clone_from(&self.fingerprint);
         parsed.document.author.clone_from(&self.author);
         parsed.document.title.clone_from(&info.title);
@@ -706,11 +760,41 @@ fn parse_package(
     if chapters.is_empty() {
         return Err("EPUB has no readable linear spine chapters".into());
     }
+    let mut auxiliary: Vec<String> = items
+        .iter()
+        .filter(|(id, item)| {
+            !layout_fixed
+                && (item.media == XHTML || item.media == "text/html")
+                && !seen.contains(&item.path)
+                && nav.as_ref() != Some(&item.path)
+                && layout_overrides.get(id.as_str()).map(String::as_str) != Some("pre-paginated")
+                && !spine.children().any(|node| {
+                    node.attribute("idref") == Some(id.as_str())
+                        && (node
+                            .attribute("id")
+                            .and_then(|id| layout_overrides.get(id))
+                            .map(String::as_str)
+                            == Some("pre-paginated")
+                            || node
+                                .attribute("properties")
+                                .unwrap_or("")
+                                .split_whitespace()
+                                .any(|value| value == "rendition:layout-pre-paginated"))
+                })
+        })
+        .map(|(_, item)| item.path.clone())
+        .collect();
+    auxiliary.sort();
+    auxiliary.dedup();
+    if chapters.len() + auxiliary.len() > MAX_CHAPTERS {
+        return Err("EPUB exceeds 4096 readable sections".into());
+    }
     Ok(Package {
         author,
         cover_path,
         title,
         chapters,
+        auxiliary,
         nav,
         ncx,
     })
@@ -760,6 +844,38 @@ fn check_encryption(
         }
     }
     Ok(())
+}
+
+fn parse_page_list(
+    xml: &str,
+    path: &str,
+    chapters: &HashMap<String, usize>,
+    ncx: bool,
+) -> Result<Vec<TocEntry>, String> {
+    let doc = parse_xml(xml)?;
+    let mut result = Vec::new();
+    if ncx {
+        if let Some(list) = doc.descendants().find(|n| n.has_tag_name("pageList")) {
+            for point in list.children().filter(|n| n.has_tag_name("pageTarget")) {
+                if let Some(src) = child(point, "content").and_then(|n| n.attribute("src")) {
+                    let label = child(point, "navLabel").map(text_of).unwrap_or_default();
+                    add_toc(&mut result, chapters, path, src, label, 0)?;
+                }
+            }
+        }
+    } else if let Some(nav) = doc.descendants().find(|n| {
+        n.is_element()
+            && n.tag_name().name() == "nav"
+            && n.attributes().any(|a| {
+                a.name() == "type" && a.value().split_whitespace().any(|v| v == "page-list")
+            })
+    }) && let Some(list) = nav
+        .children()
+        .find(|n| n.is_element() && matches!(n.tag_name().name(), "ol" | "ul"))
+    {
+        visit_nav_list(list, path, chapters, 0, &mut result)?;
+    }
+    Ok(result)
 }
 
 fn parse_nav(
@@ -960,7 +1076,7 @@ fn member_path(path: &str) -> Result<String, String> {
 }
 
 /// Decode URI escapes exactly once, then fold relative parent segments inside the archive.
-fn resolve_uri(base: &str, href: &str) -> Result<(String, Option<String>), String> {
+pub(crate) fn resolve_uri(base: &str, href: &str) -> Result<(String, Option<String>), String> {
     let (raw_path, raw_fragment) = href
         .split_once('#')
         .map_or((href, None), |(p, f)| (p, Some(f)));
@@ -1249,6 +1365,66 @@ mod tests {
             ("OEBPS/text/two.xhtml", chapter_two()),
             ("OEBPS/images/dot.png", &image),
         ])
+    }
+
+    #[test]
+    fn publisher_page_lists_are_separate_from_chapter_contents() {
+        let chapters = HashMap::from([("OEBPS/a.xhtml".into(), 0), ("OEBPS/b.xhtml".into(), 1)]);
+        let nav = r##"<html xmlns:epub="http://www.idpf.org/2007/ops"><nav epub:type="page-list"><ol><li><a href="a.xhtml#p1">i</a></li><li><a href="b.xhtml#p2">400</a></li></ol></nav></html>"##;
+        let ncx = r##"<ncx><pageList><pageTarget><navLabel><text>i</text></navLabel><content src="a.xhtml#p1"/></pageTarget><pageTarget><navLabel><text>400</text></navLabel><content src="b.xhtml#p2"/></pageTarget></pageList></ncx>"##;
+        for (xml, old) in [(nav, false), (ncx, true)] {
+            let pages = parse_page_list(xml, "OEBPS/nav.xhtml", &chapters, old).unwrap();
+            assert_eq!(pages.len(), 2);
+            assert_eq!(pages[0].label, "i");
+            assert_eq!(pages[1].label, "400");
+            assert_eq!(pages[1].chapter, 1);
+            assert_eq!(pages[1].fragment.as_deref(), Some("p2"));
+        }
+    }
+
+    #[test]
+    fn internal_links_reach_auxiliary_notes_without_changing_reading_order() {
+        let opf = String::from_utf8(opf3().to_vec()).unwrap()
+            .replace("</manifest>", "<item id='notes' href='text/notes.xhtml' media-type='application/xhtml+xml'/></manifest>")
+            .replace("</spine>", "<itemref idref='notes' linear='no'/></spine>");
+        let image = png();
+        let file = fixture(&[
+            ("OEBPS/book.opf", opf.as_bytes()), ("OEBPS/nav.xhtml", nav3()),
+            ("OEBPS/text/Café#one.xhtml", chapter_one()), ("OEBPS/text/two.xhtml", chapter_two()),
+            ("OEBPS/images/dot.png", &image),
+            ("OEBPS/text/notes.xhtml", br##"<aside id="n1" epub:type="footnote"><p>A note <a epub:type="backlink" href="Caf%C3%A9%23one.xhtml#middle">return</a></p></aside>"##),
+        ]);
+        let book = open(&file.0).unwrap();
+        assert_eq!(book.chapters.len(), 2);
+        assert_eq!(book.auxiliary.len(), 1);
+        let (index, fragment) = book.resolve_link(0, "notes.xhtml#n1").unwrap();
+        assert_eq!(index, 2);
+        assert_eq!(fragment.as_deref(), Some("n1"));
+        let note = book.load_chapter(index).unwrap();
+        let id = &note.anchors["n1"];
+        assert_eq!(note.document.structure[id].kind, crate::BlockKind::Footnote);
+        assert_eq!(
+            book.resolve_link(index, "Caf%C3%A9%23one.xhtml#middle")
+                .unwrap(),
+            (0, Some("middle".into()))
+        );
+        assert_eq!(
+            book.resolve_link(0, "#middle").unwrap(),
+            (0, Some("middle".into()))
+        );
+        for href in [
+            "https://example.com/n",
+            "../../../escape.xhtml",
+            "absent.xhtml",
+            "../images/dot.png",
+            "#%ff",
+        ] {
+            assert!(book.resolve_link(0, href).is_err(), "{href}");
+        }
+        assert_eq!(
+            book.section_index(&book.section(index).unwrap().href),
+            Some(index)
+        );
     }
 
     #[test]

@@ -81,6 +81,47 @@ pub fn save_pdf(path: &Path, position: &PdfReadingPosition) -> Result<(), String
     save_pdf_record(&record_path(path)?.with_extension("pdf.json"), position)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PdfMode {
+    #[default]
+    Document,
+    Book,
+}
+#[derive(Serialize, Deserialize)]
+struct PdfModeRecord {
+    fingerprint: String,
+    mode: PdfMode,
+}
+
+pub fn load_pdf_book(path: &Path) -> Result<Option<ReadingPosition>, String> {
+    load_record(&record_path(path)?.with_extension("pdf-book.json"))
+}
+pub fn save_pdf_book(path: &Path, position: &ReadingPosition) -> Result<(), String> {
+    save_record(
+        &record_path(path)?.with_extension("pdf-book.json"),
+        position,
+    )
+}
+pub fn load_pdf_mode(path: &Path, fingerprint: &str) -> Result<PdfMode, String> {
+    let record = read_record::<PdfModeRecord>(&record_path(path)?.with_extension("pdf-mode.json"))?;
+    if let Some(record) = &record {
+        validate_fingerprint(&record.fingerprint)?;
+    }
+    Ok(record
+        .filter(|r| r.fingerprint == fingerprint)
+        .map_or(PdfMode::Document, |r| r.mode))
+}
+pub fn save_pdf_mode(path: &Path, fingerprint: &str, mode: PdfMode) -> Result<(), String> {
+    validate_fingerprint(fingerprint)?;
+    write_record(
+        &record_path(path)?.with_extension("pdf-mode.json"),
+        &PdfModeRecord {
+            fingerprint: fingerprint.into(),
+            mode,
+        },
+    )
+}
+
 fn load_pdf_record(path: &Path) -> Result<Option<PdfReadingPosition>, String> {
     let position = read_record::<PdfReadingPosition>(path)?;
     if let Some(position) = &position {
@@ -149,6 +190,17 @@ fn transfer_records(
             }
         }
         DocumentKind::Pdf => {
+            if let Some(position) = load_record(&old_record.with_extension("pdf-book.json"))?
+                && position.fingerprint.eq_ignore_ascii_case(fingerprint)
+            {
+                save_record(&new_record.with_extension("pdf-book.json"), &position)?;
+            }
+            if let Some(mode) =
+                read_record::<PdfModeRecord>(&old_record.with_extension("pdf-mode.json"))?
+                && mode.fingerprint.eq_ignore_ascii_case(fingerprint)
+            {
+                write_record(&new_record.with_extension("pdf-mode.json"), &mode)?;
+            }
             if let Some(position) = load_pdf_record(&old_record.with_extension("pdf.json"))?
                 && position.fingerprint.eq_ignore_ascii_case(fingerprint)
             {
@@ -446,6 +498,70 @@ mod tests {
             std::process::id(),
             NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn pdf_book_and_original_positions_transfer_independently() {
+        let dir = scratch();
+        let old = dir.join("old.json");
+        let new = dir.join("new.json");
+        let book = sample("pdf-b1-p000004-c0000012");
+        let pdf = PdfReadingPosition {
+            fingerprint: book.fingerprint.clone(),
+            page: 2,
+            within: 0.3,
+            horizontal: 0.2,
+            zoom: PdfZoom::Scale(1.5),
+        };
+        save_record(&old.with_extension("pdf-book.json"), &book).unwrap();
+        save_pdf_record(&old.with_extension("pdf.json"), &pdf).unwrap();
+        write_record(
+            &old.with_extension("pdf-mode.json"),
+            &PdfModeRecord {
+                fingerprint: book.fingerprint.clone(),
+                mode: PdfMode::Book,
+            },
+        )
+        .unwrap();
+        transfer_records(
+            &old,
+            &new,
+            &book.fingerprint,
+            crate::recent::DocumentKind::Pdf,
+        )
+        .unwrap();
+        assert_eq!(
+            load_record(&new.with_extension("pdf-book.json"))
+                .unwrap()
+                .unwrap()
+                .item_id,
+            book.item_id
+        );
+        assert_eq!(
+            load_pdf_record(&new.with_extension("pdf.json"))
+                .unwrap()
+                .unwrap()
+                .page,
+            2
+        );
+        assert_eq!(
+            read_record::<PdfModeRecord>(&new.with_extension("pdf-mode.json"))
+                .unwrap()
+                .unwrap()
+                .mode,
+            PdfMode::Book
+        );
+        let mut changed = book;
+        changed.font_size = 30.0;
+        save_record(&new.with_extension("pdf-book.json"), &changed).unwrap();
+        assert_eq!(
+            load_pdf_record(&new.with_extension("pdf.json"))
+                .unwrap()
+                .unwrap()
+                .zoom,
+            PdfZoom::Scale(1.5)
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

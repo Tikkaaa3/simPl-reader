@@ -9,7 +9,10 @@ use html5ever::{parse_document, tendril::TendrilSink};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use sha2::{Digest, Sha256};
 
-use crate::{BaseDirection, Document, ImageAsset, InlineStyle, Item, StyleRun};
+use crate::{
+    BaseDirection, BlockKind as SemanticKind, BlockSemantics, Document, ImageAsset, InlineStyle,
+    Item, Link, LinkKind, StyleRun,
+};
 
 const MAX_HTML_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
@@ -153,6 +156,15 @@ pub(crate) fn parse_html(
     bytes: &[u8],
     resources: &mut dyn ResourceLoader,
 ) -> Result<ParsedHtml, String> {
+    parse_html_pages(path, bytes, resources, &[])
+}
+
+pub(crate) fn parse_html_pages(
+    path: PathBuf,
+    bytes: &[u8],
+    resources: &mut dyn ResourceLoader,
+    external_pages: &[(String, String)],
+) -> Result<ParsedHtml, String> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_HTML_BYTES {
         return Err(format!(
             "HTML file is empty or exceeds {MAX_HTML_BYTES} bytes: {}",
@@ -178,7 +190,13 @@ pub(crate) fn parse_html(
     if let Some(head) = find_element(&dom.document, "head") {
         check_charset(&head)?;
     }
+    let pages = if external_pages.is_empty() {
+        source_pages(&dom.document)
+    } else {
+        external_pages.to_vec()
+    };
     let mut extractor = Extractor {
+        page_targets: pages.iter().map(|(_, id)| id.clone()).collect(),
         resources,
         items: Vec::new(),
         images: HashMap::new(),
@@ -189,6 +207,9 @@ pub(crate) fn parse_html(
         total_rgba_bytes: 0,
         anchors: HashMap::new(),
         pending_anchors: Vec::new(),
+        structure: HashMap::new(),
+        link_targets: Vec::new(),
+        next_node: 0,
     };
     let mut title = String::new();
     find_title(&dom.document, &mut title);
@@ -229,6 +250,7 @@ pub(crate) fn parse_html(
         images,
         warnings,
         anchors,
+        structure,
         ..
     } = extractor;
     Ok(ParsedHtml {
@@ -238,11 +260,67 @@ pub(crate) fn parse_html(
             title,
             fingerprint: format!("{:x}", Sha256::digest(bytes)),
             items,
+            structure,
+            anchors: anchors.clone(),
+            page_breaks: pages,
             images,
             warnings,
         },
         anchors,
     })
+}
+
+fn source_pages(root: &Handle) -> Vec<(String, String)> {
+    let mut pages = Vec::new();
+    let mut listed = Vec::new();
+    let mut stack = vec![(root.clone(), false)];
+    while let Some((node, in_list)) = stack.pop() {
+        let role = attr(&node, "role").unwrap_or_default();
+        let kind = attr(&node, "epub:type")
+            .or_else(|| attr(&node, "type"))
+            .unwrap_or_default();
+        let in_list =
+            in_list || role == "doc-pagelist" || kind.split_whitespace().any(|v| v == "page-list");
+        if in_list
+            && let Some(href) = attr(&node, "href")
+            && let Some(id) = href.strip_prefix('#')
+        {
+            let mut label = String::new();
+            fn collect(node: &Handle, text: &mut String) {
+                if let NodeData::Text { contents } = &node.data {
+                    text.push_str(&contents.borrow());
+                }
+                for child in node.children.borrow().iter() {
+                    collect(child, text);
+                }
+            }
+            collect(&node, &mut label);
+            let id = percent_encoding::percent_decode_str(id)
+                .decode_utf8_lossy()
+                .into_owned();
+            listed.push((label.split_whitespace().collect::<Vec<_>>().join(" "), id));
+        }
+        if (role.split_whitespace().any(|s| s == "doc-pagebreak")
+            || kind.split_whitespace().any(|s| s == "pagebreak"))
+            && let Some(id) = attr(&node, "id")
+        {
+            let label = attr(&node, "aria-label")
+                .or_else(|| attr(&node, "title"))
+                .unwrap_or_else(|| id.clone());
+            if pages.len() < 100_000 {
+                pages.push((label, id));
+            }
+        }
+        stack.extend(
+            node.children
+                .borrow()
+                .iter()
+                .rev()
+                .cloned()
+                .map(|n| (n, in_list)),
+        );
+    }
+    if listed.is_empty() { pages } else { listed }
 }
 
 fn check_dom_depth(root: &Handle) -> Result<(), String> {
@@ -374,6 +452,12 @@ struct Context {
     pre: bool,
     direction: Option<BaseDirection>,
     list_number: Option<i64>,
+    semantic: SemanticKind,
+    quote_depth: u16,
+    list_depth: u16,
+    figure: Option<usize>,
+    source_node: usize,
+    link: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -389,6 +473,10 @@ struct TextBlock {
     pending_space: Option<Context>,
     direction: Option<BaseDirection>,
     pre: bool,
+    context: Context,
+    links: Vec<(usize, usize, usize)>,
+    marker_only: bool,
+    marker_reserved: bool,
 }
 
 impl TextBlock {
@@ -420,8 +508,25 @@ impl TextBlock {
     }
 
     fn push(&mut self, c: char, context: Context) {
+        if !c.is_whitespace() {
+            self.marker_only = false;
+        }
         let start = self.text.len();
+        if self.text.is_empty() {
+            self.context = context;
+        }
         self.text.push(c);
+        if let Some(target) = context.link {
+            if let Some(last) = self
+                .links
+                .last_mut()
+                .filter(|last| last.2 == target && last.1 == start)
+            {
+                last.1 = self.text.len();
+            } else {
+                self.links.push((start, self.text.len(), target));
+            }
+        }
         if let Some(style) = match (context.bold, context.italic) {
             (true, true) => Some(InlineStyle::BoldItalic),
             (true, false) => Some(InlineStyle::Bold),
@@ -452,6 +557,7 @@ impl TextBlock {
 }
 
 struct Extractor<'a> {
+    page_targets: std::collections::HashSet<String>,
     resources: &'a mut dyn ResourceLoader,
     items: Vec<Item>,
     images: HashMap<String, ImageAsset>,
@@ -462,9 +568,18 @@ struct Extractor<'a> {
     total_rgba_bytes: usize,
     anchors: HashMap<String, String>,
     pending_anchors: Vec<(String, usize)>,
+    structure: HashMap<String, BlockSemantics>,
+    link_targets: Vec<(String, LinkKind)>,
+    next_node: usize,
 }
 
 impl Extractor<'_> {
+    fn warn(&mut self, message: &str) {
+        if !self.warnings.iter().any(|warning| warning == message) {
+            self.warnings.push(message.to_owned());
+        }
+    }
+
     fn id(&mut self) -> String {
         self.next_id += 1;
         format!("item-{:06}", self.next_id)
@@ -514,6 +629,38 @@ impl Extractor<'_> {
         }
         let id = self.id();
         self.bind_anchors(&id, include_unchanged, block.text.len());
+        let context = block.context;
+        self.structure.insert(
+            id.clone(),
+            BlockSemantics {
+                kind: context.semantic,
+                quote_depth: context.quote_depth,
+                list_depth: context.list_depth,
+                figure: context.figure,
+                source_node: context.source_node,
+                links: block
+                    .links
+                    .into_iter()
+                    .filter_map(|(start, end, target)| {
+                        let end = end.min(trimmed);
+                        let start = start.min(end);
+                        let raw = &block.text[start..end];
+                        let text = raw.trim();
+                        if text.is_empty() {
+                            return None;
+                        }
+                        let start = start + raw.len() - raw.trim_start().len();
+                        let (href, kind) = &self.link_targets[target];
+                        Some(Link {
+                            start_byte: start,
+                            end_byte: start + text.len(),
+                            href: href.clone(),
+                            kind: *kind,
+                        })
+                    })
+                    .collect(),
+            },
+        );
         match self.kind {
             BlockKind::Heading(level) => self.items.push(Item::Heading {
                 id,
@@ -539,6 +686,8 @@ impl Extractor<'_> {
             return;
         };
         let tag = name.local.as_ref();
+        self.next_node += 1;
+        let source_node = self.next_node;
         if matches!(
             tag,
             "script"
@@ -576,7 +725,7 @@ impl Extractor<'_> {
             Some("auto") => context.direction = None,
             _ => {}
         }
-        context.bold |= matches!(tag, "b" | "strong");
+        context.bold |= matches!(tag, "b" | "strong" | "th");
         context.italic |= matches!(tag, "i" | "em" | "cite");
         context.pre |= matches!(tag, "pre" | "textarea");
         let heading = match tag {
@@ -613,9 +762,31 @@ impl Extractor<'_> {
                     | "dd"
                     | "figure"
                     | "figcaption"
+                    | "caption"
+                    | "aside"
                     | "hr"
+                    | "math"
             );
         if block {
+            if self.current.marker_only && matches!(tag, "p" | "div") {
+                // Join a list marker to its first paragraph. Reserve the old marker
+                // ordinal so existing paragraph IDs after the list stay unchanged.
+                if !self.current.marker_reserved {
+                    let legacy = self.id();
+                    self.queue_anchor(legacy);
+                    self.current.marker_reserved = true;
+                }
+            } else {
+                self.flush();
+            }
+        }
+        if attr(node, "id").is_some_and(|id| self.page_targets.contains(&id))
+            || attr(node, "role")
+                .is_some_and(|s| s.split_whitespace().any(|v| v == "doc-pagebreak"))
+            || attr(node, "epub:type")
+                .or_else(|| attr(node, "type"))
+                .is_some_and(|s| s.split_whitespace().any(|v| v == "pagebreak"))
+        {
             self.flush();
         }
         // A block's fragment belongs to its first readable descendant, not
@@ -630,6 +801,66 @@ impl Extractor<'_> {
                 self.queue_anchor(fragment);
             }
         }
+        if block {
+            context.source_node = source_node;
+        }
+        match tag {
+            "blockquote" => context.quote_depth = context.quote_depth.saturating_add(1),
+            "ul" | "ol" => context.list_depth = context.list_depth.saturating_add(1),
+            "li" => context.semantic = SemanticKind::ListItem,
+            "figure" => context.figure = Some(source_node),
+            "figcaption" | "caption" => context.semantic = SemanticKind::Caption,
+            "pre" => context.semantic = SemanticKind::Preformatted,
+            "hr" => context.semantic = SemanticKind::SceneBreak,
+            "table" => self.warn("Tables are shown as text rows in source order; merged cells and spatial layout are not reproduced."),
+            "tr" => context.semantic = SemanticKind::TableRow,
+            _ => {},
+        }
+        let role = attr(node, "role").unwrap_or_default();
+        let epub_type = attr(node, "epub:type")
+            .or_else(|| attr(node, "type"))
+            .unwrap_or_default();
+        if role
+            .split_whitespace()
+            .any(|v| v == "doc-footnote" || v == "doc-endnote")
+            || epub_type
+                .split_whitespace()
+                .any(|v| v == "footnote" || v == "endnote")
+        {
+            context.semantic = SemanticKind::Footnote;
+        }
+        if tag == "a"
+            && let Some(href) = attr(node, "href")
+        {
+            if href.len() <= 4096 && self.link_targets.len() < 10_000 {
+                let kind = if role == "doc-noteref"
+                    || epub_type.split_whitespace().any(|v| v == "noteref")
+                {
+                    LinkKind::Note
+                } else if role == "doc-backlink"
+                    || epub_type.split_whitespace().any(|v| v == "backlink")
+                {
+                    LinkKind::Backlink
+                } else {
+                    LinkKind::Reference
+                };
+                context.link = Some(self.link_targets.len());
+                self.link_targets.push((href, kind));
+            } else {
+                self.warn("A link exceeded the supported target length or document link limit; its text is retained.");
+            }
+        }
+        if tag == "math" {
+            self.flush();
+            self.warn("Mathematical layout is not rendered. Formulas show supplied alternative text or their MathML source.");
+            context.semantic = SemanticKind::Formula;
+            context.pre = true;
+            let alternative = attr(node, "alttext").filter(|value| !value.trim().is_empty());
+            let formula = alternative.unwrap_or_else(|| math_source(node));
+            self.current.append(&formula, context);
+            self.flush();
+            return;
+        }
         let old_kind = self.kind;
         if let Some(level) = heading {
             self.kind = BlockKind::Heading(level);
@@ -639,6 +870,7 @@ impl Extractor<'_> {
                 .list_number
                 .map_or_else(|| "• ".to_owned(), |number| format!("{number}. "));
             self.current.append(&marker, context);
+            self.current.marker_only = true;
         }
         if tag == "img" {
             self.image(node, context);
@@ -750,6 +982,17 @@ impl Extractor<'_> {
                 }
                 let id = self.id();
                 self.bind_anchors(&id, true, 0);
+                self.structure.insert(
+                    id.clone(),
+                    BlockSemantics {
+                        kind: context.semantic,
+                        quote_depth: context.quote_depth,
+                        list_depth: context.list_depth,
+                        figure: context.figure,
+                        source_node: context.source_node,
+                        links: Vec::new(),
+                    },
+                );
                 self.items.push(Item::Image {
                     id,
                     asset_path: key,
@@ -821,6 +1064,42 @@ pub(crate) fn decode_image(encoded: &[u8], remaining_rgba: usize) -> Result<Imag
     })
 }
 
+fn math_source(node: &Handle) -> String {
+    fn write(node: &Handle, out: &mut String) {
+        match &node.data {
+            NodeData::Text { contents } => out.push_str(
+                &contents
+                    .borrow()
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;"),
+            ),
+            NodeData::Element { name, attrs, .. } => {
+                out.push('<');
+                out.push_str(name.local.as_ref());
+                for attribute in attrs.borrow().iter() {
+                    out.push(' ');
+                    out.push_str(attribute.name.local.as_ref());
+                    out.push_str("=\"");
+                    out.push_str(&attribute.value.replace('&', "&amp;").replace('"', "&quot;"));
+                    out.push('"');
+                }
+                out.push('>');
+                for child in node.children.borrow().iter() {
+                    write(child, out);
+                }
+                out.push_str("</");
+                out.push_str(name.local.as_ref());
+                out.push('>');
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    write(node, &mut out);
+    out
+}
+
 fn detect_direction(text: &str) -> BaseDirection {
     for c in text.chars() {
         if matches!(c as u32, 0x0590..=0x08ff | 0xfb1d..=0xfdff | 0xfe70..=0xfeff) {
@@ -865,6 +1144,130 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn page_lists_and_inline_pagebreaks_keep_exact_source_boundaries() {
+        let dir = TempDir::new();
+        for markup in [
+            r##"<nav role="doc-pagelist"><a href="#p1">i</a><a href="#p2">1</a></nav><p><span id="p1"></span>First page.<span id="p2"></span>Second page.</p>"##,
+            r##"<p><span id="p1" epub:type="pagebreak" title="i"></span>First page.<span id="p2" role="doc-pagebreak" aria-label="1"></span>Second page.</p>"##,
+        ] {
+            let doc = load_html(&dir.html(markup)).unwrap();
+            assert_eq!(
+                doc.page_breaks,
+                [("i".into(), "p1".into()), ("1".into(), "p2".into())]
+            );
+            assert_ne!(doc.anchors["p1"], doc.anchors["p2"]);
+            assert_eq!(
+                doc.items
+                    .iter()
+                    .find(|i| i.id() == doc.anchors["p2"])
+                    .unwrap()
+                    .text(),
+                Some("Second page.")
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_blocks_links_and_fallbacks_keep_source_order() {
+        use crate::{BlockKind, LinkKind};
+        let dir = TempDir::new();
+        let path = dir.html(r##"<h1 id="title">Structure</h1>
+<p id="origin">Read <a href="#n" role="doc-noteref">é <b>note</b></a> here.</p>
+<blockquote><p>Quoted <em>words</em>.</p><blockquote><p>Nested quote</p></blockquote></blockquote>
+<ol start="3"><li><p>First item</p><ul><li>Nested item</li></ul></li><li value="8">Second item</li></ol>
+<figure><img src="missing.png" alt="Illustration"/><figcaption>A caption</figcaption></figure>
+<pre>  let x = 1;
+    x + 2</pre><hr/>
+<table><caption>Values</caption><tr><th>Name</th><th>Value</th></tr><tr><td>Alpha</td><td>42</td></tr></table>
+<math id="formula" alttext="x squared"><msup><mi>x</mi><mn>2</mn></msup></math>
+<math><mfrac><mi>a</mi><mi>b</mi></mfrac></math>
+<aside id="n" role="doc-footnote"><p>The note <a role="doc-backlink" href="#origin">return</a></p></aside>"##);
+        let doc = load_html(&path).unwrap();
+        let text: Vec<_> = doc.items.iter().filter_map(Item::text).collect();
+        assert_eq!(
+            text,
+            [
+                "Structure",
+                "Read é note here.",
+                "Quoted words.",
+                "Nested quote",
+                "3. First item",
+                "• Nested item",
+                "8. Second item",
+                "Illustration",
+                "A caption",
+                "  let x = 1;\n    x + 2",
+                "────────",
+                "Values",
+                "Name | Value |",
+                "Alpha | 42 |",
+                "x squared",
+                "<math><mfrac><mi>a</mi><mi>b</mi></mfrac></math>",
+                "The note return"
+            ]
+        );
+        let blocks: Vec<_> = doc
+            .items
+            .iter()
+            .map(|item| &doc.structure[item.id()])
+            .collect();
+        assert_eq!(blocks[2].quote_depth, 1);
+        assert_eq!(blocks[3].quote_depth, 2);
+        assert_eq!(blocks[4].kind, BlockKind::ListItem);
+        assert_eq!(blocks[5].list_depth, 2);
+        assert_eq!(blocks[7].figure, blocks[8].figure);
+        for (index, kind) in [
+            (8, BlockKind::Caption),
+            (9, BlockKind::Preformatted),
+            (10, BlockKind::SceneBreak),
+            (12, BlockKind::TableRow),
+            (14, BlockKind::Formula),
+            (16, BlockKind::Footnote),
+        ] {
+            assert_eq!(blocks[index].kind, kind);
+        }
+        let link = &blocks[1].links[0];
+        assert_eq!(&text[1][link.start_byte..link.end_byte], "é note");
+        assert_eq!(link.kind, LinkKind::Note);
+        assert_eq!(link.href, "#n");
+        assert_eq!(blocks[16].links[0].kind, LinkKind::Backlink);
+        assert_eq!(doc.anchors["n"], doc.items[16].id());
+        assert_eq!(doc.anchors["formula"], doc.items[14].id());
+        assert!(doc.warnings.iter().any(|w| w.contains("Tables are shown")));
+        assert!(
+            doc.warnings
+                .iter()
+                .any(|w| w.contains("Mathematical layout"))
+        );
+        let reopened = load_html(&path).unwrap();
+        assert_eq!(doc.items, reopened.items);
+        assert_eq!(doc.structure, reopened.structure);
+        assert_eq!(doc.anchors, reopened.anchors);
+    }
+
+    #[test]
+    fn standalone_link_resolution_is_local_and_decodes_fragments_once() {
+        let path = std::path::Path::new("C:/books/Café.html");
+        assert_eq!(
+            crate::resolve_html_link(path, "#n%C3%B6te").unwrap(),
+            Some("nöte".into())
+        );
+        assert_eq!(
+            crate::resolve_html_link(path, "Caf%C3%A9.html#x").unwrap(),
+            Some("x".into())
+        );
+        for href in [
+            "https://example.com",
+            "other.html#x",
+            "../Café.html#x",
+            "file:///C:/books/Café.html",
+            "#%zz",
+        ] {
+            assert!(crate::resolve_html_link(path, href).is_err(), "{href}");
         }
     }
 
