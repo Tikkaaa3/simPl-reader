@@ -6,3 +6,5 @@ Upstream revision for both fonts: https://github.com/google/fonts/tree/4e5f06dbb
 The resulting static font files preserve the complete Unicode coverage of their respective upstream face; no language glyphs were subset. Generated with fontTools 4.66.0. Both families use the SIL Open Font License 1.1.
 
 Material Symbols Outlined: source and modifications are documented in Material-Symbols-CHANGES.txt; Apache License 2.0 is in Material-Symbols-LICENSE.txt.
+
+Geist: @fontsource-variable/geist@5.3.0, files/geist-latin-wght-normal.woff2 (https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5.3.0/files/geist-latin-wght-normal.woff2). SIL OFL 1.1 in Geist-OFL.txt. Original Latin variable WOFF2 retained (wght 100-900). Native Iced requires sfnt and exposes discrete weights, so fontTools 4.66.0 decompresses the variable face to Geist-Variable-Latin.ttf and instantiates the exact 560 face as Geist-UI-560.ttf (family simPl UI 560). Body uses the variable face at 400; wordmark/buttons use the 560 instance. Literata remains the reading face.
