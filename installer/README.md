@@ -6,8 +6,7 @@ independent of the internal Cargo workspace's development version.
 
 ## User experience
 
-- English and Turkish wizard, selected from the Windows language with a language
-  chooser. The wizard follows the Windows light/dark appearance.
+- English-only wizard. The wizard follows the Windows light/dark appearance.
 - Per-user installation in `%LOCALAPPDATA%\Programs\simPl`; no administrator prompt.
   A different application folder can be selected.
 - Optional desktop shortcut (off initially) and Start menu shortcuts (on initially).
@@ -29,6 +28,22 @@ the remaining profile folder instead of claiming the library was fully removed.
 Installed and portable copies share that profile. Keeping it preserves data for a
 future reinstall; deleting it also removes the library used by portable copies.
 No default file associations or startup entries are changed.
+
+## Open with and default apps
+
+Setup registers simPl for `.pdf`, `.html` and `.epub` through per-user ProgIDs,
+`OpenWithProgids` and `RegisteredApplications` capabilities. Windows is notified
+after installation/removal. Right-click a supported file → **Open with** →
+**simPl Reader** (or **Choose another app** if it is not in the short menu).
+
+For double-click opening, choose simPl as the default for each desired extension
+in **Settings → Apps → Default apps**, or choose **Always** in Windows' Open with
+dialog. Setup does not overwrite existing defaults or the protected `UserChoice`
+keys. Uninstall removes only simPl's registrations, preserving other applications'
+entries. The file path passed to the reader is quoted so spaces are handled.
+
+See Microsoft's [Open with registration](https://learn.microsoft.com/en-us/windows/win32/shell/how-to-include-an-application-on-the-open-with-dialog-box)
+and [default app selection](https://support.microsoft.com/en-us/windows/apps/change-default-apps-in-windows).
 
 ## Build
 
@@ -113,7 +128,10 @@ temporary installation folder and a compile-time test profile rooted under `targ
 Only that QA build accepts the test profile definition; the shipped script's
 production path is fixed and has no runtime data-directory override.
 
-The test performs real installs, launches the installed reader, verifies the running
+The test verifies English-only setup and queries the Windows Shell to confirm simPl
+is a recommended handler for all three extensions. It checks that existing default
+apps remain unchanged and that uninstall removes simPl's association registrations.
+It performs real installs, launches the installed reader, verifies the running
 app guard, checks optional shortcuts and Windows registration, upgrades 0.1.0 to
 0.1.1, uninstalls while retaining data, reinstalls, then uninstalls with explicit
 deletion. A synthetic original file outside the profile and a junction to it must

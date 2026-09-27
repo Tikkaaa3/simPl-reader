@@ -17,6 +17,34 @@ if ((Test-Path $registry) -or (Test-Path -LiteralPath $desktop) -or (Test-Path -
 }
 New-Item -ItemType Directory -Path $sandbox,$testProfile,$original -Force | Out-Null
 
+$associationBase = 'simPl.Reader.InstallerQA'
+$capabilityKey = 'HKCU:\Software\simPl\InstallerQA\Capabilities'
+function Existing-Associations {
+    $snapshot = [ordered]@{}
+    foreach ($extension in @('.pdf', '.html', '.epub')) {
+        foreach ($kind in @('default', 'choice', 'candidates')) {
+            $path = switch ($kind) {
+                'default' { "HKCU:\Software\Classes\$extension" }
+                'choice' { "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\UserChoice" }
+                'candidates' { "HKCU:\Software\Classes\$extension\OpenWithProgids" }
+            }
+            $values = [ordered]@{}
+            if (Test-Path $path) {
+                $key = Get-Item $path
+                foreach ($name in ($key.GetValueNames() | Sort-Object)) {
+                    if (($kind -ne 'default' -or $name -eq '') -and -not $name.StartsWith($associationBase + '.')) {
+                        $values[$name] = $key.GetValue($name)
+                    }
+                }
+            }
+            $snapshot["$extension/$kind"] = $values
+        }
+    }
+    return $snapshot | ConvertTo-Json -Depth 8 -Compress
+}
+$existingAssociations = Existing-Associations
+Add-Type -Path (Join-Path $PSScriptRoot 'installer-associations.cs')
+
 function Assert-That([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
@@ -50,6 +78,32 @@ function Install-QA([string]$Setup, [string]$Tasks, [string]$Log) {
         Assert-That ((Get-FileHash (Join-Path $app $file)).Hash -eq (Get-FileHash (Join-Path $PayloadDirectory $file)).Hash) "Installed $file differs from payload."
     }
     Assert-That (Test-Path -LiteralPath (Join-Path $app 'third-party\fonts\Geist-OFL.txt')) 'Font notices missing.'
+    Assert-That ((Get-Item $registry).GetValue('Inno Setup: Language') -eq 'english') 'Installer language is not English.'
+    Assert-That ((Get-Item 'HKCU:\Software\RegisteredApplications').GetValue('simPl Reader Installer QA') -eq 'Software\simPl\InstallerQA\Capabilities') 'Default-app capabilities registration missing.'
+    foreach ($extension in @('pdf', 'html', 'epub')) {
+        $progId = $associationBase + '.' + $extension.ToUpperInvariant()
+        $candidates = Get-Item "HKCU:\Software\Classes\.$extension\OpenWithProgids"
+        Assert-That ($candidates.GetValueNames() -contains $progId) "Open with candidate missing for $extension."
+        Assert-That ((Get-Item "$capabilityKey\FileAssociations").GetValue(".$extension") -eq $progId) "Default-app capability missing for $extension."
+        $command = (Get-Item "HKCU:\Software\Classes\$progId\shell\open\command").GetValue('')
+        Assert-That ($command -eq ('"' + (Join-Path $app 'simPl.exe') + '" "%1"')) "Incorrect or unquoted open command for $extension."
+        $expectedHandler = 'simPl Reader Installer QA|' + (Join-Path $app 'simPl.exe')
+        Assert-That ([InstallerAssociations]::Recommended(".$extension") -contains $expectedHandler) "Windows does not recommend simPl with its friendly name for $extension."
+    }
+    Assert-That ((Existing-Associations) -eq $existingAssociations) 'Install changed existing defaults or another application registration.'
+}
+function Assert-AssociationsRemoved {
+    Assert-That (-not (Test-Path $capabilityKey)) 'Capabilities remain after uninstall.'
+    foreach ($extension in @('pdf', 'html', 'epub')) {
+        $progId = $associationBase + '.' + $extension.ToUpperInvariant()
+        Assert-That (-not (Test-Path "HKCU:\Software\Classes\$progId")) "ProgID remains after uninstall: $progId"
+        $path = "HKCU:\Software\Classes\.$extension\OpenWithProgids"
+        if (Test-Path $path) {
+            Assert-That (-not ((Get-Item $path).GetValueNames() -contains $progId)) "Open with entry remains for $extension."
+        }
+    }
+    Assert-That (-not ((Get-Item 'HKCU:\Software\RegisteredApplications').GetValueNames() -contains 'simPl Reader Installer QA')) 'Registered application entry remains.'
+    Assert-That ((Existing-Associations) -eq $existingAssociations) 'Uninstall changed existing defaults or another application registration.'
 }
 
 # Synthetic managed copy and reading-state sentinel. Never use the actual profile.
@@ -96,6 +150,7 @@ Assert-That ((Get-Content (Join-Path $testProfile 'positions\sentinel.txt') -Raw
 
 $null = Invoke-Setup (Get-QAUninstaller) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $sandbox 'keep-library.log') + '"'))
 Assert-That (-not (Test-Path $registry)) 'Uninstall registration remained.'
+Assert-AssociationsRemoved
 Assert-That (-not (Test-Path -LiteralPath $desktop)) 'Desktop shortcut remained.'
 Assert-That (-not (Test-Path -LiteralPath $startMenu)) 'Start menu shortcuts remained.'
 Assert-That (-not (Test-Path -LiteralPath (Join-Path $app 'simPl.exe'))) 'Reader executable remained.'
@@ -109,4 +164,5 @@ $null = Invoke-Setup (Get-QAUninstaller) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '
 Assert-That (-not (Test-Path -LiteralPath $testProfile)) 'Opt-in deletion did not remove the test library.'
 Assert-That ((Get-FileHash (Join-Path $original 'original-book.html')).Hash -eq $originalHash) 'Original document was changed or removed.'
 Assert-That (-not (Test-Path $registry)) 'Final uninstall entry remained.'
-Write-Host "PASS: shortcuts, Windows registration, startup, running-app guard, upgrade, retain, reinstall, delete and original/junction protection. Evidence: $sandbox"
+Assert-AssociationsRemoved
+Write-Host "PASS: English setup, Open with/default-app registration and cleanup, unchanged user defaults, shortcuts, startup, running-app guard, upgrade, retain, reinstall, delete and original/junction protection. Evidence: $sandbox"
