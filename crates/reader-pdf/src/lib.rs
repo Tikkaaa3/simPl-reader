@@ -74,6 +74,7 @@ pub struct Document {
     pub id: u64,
     pub path: PathBuf,
     pub title: String,
+    pub author: Option<String>,
     pub fingerprint: String,
     pub pages: Vec<PageInfo>,
     pub can_copy: bool,
@@ -105,6 +106,7 @@ struct OpenData {
     id: u64,
     path: PathBuf,
     title: String,
+    author: Option<String>,
     fingerprint: String,
     pages: Vec<PageInfo>,
     can_copy: bool,
@@ -156,6 +158,7 @@ pub async fn open(path: PathBuf) -> Result<Arc<Document>, String> {
         id: data.id,
         path: data.path,
         title: data.title,
+        author: data.author,
         fingerprint: data.fingerprint,
         pages: data.pages,
         can_copy: data.can_copy,
@@ -349,11 +352,17 @@ fn open_on_worker<'a>(
                 .to_string_lossy()
                 .into_owned()
         });
+    let author = document
+        .metadata()
+        .get(PdfDocumentMetadataTagType::Author)
+        .map(|metadata| metadata.value().trim().to_owned())
+        .filter(|author| !author.is_empty());
     Ok((
         OpenData {
             id,
             path,
             title,
+            author,
             fingerprint,
             pages,
             can_copy,

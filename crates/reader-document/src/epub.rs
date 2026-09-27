@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use zip::{CompressionMethod, ZipArchive};
 
 use crate::{
-    Document,
+    Document, ImageAsset,
     html::{self, ResourceLoader},
 };
 
@@ -58,11 +58,13 @@ struct Entry {
 pub struct Epub {
     pub path: PathBuf,
     pub title: String,
+    pub author: Option<String>,
     pub fingerprint: String,
     pub chapters: Vec<ChapterInfo>,
     pub contents: Vec<TocEntry>,
     pub warnings: Vec<String>,
     archive: Mutex<ZipArchive<File>>,
+    cover_path: Option<(String, String)>,
     entries: HashMap<String, Entry>,
 }
 
@@ -76,6 +78,8 @@ struct ManifestItem {
 #[derive(Debug)]
 struct Package {
     title: String,
+    author: Option<String>,
+    cover_path: Option<(String, String)>,
     chapters: Vec<String>,
     ncx: Option<String>,
     nav: Option<String>,
@@ -286,11 +290,13 @@ pub fn open(path: &Path) -> Result<Epub, String> {
     Ok(Epub {
         path,
         title: package.title,
+        author: package.author,
         fingerprint: format!("{:x}", hash.finalize()),
         chapters,
         contents,
         warnings,
         archive: Mutex::new(archive),
+        cover_path: package.cover_path,
         entries,
     })
 }
@@ -310,11 +316,52 @@ impl Epub {
         };
         let mut parsed = html::parse_html(self.path.clone(), &bytes, &mut resources)?;
         parsed.document.fingerprint.clone_from(&self.fingerprint);
+        parsed.document.author.clone_from(&self.author);
         parsed.document.title.clone_from(&info.title);
         Ok(Chapter {
             document: parsed.document,
             anchors: parsed.anchors,
         })
+    }
+
+    /// Decode a declared EPUB2/3 cover on demand; missing covers are normal.
+    /// Callers should consult the small persistent thumbnail cache first.
+    pub fn cover(&self) -> Result<Option<ImageAsset>, String> {
+        let Some((path, media)) = self.cover_path.as_ref() else {
+            return Ok(None);
+        };
+        let mut archive = self.archive.lock();
+        let encoded = read_named(&mut archive, &self.entries, path, MAX_RESOURCE)?;
+        if media == "image/svg+xml" {
+            let xml = std::str::from_utf8(&encoded).map_err(|_| "EPUB SVG cover must be UTF-8")?;
+            let document = parse_xml(xml)?;
+            let image = document.descendants().find(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "image"
+                    && node.tag_name().namespace() == Some("http://www.w3.org/2000/svg")
+            });
+            let Some(href) = image.and_then(|node| {
+                node.attribute(("http://www.w3.org/1999/xlink", "href"))
+                    .or_else(|| node.attribute("href"))
+            }) else {
+                return Ok(None);
+            };
+            let mut resources = EpubResources {
+                chapter: path,
+                entries: &self.entries,
+                archive: &mut archive,
+            };
+            let key = resources.resolve(href)?;
+            let raster = resources.load(&key)?;
+            return html::decode_image(&raster, 128 * 1024 * 1024).map(Some);
+        }
+        if !matches!(
+            media.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        ) {
+            return Ok(None);
+        }
+        html::decode_image(&encoded, 128 * 1024 * 1024).map(Some)
     }
 }
 
@@ -482,6 +529,15 @@ fn parse_package(
     } else {
         title
     };
+    let author = metadata
+        .descendants()
+        .find(|n| {
+            n.is_element()
+                && n.tag_name().name() == "creator"
+                && n.tag_name().namespace() == Some("http://purl.org/dc/elements/1.1/")
+        })
+        .map(text_of)
+        .filter(|author| !author.is_empty());
     let layout_fixed = metadata.descendants().any(|n| {
         n.is_element()
             && n.tag_name().name() == "meta"
@@ -495,6 +551,13 @@ fn parse_package(
     let package_base = xml_base(path, package)?;
     let manifest_base = xml_base(&package_base, manifest)?;
     let mut items = HashMap::new();
+    let cover_id = metadata
+        .descendants()
+        .find(|n| {
+            n.is_element() && n.tag_name().name() == "meta" && n.attribute("name") == Some("cover")
+        })
+        .and_then(|n| n.attribute("content"));
+    let mut cover_path = None;
     let mut nav = None;
     for item in manifest
         .children()
@@ -516,6 +579,13 @@ fn parse_package(
             .attribute("media-type")
             .ok_or("OPF item lacks media-type")?
             .to_owned();
+        if item.attribute("properties").is_some_and(|properties| {
+            properties
+                .split_whitespace()
+                .any(|property| property == "cover-image")
+        }) {
+            cover_path = Some((resource.clone(), media.clone()));
+        }
         let is_nav = item
             .attribute("properties")
             .is_some_and(|p| p.split_whitespace().any(|s| s == "nav"));
@@ -540,6 +610,11 @@ fn parse_package(
         {
             return Err(format!("Duplicate OPF manifest id: {id}"));
         }
+    }
+    if cover_path.is_none() {
+        cover_path = cover_id
+            .and_then(|id| items.get(id))
+            .map(|item| (item.path.clone(), item.media.clone()));
     }
     let spine = child(package, "spine").ok_or("OPF spine missing")?;
     let ncx = spine
@@ -632,6 +707,8 @@ fn parse_package(
         return Err("EPUB has no readable linear spine chapters".into());
     }
     Ok(Package {
+        author,
+        cover_path,
         title,
         chapters,
         nav,
@@ -1330,6 +1407,70 @@ mod tests {
         );
         assert_eq!(book.contents[0].chapter, 0);
         assert!(book.load_chapter(0).unwrap().anchors.contains_key("start"));
+    }
+
+    #[test]
+    fn declared_epub2_and_epub3_covers_and_authors() {
+        let image = png();
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="cover.png"/></svg>"#;
+        for (version, metadata, cover_manifest, cover_path, cover_bytes) in [
+            (
+                "2.0",
+                r#"<dc:creator> Mary Shelley </dc:creator><meta name="cover" content="art"/>"#,
+                r#"<item id="art" href="cover.png" media-type="image/png"/>"#,
+                "OEBPS/cover.png",
+                image.as_slice(),
+            ),
+            (
+                "3.0",
+                "<dc:creator>Octavia Butler</dc:creator>",
+                r#"<item id="art" href="cover.svg" media-type="image/svg+xml" properties="cover-image"/><item id="raster" href="cover.png" media-type="image/png"/>"#,
+                "OEBPS/cover.svg",
+                svg.as_slice(),
+            ),
+        ] {
+            let opf = format!(
+                r#"<package xmlns="http://www.idpf.org/2007/opf" version="{version}"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Real title</dc:title>{metadata}</metadata><manifest><item id="text" href="chapter.xhtml" media-type="application/xhtml+xml"/>{cover_manifest}</manifest><spine><itemref idref="text"/></spine></package>"#
+            );
+            let mut members = vec![
+                ("OEBPS/book.opf", opf.as_bytes()),
+                ("OEBPS/chapter.xhtml", chapter_two()),
+                (cover_path, cover_bytes),
+            ];
+            if version == "3.0" {
+                members.push(("OEBPS/cover.png", image.as_slice()));
+            }
+            let file = fixture(&members);
+            let book = open(&file.0).unwrap();
+            assert_eq!(book.title, "Real title");
+            assert_eq!(
+                book.author.as_deref(),
+                Some(if version == "2.0" {
+                    "Mary Shelley"
+                } else {
+                    "Octavia Butler"
+                })
+            );
+            assert_eq!(
+                book.cover()
+                    .unwrap()
+                    .map(|asset| (asset.width, asset.height)),
+                Some((1, 1))
+            );
+        }
+    }
+
+    #[test]
+    fn broken_declared_cover_does_not_prevent_opening_text() {
+        let opf = br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata/><manifest><item id="text" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="cover" href="broken.png" media-type="image/png" properties="cover-image"/></manifest><spine><itemref idref="text"/></spine></package>"#;
+        let file = fixture(&[
+            ("OEBPS/book.opf", opf),
+            ("OEBPS/chapter.xhtml", chapter_two()),
+            ("OEBPS/broken.png", b"not an image"),
+        ]);
+        let book = open(&file.0).unwrap();
+        assert!(book.cover().is_err());
+        assert!(!book.load_chapter(0).unwrap().document.items.is_empty());
     }
 
     #[test]

@@ -1,0 +1,8 @@
+Bundled product typefaces, available offline in assets/fonts/
+
+Inter: Google Fonts ofl/inter/Inter[opsz,wght].ttf (Git blob 047c92f6e2212473dc436020afed689527076d44), instantiated to static weights 400/500/600, optical size 14. License and copyright in Inter-OFL.txt.
+Literata: Google Fonts ofl/literata/Literata[opsz,wght].ttf (Git blob 0a81b4984a4a4eb101e0ddc28babc85bb137efef) and Literata-Italic[opsz,wght].ttf (Git blob 8690209cd1bb4d9be1c1a0e976ee2f740c94093b), instantiated to static upright weights 400/500/700 and italic weights 400/700, optical size 16. License and copyright in Literata-OFL.txt.
+Upstream revision for both fonts: https://github.com/google/fonts/tree/4e5f06dbb274a27ebe71ed54ea706b3ee40eabd9/ofl
+The resulting static font files preserve the complete Unicode coverage of their respective upstream face; no language glyphs were subset. Generated with fontTools 4.66.0. Both families use the SIL Open Font License 1.1.
+
+Material Symbols Outlined: source and modifications are documented in Material-Symbols-CHANGES.txt; Apache License 2.0 is in Material-Symbols-LICENSE.txt.

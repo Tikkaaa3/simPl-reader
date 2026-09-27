@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::{pdf_reader, ui};
+use crate::{chrome, pdf_reader, shelf, ui};
 use iced::keyboard::{self, Key, key};
 use iced::widget::{column, container, image, row, scrollable, text};
-use iced::{Element, Font, Length, Size, Subscription, Task, mouse, window};
+use iced::{Element, Length, Size, Subscription, Task, mouse, window};
 use iced_shell::{reader, selection, virtual_reader};
+use reader_document::library;
 use reader_document::position::{self, EpubReadingPosition, PdfReadingPosition, ReadingPosition};
 use reader_document::recent::{self, DocumentKind, Entry};
 use reader_document::{BaseDirection, Endpoint, Item};
@@ -16,7 +17,7 @@ use reader_document::{BaseDirection, Endpoint, Item};
 const DEFAULT_FONT_SIZE: f32 = 18.0;
 const MIN_FONT_SIZE: f32 = 12.0;
 const MAX_FONT_SIZE: f32 = 36.0;
-const GAP: f32 = 14.0;
+const GAP: f32 = 24.0;
 const OVERSCAN: f32 = 600.0;
 const CONTENT_ROW_HEIGHT: f32 = 34.0;
 const RECENT_ROW_HEIGHT: f32 = 52.0;
@@ -40,6 +41,8 @@ struct EpubChapter {
 struct Book {
     path: PathBuf,
     title: String,
+    author: Option<String>,
+    cover: bool,
     fingerprint: String,
     items: Vec<Item>,
     images: HashMap<String, DisplayImage>,
@@ -54,6 +57,15 @@ fn load_book(
     carried: Option<&SavedPosition>,
 ) -> Result<Book, String> {
     let mut document = reader_document::load_html(&path)?;
+    let cover = match cache_html_cover(&document) {
+        Ok(cover) => cover,
+        Err(error) => {
+            document
+                .warnings
+                .push(format!("Cover preview unavailable: {error}"));
+            false
+        }
+    };
     if let Some(old) = locate {
         recent::relocate(
             old,
@@ -77,7 +89,9 @@ fn load_book(
             None
         }
     };
-    Ok(display_book(document, restored, None))
+    let mut book = display_book(document, restored, None);
+    book.cover = cover;
+    Ok(book)
 }
 
 fn display_book(
@@ -88,6 +102,7 @@ fn display_book(
     let reader_document::Document {
         path,
         title,
+        author,
         fingerprint,
         items,
         images,
@@ -109,6 +124,11 @@ fn display_book(
         title: epub
             .as_ref()
             .map_or(title, |chapter| chapter.document.title.clone()),
+        author: epub
+            .as_ref()
+            .and_then(|chapter| chapter.document.author.clone())
+            .or(author),
+        cover: false,
         fingerprint,
         items,
         images,
@@ -185,6 +205,13 @@ fn load_epub(
     if let Some(position) = carried {
         position.save_at(&document.path)?;
     }
+    book.cover = match cache_epub_cover(&document) {
+        Ok(cover) => cover,
+        Err(error) => {
+            warnings.push(format!("Cover preview unavailable: {error}"));
+            false
+        }
+    };
     book.warnings.extend(warnings);
     Ok(book)
 }
@@ -218,6 +245,12 @@ enum LoadedDocument {
         restored: Option<PdfReadingPosition>,
         warnings: Vec<String>,
     },
+}
+
+#[derive(Clone, Debug)]
+struct LoadReply {
+    document: LoadedDocument,
+    catalog: Option<library::Entry>,
 }
 
 enum SavedPosition {
@@ -279,6 +312,73 @@ fn document_kind(path: &Path) -> Result<DocumentKind, String> {
     }
 }
 
+fn catalog_entry(document: Entry, author: Option<String>, cover: bool) -> library::Entry {
+    let byte_len = document
+        .path
+        .metadata()
+        .map_or(0, |metadata| metadata.len());
+    library::Entry {
+        document,
+        author,
+        byte_len,
+        opened_at: shelf::now(),
+        progress: 0.0,
+        current: 0,
+        total: 0,
+        cover,
+    }
+}
+
+fn cache_html_cover(document: &reader_document::Document) -> Result<bool, String> {
+    if library::cached_cover(&document.fingerprint)?.is_some() {
+        return Ok(true);
+    }
+    let asset = document.items.iter().find_map(|item| match item {
+        Item::Image { asset_path, .. } => document.images.get(asset_path),
+        _ => None,
+    });
+    if let Some(asset) = asset {
+        library::cache_cover(&document.fingerprint, asset)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn cache_epub_cover(document: &reader_document::epub::Epub) -> Result<bool, String> {
+    if library::cached_cover(&document.fingerprint)?.is_some() {
+        return Ok(true);
+    }
+    if let Some(asset) = document.cover()? {
+        library::cache_cover(&document.fingerprint, &asset)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+async fn cache_pdf_cover(document: &reader_pdf::Document) -> Result<bool, String> {
+    if library::cached_cover(&document.fingerprint)?.is_some() {
+        return Ok(true);
+    }
+    // Keep enough detail for the 240px-wide 5:7 center crop on landscape pages.
+    let width = document.pages.first().map_or(240, |page| {
+        (336.0 * page.width / page.height)
+            .clamp(240.0, 1024.0)
+            .ceil() as u32
+    });
+    let page = document.session.render(0, width).await?;
+    library::cache_cover(
+        &document.fingerprint,
+        &reader_document::ImageAsset {
+            width: page.width,
+            height: page.height,
+            rgba: page.rgba,
+        },
+    )?;
+    Ok(true)
+}
+
 impl LoadedDocument {
     fn recent_entry(&self) -> Entry {
         match self {
@@ -306,7 +406,7 @@ async fn load_document(
     path: PathBuf,
     previous: Option<SavedPosition>,
     locate: Option<Entry>,
-) -> Result<LoadedDocument, String> {
+) -> Result<LoadReply, String> {
     let kind = document_kind(&path)?;
     if let Some(old) = &locate
         && kind != old.kind
@@ -358,10 +458,30 @@ async fn load_document(
                 None
             }
         };
-        Ok(LoadedDocument::Pdf {
-            document,
-            restored,
-            warnings,
+        let cover = match cache_pdf_cover(&document).await {
+            Ok(cover) => cover,
+            Err(error) => {
+                warnings.push(format!("Cover preview unavailable: {error}"));
+                false
+            }
+        };
+        let catalog = Some(catalog_entry(
+            Entry {
+                path: document.path.clone(),
+                title: document.title.clone(),
+                fingerprint: document.fingerprint.clone(),
+                kind: DocumentKind::Pdf,
+            },
+            document.author.clone(),
+            cover,
+        ));
+        Ok(LoadReply {
+            document: LoadedDocument::Pdf {
+                document,
+                restored,
+                warnings,
+            },
+            catalog,
         })
     } else {
         let mut book = if kind == DocumentKind::Epub {
@@ -374,7 +494,20 @@ async fn load_document(
                 "Could not save the previous reading position: {error}"
             ));
         }
-        Ok(LoadedDocument::Reflow(Arc::new(book)))
+        let catalog = Some(catalog_entry(
+            Entry {
+                path: book.path.clone(),
+                title: book.title.clone(),
+                fingerprint: book.fingerprint.clone(),
+                kind,
+            },
+            book.author.take(),
+            book.cover,
+        ));
+        Ok(LoadReply {
+            document: LoadedDocument::Reflow(Arc::new(book)),
+            catalog,
+        })
     }
 }
 
@@ -398,6 +531,13 @@ struct Reader {
     opening_task: Option<iced::task::Handle>,
     opening: Option<PathBuf>,
     recent: Vec<Entry>,
+    shelf: shelf::Shelf,
+    show_search: bool,
+    search_query: String,
+    search_results: Vec<usize>,
+    search_selected: usize,
+    show_settings: bool,
+    dropping: bool,
     recent_loading: bool,
     recent_pending: Vec<(Entry, Option<Entry>)>,
     recent_saving: bool,
@@ -440,11 +580,18 @@ impl Default for Reader {
             book: None,
             pdf: None,
             pdf_warnings: Vec::new(),
-            window_size: Size::new(1000.0, 720.0),
+            window_size: Size::new(1280.0, 800.0),
             scale_factor: 1.0,
             opening_task: None,
             opening: None,
             recent: Vec::new(),
+            shelf: shelf::Shelf::default(),
+            show_search: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_selected: 0,
+            show_settings: false,
+            dropping: false,
             recent_loading: true,
             recent_pending: Vec::new(),
             recent_saving: false,
@@ -469,7 +616,7 @@ impl Default for Reader {
             request: 0,
             generation: 0,
             font_size: DEFAULT_FONT_SIZE,
-            width: content_width(1000.0),
+            width: content_width(1280.0),
             viewport: 620.0,
             offset: 0.0,
             heights: virtual_reader::HeightIndex::new(Vec::new()),
@@ -490,6 +637,17 @@ enum CloseAction {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
+    Chrome(chrome::Action),
+    Shelf(shelf::Control),
+    SearchInput,
+    SearchResult(usize),
+    LocateLibrary(usize),
+    RemoveLibrary(usize),
+    DismissOverlay,
+    SettingsFontDown,
+    SettingsFontUp,
+    SettingsRecent,
+    SettingsHelp,
     Open,
     Recent,
     Close,
@@ -516,6 +674,14 @@ enum Control {
 
 #[derive(Clone, Debug)]
 enum Message {
+    Chrome(chrome::Action),
+    Shelf(shelf::Message),
+    SearchChanged(String),
+    SearchSubmit,
+    OpenLibrary(usize),
+    LocateLibrary(usize),
+    RemoveLibrary(usize),
+    DismissOverlay,
     OpenDialog,
     RecentLoaded(Result<Vec<Entry>, String>),
     RecentSaved(Result<(), String>),
@@ -531,7 +697,7 @@ enum Message {
     DialogChosen(Result<Option<PathBuf>, String>),
     Loaded {
         request: u64,
-        result: Result<LoadedDocument, String>,
+        result: Result<LoadReply, String>,
     },
     Pdf {
         document: u64,
@@ -565,7 +731,7 @@ enum Message {
 }
 
 fn content_width(window_width: f32) -> f32 {
-    (window_width - 64.0).clamp(160.0, 960.0)
+    (window_width - 64.0).clamp(160.0, 720.0)
 }
 
 fn image_size(image: &DisplayImage, width: f32) -> Size {
@@ -673,6 +839,7 @@ impl Reader {
         self.pdf = None;
         self.pdf_warnings.clear();
         self.selection.clear();
+        self.focused = None;
         self.heights = virtual_reader::HeightIndex::new(Vec::new());
         self.measurements.lock().clear();
         self.pending_anchor = None;
@@ -713,7 +880,7 @@ impl Reader {
                                             .max(1.0)
                                     })
                                     .sum::<f32>();
-                                lines * size * 1.5
+                                lines * size * 1.675
                             }
                         };
                         height
@@ -764,6 +931,11 @@ impl Reader {
         if self.saving || self.dialog_open || self.failed_close.is_some() {
             return Task::none();
         }
+        self.capture_progress();
+        let library_task = self.shelf.persist().map(Message::Shelf);
+        self.show_search = false;
+        self.show_settings = false;
+        self.dropping = false;
         let previous = self.document_position();
         self.cancel_open();
         let request = self.request;
@@ -772,7 +944,17 @@ impl Reader {
         self.recent_open = if locate.is_some() {
             None
         } else {
-            self.recent.iter().find(|entry| entry.path == path).cloned()
+            self.recent
+                .iter()
+                .find(|entry| entry.path == path)
+                .cloned()
+                .or_else(|| {
+                    self.shelf
+                        .entries
+                        .iter()
+                        .find(|entry| entry.document.path == path)
+                        .map(|entry| entry.document.clone())
+                })
         };
         self.error = None;
         self.missing_recent = None;
@@ -782,7 +964,7 @@ impl Reader {
         })
         .abortable();
         self.opening_task = Some(handle.abort_on_drop());
-        task
+        Task::batch([task, library_task])
     }
 
     fn persist_recent(&mut self) -> Task<Message> {
@@ -807,6 +989,53 @@ impl Reader {
         self.recent_dirty = true;
         self.persist_recent()
     }
+    fn capture_progress(&mut self) {
+        if let Some(pdf) = &self.pdf {
+            let position = pdf.position();
+            let total = pdf.document().pages.len() as u32;
+            let fraction = (position.page as f32 + position.within) / total.max(1) as f32;
+            self.shelf
+                .progress(&pdf.document().path, fraction, position.page + 1, total);
+        } else if let Some(book) = &self.book {
+            let anchor = self.anchor();
+            let within = (anchor.row as f32 + anchor.fraction) / book.items.len().max(1) as f32;
+            let (fraction, current, total) = if let Some(chapter) = &book.epub {
+                let total = chapter.document.chapters.len() as u32;
+                (
+                    (chapter.index as f32 + within) / total.max(1) as f32,
+                    chapter.index as u32 + 1,
+                    total,
+                )
+            } else {
+                (
+                    within,
+                    (anchor.row as u32 + 1).min(book.items.len() as u32),
+                    book.items.len() as u32,
+                )
+            };
+            self.shelf.progress(&book.path, fraction, current, total);
+        }
+    }
+
+    fn exit_ready(&self) -> bool {
+        !self.recent_loading
+            && !self.recent_saving
+            && !(self.recent_dirty && !self.history_corrupt)
+            && !self.shelf.loading
+            && !self.shelf.saving
+            && !(self.shelf.dirty && !self.shelf.blocked)
+    }
+
+    fn locate(&mut self, entry: Entry) -> Task<Message> {
+        self.show_search = false;
+        self.dialog_locate = Some(entry);
+        self.dialog_open = true;
+        self.selection.end_drag();
+        Task::perform(
+            async { crate::platform::open_document_dialog(true) },
+            Message::DialogChosen,
+        )
+    }
 
     fn contents_range(&self) -> std::ops::Range<usize> {
         let Some(chapter) = self
@@ -828,7 +1057,9 @@ impl Reader {
     fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
         let book = self.book.as_ref();
         let chapter = book.and_then(|book| book.epub.as_ref());
-        let history = self.show_recent || (book.is_none() && self.pdf.is_none());
+        let overlay = self.show_search || self.show_settings;
+        let has_document = book.is_some() || self.pdf.is_some();
+        let history = self.show_recent && !overlay;
         let pdf_page = self.pdf.as_ref().map(pdf_reader::Reader::page_index);
         let primary = [
             Some(Control::Open),
@@ -885,25 +1116,70 @@ impl Reader {
             self.history_corrupt.then_some(Control::ResetRecent),
             (book.is_some_and(|book| !book.warnings.is_empty()) || !self.pdf_warnings.is_empty())
                 .then_some(Control::Warnings),
-            (history && (book.is_some() || self.pdf.is_some())).then_some(Control::HideRecent),
+            history.then_some(Control::HideRecent),
         ];
-        primary
-            .into_iter()
-            .flatten()
-            .chain(self.contents_range().map(Control::ContentsEntry))
-            .chain(secondary.into_iter().flatten())
-            .chain(
-                (0..self.recent.len())
-                    .filter(move |_| history)
-                    .flat_map(|index| {
-                        [
-                            Control::OpenRecent(index),
-                            Control::LocateRecent(index),
-                            Control::RemoveRecent(index),
-                        ]
-                    }),
-            )
-            .chain(self.show_help.then_some(Control::HideHelp))
+        [
+            (!overlay).then_some(Control::Chrome(chrome::Action::Search)),
+            (!overlay).then_some(Control::Chrome(chrome::Action::Settings)),
+            self.show_search.then_some(Control::SearchInput),
+            overlay.then_some(Control::DismissOverlay),
+            (self.show_settings && self.font_size > MIN_FONT_SIZE)
+                .then_some(Control::SettingsFontDown),
+            (self.show_settings && self.font_size < MAX_FONT_SIZE)
+                .then_some(Control::SettingsFontUp),
+            self.show_settings.then_some(Control::SettingsRecent),
+            self.show_settings.then_some(Control::SettingsHelp),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(
+            primary
+                .into_iter()
+                .flatten()
+                .filter(move |_| has_document && !overlay),
+        )
+        .chain(
+            self.contents_range()
+                .map(Control::ContentsEntry)
+                .filter(move |_| !overlay),
+        )
+        .chain(secondary.into_iter().flatten().filter(move |_| !overlay))
+        .chain(
+            (0..self.recent.len())
+                .filter(move |_| history)
+                .flat_map(|index| {
+                    [
+                        Control::OpenRecent(index),
+                        Control::LocateRecent(index),
+                        Control::RemoveRecent(index),
+                    ]
+                }),
+        )
+        .chain(
+            self.show_help
+                .then_some(Control::HideHelp)
+                .filter(move |_| !overlay),
+        )
+        .chain(
+            self.shelf
+                .controls()
+                .map(Control::Shelf)
+                .filter(move |_| !has_document && !overlay),
+        )
+        .chain(
+            self.search_results
+                .iter()
+                .copied()
+                .take(8)
+                .filter(move |_| self.show_search)
+                .flat_map(|index| {
+                    [
+                        Control::SearchResult(index),
+                        Control::LocateLibrary(index),
+                        Control::RemoveLibrary(index),
+                    ]
+                }),
+        )
     }
 
     fn activate(&mut self, control: Control) -> Task<Message> {
@@ -911,12 +1187,23 @@ impl Reader {
             return Task::none();
         }
         let message = match control {
+            Control::Chrome(action) => Message::Chrome(action),
+            Control::Shelf(control) => Message::Shelf(shelf::Message::Activate(control)),
+            Control::SearchInput => return iced::widget::operation::focus(search_id()),
+            Control::SearchResult(index) => Message::OpenLibrary(index),
+            Control::LocateLibrary(index) => Message::LocateLibrary(index),
+            Control::RemoveLibrary(index) => Message::RemoveLibrary(index),
+            Control::DismissOverlay => Message::DismissOverlay,
             Control::Open => Message::OpenDialog,
-            Control::Recent | Control::HideRecent => Message::ToggleRecent,
+            Control::Recent | Control::HideRecent | Control::SettingsRecent => {
+                Message::ToggleRecent
+            }
             Control::Close => Message::Close(CloseAction::Document),
-            Control::Help | Control::HideHelp => Message::ToggleHelp,
-            Control::FontDown => Message::FontSize(self.font_size - 2.0),
-            Control::FontUp => Message::FontSize(self.font_size + 2.0),
+            Control::Help | Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
+            Control::FontDown | Control::SettingsFontDown => {
+                Message::FontSize(self.font_size - 2.0)
+            }
+            Control::FontUp | Control::SettingsFontUp => Message::FontSize(self.font_size + 2.0),
             Control::Copy => Message::Copy,
             Control::Pdf(action) => {
                 if action == pdf_reader::FocusControl::Page {
@@ -1029,7 +1316,10 @@ impl Reader {
                         "Could not save the previous reading position: {error}"
                     ));
                 }
-                Ok(LoadedDocument::Reflow(Arc::new(book)))
+                Ok(LoadReply {
+                    document: LoadedDocument::Reflow(Arc::new(book)),
+                    catalog: None,
+                })
             },
             move |result| Message::Loaded { request, result },
         )
@@ -1054,21 +1344,25 @@ impl Reader {
         self.failed_close = None;
         match action {
             CloseAction::Window => {
-                if self.recent_loading
-                    || self.recent_saving
-                    || (self.recent_dirty && !self.history_corrupt)
-                {
+                if !self.exit_ready() {
                     self.pending_exit = true;
-                    self.persist_recent()
+                    Task::batch([
+                        self.persist_recent(),
+                        self.shelf.persist().map(Message::Shelf),
+                    ])
                 } else {
                     iced::exit()
                 }
             }
             CloseAction::Document => {
+                self.capture_progress();
                 self.cancel_open();
                 self.clear_content();
                 self.error = None;
-                Task::none()
+                Task::batch([
+                    self.shelf.persist().map(Message::Shelf),
+                    self.shelf.show(true).map(Message::Shelf),
+                ])
             }
         }
     }
@@ -1080,6 +1374,9 @@ impl Reader {
         self.failed_close = None;
         self.cancel_open();
         self.selection.end_drag();
+        self.show_search = false;
+        self.show_settings = false;
+        self.capture_progress();
         if let Some(position) = self.document_position() {
             self.saving = true;
             Task::perform(async move { position.save() }, move |result| {
@@ -1114,11 +1411,122 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.focus_generation = reader.focus_generation.wrapping_add(1);
         reader.focus_pending = reader.focused.is_some();
     }
-    task
+    if reader.focused != previous_focus
+        && let Some(Control::Shelf(control)) = reader.focused
+    {
+        Task::batch([task, reader.shelf.reveal(control).map(Message::Shelf)])
+    } else {
+        task
+    }
 }
 
 fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
     match message {
+        Message::Chrome(action) => match action {
+            chrome::Action::Close => reader.close(CloseAction::Window),
+            chrome::Action::Search if reader.interactive() => {
+                reader.show_search = !reader.show_search;
+                reader.show_settings = false;
+                reader.search_query.clear();
+                reader.search_results = reader.shelf.search("");
+                reader.search_selected = 0;
+                reader.focused = Some(if reader.show_search {
+                    Control::SearchInput
+                } else {
+                    Control::Chrome(chrome::Action::Search)
+                });
+                if reader.show_search {
+                    iced::widget::operation::focus(search_id())
+                } else {
+                    iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::unfocus(),
+                    )
+                }
+            }
+            chrome::Action::Settings if reader.interactive() => {
+                reader.show_settings = !reader.show_settings;
+                reader.show_search = false;
+                reader.focused = Some(if reader.show_settings {
+                    Control::DismissOverlay
+                } else {
+                    Control::Chrome(chrome::Action::Settings)
+                });
+                Task::none()
+            }
+            action => reader.window.map_or_else(Task::none, |id| match action {
+                chrome::Action::Drag => window::drag(id),
+                chrome::Action::Menu => window::show_system_menu(id),
+                chrome::Action::Minimize => window::minimize(id, true),
+                chrome::Action::Maximize => window::toggle_maximize(id),
+                chrome::Action::Resize(direction) => window::drag_resize(id, direction),
+                _ => Task::none(),
+            }),
+        },
+        Message::Shelf(shelf::Message::Activate(shelf::Control::Add)) => {
+            update_inner(reader, Message::OpenDialog)
+        }
+        Message::Shelf(shelf::Message::Activate(
+            shelf::Control::Resume(index) | shelf::Control::Document(index),
+        )) => update_inner(reader, Message::OpenLibrary(index)),
+        Message::Shelf(message) => {
+            let task = reader.shelf.update(message).map(Message::Shelf);
+            if reader.pending_exit && reader.exit_ready() {
+                iced::exit()
+            } else {
+                task
+            }
+        }
+        Message::SearchChanged(query) => {
+            reader.search_results = reader.shelf.search(&query);
+            reader.search_query = query;
+            reader.search_selected = 0;
+            reader.focused = Some(Control::SearchInput);
+            Task::none()
+        }
+        Message::SearchSubmit if reader.show_search => reader
+            .search_results
+            .get(reader.search_selected)
+            .copied()
+            .map_or_else(Task::none, |index| {
+                update_inner(reader, Message::OpenLibrary(index))
+            }),
+        Message::OpenLibrary(index) if reader.interactive() => {
+            let Some(entry) = reader.shelf.entries.get(index) else {
+                return Task::none();
+            };
+            let path = entry.document.path.clone();
+            reader.show_recent = false;
+            reader.open(path, None)
+        }
+        Message::LocateLibrary(index) if reader.interactive() => {
+            let Some(entry) = reader.shelf.entries.get(index) else {
+                return Task::none();
+            };
+            reader.locate(entry.document.clone())
+        }
+        Message::RemoveLibrary(index) if reader.interactive() => {
+            let Some(entry) = reader.shelf.entries.get(index) else {
+                return Task::none();
+            };
+            let path = entry.document.path.clone();
+            let library_task = reader.shelf.remove(&path).map(Message::Shelf);
+            recent::remove(&mut reader.recent, &path);
+            reader.recent_dirty = true;
+            reader.search_results = reader.shelf.search(&reader.search_query);
+            reader.search_selected = 0;
+            reader.focused = Some(Control::SearchInput);
+            Task::batch([
+                library_task,
+                reader.persist_recent(),
+                iced::widget::operation::focus(search_id()),
+            ])
+        }
+        Message::DismissOverlay => {
+            reader.show_search = false;
+            reader.show_settings = false;
+            reader.focused = None;
+            iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
+        }
         Message::FocusReady(generation) if generation == reader.focus_generation => {
             reader.focus_pending = false;
             ui::reveal_focus()
@@ -1142,7 +1550,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 reader.recent_dirty = true;
             }
             let task = reader.persist_recent();
-            if reader.pending_exit && !reader.recent_saving {
+            if reader.pending_exit && reader.exit_ready() {
                 iced::exit()
             } else {
                 task
@@ -1157,7 +1565,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
             }
             let task = reader.persist_recent();
-            if reader.pending_exit && !reader.recent_saving {
+            if reader.pending_exit && reader.exit_ready() {
                 iced::exit()
             } else {
                 task
@@ -1169,20 +1577,23 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.persist_recent()
         }
         Message::ToggleRecent if reader.interactive() => {
+            reader.show_settings = false;
+            reader.show_search = false;
             reader.show_recent = !reader.show_recent;
-            reader.focused =
-                if reader.show_recent || (reader.book.is_none() && reader.pdf.is_none()) {
-                    Some(if reader.recent.is_empty() {
-                        Control::Recent
-                    } else {
-                        Control::OpenRecent(0)
-                    })
+            reader.focused = if reader.show_recent {
+                Some(if reader.recent.is_empty() {
+                    Control::Recent
                 } else {
-                    Some(Control::Recent)
-                };
+                    Control::OpenRecent(0)
+                })
+            } else {
+                Some(Control::Recent)
+            };
             restore_viewport(reader)
         }
         Message::ToggleHelp if reader.interactive() => {
+            reader.show_settings = false;
+            reader.show_search = false;
             reader.show_help = !reader.show_help;
             reader.focused = Some(if reader.show_help {
                 Control::HideHelp
@@ -1202,24 +1613,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let Some(entry) = reader.recent.get(index).cloned() else {
                 return Task::none();
             };
-            reader.dialog_locate = Some(entry);
-            reader.dialog_open = true;
-            reader.selection.end_drag();
-            Task::perform(
-                async { crate::platform::open_document_dialog(true) },
-                Message::DialogChosen,
-            )
+            reader.locate(entry)
         }
         Message::LocateMissing if reader.interactive() => {
             let Some(entry) = reader.missing_recent.clone() else {
                 return Task::none();
             };
-            reader.dialog_locate = Some(entry);
-            reader.dialog_open = true;
-            Task::perform(
-                async { crate::platform::open_document_dialog(true) },
-                Message::DialogChosen,
-            )
+            reader.locate(entry)
         }
         Message::RemoveRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
@@ -1227,7 +1627,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             recent::remove(&mut reader.recent, &entry.path);
             reader.recent_dirty = true;
-            reader.persist_recent()
+            Task::batch([
+                reader.persist_recent(),
+                reader.shelf.remove(&entry.path).map(Message::Shelf),
+            ])
         }
         Message::DismissError => {
             reader.error = None;
@@ -1236,6 +1639,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             restore_viewport(reader)
         }
         Message::OpenDialog if reader.interactive() => {
+            reader.show_search = false;
+            reader.show_settings = false;
             reader.dialog_open = true;
             reader.selection.end_drag();
             Task::perform(
@@ -1267,15 +1672,25 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let recent_open = reader.recent_open.take();
             let history_task = result.as_ref().ok().map_or_else(Task::none, |document| {
                 reader.missing_recent = None;
-                reader.remember_recent(document.recent_entry(), relocated.as_ref())
+                reader.remember_recent(document.document.recent_entry(), relocated.as_ref())
             });
+            let (result, library_task) = match result {
+                Ok(reply) => {
+                    let task = reply.catalog.map_or_else(Task::none, |entry| {
+                        reader
+                            .shelf
+                            .remember(entry, relocated.as_ref().map(|entry| entry.path.as_path()))
+                            .map(Message::Shelf)
+                    });
+                    (Ok(reply.document), task)
+                }
+                Err(error) => (Err(error), Task::none()),
+            };
             let content_task = match result {
                 Ok(LoadedDocument::Reflow(book)) => {
                     reader.clear_content();
-                    reader.font_size = book
-                        .restored
-                        .as_ref()
-                        .map_or(DEFAULT_FONT_SIZE, |position| {
+                    reader.font_size =
+                        book.restored.as_ref().map_or(reader.font_size, |position| {
                             position.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
                         });
                     let anchor = book
@@ -1304,6 +1719,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     document,
                     restored,
                     warnings,
+                    ..
                 }) => {
                     reader.clear_content();
                     let id = document.id;
@@ -1331,7 +1747,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     restore_viewport(reader)
                 }
             };
-            Task::batch([content_task, history_task])
+            reader.capture_progress();
+            let has_document = reader.book.is_some() || reader.pdf.is_some();
+            Task::batch([
+                content_task,
+                history_task,
+                library_task,
+                reader.shelf.show(!has_document).map(Message::Shelf),
+            ])
         }
         Message::Pdf { document, message } => {
             if let Some(pdf) = &mut reader.pdf
@@ -1374,10 +1797,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 Task::none()
             }
         }
-        Message::FontSize(size) if reader.interactive() && reader.book.is_some() => {
+        Message::FontSize(size) if reader.interactive() => {
             let anchor = reader.anchor();
             reader.font_size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-            reader.rebuild_geometry(anchor)
+            if reader.book.is_some() {
+                reader.rebuild_geometry(anchor)
+            } else {
+                Task::none()
+            }
         }
         Message::SelectStart(endpoint) if reader.interactive() => {
             reader.selection.begin(endpoint);
@@ -1436,6 +1863,28 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 && reader.interactive()
             {
                 match key.as_ref() {
+                    Key::Character(value)
+                        if modifiers.control() && value.eq_ignore_ascii_case("k") && !repeat =>
+                    {
+                        return update_inner(reader, Message::Chrome(chrome::Action::Search));
+                    }
+                    Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
+                        if reader.show_search =>
+                    {
+                        let count = reader.search_results.len().min(8);
+                        reader.search_selected =
+                            if matches!(key.as_ref(), Key::Named(key::Named::ArrowDown)) {
+                                (reader.search_selected + 1).min(count.saturating_sub(1))
+                            } else {
+                                reader.search_selected.saturating_sub(1)
+                            };
+                        reader.focused = reader
+                            .search_results
+                            .get(reader.search_selected)
+                            .copied()
+                            .map(Control::SearchResult);
+                        return Task::none();
+                    }
                     Key::Named(key::Named::Tab) if !repeat => {
                         let mut controls = reader.controls();
                         let count = controls.clone().count();
@@ -1454,6 +1903,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             iced::advanced::widget::operation::focusable::unfocus(),
                         );
                         return match reader.focused {
+                            Some(Control::SearchInput) => {
+                                iced::widget::operation::focus(search_id())
+                            }
                             Some(Control::Pdf(pdf_reader::FocusControl::Page)) => {
                                 iced::widget::operation::focus(pdf_reader::page_input_id())
                             }
@@ -1496,6 +1948,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     }
                     Key::Named(key::Named::Escape) if !repeat => {
                         reader.focused = None;
+                        if reader.show_search || reader.show_settings {
+                            return update_inner(reader, Message::DismissOverlay);
+                        }
                         if reader.show_help {
                             return update_inner(reader, Message::ToggleHelp);
                         }
@@ -1529,6 +1984,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     _ => {}
                 }
             }
+            if (reader.show_search || reader.show_settings)
+                && matches!(&event, iced::Event::Keyboard(_))
+            {
+                return Task::none();
+            }
             if matches!(
                 &event,
                 iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
@@ -1547,8 +2007,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let global_shortcut = matches!(&event,
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: Key::Character(value), modifiers, ..
-                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l")));
-            if pdf_input && !global_shortcut {
+                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l") || value.eq_ignore_ascii_case("k")));
+            if pdf_input && !global_shortcut && !reader.show_search && !reader.show_settings {
                 let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
                 if let Some(pdf) = &mut reader.pdf {
                     return if accepted {
@@ -1573,6 +2033,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     };
                     Task::batch([
                         task,
+                        reader.shelf.resize(size).map(Message::Shelf),
                         window::scale_factor(id).map(|scale| Message::ScaleFactor(scale.into())),
                     ])
                 }
@@ -1593,11 +2054,20 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     };
                     Task::batch([
                         task,
+                        reader.shelf.resize(size).map(Message::Shelf),
                         window::scale_factor(id).map(|scale| Message::ScaleFactor(scale.into())),
                     ])
                 }
                 iced::Event::Window(window::Event::CloseRequested) => {
                     reader.close(CloseAction::Window)
+                }
+                iced::Event::Window(window::Event::FileHovered(_)) => {
+                    reader.dropping = true;
+                    Task::none()
+                }
+                iced::Event::Window(window::Event::FilesHoveredLeft) => {
+                    reader.dropping = false;
+                    Task::none()
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => reader.open(path, None),
                 iced::Event::Window(window::Event::Unfocused)
@@ -1656,6 +2126,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                                 && reader.book.as_ref().is_some_and(|book| book.epub.is_some()) =>
                         {
                             reader.adjacent_chapter(false)
+                        }
+                        Key::Named(key::Named::Space)
+                            if reader.book.is_none() && reader.pdf.is_none() =>
+                        {
+                            reader
+                                .shelf
+                                .first_resume()
+                                .map_or_else(Task::none, |index| {
+                                    update_inner(reader, Message::OpenLibrary(index))
+                                })
                         }
                         Key::Named(key::Named::PageDown | key::Named::Space) => {
                             reader.jump(reader.offset + reader.viewport * 0.9)
@@ -1768,7 +2248,7 @@ fn render_item(
             logical_text: logical.to_owned(),
             mapped,
             font_size: size,
-            line_height: size * 1.5,
+            line_height: size * 1.675,
             selection: bounds.and_then(|bounds| bounds.range_for_item(index, logical)),
             dragging: reader.selection.is_dragging(),
             track_hit_test: false,
@@ -1941,29 +2421,195 @@ fn recent_panel(reader: &Reader, active: bool, has_document: bool) -> Element<'_
         .into()
 }
 
+fn search_id() -> iced::advanced::widget::Id {
+    iced::advanced::widget::Id::new("library-search")
+}
+
+fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, Message> {
+    use iced::widget::{Space, mouse_area, opaque, stack, text_input};
+    if !reader.show_search && !reader.show_settings {
+        // Keep the reader and shelf in the same widget-tree slot when a modal opens.
+        return stack![base].into();
+    }
+    let heading = row![
+        text(if reader.show_search {
+            "Quick Switcher"
+        } else {
+            "Reading Settings"
+        })
+        .font(ui::SERIF_MEDIUM)
+        .size(22)
+        .shaping(text::Shaping::Advanced),
+        Space::new().width(Length::Fill),
+        control_button(
+            reader,
+            Control::DismissOverlay,
+            shelf::icon("\u{e5cd}", 18),
+            Some(Message::DismissOverlay)
+        ),
+    ]
+    .align_y(iced::Alignment::Center)
+    .spacing(12);
+    let mut contents = column![heading].spacing(16);
+    if reader.show_search {
+        let mut input = container(
+            text_input("Find a title, author, or filename…", &reader.search_query)
+                .id(search_id())
+                .font(ui::SANS)
+                .size(14)
+                .padding(12)
+                .style(ui::input_style)
+                .on_input(Message::SearchChanged)
+                .on_submit(Message::SearchSubmit),
+        );
+        if reader.focused == Some(Control::SearchInput) {
+            input = input.id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL));
+        }
+        contents = contents.push(input);
+        let mut results = column![].spacing(6);
+        for (position, index) in reader.search_results.iter().copied().take(8).enumerate() {
+            let Some(entry) = reader.shelf.entries.get(index) else {
+                continue;
+            };
+            let description = column![
+                container(
+                    text(&entry.document.title)
+                        .size(14)
+                        .font(ui::SEMIBOLD)
+                        .wrapping(text::Wrapping::None)
+                        .shaping(text::Shaping::Advanced)
+                )
+                .width(Length::Fill)
+                .clip(true),
+                container(
+                    text(format!(
+                        "{} · {}",
+                        shelf::format_name(entry.document.kind),
+                        entry.author.as_deref().unwrap_or("Local document")
+                    ))
+                    .size(11)
+                    .color(ui::MUTED)
+                    .wrapping(text::Wrapping::None)
+                    .shaping(text::Shaping::Advanced)
+                )
+                .width(Length::Fill)
+                .clip(true),
+            ]
+            .spacing(4)
+            .width(Length::Fill);
+            results = results.push(
+                row![
+                    container(toned_button(
+                        reader,
+                        Control::SearchResult(index),
+                        description,
+                        Some(Message::OpenLibrary(index)),
+                        ui::ButtonTone::Quiet,
+                        position == reader.search_selected
+                    ))
+                    .width(Length::Fill),
+                    control_button(
+                        reader,
+                        Control::LocateLibrary(index),
+                        text("Locate").size(11),
+                        Some(Message::LocateLibrary(index))
+                    ),
+                    toned_button(
+                        reader,
+                        Control::RemoveLibrary(index),
+                        text("Remove").size(11),
+                        Some(Message::RemoveLibrary(index)),
+                        ui::ButtonTone::Destructive,
+                        false
+                    ),
+                ]
+                .spacing(4)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        if reader.search_results.is_empty() {
+            results = results.push(
+                text(if reader.shelf.loading {
+                    "Loading the library…"
+                } else {
+                    "No matching documents."
+                })
+                .size(13)
+                .color(ui::MUTED),
+            );
+        }
+        contents = contents
+            .push(results)
+            .push(
+                text(if reader.search_results.len() > 8 {
+                    "Showing the first 8 matches. Keep typing to narrow the results."
+                } else {
+                    "↑ ↓ Select · Enter Open · Esc Close"
+                })
+                .size(11)
+                .color(ui::MUTED),
+            )
+            .push(
+                text("Remove only forgets the library entry; your file stays on disk.")
+                    .size(11)
+                    .color(ui::MUTED),
+            );
+    } else {
+        contents = contents
+            .push(text("Literata").font(ui::SERIF).size(28).shaping(text::Shaping::Advanced))
+            .push(text("A calm, readable measure. Your books, without distractions.")
+                .font(ui::SERIF).size(reader.font_size).line_height(1.675)
+                .shaping(text::Shaping::Advanced))
+            .push(row![
+                text("Reflow text size").size(13), Space::new().width(Length::Fill),
+                control_button(reader, Control::SettingsFontDown, text("A−").size(14),
+                    (reader.font_size > MIN_FONT_SIZE).then_some(Message::FontSize(reader.font_size - 2.0))),
+                text(format!("{:.0} px", reader.font_size)).size(12).color(ui::MUTED),
+                control_button(reader, Control::SettingsFontUp, text("A+").size(14),
+                    (reader.font_size < MAX_FONT_SIZE).then_some(Message::FontSize(reader.font_size + 2.0))),
+            ].spacing(12).align_y(iced::Alignment::Center))
+            .push(text("Applies to HTML and EPUB. Saved with each document; also used for new documents in this session.")
+                .size(12).color(ui::MUTED))
+            .push(row![
+                control_button(reader, Control::SettingsRecent, text("Recent documents").size(12), Some(Message::ToggleRecent)),
+                control_button(reader, Control::SettingsHelp, text("Keyboard shortcuts").size(12), Some(Message::ToggleHelp)),
+            ].spacing(8));
+    }
+    let panel = container(
+        scrollable(contents)
+            .id(iced::advanced::widget::Id::new("workspace-overlay"))
+            .height(Length::Shrink)
+            .direction(ui::vertical_scrollbar())
+            .style(ui::scroll_style),
+    )
+    .padding(24)
+    .width((reader.window_size.width - 32.0).min(680.0))
+    .max_height((reader.window_size.height - 64.0).max(160.0))
+    .style(ui::panel);
+    let backdrop = mouse_area(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(iced::Color::BLACK.scale_alpha(0.55).into()),
+                ..container::Style::default()
+            }),
+    )
+    .on_press(Message::DismissOverlay);
+    stack![
+        base,
+        backdrop,
+        container(opaque(panel))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+    ]
+    .into()
+}
+
 fn view(reader: &Reader) -> Element<'_, Message> {
     let active = reader.interactive();
     let loaded = (reader.book.is_some() || reader.pdf.is_some()) && active;
     let has_document = reader.book.is_some() || reader.pdf.is_some();
-    let current_title = reader
-        .book
-        .as_ref()
-        .map(|book| book.title.as_str())
-        .or_else(|| reader.pdf.as_ref().map(|pdf| pdf.document().title.as_str()));
-    let brand = row![
-        text("simPl").size(22).font(ui::SEMIBOLD).color(ui::ACCENT),
-        container(
-            text(current_title.unwrap_or("A quieter place to read"))
-                .size(13)
-                .color(ui::MUTED)
-                .wrapping(iced::widget::text::Wrapping::None)
-        )
-        .width(Length::Fill)
-        .clip(true),
-        text("LOCAL READER").size(10).color(ui::MUTED),
-    ]
-    .spacing(16)
-    .align_y(iced::Alignment::Center);
     let mut toolbar = row![
         toned_button(
             reader,
@@ -1986,7 +2632,9 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         toolbar = toolbar.push(control_button(
             reader,
             Control::Close,
-            text("Close").size(13),
+            row![shelf::icon("\u{e5c4}", 16), text("Library").size(13)]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
             loaded.then_some(Message::Close(CloseAction::Document)),
         ));
     }
@@ -1997,7 +2645,23 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             text("Keys").size(13),
             active.then_some(Message::ToggleHelp),
         ))
-        .push(iced::widget::Space::new().width(Length::Fill));
+        .push(
+            container(
+                text(
+                    reader
+                        .book
+                        .as_ref()
+                        .map(|book| book.title.as_str())
+                        .or_else(|| reader.pdf.as_ref().map(|pdf| pdf.document().title.as_str()))
+                        .unwrap_or(""),
+                )
+                .size(12)
+                .color(ui::MUTED)
+                .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .clip(true),
+        );
     if reader.book.is_some() {
         toolbar = toolbar
             .push(control_button(
@@ -2231,7 +2895,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         }
         auxiliary = auxiliary.push(container(details).padding([5, 10]).style(ui::panel));
     }
-    if reader.show_recent && has_document {
+    if reader.show_recent {
         auxiliary = auxiliary.push(recent_panel(reader, active, true));
     }
     if reader.show_help {
@@ -2245,7 +2909,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center),
             text("Tab / Shift+Tab  ·  Controls    Enter / Space  ·  Activate    Escape  ·  Dismiss    F1  ·  Help")
                 .size(12).color(ui::MUTED),
-            text("Ctrl+O  Open    Ctrl+R  Recent    Ctrl+W  Close    Ctrl+C  Copy    Ctrl+A  Select all")
+            text("Ctrl+O  Open    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
                 .size(12).color(ui::MUTED),
             text("Page Up / Down  Read    Ctrl+Home / End  Ends    Ctrl+plus / minus / 0  Text size or PDF zoom")
                 .size(12).color(ui::MUTED),
@@ -2258,6 +2922,13 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             panel = panel.id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL));
         }
         auxiliary = auxiliary.push(panel);
+    }
+    if let Some(notice) = &reader.shelf.notice {
+        auxiliary = auxiliary.push(
+            container(text(notice).size(12).color(ui::DANGER))
+                .padding(12)
+                .style(ui::panel),
+        );
     }
     if reader.saving {
         auxiliary = auxiliary.push(text("Saving reading position…").size(12).color(ui::MUTED));
@@ -2273,19 +2944,27 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             .clip(true),
         );
     }
-    let mut page = column![
-        container(brand)
-            .width(Length::Fill)
-            .padding([10, 20])
-            .style(ui::header),
+    let toolbar: Element<'_, Message> = if has_document {
         container(toolbar)
             .width(Length::Fill)
-            .padding(iced::Padding {
-                top: 5.0,
-                right: 20.0,
-                bottom: 8.0,
-                left: 20.0
-            }),
+            .padding([6, 20])
+            .into()
+    } else {
+        iced::widget::Space::new().height(0).into()
+    };
+    let mut page = column![
+        chrome::view(
+            reader
+                .focused
+                .and_then(|control| if let Control::Chrome(action) = control {
+                    Some(action)
+                } else {
+                    None
+                }),
+            active
+        )
+        .map(Message::Chrome),
+        toolbar,
         container(
             scrollable(auxiliary)
                 .id(iced::advanced::widget::Id::new("reader-panels"))
@@ -2296,8 +2975,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         .width(Length::Fill)
         .max_height(reader.window_size.height * 0.38)
         .padding([0, 20]),
-    ]
-    .spacing(4);
+    ];
     if let Some(pdf) = &reader.pdf {
         let document = pdf.document().id;
         page = page.push(
@@ -2350,65 +3028,30 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             .height(Length::Fill),
         );
     } else {
-        let compact = reader.window_size.height < 500.0;
-        let mut introduction = column![].spacing(7);
-        if !compact {
-            introduction = introduction.push(
-                text("YOUR READING SPACE")
-                    .size(10)
-                    .font(ui::SEMIBOLD)
-                    .color(ui::ACCENT),
-            );
-        }
-        introduction = introduction
-            .push(
-                text("Settle into a good read.")
-                    .size(if compact { 22 } else { 26 })
-                    .font(ui::SEMIBOLD),
-            )
-            .push(
-                text(if compact {
-                    "HTML, PDF or EPUB. Drop a file here, or use Open file."
-                } else {
-                    "Open a local HTML, XHTML, PDF or EPUB document, or drop one into this window."
-                })
-                .size(if compact { 12 } else { 14 })
-                .color(ui::MUTED)
-                .wrapping(iced::advanced::text::Wrapping::WordOrGlyph),
-            );
-        if !compact {
-            introduction = introduction.push(
-                text("Private by design · No scripts or remote resources")
-                    .size(11)
-                    .color(ui::MUTED),
-            );
-        }
-        let hero = container(introduction)
-            .padding([if compact { 12 } else { 17 }, 18])
-            .width(Length::Fill)
-            .style(ui::panel);
         page = page.push(
-            container(
-                scrollable(column![hero, recent_panel(reader, active, false),].spacing(12))
-                    .id(iced::advanced::widget::Id::new("welcome-panels"))
-                    .direction(ui::vertical_scrollbar())
-                    .style(ui::scroll_style)
-                    .height(Length::Fill),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(iced::Padding {
-                top: 8.0,
-                right: 20.0,
-                bottom: 12.0,
-                left: 20.0,
-            }),
+            reader
+                .shelf
+                .view(
+                    reader.focused.and_then(|control| {
+                        if let Control::Shelf(control) = control {
+                            Some(control)
+                        } else {
+                            None
+                        }
+                    }),
+                    active,
+                    reader.dropping,
+                )
+                .map(Message::Shelf),
         );
     }
-    container(page)
+    let base = container(page)
         .width(Length::Fill)
         .height(Length::Fill)
-        .into()
+        .into();
+    chrome::frame(overlays(reader, base), |direction| {
+        Message::Chrome(chrome::Action::Resize(direction))
+    })
 }
 
 fn title(reader: &Reader) -> String {
@@ -2432,8 +3075,9 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
     let pending = reader.pending_anchor.is_some();
     let active = reader.book.is_some() && reader.opening.is_none();
     let focus = reader.focus_pending.then_some(reader.focus_generation);
+    let searching = reader.show_search;
     subscription::filter_map(
-        (HtmlEvents, generation, pending, active, focus),
+        (HtmlEvents, generation, pending, active, focus, searching),
         move |event| match event {
             Event::Interaction {
                 event: iced::Event::Window(window::Event::RedrawRequested(_)),
@@ -2455,11 +3099,17 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                 if modifiers.control() && (value.eq_ignore_ascii_case("o")
                     || value.eq_ignore_ascii_case("w")
                     || value.eq_ignore_ascii_case("r")
-                    || value.eq_ignore_ascii_case("l")))
+                    || value.eq_ignore_ascii_case("l")
+                    || value.eq_ignore_ascii_case("k")))
                 && !matches!(
                     &key,
                     Key::Named(key::Named::Tab | key::Named::F1 | key::Named::Escape)
-                ) =>
+                )
+                && !(searching
+                    && matches!(
+                        &key,
+                        Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
+                    )) =>
             {
                 None
             }
@@ -2470,7 +3120,7 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
 }
 
 pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
-    iced::application(
+    let mut application = iced::application(
         move || {
             let mut reader = Reader {
                 error: error.clone(),
@@ -2478,6 +3128,7 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
             };
             let tasks = [
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
+                shelf::Shelf::load().map(Message::Shelf),
                 path.clone()
                     .map_or_else(Task::none, |path| reader.open(path, None)),
             ];
@@ -2490,18 +3141,22 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
     .subscription(subscription)
     .theme(|_: &Reader| ui::theme())
     .settings(iced::Settings {
-        default_font: Font::with_name("Segoe UI"),
+        default_font: ui::SANS,
         default_text_size: 13.into(),
         ..iced::Settings::default()
     })
     .window(window::Settings {
-        size: Size::new(1000.0, 720.0),
+        size: Size::new(1280.0, 800.0),
         min_size: Some(Size::new(540.0, 360.0)),
         position: window::Position::Centered,
         exit_on_close_request: false,
+        decorations: false,
         ..window::Settings::default()
-    })
-    .run()
+    });
+    for font in ui::font_data() {
+        application = application.font(font);
+    }
+    application.run()
 }
 
 #[cfg(test)]
@@ -2512,6 +3167,8 @@ mod tests {
         Arc::new(Book {
             path: PathBuf::from(format!("{title}.html")),
             title: title.into(),
+            author: None,
+            cover: false,
             fingerprint: "a".repeat(64),
             items: (0..12)
                 .map(|index| Item::Paragraph {
@@ -2582,14 +3239,20 @@ mod tests {
             &mut reader,
             Message::Loaded {
                 request: 2,
-                result: Ok(LoadedDocument::Reflow(book("latest"))),
+                result: Ok(LoadReply {
+                    document: LoadedDocument::Reflow(book("latest")),
+                    catalog: None,
+                }),
             },
         );
         let _ = update_inner(
             &mut reader,
             Message::Loaded {
                 request: 1,
-                result: Ok(LoadedDocument::Reflow(book("old"))),
+                result: Ok(LoadReply {
+                    document: LoadedDocument::Reflow(book("old")),
+                    catalog: None,
+                }),
             },
         );
         assert_eq!(reader.book.as_ref().unwrap().title, "latest");
@@ -2602,6 +3265,40 @@ mod tests {
         );
         assert!(reader.error.is_none());
         assert_eq!(reader.book.as_ref().unwrap().title, "latest");
+    }
+
+    #[test]
+    fn switching_reading_surfaces_releases_the_previous_keyboard_action() {
+        let mut reader = Reader {
+            focused: Some(Control::Shelf(shelf::Control::Resume(0))),
+            ..Reader::default()
+        };
+        let _ = update_inner(
+            &mut reader,
+            Message::Loaded {
+                request: 0,
+                result: Ok(LoadReply {
+                    document: LoadedDocument::Reflow(book("keyboard")),
+                    catalog: None,
+                }),
+            },
+        );
+        assert!(
+            reader.focused.is_none(),
+            "Space must scroll, not reactivate a hidden shelf card"
+        );
+        reader.focused = Some(Control::Close);
+        let _ = update_inner(
+            &mut reader,
+            Message::Saved {
+                action: CloseAction::Document,
+                result: Ok(()),
+            },
+        );
+        assert!(
+            reader.focused.is_none(),
+            "Space on the shelf must resume, not close again"
+        );
     }
 
     #[test]

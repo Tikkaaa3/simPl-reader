@@ -6,6 +6,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 pub mod epub;
 mod html;
+pub mod library;
 pub mod position;
 pub mod recent;
 pub use html::load_html;
@@ -76,6 +77,7 @@ pub struct Endpoint {
 pub struct Document {
     pub path: PathBuf,
     pub title: String,
+    pub author: Option<String>,
     pub fingerprint: String,
     pub items: Vec<Item>,
     pub images: HashMap<String, ImageAsset>,

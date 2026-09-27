@@ -34,22 +34,45 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1
 
 ## Interface
 
-Normal mode uses a shared graphite/sage palette and system Segoe UI, with
-semibold headings, restrained surfaces, thin scrollbars and explicit keyboard
-outlines. Welcome introduces the local-reader workflow before the bounded recent
-list; its introduction contracts below 500 logical pixels of window height.
-Long chrome titles/paths are clipped to their allocated space rather than covering
-actions. PDF navigation and zoom share one toolbar row at wider sizes and two
-rows below 700 logical pixels. The minimum window remains 540 × 360.
+Normal mode implements the supplied `design/` reference with Inter, Literata,
+Material Symbols, blue accents, three Continue Reading cards, and a virtualized
+cover library. The default window is 1280 × 800 logical pixels; the minimum is
+540 × 360. Continue cards stack below 768 pixels, and the library uses six columns
+above 1024, three above 640, otherwise two. Long chrome titles/paths stay within
+their allocated space. PDF controls retain their compact two-row layout.
 
-`ui.rs` centralizes the styles and lazily constructs the custom theme once.
-There are no added dependencies, downloaded fonts, animation timers, blur effects,
-or changes to the tiny-skia backend, body virtualization, or PDF cache policy.
-Keyboard focus markers cover a recent row or help context where appropriate.
+`ui.rs` owns shared typography/styles, `chrome.rs` the native draggable/resizable
+frame, and `shelf.rs` the library. Static font faces and a small icon subset are
+embedded; `assets/licenses/` records upstream provenance and licenses, copied into
+the portable folder. No runtime font downloads, browser, WebView, animation timers,
+blur effects, or GPU backend were added. Reading text uses Literata with the
+existing OS fallback for Arabic, Hebrew, and CJK. The reading measure is at most
+720 logical pixels, with 1.675 line spacing.
+Keyboard focus markers cover the relevant readable metadata or help context.
 A generation-checked, gated frame notification waits for the new widget layout;
 the reveal operation then adjusts only enclosing vertical scrollables. It does
 not scroll an unrelated reading viewport or keep idle redraws running. Reading
-and PDF scrollables retain stable sibling slots when auxiliary panels expand.
+and PDF scrollables retain stable slots when panels or search/settings modals open.
+
+The shelf's versioned `library.json` is independent of `recent.json`: 4,096 entries,
+4 MiB serialized, no silent capacity eviction, atomic/coalesced background writes.
+Missing storage imports legacy Recent metadata without opening source documents.
+An invalid library is kept untouched and reported. Window exit drains pending
+library writes as well as Recent writes. Separate instances retain last-writer
+semantics rather than merging catalogs.
+
+Explicit document opens collect author, file size, format, timestamp, and genuine
+saved progress. EPUB declared artwork, HTML's first local image, and PDF page one
+provide optional covers. The bounded PNG cache uses content fingerprints, central
+crops for both card shapes, and at most 240 × 360 pixels / 512 KiB per file.
+Only visible/overscan thumbnails are decoded; the renderer handles are dropped
+when entering a document. Files with no artwork receive a typographic jacket.
+
+**Ctrl+K** searches title/author/filename, with Up/Down and Enter selection.
+The titlebar gear opens reflow settings; size applies to HTML/EPUB, is saved per
+document, and defaults new documents in this session. **Library / Ctrl+W** returns
+to the shelf. With no control focused, Space resumes its first continuing book.
+
 
 ## Opening, recent files, and keyboard controls
 
@@ -62,7 +85,7 @@ A failed position save keeps the document and anchor alive. A fresh close reques
 retries the save; Dismiss/Escape cancels the pending close instead of leaving an
 invisible input guard. Close without saving is an explicit alternative.
 
-**Recent / Ctrl+R** exposes up to 12 successful opens and is visible on welcome.
+**Recent / Ctrl+R** exposes up to 12 successful opens from the shelf or reader.
 Each row has Open, Locate and Remove. **Tab / Shift+Tab** cycles an outlined
 control; **Enter / Space** activates it. Keyboard traversal scrolls recent rows
 and EPUB contents targets into view. **F1** shows help; Escape dismisses panels
@@ -83,10 +106,10 @@ last-writer behavior, not cross-process history merging.
 Locate requires identical document kind and SHA-256 before transferring a typed
 reading position to the new canonical path. A currently open matching document
 supplies its newer live position; EPUB loads the saved chapter before committing
-relocation. On success the recent path is replaced. Old position records remain
-as recovery data; Remove only forgets history, and does not delete book files or
-reading-position records. An edited source may be opened normally, but does not
-inherit a stale position.
+relocation. On success both stored paths are replaced, including at full library
+capacity. Old position records remain as recovery data; Remove forgets the library
+and Recent entries, not book files, thumbnails, or position records. An edited source
+may be opened normally, but does not inherit a stale position.
 
 ## Local HTML reading
 
@@ -101,13 +124,13 @@ document readable.
 - Headings, paragraphs, bold/italic/nested bold-italic, lists, link text,
   preformatted whitespace, basic table text, and local PNG/JPEG/GIF/WebP images.
   Missing/blocked assets produce warnings and available alt text.
-- System fonts with OS fallback, a fluid viewport, 12–36 px body size, and
+- Bundled Literata with script-aware OS fallback, a fluid viewport, 12–36 px body size, and
   viewport-plus-overscan native layout. Full source items and the height index
   remain O(N); only visible/overscan rows become native text/image widgets.
 - Wheel, Page Up/Down, and Space scroll; Ctrl+Home/End jumps to the ends.
   A−/A+ or Ctrl+−/+ changes size; Ctrl+0 resets it. Drag selects; Ctrl+A selects
   all source text; Ctrl+C or Copy copies in logical source order; Escape clears.
-- Close/Ctrl+W closes the document; native window close exits. Normal close,
+- Library/Ctrl+W saves and closes the document; native window close exits. Normal close,
   exit, or replacement atomically saves the content item, normalized intra-item
   location, and font size. Explicitly reopening unchanged source restores them;
   no file automatically opens at startup.

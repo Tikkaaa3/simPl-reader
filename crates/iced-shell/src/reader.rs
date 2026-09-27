@@ -77,16 +77,21 @@ pub enum FontRole {
     Hebrew,
     /// Noto Sans JP variable face at the Iced weight corresponding to 400.
     Japanese,
-    /// Platform font selection with native glyph fallback for product HTML.
+    /// Native platform fallback for scripts absent from Literata.
     SystemRegular,
     SystemBold,
     SystemItalic,
     SystemBoldItalic,
+    /// Bundled Literata faces for normal document text (not diagnostics).
+    EditorialRegular,
+    EditorialBold,
+    EditorialItalic,
+    EditorialBoldItalic,
 }
 
 impl FontRole {
-    /// Iced-native family/weight/style selection. Font bytes are loaded from
-    /// the checked fixture after the shell-first stage.
+    /// Iced-native font request; diagnostic Noto bytes come from the checked
+    /// fixture, while normal document Literata bytes ship inside the shell.
     #[must_use]
     pub const fn iced_font(self) -> iced::Font {
         use iced::font::{Family, Font, Style, Weight};
@@ -122,6 +127,20 @@ impl FontRole {
                 weight: Weight::Bold,
                 style: Style::Italic,
                 ..Font::DEFAULT
+            },
+            Self::EditorialRegular => Font::with_name("Literata"),
+            Self::EditorialBold => Font {
+                weight: Weight::Bold,
+                ..Font::with_name("Literata")
+            },
+            Self::EditorialItalic => Font {
+                style: Style::Italic,
+                ..Font::with_name("Literata")
+            },
+            Self::EditorialBoldItalic => Font {
+                weight: Weight::Bold,
+                style: Style::Italic,
+                ..Font::with_name("Literata")
             },
         }
     }
@@ -221,7 +240,7 @@ pub fn map_paragraph(
     )
 }
 
-/// Maps product document text with system font fallback and unchanged RTL offset policy.
+/// Maps product document text to Literata while allowing native script fallback.
 pub fn map_document_paragraph(
     text: &str,
     base_direction: BaseDirection,
@@ -267,7 +286,7 @@ fn map_paragraph_with_fonts(
     base_direction: BaseDirection,
     style_runs: &[StyleRun],
     leading_rlm: bool,
-    system_fonts: bool,
+    document_fonts: bool,
 ) -> Result<MappedParagraph, String> {
     let mut previous_end = 0;
     for style_run in style_runs {
@@ -301,8 +320,8 @@ fn map_paragraph_with_fonts(
             .iter()
             .find(|run| run.start_byte <= source_start && source_end <= run.end_byte)
             .map(|run| run.style);
-        let role = if system_fonts {
-            system_font_role(style)
+        let role = if document_fonts {
+            document_font_role(character, style)
         } else {
             font_role(character, style)
         };
@@ -329,8 +348,8 @@ fn map_paragraph_with_fonts(
         } else {
             runs.push(MappedRun {
                 bytes: 0..mapped_text.len(),
-                role: if system_fonts {
-                    FontRole::SystemRegular
+                role: if document_fonts {
+                    FontRole::EditorialRegular
                 } else {
                     FontRole::LatinRegular
                 },
@@ -554,6 +573,20 @@ fn font_role(character: char, style: Option<InlineStyle>) -> FontRole {
         Some(InlineStyle::Bold | InlineStyle::BoldItalic) => FontRole::LatinBold,
         Some(InlineStyle::Italic) => FontRole::LatinItalic,
         None => FontRole::LatinRegular,
+    }
+}
+
+fn document_font_role(character: char, style: Option<InlineStyle>) -> FontRole {
+    // These scripts have no glyphs in Literata; keep platform script selection
+    // instead of assigning a Latin font to an entire mixed run.
+    if is_arabic(character) || is_hebrew(character) || is_japanese_or_cjk(character) {
+        return system_font_role(style);
+    }
+    match style {
+        Some(InlineStyle::Bold) => FontRole::EditorialBold,
+        Some(InlineStyle::Italic) => FontRole::EditorialItalic,
+        Some(InlineStyle::BoldItalic) => FontRole::EditorialBoldItalic,
+        None => FontRole::EditorialRegular,
     }
 }
 
@@ -943,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn document_mapping_uses_system_fonts_for_mixed_script_nested_style_and_preserves_offsets() {
+    fn document_mapping_keeps_script_fallback_and_literata_style_offsets() {
         let source = "ا bold λ";
         let mapped = super::map_document_paragraph(
             source,
@@ -958,13 +991,13 @@ mod tests {
         assert_eq!(mapped.text, format!("\u{200f}{source}"));
         assert_eq!(&mapped.text['\u{200f}'.len_utf8()..], source);
         assert!(mapped.runs.iter().any(|run| {
-            run.role == super::FontRole::SystemBoldItalic
+            run.role == super::FontRole::EditorialBoldItalic
                 && &mapped.text[run.bytes.clone()] == "bold λ"
         }));
-        assert!(mapped.runs.iter().all(|run| matches!(
-            run.role,
-            super::FontRole::SystemRegular | super::FontRole::SystemBoldItalic
-        )));
+        assert!(mapped.runs.iter().any(|run| {
+            run.role == super::FontRole::SystemRegular
+                && &mapped.text[run.bytes.clone()] == "\u{200f}ا"
+        }));
     }
 
     #[test]

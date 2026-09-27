@@ -363,11 +363,11 @@ artifacts. The verified executable's SHA-256 is
 
 ### Modern reader UI
 
-The normal reader now uses shared graphite/sage chrome, system Segoe UI,
-semibold headings, restrained cards and thin scrollbars. Welcome contracts at
-small heights; PDF controls use one row above the compact breakpoint and two
-below it. Long labels cannot cover adjacent actions. No dependency, bundled font,
-animation timer, blur effect, GPU backend, or larger document/page cache was added.
+**Historical baseline, before the supplied design:** the reader used graphite/sage chrome, system Segoe UI,
+semibold headings, restrained cards and thin scrollbars. Welcome contracted at
+small heights; PDF controls used one row above the compact breakpoint and two
+below it. Long labels could not cover adjacent actions. That pass added no dependency,
+bundled font, animation timer, blur effect, GPU backend, or larger document/page cache.
 The custom theme is initialized once.
 
 Offline format/Clippy checks and **201 tests** passed, including four regressions
@@ -444,6 +444,81 @@ The baseline executable SHA-256 is
 `8b1e4679b2a7491a7880be5bc39694bee18b20c3f6844d3a8ac002edbffc45e2`;
 the measured new executable SHA-256 is
 `58ffc7c5992fa60f858a7d6d03b91a7d49c061b8b51c45bb52972c012db0c418`.
+
+### Supplied-design native workspace
+
+The supplied `design/code.html`, `screen.png`, and `DESIGN.md` now drive the
+normal native UI: the 48-pixel custom window header, Inter/Literata typography,
+blue-accent palette, three Continue Reading cards, six-column cover shelf,
+responsive stacking, segmented sorting, and footer. The source design files are
+unchanged. There is no browser/WebView replacement and no animation timer;
+hover treatment is event-driven. The nine bundled font/icon faces total
+2,362,368 bytes, with upstream and modification notices in `assets/licenses/`
+and the portable folder.
+
+The shelf uses real document authors, source covers, sizes, opening times, and
+saved progress rather than installed sample records. A separate atomic library
+retains up to 4,096 entries / 4 MiB, without the Recent list's 12-entry eviction.
+Legacy entries acquire unknown metadata only when explicitly reopened. Cover
+PNGs are bounded to 240 × 360 / 512 KiB, cropped before downsampling to preserve
+detail for both card shapes. Only visible/overscan covers become UI handles,
+and entering a document releases those handles. Startup reads stored metadata
+and cached covers, not the source books or PDFium.
+
+Ctrl+K searches the local library. Settings change reflow size, per document and
+for new documents in the session. Library/Ctrl+W saves and returns; unfocused
+Space resumes the first continuing document. The custom controls retain actual
+Windows minimize, maximize, move, resize, and save-before-exit behavior.
+
+Offline formatting, Clippy with warnings denied, and **212 tests** passed.
+New boundary regressions cover full-capacity relocation, an existing destination,
+center-cropped thumbnails, and keyboard focus ownership when switching surfaces.
+Native verification used isolated profiles, an unrelated working directory,
+restricted PATH, and actual client pixels at 125% DPI. The reference's nine
+titles/covers were placed into test-only documents with generated exercise text,
+then imported through the real native picker, not injected into a library JSON.
+The 1280 × 838 and 540 × 360 surfaces, sorting, switcher, settings, copy, typed
+resume, rejected open, and native frame operations were exercised.
+Quick Switcher Locate restored a moved EPUB's chapter, item, fractional offset,
+and size exactly, replacing its old library path. Remove preserved the file
+and its saved position. The native process then exited normally with code 0.
+
+Visual/runtime checks exposed cover overflow, modal widget-tree replacement
+resetting scroll offsets, and a stale shelf action intercepting Space in a reader.
+The fixes preserve clipped renderer layers, stable root slots, and content-scoped
+focus. Compact traversal reveals the book's title/author rather than only the top
+of an oversized cover. Actual before/after saved anchors and screenshots are
+retained under `target/portable/design-evidence/`. This is not an independent
+clean-host, cold-restart, long-session, or new OLE gesture claim.
+
+The final portable executable is 12,582,912 bytes (12 MiB), SHA-256
+`ac967a6262ac4913768226f2120db181784d8a5bbf80eca1ad5f2b6ec2b19ab0`.
+The complete folder contains 350 files and is approximately 21 MiB, including
+PDFium and third-party notices.
+
+Five isolated 12-second runs used `process-measure`, 250 ms sampling, the default
+1280 × 800 logical window, restricted PATH, and an unrelated working directory.
+The populated library profile was copied from the actual native import run.
+Each row is the median of 21 valid live samples in the final approximately
+five seconds; this is one run per scenario, not a comparative benchmark.
+
+| Surface | Private working set | Private commit | Idle CPU-counter increase |
+| --- | ---: | ---: | ---: |
+| Empty library | 13.05 MiB | 14.15 MiB | 0 |
+| Nine-book library | 19.07 MiB | 20.64 MiB | 0 |
+| HTML first view | 15.22 MiB | 16.50 MiB | 0 |
+| PDF first view | 44.14 MiB | 45.42 MiB | 0 |
+| EPUB first view | 14.33 MiB | 16.03 MiB | 0 |
+
+All five collections were valid. Their target exit code 124 is the measurement
+tool's intentional duration-limit termination, not the native smoke's graceful
+exit. No startup latency or active-frame measurement is inferred from them.
+The prior UI measurements used a different window size and documents, so these
+numbers do not isolate font or design overhead.
+
+Final evidence: `target/portable/design-evidence/run-06/outcomes.json` and
+`screenshots/`, `window-final/` for modal/frame checks, and
+`resources-final/<scenario>/{manifest.json,samples.jsonl}` for raw measurements.
 
 ## Delivery order
 

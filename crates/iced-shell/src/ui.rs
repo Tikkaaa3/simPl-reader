@@ -6,20 +6,52 @@ use iced::advanced::widget::{Id, Operation, operation};
 use iced::widget::{button, container, scrollable, text_input};
 use iced::{Border, Color, Font, Rectangle, Theme, Vector, font};
 
-pub const BACKGROUND: Color = Color::from_rgb8(0x15, 0x17, 0x19);
-pub const SURFACE: Color = Color::from_rgb8(0x1d, 0x21, 0x23);
-pub const RAISED: Color = Color::from_rgb8(0x26, 0x2c, 0x2e);
-pub const BORDER: Color = Color::from_rgb8(0x34, 0x3c, 0x3d);
-pub const TEXT: Color = Color::from_rgb8(0xe7, 0xeb, 0xe7);
-pub const MUTED: Color = Color::from_rgb8(0xa0, 0xab, 0xaa);
-pub const ACCENT: Color = Color::from_rgb8(0xb4, 0xce, 0xb8);
-pub const DANGER: Color = Color::from_rgb8(0xe8, 0xa4, 0x9a);
+pub const BACKGROUND: Color = Color::from_rgb8(0x10, 0x14, 0x1a);
+pub const SURFACE: Color = Color::from_rgb8(0x1c, 0x20, 0x26);
+pub const RAISED: Color = Color::from_rgb8(0x26, 0x2a, 0x31);
+pub const LOWEST: Color = Color::from_rgb8(0x0a, 0x0e, 0x14);
+pub const BORDER: Color = Color::from_rgb8(0x41, 0x47, 0x52);
+pub const TEXT: Color = Color::from_rgb8(0xdf, 0xe2, 0xeb);
+pub const SECONDARY: Color = Color::from_rgb8(0xc0, 0xc7, 0xd4);
+pub const MUTED: Color = Color::from_rgb8(0x8b, 0x91, 0x9d);
+pub const ACCENT: Color = Color::from_rgb8(0x58, 0xa6, 0xff);
+pub const DANGER: Color = Color::from_rgb8(0xff, 0xb4, 0xab);
 
-pub const SEMIBOLD: Font = Font {
-    family: font::Family::Name("Segoe UI"),
-    weight: font::Weight::Semibold,
-    ..Font::DEFAULT
+pub const SANS: Font = Font::with_name("Inter");
+pub const MEDIUM: Font = Font {
+    weight: font::Weight::Medium,
+    ..SANS
 };
+pub const SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
+    ..SANS
+};
+pub const SERIF: Font = Font::with_name("Literata");
+pub const SERIF_MEDIUM: Font = Font {
+    weight: font::Weight::Medium,
+    ..SERIF
+};
+pub const SERIF_ITALIC: Font = Font {
+    style: font::Style::Italic,
+    ..SERIF
+};
+pub const ICONS: Font = Font::with_name("Material Symbols Outlined");
+
+/// The text faces retain upstream glyph coverage; native fallback handles other scripts.
+/// Embedded bytes keep the portable executable independent of installed fonts.
+pub fn font_data() -> [&'static [u8]; 9] {
+    [
+        include_bytes!("../../../assets/fonts/Inter-Regular.ttf"),
+        include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
+        include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
+        include_bytes!("../../../assets/fonts/Literata-Regular.ttf"),
+        include_bytes!("../../../assets/fonts/Literata-Medium.ttf"),
+        include_bytes!("../../../assets/fonts/Literata-Bold.ttf"),
+        include_bytes!("../../../assets/fonts/Literata-Italic.ttf"),
+        include_bytes!("../../../assets/fonts/Literata-BoldItalic.ttf"),
+        include_bytes!("../../../assets/fonts/MaterialSymbolsOutlined-Subset.ttf"),
+    ]
+}
 
 static THEME: LazyLock<Theme> = LazyLock::new(|| {
     Theme::custom(
@@ -56,24 +88,20 @@ pub fn button_style(
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     let disabled = matches!(status, button::Status::Disabled);
     let (background, text_color) = if disabled {
-        (None, Color::from_rgb8(0x65, 0x70, 0x70))
+        (None, MUTED)
     } else {
         match tone {
             ButtonTone::Primary => (
-                Some(if hovered {
-                    Color::from_rgb8(0xca, 0xdf, 0xcd)
-                } else {
-                    ACCENT
-                }),
-                BACKGROUND,
+                Some(ACCENT.scale_alpha(if hovered { 0.2 } else { 0.12 })),
+                Color::from_rgb8(0xa2, 0xc9, 0xff),
             ),
             ButtonTone::Destructive if hovered => {
-                (Some(Color::from_rgb8(0x3c, 0x2a, 0x29)), DANGER)
+                (Some(Color::from_rgb8(0x47, 0x29, 0x2b)), DANGER)
             }
-            _ if selected => (Some(Color::from_rgb8(0x2b, 0x3a, 0x30)), ACCENT),
+            _ if selected => (Some(RAISED), TEXT),
             _ if hovered => (Some(RAISED), TEXT),
-            ButtonTone::Quiet => (Some(RAISED), TEXT),
-            ButtonTone::Subtle | ButtonTone::Destructive => (None, MUTED),
+            ButtonTone::Quiet => (Some(SURFACE), TEXT),
+            ButtonTone::Subtle | ButtonTone::Destructive => (None, SECONDARY),
         }
     };
     button::Style {
@@ -96,9 +124,9 @@ pub fn panel(_: &Theme) -> container::Style {
     container::Style {
         background: Some(SURFACE.into()),
         border: Border {
-            color: BORDER,
+            color: Color::from_rgb8(0x24, 0x28, 0x2e),
             width: 1.0,
-            radius: 12.0.into(),
+            radius: 8.0.into(),
         },
         ..container::Style::default()
     }
@@ -106,7 +134,7 @@ pub fn panel(_: &Theme) -> container::Style {
 
 pub fn header(_: &Theme) -> container::Style {
     container::Style {
-        background: Some(SURFACE.into()),
+        background: Some(LOWEST.into()),
         ..container::Style::default()
     }
 }
@@ -115,7 +143,7 @@ pub fn inset(_: &Theme) -> container::Style {
     container::Style {
         background: Some(RAISED.into()),
         border: Border {
-            radius: 8.0.into(),
+            radius: 4.0.into(),
             ..Border::default()
         },
         ..container::Style::default()
@@ -125,11 +153,11 @@ pub fn inset(_: &Theme) -> container::Style {
 pub fn input_style(_: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
-        background: BACKGROUND.into(),
+        background: LOWEST.into(),
         border: Border {
             color: if focused { ACCENT } else { BORDER },
             width: if focused { 2.0 } else { 1.0 },
-            radius: 8.0.into(),
+            radius: 4.0.into(),
         },
         icon: MUTED,
         placeholder: MUTED,
@@ -138,7 +166,7 @@ pub fn input_style(_: &Theme, status: text_input::Status) -> text_input::Style {
         } else {
             TEXT
         },
-        selection: Color::from_rgb8(0x45, 0x60, 0x4c),
+        selection: Color::from_rgb8(0x00, 0x3a, 0x6b),
     }
 }
 
@@ -203,7 +231,7 @@ pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::St
         } else if active {
             ACCENT
         } else {
-            Color::from_rgb8(0x65, 0x70, 0x70)
+            MUTED
         }
         .into();
         rail.scroller.border.radius = 3.0.into();

@@ -19,6 +19,14 @@ try {
     Copy-Item -LiteralPath $exe -Destination (Join-Path $staging 'simPl.exe')
     & (Join-Path $PSScriptRoot 'pdfium.ps1') -Offline:$Offline -Destination $staging
     & (Join-Path $PSScriptRoot 'collect-licenses.ps1') -Destination (Join-Path $staging 'third-party') -Offline:$Offline
+    # Font binaries are embedded in simPl.exe; ship their notices alongside Rust notices.
+    $fontNotices = Join-Path $staging 'third-party\fonts'
+    New-Item -ItemType Directory -Path $fontNotices | Out-Null
+    foreach ($notice in @('Inter-OFL.txt', 'Literata-OFL.txt', 'Material-Symbols-LICENSE.txt', 'Material-Symbols-CHANGES.txt', 'Typeface-SOURCES.txt')) {
+        $source = Join-Path $root "assets\licenses\$notice"
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Bundled font notice missing: $source" }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $fontNotices $notice)
+    }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     Move-Item -LiteralPath $staging -Destination $output
 } finally {

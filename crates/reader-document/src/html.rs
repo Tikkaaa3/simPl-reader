@@ -192,6 +192,7 @@ pub(crate) fn parse_html(
     };
     let mut title = String::new();
     find_title(&dom.document, &mut title);
+    let author = find_element(&dom.document, "head").and_then(|head| find_author(&head));
     if let Some(body) = find_element(&dom.document, "body") {
         extractor.walk(&body, Context::default());
     }
@@ -233,6 +234,7 @@ pub(crate) fn parse_html(
     Ok(ParsedHtml {
         document: Document {
             path,
+            author,
             title,
             fingerprint: format!("{:x}", Sha256::digest(bytes)),
             items,
@@ -290,6 +292,22 @@ fn find_title(node: &Handle, title: &mut String) {
     }
 }
 
+fn find_author(node: &Handle) -> Option<String> {
+    if let NodeData::Element { name, .. } = &node.data
+        && name.local.as_ref() == "meta"
+        && attr(node, "name").is_some_and(|name| name.eq_ignore_ascii_case("author"))
+    {
+        return attr(node, "content")
+            .map(|content| content.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|content| !content.is_empty());
+    }
+    for child in node.children.borrow().iter() {
+        if let Some(author) = find_author(child) {
+            return Some(author);
+        }
+    }
+    None
+}
 fn collect_text(node: &Handle, out: &mut String) {
     if let NodeData::Text { contents } = &node.data {
         out.push_str(&contents.borrow());
@@ -753,56 +771,54 @@ impl Extractor<'_> {
             return Ok((key, None));
         }
         let encoded = self.resources.load(&key)?;
-        if encoded.len() as u64 > MAX_IMAGE_BYTES {
-            return Err("image exceeds encoded size limit".into());
-        }
-        let identify = || {
-            image::ImageReader::new(std::io::Cursor::new(encoded.as_slice()))
-                .with_guessed_format()
-                .map_err(|e| format!("cannot identify image: {e}"))
-        };
-        let (width, height) = identify()?
-            .into_dimensions()
-            .map_err(|e| format!("corrupt or unsupported image: {e}"))?;
-        if width == 0
-            || height == 0
-            || width > 10_000
-            || height > 10_000
-            || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
-        {
-            return Err("image exceeds pixel/dimension limit".into());
-        }
-        let length = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|size| size.checked_mul(4))
-            .ok_or("image dimensions overflow")?;
-        if self
-            .total_rgba_bytes
-            .checked_add(length)
-            .is_none_or(|n| n > MAX_TOTAL_RGBA_BYTES)
-        {
-            return Err("document image allocation limit exceeded".into());
-        }
-        let mut reader = identify()?;
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(MAX_TOTAL_RGBA_BYTES as u64);
-        limits.max_image_width = Some(10_000);
-        limits.max_image_height = Some(10_000);
-        reader.limits(limits);
-        let image = reader
-            .decode()
-            .map_err(|e| format!("corrupt or unsupported image: {e}"))?;
-        let rgba = image.to_rgba8().into_raw();
-        self.total_rgba_bytes += rgba.len();
-        Ok((
-            key,
-            Some(ImageAsset {
-                width,
-                height,
-                rgba,
-            }),
-        ))
+        let image = decode_image(&encoded, MAX_TOTAL_RGBA_BYTES - self.total_rgba_bytes)?;
+        self.total_rgba_bytes += image.rgba.len();
+        Ok((key, Some(image)))
     }
+}
+
+/// Shared bounded raster decoder for HTML images and declared EPUB covers.
+pub(crate) fn decode_image(encoded: &[u8], remaining_rgba: usize) -> Result<ImageAsset, String> {
+    if encoded.len() as u64 > MAX_IMAGE_BYTES {
+        return Err("image exceeds encoded size limit".into());
+    }
+    let identify = || {
+        image::ImageReader::new(std::io::Cursor::new(encoded))
+            .with_guessed_format()
+            .map_err(|e| format!("cannot identify image: {e}"))
+    };
+    let (width, height) = identify()?
+        .into_dimensions()
+        .map_err(|e| format!("corrupt or unsupported image: {e}"))?;
+    if width == 0
+        || height == 0
+        || width > 10_000
+        || height > 10_000
+        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
+    {
+        return Err("image exceeds pixel/dimension limit".into());
+    }
+    let length = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|size| size.checked_mul(4))
+        .ok_or("image dimensions overflow")?;
+    if length > remaining_rgba {
+        return Err("document image allocation limit exceeded".into());
+    }
+    let mut reader = identify()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_TOTAL_RGBA_BYTES as u64);
+    limits.max_image_width = Some(10_000);
+    limits.max_image_height = Some(10_000);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|e| format!("corrupt or unsupported image: {e}"))?;
+    Ok(ImageAsset {
+        width,
+        height,
+        rgba: image.to_rgba8().into_raw(),
+    })
 }
 
 fn detect_direction(text: &str) -> BaseDirection {
@@ -895,6 +911,16 @@ mod tests {
             all,
             ["Section <One>", text.as_str(), "outer", "nested", "tail"]
         );
+    }
+
+    #[test]
+    fn author_comes_only_from_document_metadata() {
+        let dir = TempDir::new();
+        let book = load_html(&dir.html("<head><title>Actual title</title><meta name='AuThOr' content='  Ursula  K. Le Guin '></head><body>Read me</body>")).unwrap();
+        assert_eq!(book.title, "Actual title");
+        assert_eq!(book.author.as_deref(), Some("Ursula K. Le Guin"));
+        let untitled = load_html(&dir.html("<body><p>Anonymous text</p></body>")).unwrap();
+        assert_eq!(untitled.author, None);
     }
 
     #[test]

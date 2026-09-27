@@ -1,0 +1,9 @@
+Material Symbols Outlined icon subset — redistribution and change notice
+Source: https://github.com/google/material-design-icons/blob/master/variablefont/MaterialSymbolsOutlined%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf
+Source Git blob SHA-1: d22fa3f30c8fecd248542b63b4f2f68d29a48f41
+License: Apache License 2.0 (Material-Symbols-LICENSE.txt).
+
+This font file was changed: variable axes instantiated at FILL=0, GRAD=0,
+opsz=24, wght=400; glyphs subset to Unicode E145, E5C4, E5C8, E5CD,
+E86F, E8B6, E8B8, EA19, EAE7, EF7A (the source also aliases search at EF7A).
+Output: ../fonts/MaterialSymbolsOutlined-Subset.ttf

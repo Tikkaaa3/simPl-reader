@@ -4,7 +4,7 @@
 
 simPl aims to be a small, responsive, offline native reader for local books.
 The first target is Windows x64. The focused MVP reads **HTML, then PDF, then EPUB**;
-it is not a library platform, cloud service, or browser engine.
+it is not a cloud service or browser engine.
 
 ## Current state
 
@@ -14,13 +14,17 @@ explicit reopen. HTML and EPUB reflow with font and viewport changes; PDFs retai
 their page layout and use zoom or fit-width. The single UI path is **Iced with
 the tiny-skia CPU renderer**; WGPU is not the active backend.
 
-The reader has a minimal graphite-and-sage interface: system Segoe UI typography,
-quiet controls, a compact welcome screen, and recent-document cards with format
-badges. Narrow windows keep the reading controls available; keyboard focus reveals
-the full recent row or relevant panel instead of disappearing inside nested scroll
-areas. No new UI dependency, bundled font, animation, or GPU backend is required.
+The native interface follows the supplied `design/` reference: a dark editorial
+workspace, Inter controls, Literata headings and reading text, a draggable custom
+titlebar, three Continue Reading cards, and a cover-based library. The library
+adapts from six columns to three or two on narrower windows. Search, sorting,
+reading settings, and keyboard focus are functional, not static mockups.
 
-The normal application needs no repository fixtures or bundled test fonts.
+Fonts and the small icon subset are bundled for offline use, with their licenses
+in the portable folder. The application still uses tiny-skia, not a browser,
+WebView, or GPU backend; there are no animation timers or runtime font downloads.
+
+The normal application needs no repository fixtures or diagnostic test fonts.
 The 1,000/10,000-paragraph fixture modes remain explicit diagnostics for
 virtualization, mixed-script layout, and native selection regressions.
 
@@ -97,11 +101,39 @@ another working directory without repository fixtures. Only `--reader-poc` /
 `--reader-poc-large` need repository fixtures; `--shell-poc` opens the old empty
 diagnostic shell.
 
+## Your local library
+
+- **Add Document / Ctrl+O** opens the native file picker. The titlebar's traffic
+  controls close, minimize, and maximize/restore the native window; its empty
+  area is draggable and its edges resize.
+- **Continue Reading** shows up to three recent, unfinished documents with actual
+  saved progress. **Space**, without a focused control, resumes the first one.
+  The remaining documents appear under **Library**; sort by recent opening,
+  title, or format. No sample books, invented dates, or estimated reading times
+  are installed.
+- **Search / Ctrl+K** finds local titles, authors, or filenames. Use Up/Down and
+  Enter to open a result, or Locate/Remove for its stored entry. Escape dismisses
+  the switcher without moving the current reading position.
+- **Settings** adjusts HTML/EPUB text size. It is saved with each document and
+  becomes the default for new documents in the current session. PDF zoom remains
+  separate. **Library / Ctrl+W** saves and returns from a document.
+- `%LOCALAPPDATA%\simPl\library.json` retains up to **4,096 entries / 4 MiB**,
+  independently of the 12-item Recent list. Writes are atomic; reaching the limit
+  does not silently evict books. Missing library storage imports legacy Recent
+  entries once. Their unknown metadata stays unknown until explicitly reopened.
+  An unreadable library is preserved rather than overwritten.
+- Authors come from document metadata. Covers come from an EPUB's declared cover,
+  the first local HTML image, or the first PDF page. Missing artwork uses a
+  typographic jacket. Fingerprint-keyed PNG thumbnails in `simPl\covers\` are at
+  most **240 × 360 pixels / 512 KiB each**. Only visible/overscan covers are decoded,
+  and their UI handles are released while reading. Startup does not parse the
+  source books or load PDFium just to show cached library covers.
+
+
 ## Recent files, moved books, and keyboard access
 
-- **Recent / Ctrl+R** opens the list; it is also visible on the welcome screen.
-  The 12 most recently opened documents are retained, without automatically
-  reopening a book at startup. Open a row to resume it.
+- **Recent / Ctrl+R** opens the separate 12-item recent list from the workspace or
+  reader, without automatically reopening a book at startup. Open a row to resume it.
 - **Tab / Shift+Tab** moves the visible focus outline through available controls;
   **Enter / Space** activates the focused control. **F1** opens keyboard help.
   **Escape** dismisses auxiliary panels or an error and clears selection.
@@ -109,9 +141,9 @@ diagnostic shell.
   same format and exact SHA-256 fingerprint can inherit its reading position.
   A different book is rejected without replacing the old history entry. If the
   source moved while still open, the newer in-memory position is carried over.
-- **Remove** forgets a recent entry, not its saved reading-position record.
-  Successful relocation replaces the old recent path; its old position record
-  remains available as recovery data.
+- **Remove** forgets the document's library and Recent entries, not its book file,
+  saved position, or cached thumbnail. Successful relocation replaces the old
+  stored path; its old position record remains available as recovery data.
 - History lives in `%LOCALAPPDATA%\simPl\recent.json`, with a 12-entry / 64 KiB
   bound and atomic replacement. History errors do not prevent reading. Unreadable
   or corrupt history is not overwritten by ordinary opens; **Reset history**
@@ -120,13 +152,13 @@ diagnostic shell.
   `.html`, `.htm`, `.xhtml`, `.pdf`, `.epub`. Other extensions are rejected instead
   of being treated as HTML. A failed replacement keeps the current book and view.
 - If saving a reading position fails, the book stays open. After fixing the
-  storage problem, use **Close / Ctrl+W** again to retry. **Dismiss / Escape**
+  storage problem, use **Library / Ctrl+W** again to retry. **Dismiss / Escape**
   cancels that close request and returns to reading; **Close without saving**
   explicitly discards the unsaved position.
 
 ## Reading HTML
 
-- **Open / Ctrl+O:** native file picker. **Ctrl+W / Close:** close the document.
+- **Add Document / Open / Ctrl+O:** native file picker. **Ctrl+W / Library:** save and close the document.
 - Scroll with the wheel, Page Up/Down, or Space; Ctrl+Home/End jumps to the ends.
 - **A− / A+** or Ctrl+−/+ changes font size; Ctrl+0 resets it. Window resizing reflows text.
 - Drag to select, Ctrl+A selects document text, and Ctrl+C copies in source order.
@@ -175,7 +207,7 @@ PDFium DLL, and third-party notices. Windows builds statically link the MSVC
 runtime instead of requiring a separate VC++ redistributable. PDFium's archive
 and SHA-256 are pinned in `scripts/pdfium.ps1`; Cargo versions are locked.
 Notices retain the binary distributor's license, the PDFium/native notices,
-Rust dependency licenses, and standard-library notices. The application's own
+Rust dependency licenses, standard-library notices, and bundled font licenses. The application's own
 license has not been chosen; no open-source license for simPl is asserted.
 Upstream sources: [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)
 and [pdfium-render](https://github.com/ajrcarey/pdfium-render).
@@ -338,7 +370,7 @@ restarted and unrelated sessions were not terminated.
 
 ### Modern UI verification
 
-The redesigned reader passed offline formatting, Clippy with warnings denied,
+The previous graphite/sage interface passed offline formatting, Clippy with warnings denied,
 and **201 Rust tests**, including four focus-visibility geometry regressions.
 The copied portable folder was exercised on the native Windows desktop at 125%
 scaling, including the 540 × 360 logical minimum: mouse/native-picker opening,
@@ -354,3 +386,35 @@ help reveals its heading and shortcut text rather than only its Hide button.
 A separate five-second check with keyboard focus and help open recorded no
 user/kernel CPU-counter increase. The paired release measurements and their
 limits are in the [roadmap](roadmap.md#modern-reader-ui).
+
+### Supplied-design interface verification
+
+The `design/` reference was implemented as native Iced widgets, not embedded HTML.
+Offline formatting, warnings-as-errors Clippy, and **212 Rust tests** passed.
+Real desktop captures were inspected at 125% scaling: a 1280 × 838 logical
+workspace (height limited by this display), and the 540 × 360 minimum.
+
+Nine test-only EPUB/PDF/HTML documents use the reference artwork and metadata,
+but generated exercise text, not the named books' contents. They were opened
+through the native picker; the library and progress were not seeded with mock
+JSON. Verification covered cover crops, actual metadata, title/format sorting,
+search, text-size settings, keyboard opening followed by Space, copy and saved
+position across all three formats, and a missing file retaining the current book.
+The separate native frame checks exercised minimize, maximize/restore, dragging,
+corner resizing, and close-time position saving.
+Quick Switcher Locate also restored a moved EPUB's chapter, item, fractional
+offset, and font size exactly; Remove left its file and saved position intact.
+
+The smoke caught and fixed cover overflow, lost reader offsets when opening a
+modal, hidden metadata on compact keyboard-focused cards, and stale shelf focus
+intercepting Space after a book opened. Search/settings now preserve the same
+saved item and intra-item fraction. Evidence is machine-local and untracked under
+`target/portable/design-evidence/`; this is not a clean-Windows, cold-launch, or
+new OLE drag/drop qualification.
+
+Five 12-second resource runs recorded a last-five-second median private working
+set of **13.05 MiB empty / 19.07 MiB nine-book library / 15.22 MiB HTML /
+44.14 MiB PDF / 14.33 MiB EPUB**, with no user/kernel CPU-counter increase in
+those idle windows. These are single runs on this host, not startup timings or
+an old/new benchmark. The [roadmap](roadmap.md#supplied-design-native-workspace)
+records the method, private commit, build identity, and evidence paths.

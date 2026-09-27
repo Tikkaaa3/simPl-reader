@@ -187,41 +187,54 @@ fn validate_entry(entry: &Entry) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn same_path(first: &Path, second: &Path) -> bool {
+pub(crate) fn path_key(path: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
+    path.as_os_str()
+        .encode_wide()
+        .map(|unit| {
+            if unit == u16::from(b'/') {
+                u16::from(b'\\')
+            } else {
+                unit
+            }
+        })
+        .collect()
+}
 
-    if first == second {
-        return true;
-    }
-    let normalized = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .map(|unit| {
-                if unit == u16::from(b'/') {
-                    u16::from(b'\\')
-                } else {
-                    unit
-                }
-            })
-            .collect::<Vec<_>>()
+#[cfg(windows)]
+pub(crate) fn compare_path_keys(first: &[u16], second: &[u16]) -> std::cmp::Ordering {
+    use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
+    // Persisted paths are validated at <=4096 UTF-8 bytes; opened Windows paths
+    // are bounded by the OS. Both counted UTF-16 buffers are valid for the call.
+    let result = unsafe {
+        CompareStringOrdinal(
+            first.as_ptr(),
+            first.len() as i32,
+            second.as_ptr(),
+            second.len() as i32,
+            1,
+        )
     };
-    let first = normalized(first);
-    let second = normalized(second);
-    let (Ok(first_len), Ok(second_len)) = (i32::try_from(first.len()), i32::try_from(second.len()))
-    else {
-        return false;
-    };
-    // SAFETY: both counted UTF-16 buffers remain valid throughout this call.
-    // Ordinal comparison matches Windows casing without full Unicode expansions.
-    unsafe {
-        CompareStringOrdinal(first.as_ptr(), first_len, second.as_ptr(), second_len, 1)
-            == CSTR_EQUAL
-    }
+    result.cmp(&CSTR_EQUAL)
+}
+
+#[cfg(windows)]
+pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
+    first == second || compare_path_keys(&path_key(first), &path_key(second)).is_eq()
 }
 
 #[cfg(not(windows))]
-fn same_path(first: &Path, second: &Path) -> bool {
+pub(crate) fn path_key(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+#[cfg(not(windows))]
+pub(crate) fn compare_path_keys(first: &Path, second: &Path) -> std::cmp::Ordering {
+    first.cmp(second)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
     first == second
 }
 

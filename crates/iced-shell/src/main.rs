@@ -4,8 +4,10 @@
 compile_error!("simPl currently supports Windows only");
 
 mod app;
+mod chrome;
 mod pdf_reader;
 mod platform;
+mod shelf;
 mod ui;
 
 use iced::event;
