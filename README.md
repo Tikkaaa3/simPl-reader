@@ -35,8 +35,15 @@ Example libraries shown above. Books are not included with the application.
 
 ## Get started
 
-The current target is **Windows x64**. To create the portable application, follow
-[Build from source](#build-from-source). If you already have a portable folder:
+The current target is **Windows x64**. The setup package is
+`simPl-0.1.0-windows-x64-setup.exe`. It installs for your Windows account, offers
+desktop and Start menu shortcuts, and registers an uninstaller in Windows Settings.
+When uninstalling, you can keep your library or delete simPl's imported copies and
+reading data. Original files outside the library are left untouched.
+
+To build the setup package, see the [installer guide](installer/README.md).
+To create the portable application, follow [Build from source](#build-from-source).
+If you already have a portable folder:
 
 1. Run `simPl.exe`. Keep `pdfium.dll` and the `third-party` folder beside it.
 2. Select **Add Document**, press **Ctrl+O**, or drop a supported file into the window.
@@ -119,6 +126,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 check
 
 # Build a complete portable folder.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
+
+# Build a website installer (also requires Inno Setup 6.7.3).
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.0
 ```
 
 The portable output is `target\portable\simPl\simPl.exe`. The scripts initialize
