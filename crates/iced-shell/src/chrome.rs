@@ -18,6 +18,8 @@ pub enum Action {
     Menu,
     Search,
     Settings,
+    ToggleAppearance,
+    ToggleToolbar,
     Resize(window::Direction),
 }
 
@@ -38,24 +40,27 @@ impl Eq for Action {}
 const HEIGHT: f32 = 48.0;
 const EDGE: f32 = 4.0;
 const CORNER: f32 = 8.0;
-const HEADER: Color = Color::from_rgb8(0x0b, 0x0f, 0x15);
 
-fn blend(foreground: Color, opacity: f32) -> Color {
+fn blend(theme: &Theme, foreground: Color, opacity: f32) -> Color {
     Color::from_rgb(
-        foreground.r * opacity + HEADER.r * (1.0 - opacity),
-        foreground.g * opacity + HEADER.g * (1.0 - opacity),
-        foreground.b * opacity + HEADER.b * (1.0 - opacity),
+        foreground.r * opacity + ui::palette(theme).lowest.r * (1.0 - opacity),
+        foreground.g * opacity + ui::palette(theme).lowest.g * (1.0 - opacity),
+        foreground.b * opacity + ui::palette(theme).lowest.b * (1.0 - opacity),
     )
 }
 
-fn button_style(status: button::Status, focused: bool) -> button::Style {
+fn button_style(theme: &Theme, status: button::Status, focused: bool) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: hovered.then_some(ui::RAISED.into()),
-        text_color: if hovered { ui::TEXT } else { ui::SECONDARY },
+        background: hovered.then_some(ui::palette(theme).raised.into()),
+        text_color: if hovered {
+            ui::palette(theme).text
+        } else {
+            ui::palette(theme).secondary
+        },
         border: Border {
             color: if focused {
-                ui::ACCENT
+                ui::palette(theme).accent
             } else {
                 Color::TRANSPARENT
             },
@@ -72,13 +77,16 @@ fn hint(
 ) -> Element<'static, Action> {
     tooltip(
         content,
-        text(caption).font(ui::SANS).size(12).color(ui::TEXT),
+        text(caption)
+            .font(ui::SANS)
+            .size(12)
+            .style(ui::primary_text),
         tooltip::Position::Bottom,
     )
     .gap(5)
     .padding(7)
-    .style(|_| container::Style {
-        background: Some(ui::RAISED.into()),
+    .style(|theme| container::Style {
+        background: Some(ui::palette(theme).raised.into()),
         border: Border {
             radius: 5.0.into(),
             ..Border::default()
@@ -104,13 +112,13 @@ fn focus_marker(
 
 fn dot(
     action: Action,
-    color: Color,
+    color: impl Fn(&Theme) -> Color + 'static,
     focused: Option<Action>,
     caption: &'static str,
 ) -> Element<'static, Action> {
     let selected = focused == Some(action);
-    let dot = container(space().width(12).height(12)).style(move |_| container::Style {
-        background: Some(color.into()),
+    let dot = container(space().width(12).height(12)).style(move |theme| container::Style {
+        background: Some(color(theme).into()),
         border: Border {
             radius: 6.0.into(),
             ..Border::default()
@@ -122,7 +130,7 @@ fn dot(
         .width(20)
         .height(30)
         .padding([9, 4])
-        .style(move |_, status| button_style(status, selected));
+        .style(move |theme, status| button_style(theme, status, selected));
     hint(focus_marker(control, selected), caption)
 }
 
@@ -135,7 +143,13 @@ fn icon(
     let selected = focused == Some(action);
     let control = button(
         text(name)
-            .font(ui::ICONS)
+            .font(
+                if matches!(action, Action::ToggleAppearance | Action::ToggleToolbar) {
+                    iced::Font::with_name("Segoe UI Symbol")
+                } else {
+                    ui::ICONS
+                },
+            )
             .size(19)
             .line_height(1.0)
             .shaping(text::Shaping::Advanced),
@@ -144,59 +158,108 @@ fn icon(
     .width(32)
     .height(32)
     .padding(6)
-    .style(move |_, status| button_style(status, selected));
+    .style(move |theme, status| button_style(theme, status, selected));
     hint(focus_marker(control, selected), caption)
 }
 
 /// The 48-DIP draggable header. Controls receive events before the drag surface.
 /// `active` changes visual emphasis, never whether the native controls work.
-pub fn view(focused: Option<Action>, active: bool) -> Element<'static, Action> {
+pub fn view<'a>(
+    focused: Option<Action>,
+    active: bool,
+    document_title: Option<String>,
+    appearance: Option<reader_document::preferences::Appearance>,
+    toolbar: Option<bool>,
+) -> Element<'a, Action> {
     let left = row![
         dot(
             Action::Close,
-            blend(ui::DANGER, 0.8),
+            |theme| blend(theme, ui::palette(theme).danger, 0.8),
             focused,
             "Close window"
         ),
         dot(
             Action::Minimize,
-            blend(ui::MUTED, 0.6),
+            |theme| blend(theme, ui::palette(theme).muted, 0.6),
             focused,
             "Minimize window"
         ),
         dot(
             Action::Maximize,
-            blend(ui::BORDER, 0.8),
+            |theme| blend(theme, ui::palette(theme).border, 0.8),
             focused,
             "Maximize or restore window"
         ),
     ]
     .align_y(iced::Alignment::Center);
-    let right = row![
-        icon(
-            Action::Search,
-            "\u{e8b6}",
+    let mut right = row![icon(
+        Action::Search,
+        "\u{e8b6}",
+        focused,
+        "Search or switch (Ctrl+K)"
+    )];
+    if let Some(appearance) = appearance {
+        right = right.push(icon(
+            Action::ToggleAppearance,
+            if appearance == reader_document::preferences::Appearance::Dark {
+                "☼"
+            } else {
+                "☾"
+            },
             focused,
-            "Search or switch (Ctrl+K)"
-        ),
-        icon(Action::Settings, "\u{e8b8}", focused, "Settings"),
-    ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center);
-    // Iced Text has no letter-spacing property; separate glyphs preserve the
-    // reference's 1.2-DIP tracking without inserting visible word spaces.
-    let title_color = if active { ui::SECONDARY } else { ui::MUTED };
-    let title = row![
-        text("S").font(ui::MEDIUM).size(12).color(title_color),
-        text("I").font(ui::MEDIUM).size(12).color(title_color),
-        text("M").font(ui::MEDIUM).size(12).color(title_color),
-        text("P").font(ui::MEDIUM).size(12).color(title_color),
-        text("L").font(ui::MEDIUM).size(12).color(title_color),
-    ]
-    .spacing(1.2);
+            appearance.toggle_label(),
+        ));
+    }
+    if let Some(expanded) = toolbar {
+        right = right.push(icon(
+            Action::ToggleToolbar,
+            "▤",
+            focused,
+            if expanded {
+                "Hide reading toolbar (F8)"
+            } else {
+                "Show reading toolbar (F8)"
+            },
+        ));
+    }
+    let right = right
+        .push(icon(Action::Settings, "\u{e8b8}", focused, "Settings"))
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    let side_width = if appearance.is_some() || toolbar.is_some() {
+        152
+    } else {
+        112
+    };
+    // Library keeps the tracked wordmark; a document uses its own title.
+    let title_style = move |theme: &Theme| text::Style {
+        color: Some(if active {
+            ui::palette(theme).secondary
+        } else {
+            ui::palette(theme).muted
+        }),
+    };
+    let title: Element<'a, Action> = if let Some(document_title) = document_title {
+        text(document_title)
+            .font(ui::MEDIUM)
+            .size(12)
+            .style(title_style)
+            .wrapping(text::Wrapping::None)
+            .into()
+    } else {
+        row![
+            text("S").font(ui::MEDIUM).size(12).style(title_style),
+            text("I").font(ui::MEDIUM).size(12).style(title_style),
+            text("M").font(ui::MEDIUM).size(12).style(title_style),
+            text("P").font(ui::MEDIUM).size(12).style(title_style),
+            text("L").font(ui::MEDIUM).size(12).style(title_style),
+        ]
+        .spacing(1.2)
+        .into()
+    };
     let content = row![
         container(left)
-            .width(112)
+            .width(side_width)
             .height(HEIGHT)
             .padding([0, 20])
             .align_y(iced::alignment::Vertical::Center),
@@ -204,9 +267,10 @@ pub fn view(focused: Option<Action>, active: bool) -> Element<'static, Action> {
             .width(Length::Fill)
             .height(HEIGHT)
             .center_x(Length::Fill)
-            .center_y(HEIGHT),
+            .center_y(HEIGHT)
+            .clip(true),
         container(right)
-            .width(112)
+            .width(side_width)
             .height(HEIGHT)
             .padding([0, 24])
             .align_x(iced::alignment::Horizontal::Right)
@@ -219,8 +283,8 @@ pub fn view(focused: Option<Action>, active: bool) -> Element<'static, Action> {
         content: container(content)
             .width(Length::Fill)
             .height(HEIGHT)
-            .style(|_| container::Style {
-                background: Some(Background::Color(HEADER)),
+            .style(|theme| container::Style {
+                background: Some(Background::Color(ui::palette(theme).lowest)),
                 ..container::Style::default()
             })
             .into(),

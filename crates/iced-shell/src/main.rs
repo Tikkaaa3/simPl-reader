@@ -4,7 +4,10 @@
 compile_error!("simPl currently supports Windows only");
 
 mod app;
+mod book_pages;
+mod book_style;
 mod chrome;
+mod document_scroll;
 mod pdf_reader;
 mod platform;
 mod shelf;
@@ -1179,6 +1182,8 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
     };
     selection::selectable_text(
         selection::SelectableParagraphConfig {
+            links: Vec::new(),
+            focused_link: None,
             item_id: item_id.to_owned(),
             logical_text: logical_text.to_owned(),
             mapped,
@@ -1190,6 +1195,7 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
         },
         Message::ReaderSelectionStart,
         |endpoint, point| Message::ReaderSelectionMove { endpoint, point },
+        None,
     )
 }
 

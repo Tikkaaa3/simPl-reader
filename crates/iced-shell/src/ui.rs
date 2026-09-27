@@ -4,46 +4,109 @@ use std::{cell::RefCell, sync::LazyLock};
 
 use iced::advanced::widget::{Id, Operation, operation};
 use iced::widget::{button, container, scrollable, text_input};
-use iced::{Border, Color, Font, Rectangle, Theme, Vector, font};
+use iced::{Border, Color, Font, Rectangle, Theme, Vector};
 
-pub const BACKGROUND: Color = Color::from_rgb8(0x10, 0x14, 0x1a);
-pub const SURFACE: Color = Color::from_rgb8(0x1c, 0x20, 0x26);
-pub const RAISED: Color = Color::from_rgb8(0x26, 0x2a, 0x31);
-pub const LOWEST: Color = Color::from_rgb8(0x0a, 0x0e, 0x14);
-pub const BORDER: Color = Color::from_rgb8(0x41, 0x47, 0x52);
-pub const TEXT: Color = Color::from_rgb8(0xdf, 0xe2, 0xeb);
-pub const SECONDARY: Color = Color::from_rgb8(0xc0, 0xc7, 0xd4);
-pub const MUTED: Color = Color::from_rgb8(0x8b, 0x91, 0x9d);
-pub const ACCENT: Color = Color::from_rgb8(0x58, 0xa6, 0xff);
-pub const DANGER: Color = Color::from_rgb8(0xff, 0xb4, 0xab);
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub background: Color,
+    pub surface: Color,
+    pub raised: Color,
+    pub lowest: Color,
+    pub border: Color,
+    pub text: Color,
+    pub secondary: Color,
+    pub muted: Color,
+    pub accent: Color,
+    pub danger: Color,
+    pub button_bg: Color,
+    pub button_text: Color,
+    pub button_hover: Color,
+    pub control_border: Color,
+}
 
-pub const SANS: Font = Font::with_name("Inter");
-pub const MEDIUM: Font = Font {
-    weight: font::Weight::Medium,
-    ..SANS
+const DARK: Palette = Palette {
+    background: Color::from_rgb8(0x0c, 0x0c, 0x0c),
+    surface: Color::from_rgb8(0x10, 0x10, 0x10),
+    raised: Color::from_rgb8(0x16, 0x16, 0x16),
+    lowest: Color::from_rgb8(0x0c, 0x0c, 0x0c),
+    border: Color::from_rgb8(0x27, 0x27, 0x27),
+    text: Color::from_rgb8(0xed, 0xed, 0xed),
+    secondary: Color::from_rgb8(0xb5, 0xb5, 0xb5),
+    muted: Color::from_rgb8(0x85, 0x85, 0x85),
+    accent: Color::from_rgb8(0xed, 0xed, 0xed),
+    danger: Color::from_rgb8(0xff, 0xb4, 0xab),
+    button_bg: Color::from_rgb8(0xe5, 0xe5, 0xe5),
+    button_text: Color::from_rgb8(0x17, 0x17, 0x17),
+    button_hover: Color::from_rgb8(0xff, 0xff, 0xff),
+    control_border: Color::from_rgb8(0x2a, 0x2a, 0x2a),
 };
-pub const SEMIBOLD: Font = Font {
-    weight: font::Weight::Semibold,
-    ..SANS
+
+const LIGHT: Palette = Palette {
+    background: Color::from_rgb8(0xff, 0xff, 0xff),
+    surface: Color::from_rgb8(0xf6, 0xf6, 0xf6),
+    raised: Color::from_rgb8(0xff, 0xff, 0xff),
+    lowest: Color::from_rgb8(0xff, 0xff, 0xff),
+    border: Color::from_rgb8(0xe5, 0xe5, 0xe5),
+    text: Color::from_rgb8(0x10, 0x10, 0x10),
+    secondary: Color::from_rgb8(0x52, 0x52, 0x52),
+    muted: Color::from_rgb8(0x73, 0x73, 0x73),
+    accent: Color::from_rgb8(0x10, 0x10, 0x10),
+    danger: Color::from_rgb8(0xa3, 0x2b, 0x2b),
+    button_bg: Color::from_rgb8(0x17, 0x17, 0x17),
+    button_text: Color::from_rgb8(0xf5, 0xf5, 0xf5),
+    button_hover: Color::from_rgb8(0x00, 0x00, 0x00),
+    control_border: Color::from_rgb8(0xe2, 0xe2, 0xe2),
 };
+pub fn palette(theme: &Theme) -> Palette {
+    if theme.extended_palette().is_dark {
+        DARK
+    } else {
+        LIGHT
+    }
+}
+
+pub fn primary_text(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(palette(theme).text),
+    }
+}
+
+pub fn secondary_text(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(palette(theme).secondary),
+    }
+}
+
+pub fn muted_text(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(palette(theme).muted),
+    }
+}
+
+pub fn accent_text(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(palette(theme).accent),
+    }
+}
+
+pub fn danger_text(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(palette(theme).danger),
+    }
+}
+
+pub const SANS: Font = Font::with_name("Geist");
+pub const MEDIUM: Font = Font::with_name("simPl UI 560");
+pub const SEMIBOLD: Font = MEDIUM;
 pub const SERIF: Font = Font::with_name("Literata");
-pub const SERIF_MEDIUM: Font = Font {
-    weight: font::Weight::Medium,
-    ..SERIF
-};
-pub const SERIF_ITALIC: Font = Font {
-    style: font::Style::Italic,
-    ..SERIF
-};
 pub const ICONS: Font = Font::with_name("Material Symbols Outlined");
 
 /// The text faces retain upstream glyph coverage; native fallback handles other scripts.
 /// Embedded bytes keep the portable executable independent of installed fonts.
-pub fn font_data() -> [&'static [u8]; 9] {
+pub fn font_data() -> [&'static [u8]; 8] {
     [
-        include_bytes!("../../../assets/fonts/Inter-Regular.ttf"),
-        include_bytes!("../../../assets/fonts/Inter-Medium.ttf"),
-        include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"),
+        include_bytes!("../../../assets/fonts/Geist-Variable-Latin.ttf"),
+        include_bytes!("../../../assets/fonts/Geist-UI-560.ttf"),
         include_bytes!("../../../assets/fonts/Literata-Regular.ttf"),
         include_bytes!("../../../assets/fonts/Literata-Medium.ttf"),
         include_bytes!("../../../assets/fonts/Literata-Bold.ttf"),
@@ -53,33 +116,39 @@ pub fn font_data() -> [&'static [u8]; 9] {
     ]
 }
 
-static THEME: LazyLock<Theme> = LazyLock::new(|| {
+fn make_theme(colors: Palette, name: &str) -> Theme {
     Theme::custom(
-        "simPl",
+        name.to_owned(),
         iced::theme::Palette {
-            background: BACKGROUND,
-            text: TEXT,
-            primary: ACCENT,
-            success: ACCENT,
-            warning: Color::from_rgb8(0xdf, 0xc2, 0x8f),
-            danger: DANGER,
+            background: colors.background,
+            text: colors.text,
+            primary: colors.accent,
+            success: colors.accent,
+            warning: colors.accent,
+            danger: colors.danger,
         },
     )
-});
+}
+static LIGHT_THEME: LazyLock<Theme> = LazyLock::new(|| make_theme(LIGHT, "simPl Light"));
+static DARK_THEME: LazyLock<Theme> = LazyLock::new(|| make_theme(DARK, "simPl Dark"));
 
-pub fn theme() -> Theme {
-    THEME.clone()
+pub fn theme(appearance: reader_document::preferences::Appearance) -> Theme {
+    match appearance {
+        reader_document::preferences::Appearance::Light => LIGHT_THEME.clone(),
+        reader_document::preferences::Appearance::Dark => DARK_THEME.clone(),
+    }
 }
 
 #[derive(Clone, Copy)]
 pub enum ButtonTone {
-    Primary,
     Quiet,
+    Surface,
     Subtle,
     Destructive,
 }
 
 pub fn button_style(
+    theme: &Theme,
     status: button::Status,
     tone: ButtonTone,
     focused: bool,
@@ -88,20 +157,32 @@ pub fn button_style(
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     let disabled = matches!(status, button::Status::Disabled);
     let (background, text_color) = if disabled {
-        (None, MUTED)
+        (None, palette(theme).muted)
     } else {
         match tone {
-            ButtonTone::Primary => (
-                Some(ACCENT.scale_alpha(if hovered { 0.2 } else { 0.12 })),
-                Color::from_rgb8(0xa2, 0xc9, 0xff),
+            ButtonTone::Destructive if hovered => (
+                Some(palette(theme).danger.scale_alpha(0.12)),
+                palette(theme).danger,
             ),
-            ButtonTone::Destructive if hovered => {
-                (Some(Color::from_rgb8(0x47, 0x29, 0x2b)), DANGER)
-            }
-            _ if selected => (Some(RAISED), TEXT),
-            _ if hovered => (Some(RAISED), TEXT),
-            ButtonTone::Quiet => (Some(SURFACE), TEXT),
-            ButtonTone::Subtle | ButtonTone::Destructive => (None, SECONDARY),
+            ButtonTone::Quiet => (
+                Some(if hovered {
+                    palette(theme).button_hover
+                } else {
+                    palette(theme).button_bg
+                }),
+                palette(theme).button_text,
+            ),
+            ButtonTone::Surface => (
+                Some(if hovered || selected {
+                    palette(theme).raised
+                } else {
+                    palette(theme).surface
+                }),
+                palette(theme).text,
+            ),
+            _ if selected => (Some(palette(theme).raised), palette(theme).text),
+            _ if hovered => (Some(palette(theme).surface), palette(theme).text),
+            ButtonTone::Subtle | ButtonTone::Destructive => (None, palette(theme).secondary),
         }
     };
     button::Style {
@@ -109,22 +190,36 @@ pub fn button_style(
         text_color,
         border: Border {
             color: if focused && !disabled {
-                ACCENT
+                palette(theme).accent
+            } else if matches!(tone, ButtonTone::Surface) && !disabled {
+                if selected {
+                    palette(theme).secondary.scale_alpha(0.4)
+                } else {
+                    palette(theme)
+                        .border
+                        .scale_alpha(if hovered { 0.5 } else { 0.2 })
+                }
             } else {
                 Color::TRANSPARENT
             },
-            width: if focused && !disabled { 2.0 } else { 0.0 },
+            width: if focused && !disabled {
+                2.0
+            } else if matches!(tone, ButtonTone::Surface) && !disabled {
+                1.0
+            } else {
+                0.0
+            },
             radius: 8.0.into(),
         },
         ..button::Style::default()
     }
 }
 
-pub fn panel(_: &Theme) -> container::Style {
+pub fn panel(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(SURFACE.into()),
+        background: Some(palette(theme).surface.into()),
         border: Border {
-            color: Color::from_rgb8(0x24, 0x28, 0x2e),
+            color: palette(theme).border,
             width: 1.0,
             radius: 8.0.into(),
         },
@@ -132,16 +227,16 @@ pub fn panel(_: &Theme) -> container::Style {
     }
 }
 
-pub fn header(_: &Theme) -> container::Style {
+pub fn header(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(LOWEST.into()),
+        background: Some(palette(theme).lowest.into()),
         ..container::Style::default()
     }
 }
 
-pub fn inset(_: &Theme) -> container::Style {
+pub fn inset(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(RAISED.into()),
+        background: Some(palette(theme).raised.into()),
         border: Border {
             radius: 4.0.into(),
             ..Border::default()
@@ -150,23 +245,27 @@ pub fn inset(_: &Theme) -> container::Style {
     }
 }
 
-pub fn input_style(_: &Theme, status: text_input::Status) -> text_input::Style {
+pub fn input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
-        background: LOWEST.into(),
+        background: palette(theme).raised.into(),
         border: Border {
-            color: if focused { ACCENT } else { BORDER },
+            color: if focused {
+                palette(theme).accent
+            } else {
+                palette(theme).control_border
+            },
             width: if focused { 2.0 } else { 1.0 },
             radius: 4.0.into(),
         },
-        icon: MUTED,
-        placeholder: MUTED,
+        icon: palette(theme).muted,
+        placeholder: palette(theme).muted,
         value: if matches!(status, text_input::Status::Disabled) {
-            MUTED
+            palette(theme).muted
         } else {
-            TEXT
+            palette(theme).text
         },
-        selection: Color::from_rgb8(0x00, 0x3a, 0x6b),
+        selection: palette(theme).accent.scale_alpha(0.25),
     }
 }
 
@@ -229,9 +328,9 @@ pub fn scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::St
         rail.scroller.background = if disabled {
             Color::TRANSPARENT
         } else if active {
-            ACCENT
+            palette(theme).accent
         } else {
-            MUTED
+            palette(theme).muted
         }
         .into();
         rail.scroller.border.radius = 3.0.into();

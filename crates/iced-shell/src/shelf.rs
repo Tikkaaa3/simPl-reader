@@ -14,10 +14,6 @@ use reader_document::recent::DocumentKind;
 
 use crate::ui;
 
-const LOWEST: Color = Color::from_rgb8(10, 14, 20);
-const VARIANT: Color = Color::from_rgb8(192, 199, 212);
-const PRIMARY: Color = Color::from_rgb8(162, 201, 255);
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sort {
     #[default]
@@ -31,6 +27,9 @@ pub enum Control {
     Add,
     Resume(usize),
     Document(usize),
+    FavouriteDocument(usize),
+    Favourite(usize, bool),
+    Remove(usize, bool),
     Sort(Sort),
 }
 
@@ -58,6 +57,7 @@ pub struct Shelf {
     fetching: HashSet<String>,
     order: Vec<usize>,
     continuing: Vec<usize>,
+    favourites: Vec<usize>,
     sort: Sort,
     hovered: Option<Control>,
     size: Size,
@@ -80,6 +80,7 @@ impl Default for Shelf {
             fetching: HashSet::new(),
             order: Vec::new(),
             continuing: Vec::new(),
+            favourites: Vec::new(),
             sort: Sort::Recent,
             size: Size::new(1280.0, 800.0),
             hovered: None,
@@ -143,6 +144,14 @@ impl Shelf {
                 self.offset = offset;
                 self.viewport = viewport;
                 self.ensure_covers()
+            }
+            Message::Activate(Control::Favourite(index, _)) => {
+                if let Some(entry) = self.entries.get_mut(index) {
+                    entry.favourite = !entry.favourite;
+                    self.dirty = true;
+                    self.reorder();
+                }
+                Task::batch([self.persist(), self.ensure_covers()])
             }
             Message::Activate(Control::Sort(sort)) => {
                 self.sort = sort;
@@ -232,26 +241,54 @@ impl Shelf {
                     .into_iter()
                     .map(Control::Sort),
             )
-            .chain(self.order.iter().copied().map(Control::Document))
+            .chain(self.order.iter().copied().flat_map(|i| {
+                [
+                    Control::Document(i),
+                    Control::Favourite(i, false),
+                    Control::Remove(i, false),
+                ]
+            }))
+            .chain(self.favourites.iter().copied().flat_map(|i| {
+                [
+                    Control::FavouriteDocument(i),
+                    Control::Favourite(i, true),
+                    Control::Remove(i, true),
+                ]
+            }))
     }
 
     pub fn reveal(&mut self, control: Control) -> Task<Message> {
         let metrics = self.metrics();
         let y = match control {
-            Control::Document(index) => {
-                self.order
-                    .iter()
-                    .position(|value| *value == index)
-                    .map(|index| {
-                        metrics.grid_top + (index / metrics.columns) as f32 * metrics.row_height
-                    })
+            Control::Document(index)
+            | Control::Favourite(index, false)
+            | Control::Remove(index, false) => self
+                .order
+                .iter()
+                .position(|value| *value == index)
+                .map(|index| {
+                    metrics.grid_top + (index / metrics.columns) as f32 * metrics.row_height
+                }),
+            Control::FavouriteDocument(index)
+            | Control::Favourite(index, true)
+            | Control::Remove(index, true) => {
+                self.favourites.iter().position(|i| *i == index).map(|i| {
+                    self.favourites_top(&metrics)
+                        + (i / metrics.columns) as f32 * metrics.row_height
+                })
             }
             _ => Some(0.0),
         };
         let Some(y) = y else {
             return Task::none();
         };
-        let height = if matches!(control, Control::Document(_)) {
+        let height = if matches!(
+            control,
+            Control::Document(_)
+                | Control::FavouriteDocument(_)
+                | Control::Favourite(..)
+                | Control::Remove(..)
+        ) {
             metrics.card_height
         } else {
             0.0
@@ -309,9 +346,7 @@ impl Shelf {
             .map(|(index, _)| index)
             .take(3)
             .collect();
-        self.order = (0..self.entries.len())
-            .filter(|index| !self.continuing.contains(index))
-            .collect();
+        self.order = (0..self.entries.len()).collect();
         match self.sort {
             Sort::Recent => {}
             Sort::Title => self
@@ -319,11 +354,18 @@ impl Shelf {
                 .sort_by_cached_key(|index| self.entries[*index].document.title.to_lowercase()),
             Sort::Format => self.order.sort_by_cached_key(|index| {
                 (
-                    format_name(self.entries[*index].document.kind),
+                    format_name(self.entries[*index].format()),
                     self.entries[*index].document.title.to_lowercase(),
                 )
             }),
         }
+        self.favourites = self
+            .order
+            .iter()
+            .copied()
+            .filter(|i| self.entries[*i].favourite)
+            .collect();
+        self.hovered = None;
     }
 
     fn metrics(&self) -> Metrics {
@@ -368,13 +410,23 @@ impl Shelf {
         }
     }
 
-    fn visible_rows(&self, metrics: &Metrics) -> std::ops::Range<usize> {
-        let rows = self.order.len().div_ceil(metrics.columns);
-        let first = (((self.offset - metrics.grid_top).max(0.0) / metrics.row_height) as usize)
+    fn favourites_top(&self, m: &Metrics) -> f32 {
+        let height = (self.order.len().div_ceil(m.columns) as f32 * m.row_height - 20.0).max(0.0);
+        m.grid_top + height + 48.0 + 56.0 + 49.0 + 24.0
+    }
+    fn section_rows(&self, metrics: &Metrics, count: usize, top: f32) -> std::ops::Range<usize> {
+        let rows = count.div_ceil(metrics.columns);
+        let first = (((self.offset - top).max(0.0) / metrics.row_height) as usize)
             .saturating_sub(1)
             .min(rows);
-        let last = (((self.offset + self.viewport - metrics.grid_top).max(0.0) / metrics.row_height).ceil() as usize + 2).min(rows);
+        let last = (((self.offset + self.viewport - top).max(0.0) / metrics.row_height).ceil()
+            as usize
+            + 2)
+        .min(rows);
         first..last.max(first)
+    }
+    fn visible_rows(&self, metrics: &Metrics) -> std::ops::Range<usize> {
+        self.section_rows(metrics, self.order.len(), metrics.grid_top)
     }
 
     fn cover_keys(&self) -> HashSet<String> {
@@ -393,6 +445,18 @@ impl Shelf {
                     .skip(rows.start * metrics.columns)
                     .take((rows.end - rows.start) * metrics.columns),
             )
+            .chain({
+                let rows = self.section_rows(
+                    &metrics,
+                    self.favourites.len(),
+                    self.favourites_top(&metrics),
+                );
+                self.favourites
+                    .iter()
+                    .copied()
+                    .skip(rows.start * metrics.columns)
+                    .take((rows.end - rows.start) * metrics.columns)
+            })
             .filter(|index| self.entries[*index].cover)
             .map(|index| self.entries[index].document.fingerprint.clone())
             .collect()
@@ -435,34 +499,35 @@ impl Shelf {
         let wide = self.size.width >= 768.0;
         let intro = column![
             row![
-                container(Space::new().width(8).height(8)).style(|_| fill(ui::ACCENT, 12.0)),
-                label("LOCAL WORKSPACE", 11).color(VARIANT)
+                container(Space::new().width(8).height(8))
+                    .style(|theme| fill(ui::palette(theme).accent, 12.0)),
+                label("LOCAL WORKSPACE", 11).style(ui::secondary_text)
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .height(14),
             text("simPl Reader")
-                .font(ui::SERIF)
+                .font(ui::SANS)
                 .size(28)
                 .line_height(iced::Pixels(38.0))
                 .shaping(text::Shaping::Advanced),
             text("Quick, lightweight offline reader for curated thinking\nand serene study.")
-                .font(ui::SERIF)
+                .font(ui::SANS)
                 .size(16)
                 .line_height(iced::Pixels(26.0))
-                .color(VARIANT)
+                .style(ui::secondary_text)
                 .shaping(text::Shaping::Advanced),
         ]
         .spacing(8)
         .width(448.0_f32.min(m.width));
         let add = card_button(
             row![
-                container(icon("\u{e145}", 18).color(ui::ACCENT))
+                container(icon("\u{e145}", 18).style(ui::accent_text))
                     .center(28)
-                    .style(|_| fill(Color::from_rgb8(49, 53, 60), 4.0)),
+                    .style(|theme| fill(ui::palette(theme).raised, 4.0)),
                 column![
-                    label("+ Add Document", 13).color(ui::TEXT),
-                    label("Drop .epub, .pdf, or .html", 11).color(VARIANT)
+                    label("+ Add Document", 13).style(ui::primary_text),
+                    label("Drop .epub, .pdf, or .html", 11).style(ui::secondary_text)
                 ]
             ]
             .spacing(12)
@@ -475,8 +540,13 @@ impl Shelf {
         .padding([12, 20])
         .width(224)
         .height(58)
-        .style(move |_, status| {
-            card_style(status, dropping || focused == Some(Control::Add), false)
+        .style(move |theme, status| {
+            card_style(
+                theme,
+                status,
+                dropping || focused == Some(Control::Add),
+                false,
+            )
         });
         let hero: Element<'_, Message> = if wide {
             row![intro, Space::new().width(Length::Fill), add]
@@ -487,7 +557,7 @@ impl Shelf {
         };
         let continue_heading = row![
             text("Continue Reading")
-                .font(ui::SERIF_MEDIUM)
+                .font(ui::MEDIUM)
                 .size(22)
                 .line_height(iced::Pixels(32.0))
                 .shaping(text::Shaping::Advanced),
@@ -498,7 +568,7 @@ impl Shelf {
         .align_y(Alignment::Center);
         let continue_heading: Element<'_, Message> = if wide {
             continue_heading
-                .push(label("Press Space to resume current", 11).color(ui::MUTED))
+                .push(label("Press Space to resume current", 11).style(ui::muted_text))
                 .into()
         } else {
             continue_heading.into()
@@ -511,19 +581,19 @@ impl Shelf {
                     } else {
                         "A quiet place to pick up where you left off."
                     })
-                    .font(ui::SERIF)
+                    .font(ui::SANS)
                     .size(18),
                     label(
                         "Add a document, or choose one from your library to begin.",
                         12
                     )
-                    .color(ui::MUTED)
+                    .style(ui::muted_text)
                 ]
                 .spacing(10),
             )
             .center_x(Length::Fill)
             .center_y(146)
-            .style(|_| fill(ui::SURFACE, 8.0))
+            .style(|theme| fill(ui::palette(theme).surface, 8.0))
             .into()
         } else if wide {
             let mut cards = row![].spacing(24);
@@ -544,7 +614,7 @@ impl Shelf {
             .into()
         };
         let continuation = column![continue_heading, continuing].spacing(20);
-        let mut sorting = row![label("SORT:", 11).color(ui::MUTED)]
+        let mut sorting = row![label("SORT:", 11).style(ui::muted_text)]
             .spacing(12)
             .align_y(Alignment::Center);
         let choices = [
@@ -560,9 +630,9 @@ impl Shelf {
             let segment = button(label(caption, 12))
                 .padding([4, 10])
                 .on_press_maybe(active.then_some(Message::Activate(control)))
-                .style(move |_, status| {
+                .style(move |theme, status| {
                     let mut style =
-                        ui::button_style(status, ui::ButtonTone::Subtle, focused, selected);
+                        ui::button_style(theme, status, ui::ButtonTone::Subtle, focused, selected);
                     style.border.radius = 2.0.into();
                     style
                 });
@@ -571,11 +641,11 @@ impl Shelf {
         sorting = sorting.push(
             container(segments)
                 .padding(2)
-                .style(|_| boxed(LOWEST, 0.3, 4.0)),
+                .style(|theme| boxed(theme, ui::palette(theme).lowest, 0.3, 4.0)),
         );
         let heading = row![
             text("Library")
-                .font(ui::SERIF_MEDIUM)
+                .font(ui::MEDIUM)
                 .size(22)
                 .line_height(iced::Pixels(32.0))
                 .shaping(text::Shaping::Advanced),
@@ -594,80 +664,69 @@ impl Shelf {
             library_heading,
             container(Space::new().height(1))
                 .width(Length::Fill)
-                .style(|_| fill(ui::BORDER.scale_alpha(0.2), 0.0))
+                .style(|theme| fill(ui::palette(theme).border.scale_alpha(0.2), 0.0))
         ]
         .spacing(16);
-        let range = self.visible_rows(&m);
-        let rows = self.order.len().div_ceil(m.columns);
-        let grid_height = (rows as f32 * m.row_height - 20.0).max(0.0);
-        let mut grid =
-            column![Space::new().height((range.start as f32 * m.row_height).min(grid_height))];
-        for row_index in range.clone() {
-            let mut cards = row![].spacing(20);
-            for index in self
-                .order
-                .iter()
-                .skip(row_index * m.columns)
-                .take(m.columns)
-            {
-                cards = cards.push(self.library_card(*index, &m, focused, active));
-            }
-            grid = grid.push(cards);
-            if row_index + 1 < rows {
-                grid = grid.push(Space::new().height(20));
-            }
-        }
-        let remaining = rows - range.end;
-        grid = grid.push(Space::new().height(if remaining == 0 {
-            0.0
-        } else {
-            remaining as f32 * m.row_height - 20.0
-        }));
-        if self.order.is_empty() {
-            grid = grid.push(
-                container(
-                    label(
-                        if self.entries.is_empty() {
-                            "Your library is empty. Add local EPUB, PDF, or HTML files above."
-                        } else {
-                            "Your documents are on the reading desk above."
-                        },
-                        13,
-                    )
-                    .color(ui::MUTED),
-                )
-                .padding([32, 0]),
-            );
-        }
+        let grid = self.grid(&self.order, &m, m.grid_top, focused, active, false);
         let library = container(column![library_heading, grid].spacing(24)).padding(Padding {
             bottom: 48.0,
             ..Padding::default()
         });
-        let main = container(
-            column![
-                container(hero).padding(Padding {
-                    top: 16.0,
-                    ..Padding::default()
-                }),
-                continuation,
-                library
+        let mut sections = column![
+            container(hero).padding(Padding {
+                top: 16.0,
+                ..Padding::default()
+            }),
+            continuation,
+            library
+        ]
+        .spacing(56);
+        if !self.favourites.is_empty() {
+            let heading = column![
+                row![
+                    text("Favourites")
+                        .font(ui::MEDIUM)
+                        .size(22)
+                        .line_height(iced::Pixels(32.0)),
+                    pill(format!("{} items", self.favourites.len()))
+                ]
+                .spacing(12)
+                .align_y(Alignment::Center),
+                container(Space::new().height(1))
+                    .width(Length::Fill)
+                    .style(|theme| fill(ui::palette(theme).border.scale_alpha(0.2), 0.0))
             ]
-            .spacing(56),
-        )
-        .padding(Padding {
-            top: 40.0,
-            bottom: 40.0,
-            left: m.gutter,
-            right: m.gutter,
-        })
-        .width(Length::Fill)
-        .max_width(1240);
+            .spacing(16);
+            sections = sections.push(
+                column![
+                    heading,
+                    self.grid(
+                        &self.favourites,
+                        &m,
+                        self.favourites_top(&m),
+                        focused,
+                        active,
+                        true
+                    )
+                ]
+                .spacing(24),
+            );
+        }
+        let main = container(sections)
+            .padding(Padding {
+                top: 40.0,
+                bottom: 40.0,
+                left: m.gutter,
+                right: m.gutter,
+            })
+            .width(Length::Fill)
+            .max_width(1240);
         let footer_left =
-            label("simPl Reader — Continuous Distraction-Free Synthesis", 11).color(ui::MUTED);
+            label("simPl Reader — Continuous Distraction-Free Synthesis", 11).style(ui::muted_text);
         let footer_right = row![
-            label("Ctrl+K  Quick Switcher", 11).color(ui::MUTED),
-            icon("\u{e86f}", 14).color(ui::MUTED),
-            label("UTF-8 Engine", 11).color(ui::MUTED)
+            label("Ctrl+K  Quick Switcher", 11).style(ui::muted_text),
+            icon("\u{e86f}", 14).style(ui::muted_text),
+            label("UTF-8 Engine", 11).style(ui::muted_text)
         ]
         .spacing(12)
         .align_y(Alignment::Center);
@@ -688,7 +747,7 @@ impl Shelf {
                 .max_width(1240),
         )
         .center_x(Length::Fill)
-        .style(|_| fill(LOWEST.scale_alpha(0.6), 0.0));
+        .style(|theme| fill(ui::palette(theme).lowest.scale_alpha(0.6), 0.0));
         scrollable(column![container(main).center_x(Length::Fill), footer])
             .id(scroll_id())
             .direction(ui::vertical_scrollbar())
@@ -701,6 +760,55 @@ impl Shelf {
             .into()
     }
 
+    fn grid<'a>(
+        &'a self,
+        order: &[usize],
+        m: &Metrics,
+        top: f32,
+        focused: Option<Control>,
+        active: bool,
+        favourites: bool,
+    ) -> Element<'a, Message> {
+        let range = self.section_rows(m, order.len(), top);
+        let rows = order.len().div_ceil(m.columns);
+        let grid_height = (rows as f32 * m.row_height - 20.0).max(0.0);
+        let mut grid =
+            column![Space::new().height((range.start as f32 * m.row_height).min(grid_height))];
+        for row_index in range.clone() {
+            let mut cards = row![].spacing(20);
+            for index in order.iter().skip(row_index * m.columns).take(m.columns) {
+                cards = cards.push(self.library_card(*index, m, focused, active, favourites));
+            }
+            grid = grid.push(cards);
+            if row_index + 1 < rows {
+                grid = grid.push(Space::new().height(20));
+            }
+        }
+        let remaining = rows - range.end;
+        grid = grid.push(Space::new().height(if remaining == 0 {
+            0.0
+        } else {
+            remaining as f32 * m.row_height - 20.0
+        }));
+        if order.is_empty() {
+            grid = grid.push(
+                container(
+                    label(
+                        if self.entries.is_empty() {
+                            "Your library is empty. Add local EPUB, PDF, or HTML files above."
+                        } else {
+                            "Your documents are on the reading desk above."
+                        },
+                        13,
+                    )
+                    .style(ui::muted_text),
+                )
+                .padding([32, 0]),
+            );
+        }
+        grid.into()
+    }
+
     fn continue_card(
         &self,
         index: usize,
@@ -711,9 +819,10 @@ impl Shelf {
         let control = Control::Resume(index);
         let hovered = self.hovered == Some(control);
         let heading = row![
-            label(age(entry.opened_at), 11).color(ui::MUTED),
+            label(age(entry.opened_at), 11).style(ui::muted_text),
             Space::new().width(Length::Fill),
-            label(format!("{}%", (entry.progress * 100.0).round() as u32), 11).color(ui::ACCENT)
+            label(format!("{}%", (entry.progress * 100.0).round() as u32), 11)
+                .style(ui::accent_text)
         ]
         .align_y(Alignment::Center);
         let title = clipped(
@@ -721,7 +830,13 @@ impl Shelf {
                 .font(ui::SEMIBOLD)
                 .size(16)
                 .line_height(iced::Pixels(22.0))
-                .color(if hovered { PRIMARY } else { ui::TEXT })
+                .style(move |theme| iced::widget::text::Style {
+                    color: Some(if hovered {
+                        ui::palette(theme).accent
+                    } else {
+                        ui::palette(theme).text
+                    }),
+                })
                 .shaping(text::Shaping::Advanced)
                 .wrapping(text::Wrapping::None),
         );
@@ -729,29 +844,27 @@ impl Shelf {
             text(entry.author.as_deref().unwrap_or("Local document"))
                 .size(14)
                 .line_height(iced::Pixels(22.0))
-                .color(VARIANT)
+                .style(ui::secondary_text)
                 .shaping(text::Shaping::Advanced)
                 .wrapping(text::Wrapping::None),
         );
         let metadata = column![heading, title, author].spacing(4);
-        let caption = if entry.document.kind == DocumentKind::Pdf {
+        let caption = if entry.total > 0 {
             format!("Page {} of {}", entry.current, entry.total)
-        } else if entry.document.kind == DocumentKind::Epub {
-            format!("Chapter {} of {}", entry.current, entry.total)
         } else {
             "Saved reading position".to_owned()
         };
         let progress = column![
             progress_bar(0.0..=1.0, entry.progress)
                 .girth(4)
-                .style(|_| progress_bar::Style {
-                    background: LOWEST.into(),
-                    bar: ui::ACCENT.into(),
+                .style(|theme| progress_bar::Style {
+                    background: ui::palette(theme).lowest.into(),
+                    bar: ui::palette(theme).accent.into(),
                     border: Border::default().rounded(12)
                 }),
             row![
-                clipped(label(caption, 12).color(ui::MUTED)),
-                icon("\u{e5c8}", 16).color(VARIANT)
+                clipped(label(caption, 12).style(ui::muted_text)),
+                icon("\u{e5c8}", 16).style(ui::secondary_text)
             ]
             .align_y(Alignment::Center)
         ]
@@ -779,17 +892,35 @@ impl Shelf {
         m: &Metrics,
         focused: Option<Control>,
         active: bool,
+        favourites: bool,
     ) -> Element<'_, Message> {
         let entry = &self.entries[index];
-        let control = Control::Document(index);
-        let hovered = self.hovered == Some(control) || focused == Some(control);
+        let control = if favourites {
+            Control::FavouriteDocument(index)
+        } else {
+            Control::Document(index)
+        };
+        let hovered = self.hovered == Some(control)
+            || [
+                control,
+                Control::Favourite(index, favourites),
+                Control::Remove(index, favourites),
+            ]
+            .into_iter()
+            .any(|c| focused == Some(c));
         let cover_width = m.card_width - 26.0;
         let title = container(
             text(&entry.document.title)
                 .font(ui::MEDIUM)
                 .size(14)
                 .line_height(iced::Pixels(17.5))
-                .color(if hovered { PRIMARY } else { ui::TEXT })
+                .style(move |theme| iced::widget::text::Style {
+                    color: Some(if hovered {
+                        ui::palette(theme).accent
+                    } else {
+                        ui::palette(theme).text
+                    }),
+                })
                 .shaping(text::Shaping::Advanced),
         )
         .max_height(35)
@@ -797,13 +928,13 @@ impl Shelf {
         .clip(true);
         let author = clipped(
             label(entry.author.as_deref().unwrap_or("Local document"), 12)
-                .color(VARIANT)
+                .style(ui::secondary_text)
                 .wrapping(text::Wrapping::None),
         );
         let footer = row![
-            label(short_date(entry.opened_at), 11).color(ui::MUTED),
+            label(short_date(entry.opened_at), 11).style(ui::muted_text),
             Space::new().width(Length::Fill),
-            label(file_size(entry.byte_len), 11).color(ui::MUTED)
+            label(file_size(entry.byte_len), 11).style(ui::muted_text)
         ]
         .align_y(Alignment::Center);
         let details = column![title, author, Space::new().height(Length::Fill), footer]
@@ -818,7 +949,53 @@ impl Shelf {
             .padding(13)
             .width(m.card_width)
             .height(m.card_height);
-        iced::widget::mouse_area(button)
+        let mut card = stack![button];
+        if hovered {
+            let actions = row![
+                mark(
+                    iced::widget::button(
+                        text(if entry.favourite { "★" } else { "☆" })
+                            .font(iced::Font::with_name("Segoe UI Symbol"))
+                            .size(20)
+                    )
+                    .padding([3, 7])
+                    .on_press_maybe(
+                        active.then_some(Message::Activate(Control::Favourite(index, favourites)))
+                    )
+                    .style(move |theme, status| ui::button_style(
+                        theme,
+                        status,
+                        ui::ButtonTone::Quiet,
+                        focused == Some(Control::Favourite(index, favourites)),
+                        entry.favourite
+                    )),
+                    focused == Some(Control::Favourite(index, favourites))
+                ),
+                mark(
+                    iced::widget::button(text("×").size(20))
+                        .padding([3, 7])
+                        .on_press_maybe(
+                            active.then_some(Message::Activate(Control::Remove(index, favourites)))
+                        )
+                        .style(move |theme, status| ui::button_style(
+                            theme,
+                            status,
+                            ui::ButtonTone::Quiet,
+                            focused == Some(Control::Remove(index, favourites)),
+                            false
+                        )),
+                    focused == Some(Control::Remove(index, favourites))
+                )
+            ]
+            .spacing(4);
+            card = card.push(
+                container(actions)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .padding(8),
+            );
+        }
+        iced::widget::mouse_area(card)
             .on_enter(Message::Hover(Some(control)))
             .on_exit(Message::Hover(None))
             .into()
@@ -845,42 +1022,44 @@ impl Shelf {
             } else {
                 // A typographic jacket for a document without artwork, not an invented book cover.
                 let title = text(&entry.document.title)
-                    .font(ui::SERIF)
+                    .font(ui::SANS)
                     .size(if small { 11 } else { 18 })
                     .line_height(iced::Pixels(if small { 16.0 } else { 26.0 }))
-                    .color(VARIANT)
+                    .style(ui::secondary_text)
                     .shaping(text::Shaping::Advanced);
                 container(
                     column![
                         container(Space::new().height(2))
                             .width(24)
-                            .style(|_| fill(ui::ACCENT.scale_alpha(0.5), 0.0)),
+                            .style(|theme| fill(ui::palette(theme).accent.scale_alpha(0.5), 0.0)),
                         container(title).max_height(height * 0.55).clip(true),
                         Space::new().height(Length::Fill),
                         text("simPl")
-                            .font(ui::SERIF_ITALIC)
+                            .font(ui::SANS)
                             .size(if small { 9 } else { 12 })
-                            .color(ui::MUTED)
+                            .style(ui::muted_text)
                     ]
                     .spacing(if small { 8 } else { 16 }),
                 )
                 .padding(if small { 10 } else { 18 })
                 .width(width)
                 .height(height)
-                .style(|_| boxed(LOWEST, 0.25, 4.0))
+                .style(|theme| boxed(theme, ui::palette(theme).lowest, 0.25, 4.0))
                 .into()
             };
         let badge = container(
-            label(format_name(entry.document.kind), 10)
+            label(format_name(entry.format()), 10)
                 .font(ui::SEMIBOLD)
-                .color(if entry.document.kind == DocumentKind::Epub {
-                    PRIMARY
-                } else {
-                    VARIANT
+                .style(move |theme| iced::widget::text::Style {
+                    color: Some(if entry.format() == DocumentKind::Epub {
+                        ui::palette(theme).accent
+                    } else {
+                        ui::palette(theme).secondary
+                    }),
                 }),
         )
         .padding([2, 6])
-        .style(|_| fill(ui::BACKGROUND.scale_alpha(0.9), 2.0));
+        .style(|theme| fill(ui::palette(theme).background.scale_alpha(0.9), 2.0));
         let overlay = container(badge)
             .padding(if small { 6 } else { 8 })
             .width(width)
@@ -896,9 +1075,9 @@ impl Shelf {
             .height(height)
             .clip(true);
         if !small && hovered {
-            let open = container(icon("\u{ea19}", 16).color(PRIMARY))
+            let open = container(icon("\u{ea19}", 16).style(ui::accent_text))
                 .center(28)
-                .style(|_| fill(ui::RAISED.scale_alpha(0.9), 14.0));
+                .style(|theme| fill(ui::palette(theme).raised.scale_alpha(0.9), 14.0));
             cover = cover.push(
                 container(open)
                     .width(width)
@@ -1006,9 +1185,9 @@ fn clipped<'a>(value: iced::widget::Text<'a>) -> Element<'a, Message> {
     container(value).width(Length::Fill).clip(true).into()
 }
 fn pill(value: String) -> Element<'static, Message> {
-    container(label(value, 11).color(VARIANT))
+    container(label(value, 11).style(ui::secondary_text))
         .padding([2, 8])
-        .style(|_| fill(ui::RAISED, 12.0))
+        .style(|theme| fill(ui::palette(theme).raised, 12.0))
         .into()
 }
 fn scroll_id() -> iced::advanced::widget::Id {
@@ -1022,10 +1201,10 @@ fn fill(color: Color, radius: f32) -> container::Style {
         ..container::Style::default()
     }
 }
-fn boxed(color: Color, alpha: f32, radius: f32) -> container::Style {
+fn boxed(theme: &iced::Theme, color: Color, alpha: f32, radius: f32) -> container::Style {
     container::Style {
         border: Border {
-            color: ui::BORDER.scale_alpha(alpha),
+            color: ui::palette(theme).border.scale_alpha(alpha),
             width: 1.0,
             radius: radius.into(),
         },
@@ -1033,24 +1212,31 @@ fn boxed(color: Color, alpha: f32, radius: f32) -> container::Style {
     }
 }
 
-fn card_style(status: button::Status, focused: bool, muted: bool) -> button::Style {
+fn card_style(
+    theme: &iced::Theme,
+    status: button::Status,
+    focused: bool,
+    muted: bool,
+) -> button::Style {
     let hover = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
         background: Some(Background::Color(if hover {
-            ui::RAISED
+            ui::palette(theme).raised
         } else if muted {
-            Color::from_rgb8(24, 28, 34)
+            ui::palette(theme).background
         } else {
-            ui::SURFACE
+            ui::palette(theme).surface
         })),
-        text_color: ui::TEXT,
+        text_color: ui::palette(theme).text,
         border: Border {
             radius: 8.0.into(),
             width: 1.0,
             color: if focused {
-                ui::ACCENT
+                ui::palette(theme).accent
             } else {
-                ui::BORDER.scale_alpha(if hover { 0.5 } else { 0.2 })
+                ui::palette(theme)
+                    .border
+                    .scale_alpha(if hover { 0.5 } else { 0.2 })
             },
         },
         ..button::Style::default()
@@ -1066,7 +1252,7 @@ fn card_button<'a>(
 ) -> iced::widget::Button<'a, Message> {
     button(content)
         .on_press_maybe(active.then_some(Message::Activate(control)))
-        .style(move |_, status| card_style(status, focused == Some(control), muted))
+        .style(move |theme, status| card_style(theme, status, focused == Some(control), muted))
 }
 
 fn mark<'a>(content: impl Into<Element<'a, Message>>, focused: bool) -> Element<'a, Message> {
@@ -1077,5 +1263,55 @@ fn mark<'a>(content: impl Into<Element<'a, Message>>, focused: bool) -> Element<
             .into()
     } else {
         content
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continuing_documents_remain_in_every_library_sort() {
+        let mut shelf = Shelf {
+            entries: [
+                ("Zulu", DocumentKind::Epub, 0.5),
+                ("Alpha", DocumentKind::Pdf, 1.0),
+                ("Beta", DocumentKind::Html, 0.25),
+            ]
+            .into_iter()
+            .map(|(title, kind, progress)| Entry {
+                document: reader_document::recent::Entry {
+                    path: format!("{title}.book").into(),
+                    title: title.into(),
+                    fingerprint: String::new(),
+                    kind,
+                },
+                author: None,
+                byte_len: 0,
+                opened_at: 0,
+                progress,
+                current: 1,
+                total: 2,
+                cover: false,
+                favourite: false,
+                source_kind: None,
+            })
+            .collect(),
+            ..Shelf::default()
+        };
+        for (sort, expected) in [
+            (Sort::Recent, [0, 1, 2]),
+            (Sort::Title, [1, 2, 0]),
+            (Sort::Format, [0, 2, 1]),
+        ] {
+            shelf.sort = sort;
+            shelf.reorder();
+            assert_eq!(shelf.continuing, [0, 2]);
+            assert_eq!(shelf.order, expected);
+        }
+        shelf.entries[0].progress = 1.0;
+        shelf.reorder();
+        assert_eq!(shelf.continuing, [2]);
+        assert_eq!(shelf.order, [0, 2, 1]);
     }
 }
