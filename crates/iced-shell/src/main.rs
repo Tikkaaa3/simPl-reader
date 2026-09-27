@@ -1434,6 +1434,7 @@ fn application_style(_: &Shell, _: &Theme) -> iced::theme::Style {
 }
 
 fn main() {
+    platform::mark_reader_running();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let reader_mode = reader::reader_poc_requested(&arguments);
     let reader_large = reader::reader_large_requested(&arguments);

@@ -1,5 +1,19 @@
 use std::path::PathBuf;
 
+/// Let Setup/Uninstall ask for a normal close before replacing the reader or
+/// removing its profile. This is a lifetime marker, not a single-instance lock.
+pub fn mark_reader_running() {
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "Local\\simPl.Reader.Running\0".encode_utf16().collect();
+    // SAFETY: a terminated UTF-16 name remains valid for this call, with no
+    // security attributes and no ownership requested. Windows releases the
+    // deliberately retained handle when the process terminates, including exit().
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        eprintln!("Could not register the installer running-app marker");
+    }
+}
+
 /// Display the native Windows picker. Call this from an application worker task,
 /// not from the UI update/view thread. Cancellation is not an error.
 #[cfg(windows)]
