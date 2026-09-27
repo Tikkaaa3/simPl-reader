@@ -28,23 +28,13 @@ pub(super) fn hit(
 ) -> Option<TextPoint> {
     let x = ((position.x - bounds.x) / bounds.width).clamp(0.0, 1.0);
     let y = ((position.y - bounds.y) / bounds.height).clamp(0.0, 1.0);
-    let mut nearest = None;
-    let mut distance = f32::INFINITY;
-    for (index, glyph) in text.glyphs.iter().enumerate() {
-        let Some(rect) = glyph.bounds else { continue };
-        let dx = (rect.left - x).max(x - rect.right).max(0.0);
-        let dy = (rect.top - y).max(y - rect.bottom).max(0.0);
-        // Vertical proximity takes priority when selecting across lines.
-        let score = dy * dy * 4.0 + dx * dx;
-        if score < distance {
-            distance = score;
-            nearest = Some(TextPoint { page, index });
-        }
-    }
-    if exact && distance > 0.0 {
+    let (index, dx, dy) = text.closest(x, y, bounds.width, bounds.height)?;
+    // A press just outside letter ink (including a source-space glyph between
+    // words) starts selection, but blank page margins do not grab distant text.
+    if exact && (dx > 12.0 || dy > 8.0) {
         None
     } else {
-        nearest
+        Some(TextPoint { page, index })
     }
 }
 
@@ -101,15 +91,22 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
                 (selection.focus, selection.anchor)
             };
             if start.page <= self.number && self.number <= end.page {
+                let first = (if self.number == start.page {
+                    start.index
+                } else {
+                    0
+                })
+                .min(text.glyphs.len());
+                let last = (if self.number == end.page {
+                    end.index.saturating_add(1)
+                } else {
+                    text.glyphs.len()
+                })
+                .min(text.glyphs.len());
                 // tiny-skia batches images after quads within a layer. Put
                 // selection ink in a later layer so the opaque page cannot hide it.
                 renderer.with_layer(clip, |renderer| {
-                    for (index, glyph) in text.glyphs.iter().enumerate() {
-                        if (self.number == start.page && index < start.index)
-                            || (self.number == end.page && index > end.index)
-                        {
-                            continue;
-                        }
+                    for glyph in &text.glyphs[first..last] {
                         let Some(rect) = glyph.bounds else { continue };
                         let box_bounds = Rectangle::new(
                             Point::new(
@@ -152,7 +149,10 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
         }
         match event {
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
-                if let Some(position) = cursor.position_over(layout.bounds()) {
+                if let Some(position) = cursor
+                    .position_over(layout.bounds())
+                    .filter(|position| viewport.contains(*position))
+                {
                     let point = self
                         .text
                         .and_then(|text| hit(text, self.number, layout.bounds(), position, true));
@@ -180,11 +180,17 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
         _tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
         _renderer: &iced::Renderer,
     ) -> mouse::Interaction {
-        if self.text.is_some_and(|text| !text.glyphs.is_empty()) && cursor.is_over(layout.bounds())
-        {
+        if self.text.is_some_and(|text| {
+            cursor
+                .position_over(layout.bounds())
+                .filter(|position| viewport.contains(*position))
+                .is_some_and(|position| {
+                    hit(text, self.number, layout.bounds(), position, true).is_some()
+                })
+        }) {
             mouse::Interaction::Text
         } else {
             mouse::Interaction::default()
@@ -204,10 +210,10 @@ mod tests {
     use reader_pdf::{Glyph, Rect};
 
     #[test]
-    fn blank_space_does_not_start_selection_but_dragging_finds_a_source_glyph() {
-        let text = TextLayer {
-            text: "é A".into(),
-            glyphs: vec![
+    fn nearby_whitespace_starts_selection_but_blank_page_does_not() {
+        let text = TextLayer::new(
+            "é A".into(),
+            vec![
                 Glyph {
                     start: 0,
                     end: 2,
@@ -215,7 +221,7 @@ mod tests {
                         left: 0.1,
                         top: 0.1,
                         right: 0.2,
-                        bottom: 0.2,
+                        bottom: 0.13,
                     }),
                 },
                 Glyph {
@@ -230,21 +236,24 @@ mod tests {
                         left: 0.3,
                         top: 0.1,
                         right: 0.4,
-                        bottom: 0.2,
+                        bottom: 0.13,
                     }),
                 },
             ],
-        };
+        );
         let bounds = Rectangle::new(Point::new(20.0, 30.0), Size::new(100.0, 200.0));
-        let gap = Point::new(49.0, 60.0);
-        assert_eq!(hit(&text, 7, bounds, gap, true), None);
         assert_eq!(
-            hit(&text, 7, bounds, gap, false),
-            Some(TextPoint { page: 7, index: 2 })
+            hit(&text, 7, bounds, Point::new(21.0, 54.0), true),
+            Some(TextPoint { page: 7, index: 0 })
         );
         assert_eq!(
-            hit(&text, 7, bounds, Point::new(55.0, 60.0), true),
+            hit(&text, 7, bounds, Point::new(49.0, 54.0), true),
             Some(TextPoint { page: 7, index: 2 })
+        );
+        assert_eq!(hit(&text, 7, bounds, Point::new(23.0, 95.0), true), None);
+        assert_eq!(
+            hit(&text, 7, bounds, Point::new(23.0, 95.0), false),
+            Some(TextPoint { page: 7, index: 0 })
         );
     }
 }

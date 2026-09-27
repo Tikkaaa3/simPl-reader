@@ -83,7 +83,12 @@ pub enum FontRole {
     SystemItalic,
     SystemBoldItalic,
     /// Bundled Literata faces for normal document text (not diagnostics).
+    Code,
+    CodeBold,
+    CodeItalic,
+    CodeBoldItalic,
     EditorialRegular,
+    EditorialMedium,
     EditorialBold,
     EditorialItalic,
     EditorialBoldItalic,
@@ -96,6 +101,20 @@ impl FontRole {
     pub const fn iced_font(self) -> iced::Font {
         use iced::font::{Family, Font, Style, Weight};
         match self {
+            Self::Code => Font::MONOSPACE,
+            Self::CodeBold => Font {
+                weight: Weight::Bold,
+                ..Font::MONOSPACE
+            },
+            Self::CodeItalic => Font {
+                style: Style::Italic,
+                ..Font::MONOSPACE
+            },
+            Self::CodeBoldItalic => Font {
+                weight: Weight::Bold,
+                style: Style::Italic,
+                ..Font::MONOSPACE
+            },
             Self::LatinRegular => Font::with_name("Noto Sans"),
             Self::LatinBold => Font {
                 weight: Weight::Bold,
@@ -129,6 +148,10 @@ impl FontRole {
                 ..Font::DEFAULT
             },
             Self::EditorialRegular => Font::with_name("Literata"),
+            Self::EditorialMedium => Font {
+                weight: Weight::Medium,
+                ..Font::with_name("Literata")
+            },
             Self::EditorialBold => Font {
                 weight: Weight::Bold,
                 ..Font::with_name("Literata")

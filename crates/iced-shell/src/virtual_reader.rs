@@ -59,6 +59,20 @@ impl<'a, Message> VisibleRows<'a, Message> {
             reports,
         }
     }
+    /// Render a page's portion of the global index, retaining global row identities.
+    pub fn within(self, scope: Range<usize>, index: &HeightIndex) -> Self {
+        self.slice(index.start(scope.start)..index.start(scope.end))
+    }
+
+    /// Clip a fragment of a paragraph while keeping its complete native text layout.
+    pub fn slice(mut self, content: Range<f32>) -> Self {
+        let start = content.start;
+        for (top, _) in &mut self.geometry {
+            *top -= start;
+        }
+        self.total = content.end - start;
+        self
+    }
 }
 
 impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message> {
@@ -85,7 +99,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
         }
         // Only the most recent native layout pass is useful: a scrollbar
         // negotiation can layout twice before the app consumes the report.
-        self.reports.measurements.lock().clear();
+        self.reports
+            .measurements
+            .lock()
+            .retain(|(row, _, _, _)| *row < self.first || *row >= self.first + self.rows.len());
         let limits = layout::Limits::new(Size::ZERO, Size::new(self.width, f32::INFINITY));
         let mut nodes = Vec::with_capacity(self.rows.len());
         for (local, (row, state)) in self.rows.iter_mut().zip(&mut tree.children).enumerate() {
@@ -121,6 +138,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
         shell: &mut iced::advanced::Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        let Some(viewport) = viewport.intersection(&layout.bounds()) else {
+            return;
+        };
+        let viewport = &viewport;
         for ((row, state), row_layout) in self
             .rows
             .iter_mut()
@@ -143,6 +164,13 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
         viewport: &Rectangle,
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
+        let Some(viewport) = viewport.intersection(&layout.bounds()) else {
+            return mouse::Interaction::default();
+        };
+        if !cursor.is_over(viewport) {
+            return mouse::Interaction::default();
+        }
+        let viewport = &viewport;
         self.rows
             .iter()
             .zip(&tree.children)
@@ -165,14 +193,21 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        for ((row, state), row_layout) in
-            self.rows.iter().zip(&tree.children).zip(layout.children())
-        {
-            if row_layout.bounds().intersection(viewport).is_some() {
-                row.as_widget()
-                    .draw(state, renderer, theme, style, row_layout, cursor, viewport);
+        use iced::advanced::Renderer as _;
+        let Some(viewport) = viewport.intersection(&layout.bounds()) else {
+            return;
+        };
+        renderer.with_layer(viewport, |renderer| {
+            let viewport = &viewport;
+            for ((row, state), row_layout) in
+                self.rows.iter().zip(&tree.children).zip(layout.children())
+            {
+                if row_layout.bounds().intersection(viewport).is_some() {
+                    row.as_widget()
+                        .draw(state, renderer, theme, style, row_layout, cursor, viewport);
+                }
             }
-        }
+        });
     }
 }
 

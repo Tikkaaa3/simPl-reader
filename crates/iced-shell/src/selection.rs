@@ -274,6 +274,8 @@ pub struct SelectableParagraphConfig {
     pub dragging: bool,
     /// Whether the opt-in evidence run should observe native pointer hits.
     pub track_hit_test: bool,
+    pub links: Vec<reader_document::Link>,
+    pub focused_link: Option<usize>,
 }
 
 /// Builds a renderer-backed, selectable paragraph element from the same
@@ -282,6 +284,7 @@ pub fn selectable_text<Message: 'static>(
     config: SelectableParagraphConfig,
     on_press: impl Fn(Endpoint) -> Message + 'static,
     on_move: impl Fn(Endpoint, iced::Point) -> Message + 'static,
+    on_link: Option<fn(String) -> Message>,
 ) -> iced::Element<'static, Message> {
     let SelectableParagraphConfig {
         item_id,
@@ -292,6 +295,8 @@ pub fn selectable_text<Message: 'static>(
         selection,
         dragging,
         track_hit_test,
+        mut links,
+        focused_link,
     } = config;
     let leading_rlm = mapped.text.starts_with(LEADING_RLM)
         && mapped.text.strip_prefix(LEADING_RLM) == Some(logical_text.as_str());
@@ -304,6 +309,12 @@ pub fn selectable_text<Message: 'static>(
     let mapped_selection = selection.as_ref().map(|range| {
         let prefix = usize::from(leading_rlm) * LEADING_RLM.len();
         range.start + prefix..range.end + prefix
+    });
+    links.retain(|link| {
+        link.start_byte < link.end_byte
+            && link.end_byte <= logical_text.len()
+            && logical_text.is_char_boundary(link.start_byte)
+            && logical_text.is_char_boundary(link.end_byte)
     });
     let spans = mapped_span_keys(&mapped, selection, leading_rlm);
     iced::Element::new(SelectableParagraph {
@@ -319,6 +330,9 @@ pub fn selectable_text<Message: 'static>(
         track_hit_test,
         on_press: Box::new(on_press),
         on_move: Box::new(on_move),
+        links,
+        focused_link,
+        on_link,
     })
 }
 
@@ -421,9 +435,6 @@ fn selected_glyph_bounds(
     bounds
 }
 
-const TEXT_COLOR: iced::Color = iced::Color::from_rgb8(0xd7, 0xdc, 0xe2);
-const SELECTION_BACKGROUND: iced::Color = iced::Color::from_rgba8(0x3e, 0x79, 0xd8, 0.75);
-
 type NativeParagraph = <iced::Renderer as TextRenderer>::Paragraph;
 
 fn native_spans(
@@ -434,19 +445,12 @@ fn native_spans(
     spans
         .iter()
         .map(|key| {
-            let mut span: Span<'static, (), iced::Font> = Span::new(key.text.clone())
+            Span::new(key.text.clone())
                 .font(key.font)
                 .size(font_size)
                 .line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(
                     line_height,
                 )))
-                .color(TEXT_COLOR);
-            if key.selected {
-                span = span
-                    .background(iced::Background::Color(SELECTION_BACKGROUND))
-                    .border(iced::Border::default());
-            }
-            span
         })
         .collect()
 }
@@ -454,6 +458,9 @@ fn native_spans(
 struct ParagraphState {
     paragraph: NativeParagraph,
     spans: Vec<SpanKey>,
+    item_id: String,
+    link_press: Option<(usize, iced::Point)>,
+    link_dragged: bool,
 }
 
 struct SelectableParagraph<Message> {
@@ -469,6 +476,42 @@ struct SelectableParagraph<Message> {
     track_hit_test: bool,
     on_press: Box<dyn Fn(Endpoint) -> Message>,
     on_move: Box<dyn Fn(Endpoint, iced::Point) -> Message>,
+    links: Vec<reader_document::Link>,
+    focused_link: Option<usize>,
+    on_link: Option<fn(String) -> Message>,
+}
+
+impl<Message> SelectableParagraph<Message> {
+    fn link_bounds(&self, state: &ParagraphState, index: usize) -> Vec<iced::Rectangle> {
+        let link = &self.links[index];
+        let prefix = usize::from(self.leading_rlm) * LEADING_RLM.len();
+        let mut glyphs = selected_glyph_bounds(
+            &state.paragraph,
+            Some(&(link.start_byte + prefix..link.end_byte + prefix)),
+        );
+        glyphs.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+        let mut lines: Vec<iced::Rectangle> = Vec::new();
+        for glyph in glyphs {
+            if let Some(last) = lines.last_mut()
+                && (last.y - glyph.y).abs() < 0.5
+                && (last.height - glyph.height).abs() < 0.5
+                && glyph.x <= last.x + last.width + 0.5
+            {
+                last.width = (glyph.x + glyph.width).max(last.x + last.width) - last.x;
+            } else {
+                lines.push(glyph);
+            }
+        }
+        lines
+    }
+    fn link_at(&self, state: &ParagraphState, point: iced::Point) -> Option<usize> {
+        self.links.iter().enumerate().find_map(|(index, _)| {
+            self.link_bounds(state, index)
+                .iter()
+                .any(|bounds| bounds.contains(point))
+                .then_some(index)
+        })
+    }
 }
 
 impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
@@ -486,6 +529,9 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         tree::State::new(ParagraphState {
             paragraph: NativeParagraph::default(),
             spans: Vec::new(),
+            item_id: String::new(),
+            link_press: None,
+            link_dragged: false,
         })
     }
 
@@ -496,6 +542,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         limits: &layout::Limits,
     ) -> layout::Node {
         let state = tree.state.downcast_mut::<ParagraphState>();
+        if state.item_id != self.item_id {
+            state.item_id.clone_from(&self.item_id);
+            state.link_press = None;
+        }
         let bounds = limits.max();
         let spans = native_spans(&self.spans, self.font_size, self.line_height);
         let text = iced::advanced::Text {
@@ -507,7 +557,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
             align_x: iced::advanced::text::Alignment::Default,
             align_y: iced::alignment::Vertical::Top,
             shaping: iced::advanced::text::Shaping::Advanced,
-            wrapping: iced::advanced::text::Wrapping::Word,
+            wrapping: iced::advanced::text::Wrapping::WordOrGlyph,
         };
 
         let limits = layout::Limits::new(iced::Size::ZERO, bounds);
@@ -527,7 +577,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                     align_x: iced::advanced::text::Alignment::Default,
                     align_y: iced::alignment::Vertical::Top,
                     shaping: iced::advanced::text::Shaping::Advanced,
-                    wrapping: iced::advanced::text::Wrapping::Word,
+                    wrapping: iced::advanced::text::Wrapping::WordOrGlyph,
                 }) {
                     iced::advanced::text::Difference::None => {}
                     iced::advanced::text::Difference::Bounds => {
@@ -546,8 +596,8 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         &self,
         tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
-        _style: &renderer::Style,
+        theme: &iced::Theme,
+        style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         viewport: &iced::Rectangle,
@@ -563,10 +613,45 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                     bounds: bounds + translation,
                     ..Default::default()
                 },
-                iced::Background::Color(SELECTION_BACKGROUND),
+                iced::Background::Color(theme.palette().primary.scale_alpha(0.25)),
             );
         }
-        renderer.fill_paragraph(&state.paragraph, layout.position(), TEXT_COLOR, *viewport);
+        renderer.fill_paragraph(
+            &state.paragraph,
+            layout.position(),
+            style.text_color,
+            *viewport,
+        );
+        for index in 0..self.links.len() {
+            for bounds in self.link_bounds(state, index) {
+                let bounds = bounds + translation;
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: iced::Rectangle {
+                            y: bounds.y + bounds.height - 1.0,
+                            height: 1.0,
+                            ..bounds
+                        },
+                        ..Default::default()
+                    },
+                    theme.palette().primary,
+                );
+                if self.focused_link == Some(index) {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds,
+                            border: iced::Border {
+                                color: theme.palette().primary,
+                                width: 1.0,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        iced::Color::TRANSPARENT,
+                    );
+                }
+            }
+        }
     }
 
     fn update(
@@ -578,9 +663,13 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         _renderer: &iced::Renderer,
         _clipboard: &mut dyn iced::advanced::Clipboard,
         shell: &mut iced::advanced::Shell<'_, Message>,
-        _viewport: &iced::Rectangle,
+        viewport: &iced::Rectangle,
     ) {
         let hit = || {
+            let point = cursor.position()?;
+            if !viewport.contains(point) {
+                return None;
+            }
             let position = cursor.position_in(layout.bounds())?;
             let state = tree.state.downcast_ref::<ParagraphState>();
             let native_offset = state.paragraph.hit_test(position)?.cursor();
@@ -592,33 +681,71 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                 self.leading_rlm,
             )
         };
+        let endpoint = hit();
+        let point = cursor
+            .position_in(layout.bounds())
+            .filter(|_| cursor.position().is_some_and(|p| viewport.contains(p)));
+        let state = tree.state.downcast_mut::<ParagraphState>();
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if let Some(endpoint) = hit() {
+                state.link_press =
+                    point.and_then(|point| self.link_at(state, point).map(|index| (index, point)));
+                state.link_dragged = false;
+                if let Some(endpoint) = endpoint {
                     shell.publish((self.on_press)(endpoint));
                     shell.capture_event();
                 }
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position })
-                if self.dragging || self.track_hit_test =>
+                if self.dragging || self.track_hit_test || state.link_press.is_some() =>
             {
-                if let Some(endpoint) = hit() {
+                if let Some((_, start)) = state.link_press {
+                    let moved = cursor
+                        .position_in(layout.bounds())
+                        .is_none_or(|point| point.distance(start) > 4.0);
+                    state.link_dragged |= moved;
+                }
+                if let Some(endpoint) = endpoint {
                     shell.publish((self.on_move)(endpoint, *position));
                 }
             }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some((index, start)) = state.link_press.take()
+                    && !state.link_dragged
+                    && point.is_some_and(|point| {
+                        point.distance(start) <= 4.0 && self.link_at(state, point) == Some(index)
+                    })
+                    && let Some(on_link) = self.on_link
+                {
+                    shell.publish(on_link(self.links[index].href.clone()));
+                    shell.capture_event();
+                }
+            }
+            iced::Event::Window(iced::window::Event::Unfocused) => state.link_press = None,
             _ => {}
         }
     }
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _viewport: &iced::Rectangle,
+        viewport: &iced::Rectangle,
         _renderer: &iced::Renderer,
     ) -> mouse::Interaction {
-        if cursor.is_over(layout.bounds()) {
+        if cursor
+            .position()
+            .is_some_and(|point| viewport.contains(point))
+            && let Some(point) = cursor.position_in(layout.bounds())
+        {
+            if self.on_link.is_some()
+                && self
+                    .link_at(tree.state.downcast_ref::<ParagraphState>(), point)
+                    .is_some()
+            {
+                return mouse::Interaction::Pointer;
+            }
             mouse::Interaction::Text
         } else {
             mouse::Interaction::None
@@ -634,6 +761,154 @@ impl<Message: 'static> From<SelectableParagraph<Message>> for iced::Element<'sta
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "Native EPUB selection QA: SIMPL_PREVIEW_EPUB and SIMPL_PREVIEW_CHAPTER"]
+    fn verify_epub_selection() {
+        use iced::advanced::{Layout, Shell, layout, widget::Tree};
+        use iced::{Event, Point, Rectangle, Size, mouse};
+        use reader_document::{Endpoint, Item};
+        #[derive(Debug)]
+        enum Message {
+            Start(Endpoint),
+            Move(Endpoint),
+        }
+        let path = std::path::PathBuf::from(std::env::var_os("SIMPL_PREVIEW_EPUB").unwrap());
+        let document = reader_document::epub::open(&path).unwrap();
+        let index = std::env::var("SIMPL_PREVIEW_CHAPTER")
+            .unwrap_or("5".into())
+            .parse()
+            .unwrap();
+        let chapter = document.load_chapter(index).unwrap();
+        for bytes in [
+            include_bytes!("../../../assets/fonts/Literata-Regular.ttf").as_slice(),
+            include_bytes!("../../../assets/fonts/Literata-Bold.ttf").as_slice(),
+            include_bytes!("../../../assets/fonts/Literata-Italic.ttf").as_slice(),
+        ] {
+            iced::advanced::graphics::text::font_system()
+                .write()
+                .unwrap()
+                .load_font(std::borrow::Cow::Borrowed(bytes));
+        }
+        let item = chapter
+            .document
+            .items
+            .iter()
+            .find(|item| matches!(item, Item::Paragraph { text, .. } if text.len() > 200))
+            .unwrap();
+        let Item::Paragraph {
+            id,
+            text,
+            base_direction,
+            style_runs,
+        } = item
+        else {
+            unreachable!()
+        };
+        for width in [400.0, 720.0] {
+            let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(20.0));
+            let mut element = super::selectable_text(
+                super::SelectableParagraphConfig {
+                    item_id: id.clone(),
+                    logical_text: text.clone(),
+                    mapped: crate::reader::map_document_paragraph(
+                        text,
+                        *base_direction,
+                        style_runs,
+                    )
+                    .unwrap(),
+                    font_size: 20.0,
+                    line_height: 32.0,
+                    selection: None,
+                    dragging: true,
+                    track_hit_test: false,
+                    links: vec![],
+                    focused_link: None,
+                },
+                Message::Start,
+                |endpoint, _| Message::Move(endpoint),
+                None,
+            );
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(width, 10000.0)),
+            );
+            let state = tree.state.downcast_ref::<super::ParagraphState>();
+            let space = text.find(' ').unwrap();
+            let space_bounds =
+                super::selected_glyph_bounds(&state.paragraph, Some(&(space..space + 1)));
+            let all = super::selected_glyph_bounds(&state.paragraph, Some(&(0..text.len())));
+            let start = space_bounds
+                .first()
+                .expect("space has native hit geometry")
+                .center();
+            let end = all.iter().find(|r| r.y > start.y + 32.0).unwrap().center();
+            let viewport = Rectangle::with_size(node.size());
+            let mut messages = Vec::new();
+            for (event, point) in [
+                (
+                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    start,
+                ),
+                (
+                    Event::Mouse(mouse::Event::CursorMoved { position: end }),
+                    end,
+                ),
+            ] {
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(point),
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &viewport,
+                );
+            }
+            let [Message::Start(anchor), Message::Move(focus)] = messages.as_slice() else {
+                panic!(
+                    "Whitespace press and multiline drag must reach the EPUB selection state: {messages:?}"
+                );
+            };
+            assert!(anchor.byte_offset.abs_diff(space) <= 1);
+            assert!(focus.byte_offset > anchor.byte_offset);
+            let mut selection = super::SelectionState::default();
+            selection.begin(anchor.clone());
+            selection.extend(focus.clone());
+            selection.end_drag();
+            assert_eq!(
+                selection.copy_text(&chapter.document.items).unwrap(),
+                text[anchor.byte_offset..focus.byte_offset]
+            );
+            assert!(
+                !super::selected_glyph_bounds(
+                    &tree.state.downcast_ref::<super::ParagraphState>().paragraph,
+                    Some(&(anchor.byte_offset..focus.byte_offset))
+                )
+                .is_empty()
+            );
+            // A point clipped out of the viewport must not steal the selection.
+            messages.clear();
+            element.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Layout::new(&node),
+                mouse::Cursor::Available(start),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &Rectangle::new(Point::new(10000.0, 0.0), Size::new(10.0, 10.0)),
+            );
+            assert!(messages.is_empty());
+        }
+        println!(
+            "EPUB whitespace press, multiline drag, logical copy and clipped hits passed: chapter {} of {}",
+            index + 1,
+            document.chapters.len()
+        );
+    }
     use std::{ops::Range, path::PathBuf};
 
     use reader_document::{Endpoint, Item};
@@ -683,7 +958,7 @@ mod tests {
             align_x: iced::advanced::text::Alignment::Default,
             align_y: iced::alignment::Vertical::Top,
             shaping: iced::advanced::text::Shaping::Advanced,
-            wrapping: iced::advanced::text::Wrapping::Word,
+            wrapping: iced::advanced::text::Wrapping::WordOrGlyph,
         });
         let prefix = usize::from(leading_rlm) * super::LEADING_RLM.len();
         let mapped_selection = selection.start + prefix..selection.end + prefix;
@@ -691,6 +966,112 @@ mod tests {
             &paragraph,
             Some(&mapped_selection),
         ))
+    }
+
+    #[test]
+    fn native_link_click_is_distinct_from_drag_selection_and_clipped_content() {
+        use iced::advanced::{Layout, Shell, layout, widget::Tree};
+        use iced::{Event, Point, Rectangle, Size, mouse};
+        #[derive(Debug)]
+        enum Message {
+            Start,
+            Move,
+            Link(String),
+        }
+        for (source, direction) in [
+            ("é note and more", reader_document::BaseDirection::Ltr),
+            ("ملاحظة عربية", reader_document::BaseDirection::Rtl),
+        ] {
+            let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(20.0));
+            let mut element = super::selectable_text(
+                super::SelectableParagraphConfig {
+                    item_id: "p".into(),
+                    logical_text: source.into(),
+                    mapped: crate::reader::map_document_paragraph(source, direction, &[]).unwrap(),
+                    font_size: 20.0,
+                    line_height: 32.0,
+                    selection: None,
+                    dragging: true,
+                    track_hit_test: false,
+                    links: vec![reader_document::Link {
+                        start_byte: 0,
+                        end_byte: source.len(),
+                        href: "#note".into(),
+                        kind: reader_document::LinkKind::Note,
+                    }],
+                    focused_link: None,
+                },
+                |_| Message::Start,
+                |_, _| Message::Move,
+                Some(Message::Link),
+            );
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(400.0, 200.0)),
+            );
+            let state = tree.state.downcast_ref::<super::ParagraphState>();
+            let prefix = if direction == reader_document::BaseDirection::Rtl {
+                super::LEADING_RLM.len()
+            } else {
+                0
+            };
+            let glyphs = super::selected_glyph_bounds(
+                &state.paragraph,
+                Some(&(prefix..source.len() + prefix)),
+            );
+            let point = glyphs.first().expect("shaped link").center();
+            let viewport = Rectangle::with_size(Size::new(400.0, 200.0));
+            let mut messages = Vec::new();
+            let mut dispatch = |event, point, viewport| {
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(point),
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &viewport,
+                );
+            };
+            let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+            dispatch(press.clone(), point, viewport);
+            dispatch(release.clone(), point, viewport);
+            let moved = Point::new(point.x + 30.0, point.y);
+            dispatch(press.clone(), point, viewport);
+            dispatch(
+                Event::Mouse(mouse::Event::CursorMoved { position: moved }),
+                moved,
+                viewport,
+            );
+            dispatch(release.clone(), point, viewport);
+            // Neither a cancelled press nor an off-viewport hit may activate a link.
+            dispatch(press.clone(), point, viewport);
+            dispatch(
+                Event::Window(iced::window::Event::Unfocused),
+                point,
+                viewport,
+            );
+            dispatch(release.clone(), point, viewport);
+            let clipped = Rectangle::new(Point::new(500.0, 500.0), Size::new(10.0, 10.0));
+            dispatch(press, point, clipped);
+            dispatch(release, point, clipped);
+            let links: Vec<_> = messages
+                .iter()
+                .filter_map(|m| {
+                    if let Message::Link(href) = m {
+                        Some(href.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(links, ["#note"]);
+            assert!(messages.iter().any(|m| matches!(m, Message::Move)));
+        }
     }
 
     #[test]
@@ -783,7 +1164,7 @@ mod tests {
             align_x: iced::advanced::text::Alignment::Default,
             align_y: iced::alignment::Vertical::Top,
             shaping: iced::advanced::text::Shaping::Advanced,
-            wrapping: iced::advanced::text::Wrapping::Word,
+            wrapping: iced::advanced::text::Wrapping::WordOrGlyph,
         });
         let prefix = usize::from(leading_rlm) * super::LEADING_RLM.len();
         let mapped_selection = selected.start + prefix..selected.end + prefix;

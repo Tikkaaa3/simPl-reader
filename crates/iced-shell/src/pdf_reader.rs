@@ -30,8 +30,8 @@ const MAX_ZOOM: f32 = 4.0;
 const POINT_TO_DIP: f32 = 96.0 / 72.0;
 // Allow for the root header, PDF controls and status. The first on_scroll
 // report replaces this conservative viewport estimate with its actual bounds.
-const INITIAL_CHROME: f32 = 184.0;
-const COMPACT_TOOLBAR_WIDTH: f32 = 700.0;
+const INITIAL_CHROME: f32 = 136.0;
+const COMPACT_TOOLBAR_WIDTH: f32 = 840.0;
 
 pub fn page_input_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-page-input")
@@ -60,28 +60,30 @@ pub enum FocusControl {
     ZoomIn,
     ActualSize,
     FitWidth,
-    Copy,
 }
 
 fn focus_button<'a>(
-    label: impl Into<Element<'a, Message>>,
+    label: &'a str,
     action: Option<Message>,
     focused: bool,
     selected: bool,
 ) -> Element<'a, Message> {
-    button(label)
+    button(text(label).font(ui::MEDIUM))
         .padding([7, 10])
         .on_press_maybe(action)
-        .style(move |_, status| ui::button_style(status, ButtonTone::Quiet, focused, selected))
+        .style(move |theme, status| {
+            ui::button_style(theme, status, ButtonTone::Surface, focused, selected)
+        })
         .into()
 }
 
 #[derive(Debug)]
 struct CachedPage {
-    handle: iced::widget::image::Handle,
-    text: Arc<TextLayer>,
+    handle: Option<iced::widget::image::Handle>,
+    text: Option<Arc<TextLayer>>,
     width: u32,
     bytes: usize,
+    text_bytes: usize,
     used: u64,
 }
 
@@ -108,6 +110,12 @@ pub enum Message {
         width: u32,
         result: Result<Arc<RenderReply>, String>,
     },
+    TextReady {
+        generation: u64,
+        page: u32,
+        width: u32,
+        result: Result<Arc<TextLayer>, String>,
+    },
     PageInput(String),
     PageSubmit,
     Previous,
@@ -126,7 +134,6 @@ pub enum Message {
 #[derive(Debug)]
 pub struct RenderReply {
     handle: iced::widget::image::Handle,
-    text: Arc<TextLayer>,
     width: u32,
     bytes: usize,
 }
@@ -146,7 +153,7 @@ pub struct Reader {
     measurements: iced_shell::virtual_reader::Measurements,
     content_width: f32,
     generation: u64,
-    in_flight: Option<(u64, u32, u32)>,
+    in_flight: Option<(u64, u32, u32, bool)>,
     render_task: Option<iced::task::Handle>,
     copy_task: Option<iced::task::Handle>,
     cached: HashMap<u32, CachedPage>,
@@ -245,12 +252,6 @@ impl Reader {
 
     pub fn page_index(&self) -> usize {
         self.anchor().page as usize
-    }
-
-    pub fn copy_ready(&self) -> bool {
-        self.copy_task.is_none()
-            && self.document.can_copy
-            && (self.select_all || self.selection_ready)
     }
 
     pub fn position(&self) -> PdfReadingPosition {
@@ -419,65 +420,126 @@ impl Reader {
     }
 
     fn request_next(&mut self) -> Task<Message> {
-        if self.in_flight.is_some() {
-            return Task::none();
-        }
         let visible = self.visible_range();
+        if let Some((generation, page, width, _)) = self.in_flight {
+            if generation == self.generation
+                && visible.contains(&(page as usize))
+                && width == self.target_width(page as usize)
+            {
+                return Task::none();
+            }
+            // Cancel queued work for pages no longer needed. A PDFium call
+            // already executing still finishes on its serialized worker.
+            self.render_task.take();
+            self.in_flight = None;
+        }
         self.range = visible.clone();
         let center = self.offset.y + self.viewport.height / 2.0;
-        let wanted = visible
+        let distance = |page: usize| {
+            (self.geometry.start(page) + self.page_size(page).height / 2.0 - center).abs()
+        };
+        // Request text before raster pixels; selection must not wait for a
+        // render of this page (or any of its neighbors).
+        let wanted_text = visible
+            .clone()
             .filter(|&page| {
                 !self.failed.contains(&(page as u32))
                     && self
                         .cached
                         .get(&(page as u32))
-                        .is_none_or(|entry| entry.width != self.target_width(page))
+                        .is_none_or(|entry| entry.text.is_none())
             })
-            .min_by(|&a, &b| {
-                let da = (self.geometry.start(a) + self.page_size(a).height / 2.0 - center).abs();
-                let db = (self.geometry.start(b) + self.page_size(b).height / 2.0 - center).abs();
-                da.total_cmp(&db)
-            });
-        let Some(page) = wanted else {
+            .min_by(|&a, &b| distance(a).total_cmp(&distance(b)));
+        let (page, text_request) = if let Some(page) = wanted_text {
+            (page, true)
+        } else if let Some(page) = visible
+            .filter(|&page| {
+                !self.failed.contains(&(page as u32))
+                    && self.cached.get(&(page as u32)).is_none_or(|entry| {
+                        entry.handle.is_none() || entry.width != self.target_width(page)
+                    })
+            })
+            .min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
+        {
+            (page, false)
+        } else {
             return Task::none();
         };
         let page = page as u32;
         let width = self.target_width(page as usize);
         let generation = self.generation;
-        self.in_flight = Some((generation, page, width));
+        self.in_flight = Some((generation, page, width, text_request));
         let session = self.document.session.clone();
-        let (task, handle) = Task::perform(
-            async move {
-                session.render(page, width).await.map(|rendered| {
-                    let bytes = rendered.rgba.capacity()
-                        + rendered.text.text.capacity()
-                        + rendered.text.glyphs.capacity() * size_of::<reader_pdf::Glyph>();
-                    Arc::new(RenderReply {
-                        handle: iced::widget::image::Handle::from_rgba(
-                            rendered.width,
-                            rendered.height,
-                            rendered.rgba,
-                        ),
-                        text: rendered.text,
-                        width: rendered.width,
-                        bytes,
+        let (task, handle) = if text_request {
+            Task::perform(
+                async move { session.text(page, width).await.map(Arc::new) },
+                move |result| Message::TextReady {
+                    generation,
+                    page,
+                    width,
+                    result,
+                },
+            )
+            .abortable()
+        } else {
+            Task::perform(
+                async move {
+                    session.render(page, width).await.map(|rendered| {
+                        let bytes = rendered.rgba.capacity();
+                        Arc::new(RenderReply {
+                            handle: iced::widget::image::Handle::from_rgba(
+                                rendered.width,
+                                rendered.height,
+                                rendered.rgba,
+                            ),
+                            width: rendered.width,
+                            bytes,
+                        })
                     })
-                })
-            },
-            move |result| Message::Rendered {
-                generation,
-                page,
-                width,
-                result,
-            },
-        )
-        .abortable();
+                },
+                move |result| Message::Rendered {
+                    generation,
+                    page,
+                    width,
+                    result,
+                },
+            )
+            .abortable()
+        };
         self.render_task = Some(handle.abort_on_drop());
         task
     }
 
-    fn cache(&mut self, page: u32, requested_width: u32, reply: &RenderReply) {
-        if reply.bytes > CACHE_BUDGET {
+    fn cache(
+        &mut self,
+        page: u32,
+        requested_width: u32,
+        image: Option<&RenderReply>,
+        text: Option<Arc<TextLayer>>,
+    ) {
+        let mut entry = self.cached.remove(&page).unwrap_or(CachedPage {
+            handle: None,
+            text: None,
+            width: 0,
+            bytes: 0,
+            text_bytes: 0,
+            used: 0,
+        });
+        self.cache_bytes -= entry.bytes;
+        if let Some(image) = image {
+            entry.bytes = entry.text_bytes + image.bytes;
+            entry.handle = Some(image.handle.clone());
+            entry.width = requested_width;
+        }
+        if let Some(text) = text {
+            let text_bytes = text.text.capacity()
+                + text.glyphs.capacity() * size_of::<reader_pdf::Glyph>()
+                + text.hit_bytes();
+            entry.bytes = entry.bytes - entry.text_bytes + text_bytes;
+            entry.text_bytes = text_bytes;
+            entry.text = Some(text);
+        }
+        if entry.bytes > CACHE_BUDGET {
             self.failed.insert(page);
             self.error = Some(format!(
                 "Page {} exceeds the 32 MiB display cache limit",
@@ -485,18 +547,12 @@ impl Reader {
             ));
             return;
         }
-        if let Some(old) = self.cached.remove(&page) {
-            self.cache_bytes -= old.bytes;
-        }
-        while self.cache_bytes + reply.bytes > CACHE_BUDGET || self.cached.len() >= MAX_CACHED_PAGES
+        while self.cache_bytes + entry.bytes > CACHE_BUDGET || self.cached.len() >= MAX_CACHED_PAGES
         {
             let victim = self
                 .cached
                 .iter()
-                .min_by_key(|(page, entry)| {
-                    // Evict offscreen images before visible images, then least recently used.
-                    (self.range.contains(&(**page as usize)), entry.used)
-                })
+                .min_by_key(|(page, entry)| (self.range.contains(&(**page as usize)), entry.used))
                 .map(|(page, _)| *page);
             let Some(victim) = victim else { break };
             if let Some(old) = self.cached.remove(&victim) {
@@ -507,17 +563,9 @@ impl Reader {
             }
         }
         self.clock = self.clock.wrapping_add(1);
-        self.cached.insert(
-            page,
-            CachedPage {
-                handle: reply.handle.clone(),
-                text: reply.text.clone(),
-                width: requested_width,
-                bytes: reply.bytes,
-                used: self.clock,
-            },
-        );
-        self.cache_bytes += reply.bytes;
+        entry.used = self.clock;
+        self.cache_bytes += entry.bytes;
+        self.cached.insert(page, entry);
     }
 
     fn jump(&mut self, page: usize) -> Task<Message> {
@@ -622,7 +670,7 @@ impl Reader {
                 width,
                 result,
             } => {
-                if self.in_flight != Some((generation, page, width)) {
+                if self.in_flight != Some((generation, page, width, false)) {
                     return Task::none();
                 }
                 self.in_flight = None;
@@ -633,13 +681,39 @@ impl Reader {
                 {
                     match result {
                         Ok(reply) if reply.width > 0 => {
-                            self.cache(page, width, &reply);
+                            self.cache(page, width, Some(&reply), None);
                         }
                         Ok(_) => {
                             self.failed.insert(page);
                             self.error =
                                 Some(format!("Page {} returned an empty raster", page + 1));
                         }
+                        Err(error) => {
+                            self.failed.insert(page);
+                            self.error = Some(format!("Page {}: {error}", page + 1));
+                        }
+                    }
+                }
+                self.continue_drag();
+                self.request_next()
+            }
+            Message::TextReady {
+                generation,
+                page,
+                width,
+                result,
+            } => {
+                if self.in_flight != Some((generation, page, width, true)) {
+                    return Task::none();
+                }
+                self.in_flight = None;
+                self.render_task = None;
+                if generation == self.generation
+                    && self.visible_range().contains(&(page as usize))
+                    && width == self.target_width(page as usize)
+                {
+                    match result {
+                        Ok(text) => self.cache(page, width, None, Some(text)),
                         Err(error) => {
                             self.failed.insert(page);
                             self.error = Some(format!("Page {}: {error}", page + 1));
@@ -734,7 +808,11 @@ impl Reader {
             return;
         }
         let page = self.geometry.window(y, 0.0, 0.0).start;
-        let Some(entry) = self.cached.get(&(page as u32)) else {
+        let Some(text) = self
+            .cached
+            .get(&(page as u32))
+            .and_then(|entry| entry.text.as_ref())
+        else {
             return;
         };
         let page_size = self.page_size(page);
@@ -746,7 +824,7 @@ impl Reader {
             ),
             page_size,
         );
-        if let Some(point) = pdf_page::hit(&entry.text, page as u32, bounds, pointer, false)
+        if let Some(point) = pdf_page::hit(text, page as u32, bounds, pointer, false)
             && let Some(selection) = &mut self.selection
             && selection.focus != point
         {
@@ -797,6 +875,14 @@ impl Reader {
                             self.scroll_page(0.9)
                         }
                         Key::Named(key::Named::PageUp) => self.scroll_page(-0.9),
+                        Key::Named(key::Named::ArrowLeft) => self.update(Message::Previous),
+                        Key::Named(key::Named::ArrowRight) => self.update(Message::Next),
+                        Key::Named(key::Named::ArrowUp) => {
+                            self.scroll_page(-40.0 / self.viewport.height.max(1.0))
+                        }
+                        Key::Named(key::Named::ArrowDown) => {
+                            self.scroll_page(40.0 / self.viewport.height.max(1.0))
+                        }
                         Key::Named(key::Named::Escape) => self.update(Message::ClearSelection),
                         _ => Task::none(),
                     }
@@ -815,7 +901,7 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    pub fn view(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    pub fn toolbar(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
         let zoom_label = match self.zoom {
             PdfZoom::FitWidth => "Fit".to_owned(),
@@ -838,14 +924,14 @@ impl Reader {
                 .style(move |theme, status| {
                     let mut style = ui::input_style(theme, status);
                     if focused == Some(FocusControl::Page) {
-                        style.border.color = ui::ACCENT;
+                        style.border.color = ui::palette(theme).accent;
                         style.border.width = 2.0;
                     }
                     style
                 }),
             text(format!("of {}", self.document.pages.len()))
                 .size(13)
-                .color(ui::MUTED),
+                .style(ui::muted_text),
             focus_button(
                 "Next",
                 (page + 1 < self.document.pages.len()).then_some(Message::Next),
@@ -862,7 +948,7 @@ impl Reader {
                 focused == Some(FocusControl::ZoomOut),
                 false,
             ),
-            text(zoom_label).size(13).color(ui::MUTED),
+            text(zoom_label).size(13).style(ui::muted_text),
             focus_button(
                 "+",
                 Some(Message::ZoomIn),
@@ -876,24 +962,21 @@ impl Reader {
                 self.zoom == PdfZoom::Scale(1.0),
             ),
             focus_button(
-                "Fit width",
+                if self.size.width < 520.0 {
+                    "Fit"
+                } else {
+                    "Fit width"
+                },
                 Some(Message::FitWidth),
                 focused == Some(FocusControl::FitWidth),
                 self.zoom == PdfZoom::FitWidth,
             ),
             iced::widget::Space::new().width(Length::Fill),
-            focus_button(
-                "Copy",
-                self.copy_ready().then_some(Message::Copy),
-                focused == Some(FocusControl::Copy),
-                false,
-            ),
         ]
         .spacing(7)
         .align_y(iced::Alignment::Center)
         .width(Length::Fill);
-        // Keep one toolbar slot above the scrollable in both layouts. Only its
-        // children change when the window crosses the compact breakpoint.
+        // The app supplies the one collapsible toolbar slot around these controls.
         let toolbar: Element<'_, Message> = if self.size.width < COMPACT_TOOLBAR_WIDTH {
             column![navigation, zoom].spacing(5).into()
         } else {
@@ -902,12 +985,12 @@ impl Reader {
                 .align_y(iced::Alignment::Center)
                 .into()
         };
-        let mut content = column![
-            container(toolbar)
-                .width(Length::Fill)
-                .padding([7, 12])
-                .style(ui::header)
-        ];
+        toolbar
+    }
+
+    pub fn view(&self) -> Element<'_, Message> {
+        let page = self.anchor().page as usize;
+        let mut content = column![];
         let range = self.visible_range();
         let selected = if self.select_all {
             Some(Selection {
@@ -931,8 +1014,8 @@ impl Reader {
                     number: index as u32,
                     width: size.width,
                     height: size.height,
-                    image: cached.map(|entry| &entry.handle),
-                    text: cached.map(|entry| &entry.text),
+                    image: cached.and_then(|entry| entry.handle.as_ref()),
+                    text: cached.and_then(|entry| entry.text.as_ref()),
                     selection: selected,
                     dragging: self.dragging,
                 }
@@ -956,10 +1039,9 @@ impl Reader {
             },
         );
         let generation = self.generation;
-        content = content.push(
+        content = content.push(crate::document_scroll::wrap(
             scrollable(visible)
                 .id(scroll_id())
-                .style(ui::scroll_style)
                 .direction(scrollable::Direction::Both {
                     vertical: ui::scrollbar(),
                     horizontal: ui::scrollbar(),
@@ -978,7 +1060,7 @@ impl Reader {
                         height: bounds.height,
                     }
                 }),
-        );
+        ));
         let status = if let Some(error) = &self.error {
             error.as_str()
         } else if self.copy_task.is_some() {
@@ -987,22 +1069,26 @@ impl Reader {
             "Text copying is not permitted by this PDF"
         } else if self.failed.contains(&(page as u32)) {
             "Page is unavailable at this zoom; navigate or zoom to retry"
-        } else if let Some(entry) = self.cached.get(&(page as u32)) {
-            if entry.text.glyphs.is_empty() {
+        } else if let Some(text) = self
+            .cached
+            .get(&(page as u32))
+            .and_then(|entry| entry.text.as_ref())
+        {
+            if text.glyphs.is_empty() {
                 "No selectable text on this page (scanned pages need OCR)"
             } else {
                 ""
             }
         } else {
-            "Rendering page and loading text…"
+            "Loading PDF text…"
         };
-        let status_color = if self.error.is_some() || self.failed.contains(&(page as u32)) {
-            ui::DANGER
+        let status_style = if self.error.is_some() || self.failed.contains(&(page as u32)) {
+            ui::danger_text
         } else {
-            ui::MUTED
+            ui::muted_text
         };
         content = content.push(
-            container(text(status).size(12).color(status_color))
+            container(text(status).size(12).style(status_style))
                 .width(Length::Fill)
                 .padding([5, 14])
                 .style(ui::header),
@@ -1010,8 +1096,8 @@ impl Reader {
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(ui::BACKGROUND.into()),
+            .style(|theme| container::Style {
+                background: Some(ui::palette(theme).background.into()),
                 ..container::Style::default()
             })
             .into()
