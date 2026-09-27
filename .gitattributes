@@ -3,4 +3,5 @@
 
 # Vendored assets are small enough for ordinary Git; no Git LFS dependency.
 *.png binary
+*.ico binary
 *.ttf binary

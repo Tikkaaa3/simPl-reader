@@ -1,12 +1,29 @@
 # Windows PowerShell 5.1+. Build and package a standalone Windows x64 release directory.
-param([switch]$Offline)
+param(
+    [switch]$Offline,
+    [string]$OutputDirectory = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $root 'target\release'
-$portable = Join-Path $root 'target\portable'
-$output = Join-Path $portable 'simPl'
+$targetRoot = [IO.Path]::GetFullPath((Join-Path $root 'target'))
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $targetRoot 'portable\simPl' }
+$output = [IO.Path]::GetFullPath($OutputDirectory)
+if (-not $output.StartsWith($targetRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+    $output -eq (Join-Path $targetRoot 'release') -or $output -eq (Join-Path $targetRoot 'debug')) {
+    throw 'Package output must be a dedicated subdirectory under target, not the build directory.'
+}
+$portable = Split-Path -Parent $output
+$checkPath = $output
+while ($checkPath -and $checkPath.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    if ((Test-Path -LiteralPath $checkPath) -and
+        ((Get-Item -LiteralPath $checkPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing to replace a package through a directory link: $checkPath"
+    }
+    $checkPath = Split-Path -Parent $checkPath
+}
 $staging = Join-Path $portable ('simPl-' + [guid]::NewGuid().ToString('N'))
 
 & (Join-Path $PSScriptRoot 'dev.ps1') -Command build -Offline:$Offline
