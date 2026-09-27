@@ -16,11 +16,15 @@
   #define ProductId "simPl.Reader.InstallerQA"
   #define SetupName "simPl-installer-qa"
   #define InstallFolder "simPl Installer QA"
+  #define AssociationBase "simPl.Reader.InstallerQA"
+  #define CapabilityKey "Software\simPl\InstallerQA\Capabilities"
 #else
   #define ProductName "simPl Reader"
   #define ProductId "{{1C17657E-C087-4F08-8F1B-B58D6910D604}"
   #define SetupName "simPl-" + AppVersion + "-windows-x64-setup"
   #define InstallFolder "simPl"
+  #define AssociationBase "simPl.Reader"
+  #define CapabilityKey "Software\simPl\Reader\Capabilities"
 #endif
 
 [Setup]
@@ -49,6 +53,7 @@ AppMutex=Local\simPl.Reader.Running
 SetupMutex=Local\simPl.Reader.Setup
 CloseApplications=yes
 RestartApplications=no
+ChangesAssociations=yes
 OutputDir={#OutputDir}
 OutputBaseFilename={#SetupName}
 Compression=lzma2
@@ -62,7 +67,6 @@ SignedUninstaller=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:ShortcutChoices}"; Flags: unchecked
@@ -73,6 +77,34 @@ Source: "{#PayloadDir}\simPl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\pdfium.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\third-party\*"; DestDir: "{app}\third-party"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "simPl.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+[Registry]
+; Advertise handlers for this user; never write extension defaults or UserChoice.
+Root: HKCU; Subkey: "{#CapabilityKey}"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#ProductName}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "{#CapabilityKey}"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Read local PDF, HTML and EPUB books with simPl."
+Root: HKCU; Subkey: "{#CapabilityKey}"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "{#ProductName}"; ValueData: "{#CapabilityKey}"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.PDF"; ValueType: string; ValueName: ""; ValueData: "PDF document"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.PDF\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.PDF\Application"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#ProductName}"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.PDF\Application"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.PDF\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.pdf\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.PDF"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".pdf"; ValueData: "{#AssociationBase}.PDF"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML"; ValueType: string; ValueName: ""; ValueData: "HTML document"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML\Application"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#ProductName}"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML\Application"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.html\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.HTML"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".html"; ValueData: "{#AssociationBase}.HTML"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB"; ValueType: string; ValueName: ""; ValueData: "EPUB book"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB\Application"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#ProductName}"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB\Application"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: """{app}\simPl.ico"",0"
+Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.epub\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.EPUB"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".epub"; ValueData: "{#AssociationBase}.EPUB"
 
 [Icons]
 Name: "{userdesktop}\{#ProductName}"; Filename: "{app}\simPl.exe"; WorkingDir: "{app}"; IconFilename: "{app}\simPl.ico"; Tasks: desktopicon
@@ -95,18 +127,6 @@ english.DeleteLibrary=Uninstall and delete my library
 english.CancelUninstall=Cancel
 english.ProfileDeleteFailed=simPl was uninstalled, but some library files could not be removed. Close programs using this folder and remove it manually if you still want to delete your library:%n%n%1
 english.ProfileLocationError=Choose a different installation folder. The application must be installed separately from its library folder.
-turkish.DesktopShortcut=&Masaüstü kısayolu oluştur
-turkish.StartMenuShortcut=&Başlat menüsü kısayolları oluştur
-turkish.ShortcutChoices=Kısayollar:
-turkish.UninstallShortcut=simPl Reader'ı kaldır
-turkish.LaunchReader=simPl Reader'ı aç
-turkish.LibraryQuestion=Kütüphanenize ne yapılsın?
-turkish.LibraryDetails=İleride yeniden kurmak için kitaplarınızı saklayabilir veya simPl'ye aktarılan kopyaları, favorileri, okuma ilerlemesini, ayarları ve önbellekleri kalıcı olarak silebilirsiniz.%n%nKütüphane dışındaki orijinal dosyalarınız silinmez.%n%nKütüphane klasörü: %1
-turkish.KeepLibrary=Uygulamayı kaldır, kütüphanemi sakla
-turkish.DeleteLibrary=Uygulamayı ve kütüphanemi sil
-turkish.CancelUninstall=İptal
-turkish.ProfileDeleteFailed=simPl kaldırıldı ancak bazı kütüphane dosyaları silinemedi. Bu klasörü kullanan programları kapatın ve kütüphaneyi silmek istiyorsanız klasörü elle kaldırın:%n%n%1
-turkish.ProfileLocationError=Başka bir kurulum klasörü seçin. Uygulama, kütüphane klasöründen ayrı bir yere kurulmalıdır.
 
 [Code]
 var
