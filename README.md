@@ -8,7 +8,7 @@ with light and dark themes.
 
 ![Reading Crime and Punishment in simPl's dark Book view](docs/screenshots/reading-dark.png)
 
-[Get started](#get-started) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development)
+[Get started](#get-started) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
 
 ## Made for reading
 
@@ -164,3 +164,21 @@ Fonts and icons are bundled with their [licenses and source notes](assets/licens
 The portable package also includes PDFium and Rust dependency notices in
 `third-party/`. The repository retains a small [Cosmic Text patch](patches/cosmic-text-0.15.0)
 for verified RTL text placement; its rationale is in the developer guide.
+
+## License
+
+simPl is **free to use** and **source-available**. It is not open source.
+
+- **The app.** Official releases from the simPl website or
+  [GitHub Releases](https://github.com/Tikkaaa3/simPl-reader/releases) are free for
+  everyone, including at work and across an organisation. See the
+  [terms for official releases](LICENSE-BINARY.txt).
+- **The source code** is licensed under the
+  [PolyForm Noncommercial License 1.0.0](LICENSE.md). You may study, modify and share
+  it for noncommercial purposes. Commercial use of the source, including builds made
+  from it, requires a separate license.
+- **The name and logo.** "simPl", "simPl Reader" and the simPl logo are not covered
+  by either license. Forks must use a different name and logo.
+
+For a commercial license, contact tikkaaa3@gmail.com. Third-party components keep
+their own licenses (see [Third-party notices](#third-party-notices)).

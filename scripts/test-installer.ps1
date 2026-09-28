@@ -74,7 +74,7 @@ function Install-QA([string]$Setup, [string]$Tasks, [string]$Log) {
     $entry = Get-ItemProperty $registry
     Assert-That ($entry.DisplayName -eq 'simPl Reader Installer QA') 'Wrong uninstall entry.'
     $null = Get-QAUninstaller
-    foreach ($file in @('simPl.exe', 'pdfium.dll')) {
+    foreach ($file in @('simPl.exe', 'pdfium.dll', 'LICENSE.txt')) {
         Assert-That ((Get-FileHash (Join-Path $app $file)).Hash -eq (Get-FileHash (Join-Path $PayloadDirectory $file)).Hash) "Installed $file differs from payload."
     }
     Assert-That (Test-Path -LiteralPath (Join-Path $app 'third-party\fonts\Geist-OFL.txt')) 'Font notices missing.'

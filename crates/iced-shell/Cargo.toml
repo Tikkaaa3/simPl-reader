@@ -3,6 +3,7 @@ name = "iced-shell"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "tiny-skia", "thread-pool", "image-without-codecs"] }

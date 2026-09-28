@@ -1,0 +1,58 @@
+simPl Reader - Terms of Use for Official Releases
+
+Copyright 2026 Tikkaaa3. All rights reserved except as granted below.
+
+These terms apply to the official, unmodified builds of simPl Reader published
+by Tikkaaa3 on the simPl website or at
+https://github.com/Tikkaaa3/simPl-reader/releases ("Official Releases").
+The simPl source code is licensed separately under the PolyForm Noncommercial
+License 1.0.0 (see LICENSE.md in the source repository). Builds made by anyone
+else, including builds of modified or unmodified source code, are covered only
+by that source license and not by these terms.
+
+1. Free use for everyone
+
+   You may install and use Official Releases free of charge for any purpose,
+   personal or professional. Individuals, companies, schools and other
+   organisations may use them, and an organisation may deploy them to its own
+   computers for its own staff.
+
+2. Sharing
+
+   You may share copies of an Official Release only if you share it free of
+   charge, unmodified, complete (including its third-party notices), and with
+   a link to the official download page. You may not sell Official Releases,
+   charge for access to them, bundle them with other software, or present them
+   as your own product.
+
+3. Restrictions
+
+   You may not modify, repackage, or rebrand Official Releases, or remove or
+   alter their copyright and license notices. Nothing in these terms limits
+   rights that applicable law gives you regardless of these terms.
+
+4. Name and logo
+
+   "simPl", "simPl Reader" and the simPl logo are not licensed under these
+   terms or under the source license. You may refer to simPl by name to
+   describe it truthfully, but you may not use the name or logo for another
+   product, including a fork, or in a way that suggests endorsement.
+
+5. Third-party components
+
+   Official Releases include third-party components (such as PDFium, fonts and
+   Rust libraries) that remain under their own licenses. Those licenses are
+   included in the "third-party" folder, and nothing in these terms limits the
+   rights they give you.
+
+6. No warranty
+
+   Official Releases are provided "as is", without warranty of any kind. To
+   the extent permitted by law, the author is not liable for any damage or
+   loss, including loss of data, arising from their use.
+
+7. Commercial licensing
+
+   For any use not covered by these terms or by the source license, including
+   using simPl source code in a commercial product, contact
+   tikkaaa3@gmail.com.

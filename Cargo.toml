@@ -20,6 +20,7 @@ cosmic-text = { path = "patches/cosmic-text-0.15.0" }
 version = "0.0.0"
 edition = "2024"
 publish = false
+license-file = "LICENSE.md"
 
 # Preserve the existing release settings; tune only against actual reader runs.
 [profile.release]

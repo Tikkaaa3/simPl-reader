@@ -20,6 +20,7 @@ description = "Windows process CPU/private-memory measurement CLI with owned pro
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 # Raw Win32 bindings. Each feature is a call-site module; nothing broader is

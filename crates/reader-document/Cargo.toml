@@ -3,6 +3,7 @@ name = "reader-document"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 html5ever = "=0.35.0"

@@ -34,6 +34,8 @@ New-Item -ItemType Directory -Path $portable -Force | Out-Null
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
     Copy-Item -LiteralPath $exe -Destination (Join-Path $staging 'simPl.exe')
+    # Official builds ship under the binary terms; the source license stays in the repository.
+    Copy-Item -LiteralPath (Join-Path $root 'LICENSE-BINARY.txt') -Destination (Join-Path $staging 'LICENSE.txt')
     & (Join-Path $PSScriptRoot 'pdfium.ps1') -Offline:$Offline -Destination $staging
     & (Join-Path $PSScriptRoot 'collect-licenses.ps1') -Destination (Join-Path $staging 'third-party') -Offline:$Offline
     # Font binaries are embedded in simPl.exe; ship their notices alongside Rust notices.

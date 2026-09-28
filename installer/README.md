@@ -7,6 +7,8 @@ independent of the internal Cargo workspace's development version.
 ## User experience
 
 - English-only wizard. The wizard follows the Windows light/dark appearance.
+- A license page shows the [terms for official releases](../LICENSE-BINARY.txt),
+  which are also installed as `LICENSE.txt` beside the reader.
 - Per-user installation in `%LOCALAPPDATA%\Programs\simPl`; no administrator prompt.
   A different application folder can be selected.
 - Optional desktop shortcut (off initially) and Start menu shortcuts (on initially).
@@ -67,7 +69,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 `
 ```
 
 The script creates a fresh payload in `target\installer-payload`, leaving the
-portable folder intact. Only the reader, PDFium, icon and third-party notices are
+portable folder intact. Only the reader, PDFium, icon, license and third-party notices are
 included. Test books, the compiler, user data and other portable executables are
 not included.
 

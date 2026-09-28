@@ -49,6 +49,7 @@ UsePreviousTasks=yes
 UninstallDisplayName={#ProductName}
 UninstallDisplayIcon={app}\simPl.ico
 SetupIconFile=simPl.ico
+LicenseFile={#PayloadDir}\LICENSE.txt
 AppMutex=Local\simPl.Reader.Running
 SetupMutex=Local\simPl.Reader.Setup
 CloseApplications=yes
@@ -75,6 +76,7 @@ Name: "startmenuicon"; Description: "{cm:StartMenuShortcut}"; GroupDescription: 
 [Files]
 Source: "{#PayloadDir}\simPl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\pdfium.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\third-party\*"; DestDir: "{app}\third-party"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "simPl.ico"; DestDir: "{app}"; Flags: ignoreversion
 
