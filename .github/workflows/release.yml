@@ -69,6 +69,10 @@ jobs:
           $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER','/PORTABLE=1',"/DIR=`"$dir`""
           if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $dir 'ISCC.exe'))) { throw 'Inno Setup installation failed.' }
 
+      - name: Fetch all locked dependencies
+        # License collection runs cargo metadata offline, which needs every platform's crates.
+        run: cargo fetch --locked
+
       - name: Build the installer and portable package
         shell: pwsh
         run: |
