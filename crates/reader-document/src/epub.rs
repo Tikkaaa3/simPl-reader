@@ -351,6 +351,16 @@ impl Epub {
     }
 
     pub fn load_chapter(&self, index: usize) -> Result<Chapter, String> {
+        self.load_chapter_with(index, false)
+    }
+
+    /// The chapter's items for searching: same structure and ids as `load_chapter`, but
+    /// images are neither read nor decoded (each becomes a one-pixel placeholder).
+    pub fn load_chapter_text(&self, index: usize) -> Result<Chapter, String> {
+        self.load_chapter_with(index, true)
+    }
+
+    fn load_chapter_with(&self, index: usize, text_only: bool) -> Result<Chapter, String> {
         let info = self
             .section(index)
             .ok_or("EPUB chapter index out of bounds")?;
@@ -360,6 +370,7 @@ impl Epub {
             chapter: &info.href,
             entries: &self.entries,
             archive: &mut archive,
+            placeholder: text_only.then(placeholder_png),
         };
         let page_targets = self
             .page_list
@@ -404,6 +415,7 @@ impl Epub {
                 chapter: path,
                 entries: &self.entries,
                 archive: &mut archive,
+                placeholder: None,
             };
             let key = resources.resolve(href)?;
             let raster = resources.load(&key)?;
@@ -423,6 +435,16 @@ struct EpubResources<'a> {
     chapter: &'a str,
     entries: &'a HashMap<String, Entry>,
     archive: &'a mut ZipArchive<File>,
+    /// Returned instead of the real bytes of every image when only text is wanted.
+    placeholder: Option<Vec<u8>>,
+}
+
+fn placeholder_png() -> Vec<u8> {
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("a one-pixel PNG always encodes");
+    png.into_inner()
 }
 
 impl ResourceLoader for EpubResources<'_> {
@@ -438,6 +460,9 @@ impl ResourceLoader for EpubResources<'_> {
     }
 
     fn load(&mut self, key: &str) -> Result<Vec<u8>, String> {
+        if let Some(placeholder) = &self.placeholder {
+            return Ok(placeholder.clone());
+        }
         read_named(self.archive, self.entries, key, MAX_RESOURCE)
     }
 }
@@ -1365,6 +1390,36 @@ mod tests {
             ("OEBPS/text/two.xhtml", chapter_two()),
             ("OEBPS/images/dot.png", &image),
         ])
+    }
+
+    #[test]
+    fn text_only_chapters_match_the_real_items_without_decoding_images() {
+        let mut large = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(256, 256)
+            .write_to(&mut large, image::ImageFormat::Png)
+            .unwrap();
+        let large = large.into_inner();
+        let file = fixture(&[
+            ("OEBPS/book.opf", opf3()),
+            ("OEBPS/nav.xhtml", nav3()),
+            ("OEBPS/text/Café#one.xhtml", chapter_one()),
+            ("OEBPS/text/two.xhtml", chapter_two()),
+            ("OEBPS/images/dot.png", &large),
+        ]);
+        let book = open(&file.0).unwrap();
+        for index in 0..book.chapters.len() {
+            let real = book.load_chapter(index).unwrap().document;
+            let text = book.load_chapter_text(index).unwrap().document;
+            assert_eq!(real.items, text.items);
+            assert_eq!(real.anchors, text.anchors);
+        }
+        let real = book.load_chapter(0).unwrap().document;
+        let text = book.load_chapter_text(0).unwrap().document;
+        assert_eq!(
+            real.images.values().map(|i| i.rgba.len()).sum::<usize>(),
+            256 * 256 * 4
+        );
+        assert_eq!(text.images.values().map(|i| i.rgba.len()).sum::<usize>(), 4);
     }
 
     #[test]

@@ -223,6 +223,7 @@ enum Command {
     Open(u64, PathBuf, oneshot::Sender<Result<OpenData, String>>),
     Render(u64, u32, u32, oneshot::Sender<Result<RenderedPage, String>>),
     Text(u64, u32, u32, oneshot::Sender<Result<TextLayer, String>>),
+    PageText(u64, u32, oneshot::Sender<Result<String, String>>),
     Copy(
         u64,
         Option<Selection>,
@@ -308,6 +309,18 @@ impl Session {
             .await
             .map_err(|_| "PDF reader worker stopped".to_string())?
     }
+    /// Text of one page in glyph order: the `n`th character is the `n`th `TextPoint` index.
+    pub async fn page_text(&self, page: u32) -> Result<String, String> {
+        let (reply, result) = oneshot::channel();
+        self.0
+            .worker
+            .send(Command::PageText(self.0.id, page, reply))
+            .map_err(|_| "PDF reader worker stopped".to_string())?;
+        result
+            .await
+            .map_err(|_| "PDF reader worker stopped".to_string())?
+    }
+
     pub async fn copy(&self, selection: Selection) -> Result<String, String> {
         self.copy_impl(Some(selection)).await
     }
@@ -357,6 +370,9 @@ fn run_worker(receiver: mpsc::Receiver<Command>) {
                         let _ = reply.send(Err(error.clone()));
                     }
                     Command::Text(_, _, _, reply) => {
+                        let _ = reply.send(Err(error.clone()));
+                    }
+                    Command::PageText(_, _, reply) => {
                         let _ = reply.send(Err(error.clone()));
                     }
                     Command::Copy(_, _, reply) => {
@@ -415,6 +431,16 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                     .get(&id)
                     .ok_or_else(|| "PDF document is closed".to_string())
                     .and_then(|document| text_page(document, page, target_width));
+                let _ = reply.send(result);
+            }
+            Command::PageText(id, page, reply) => {
+                if reply.is_canceled() {
+                    continue;
+                }
+                let result = documents
+                    .get(&id)
+                    .ok_or_else(|| "PDF document is closed".to_string())
+                    .and_then(|document| page_plain_text(document, page));
                 let _ = reply.send(result);
             }
             Command::Copy(id, selection, reply) => {
@@ -706,6 +732,18 @@ fn text_page(
         .render_annotations(false)
         .render_form_data(false);
     extract_text(&page, Some((&config, width, height)), false)
+}
+
+fn page_plain_text(document: &PdfDocument<'_>, page_index: u32) -> Result<String, String> {
+    if !document
+        .permissions()
+        .can_extract_text_and_graphics()
+        .map_err(|error| format!("Cannot inspect PDF copy permissions: {error}"))?
+    {
+        return Ok(String::new());
+    }
+    let page = page_at(document, page_index)?;
+    Ok(extract_text(&page, None, false)?.text)
 }
 
 fn extract_text(
