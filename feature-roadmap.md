@@ -11,6 +11,8 @@ new dependencies last.
 
 ## 1. Document view toolbar matches Book view
 
+**Status: done.** Library and Book on the left, page controls in the centre, zoom and find on the right; fit width moved to Ctrl+Shift+F (toggles back).
+
 **Goal.** The PDF Document toolbar should look like the Book toolbar: page size
 and zoom controls grouped at the right, page counter centered, Library and mode
 switch at the left.
@@ -26,6 +28,8 @@ switch at the left.
 **Risk.** Keyboard focus order and the existing toolbar tests.
 
 ## 2. In-book search (Ctrl+F)
+
+**Status: done** for HTML, EPUB and PDF (Book and Document views). Ctrl+F toggles the find bar; matches scroll to the exact line.
 
 **Goal.** Search inside the open book, step through matches, highlight them on
 the page.
