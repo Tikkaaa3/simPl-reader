@@ -25,6 +25,11 @@ fn scenario(with_book: bool, narrow: bool) -> Reader {
         reader.window_size = Size::new(640.0, 480.0);
         reader.appearance = reader_document::preferences::Appearance::Light;
         reader.word_translation.picker = Some(word_translation::Picker::Source);
+        reader.word_translation.packages_expanded = true;
+        reader.word_translation.inventory = vec![
+            reader_document::dictionary::PackageState::Missing;
+            reader_document::dictionary::packages().len()
+        ];
     }
     if with_book {
         reader.book = Some(super::tests::book("settings-profile"));

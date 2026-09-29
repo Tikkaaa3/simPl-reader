@@ -862,6 +862,7 @@ version = "0.0.0"
 dependencies = [
  "iced",
  "iced_futures",
+ "iced_runtime",
  "iced_tiny_skia",
  "image",
  "parking_lot",

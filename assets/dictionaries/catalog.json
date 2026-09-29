@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "data_version": "2026-09-30",
+  "base_url": "https://github.com/Tikkaaa3/simPl-reader/releases/download/dictionaries-v1-2026-09-30/",
+  "packages": [
+    {
+      "source": "english",
+      "target": "turkish",
+      "file": "en-tr-2026-09-30.zip",
+      "bytes": 629452,
+      "sha256": "b9f4f50a6abd42dca56308c893dd4ed84342f9c8761601fbc61ad21df30ba3c3",
+      "data_bytes": 1759034,
+      "data_sha256": "005cef4f547b7de2bac2e963ebf0c8c2b72d116b9c7c23834e80c1e3ca32a767",
+      "provider": "WikDict",
+      "entries": 47307
+    },
+    {
+      "source": "turkish",
+      "target": "english",
+      "file": "tr-en-2026-09-30.zip",
+      "bytes": 502275,
+      "sha256": "a91913e430483ffa34b85e7456d200e7d23e9bfa52398ff3561397ed2162395d",
+      "data_bytes": 1464567,
+      "data_sha256": "0fe65a0998c1c433df8bbb8ec2b05900a1a2aed91782c82a12e6b14821d5c99a",
+      "provider": "WikDict",
+      "entries": 41426
+    },
+    {
+      "source": "english",
+      "target": "spanish",
+      "file": "en-es-2026-09-30.zip",
+      "bytes": 1168715,
+      "sha256": "15f49a26bd7ec32268ff9952e5e8efa08a4491e2628df52834f2e0eebea4825e",
+      "data_bytes": 3553069,
+      "data_sha256": "627da2a61d6ebbf1259532d1ac6d0a017a6644582794269c234ca8904a26ca38",
+      "provider": "WikDict",
+      "entries": 81628
+    },
+    {
+      "source": "spanish",
+      "target": "english",
+      "file": "es-en-2026-09-30.zip",
+      "bytes": 1051871,
+      "sha256": "2e5e10ebc12f66d717f73d8cac532a87ba324c79bc41c948856eed4f206f685b",
+      "data_bytes": 3512437,
+      "data_sha256": "ab3feb5123d219dc6536f66cde091c606b1bfe79050ff7204c4df4cde07205ad",
+      "provider": "WikDict",
+      "entries": 95970
+    },
+    {
+      "source": "english",
+      "target": "german",
+      "file": "en-de-2026-09-30.zip",
+      "bytes": 1804369,
+      "sha256": "7748b03a08050bcbd31fa3bbae434156435aa112f3e566e4f369394a366d31f4",
+      "data_bytes": 5478975,
+      "data_sha256": "5028d38c9e06e0c740da8b7e603eb1e616cbc838a1a5bd4bd60d5c90f6e5e69d",
+      "provider": "WikDict",
+      "entries": 123501
+    },
+    {
+      "source": "german",
+      "target": "english",
+      "file": "de-en-2026-09-30.zip",
+      "bytes": 1841040,
+      "sha256": "e992133780d87a5795c4be56ab2d4d38963e5e69df1f64e245d0ada5f3c3e386",
+      "data_bytes": 5818781,
+      "data_sha256": "cd1bff978eefb0cc36120b48793b7066b44c66e595988e13946ddc190081e802",
+      "provider": "WikDict",
+      "entries": 141014
+    },
+    {
+      "source": "english",
+      "target": "french",
+      "file": "en-fr-2026-09-30.zip",
+      "bytes": 2033271,
+      "sha256": "22dca1b9eae5fce944788e4126a57f6d30758e85ea723f87bac86c1777fdb762",
+      "data_bytes": 6771552,
+      "data_sha256": "617601bfbd14c88164ed801250fb396fd8514be1dfdfa7f4d278b437b9cdecc2",
+      "provider": "WikDict",
+      "entries": 165793
+    },
+    {
+      "source": "french",
+      "target": "english",
+      "file": "fr-en-2026-09-30.zip",
+      "bytes": 1985555,
+      "sha256": "f2f1ab5ebe8f771cb2e482e4eaea2031f228c542402e8da0fab862f69d42c3b6",
+      "data_bytes": 6902050,
+      "data_sha256": "3e0c6b88f629ccde607bcbeeda9cf79ab4f2808c7c5a55aee5a86aa913033866",
+      "provider": "WikDict",
+      "entries": 159420
+    },
+    {
+      "source": "english",
+      "target": "japanese",
+      "file": "en-ja-2026-09-30.zip",
+      "bytes": 836701,
+      "sha256": "1dc392942b2e27d9d797dd47ead9a7ec23510ed717d7939bf44eb9152474950c",
+      "data_bytes": 2154798,
+      "data_sha256": "2a4efbc99511b4c9cf224fa4340144cbe566a132a4d293921706a2f3cd08c449",
+      "provider": "WikDict",
+      "entries": 52834
+    },
+    {
+      "source": "japanese",
+      "target": "english",
+      "file": "ja-en-2026-09-30.zip",
+      "bytes": 745063,
+      "sha256": "c44bc873b010fda9bf0e1af30c8fe832011df8ffa556593d5cb90c000a11f025",
+      "data_bytes": 2150280,
+      "data_sha256": "be670040cfaf10a4684359a7a24190ed8e3f01fe462bd00667c15cd39e0c18c9",
+      "provider": "WikDict",
+      "entries": 56971
+    },
+    {
+      "source": "english",
+      "target": "chinese",
+      "file": "en-zh-2026-09-30.zip",
+      "bytes": 382669,
+      "sha256": "fac08c97a501d19a1427854dcd83fb5058df069fce8a495923b19ced4b586474",
+      "data_bytes": 892057,
+      "data_sha256": "c23aecd80fc9b43d343736b950c6b95acfed4d70d7e6e6248b8109cb0ba52dc0",
+      "provider": "WikDict",
+      "entries": 30518
+    },
+    {
+      "source": "chinese",
+      "target": "english",
+      "file": "zh-en-2026-09-30.zip",
+      "bytes": 5524326,
+      "sha256": "799af4d73ad24f559c8191d6e76c12d1ad9da595ed9f978812c02a1430e0c5f5",
+      "data_bytes": 15509031,
+      "data_sha256": "ec4f91471fd68dbb694cb289891347a5fba9b52c92a267be0726c21017b5b9a0",
+      "provider": "WikDict / CC-CEDICT",
+      "entries": 301885
+    },
+    {
+      "source": "korean",
+      "target": "english",
+      "file": "ko-en-2026-09-30.zip",
+      "bytes": 1264395,
+      "sha256": "95acdbecf07075da12574fdfd05f26eef025bafc1dc875f26fdb23d0b779728d",
+      "data_bytes": 3363131,
+      "data_sha256": "5f80d1286b79c8ee2b0db33c5f03f0f178dac5e9d1f4b839ad239705961cfc9e",
+      "provider": "Kaikki / Wiktionary",
+      "entries": 51161
+    }
+  ]
+}

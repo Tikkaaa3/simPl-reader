@@ -1,4 +1,4 @@
-//! Bounded offline word lookup. Only the active language pair is decompressed.
+//! Bounded offline word lookup using separately installed data packages.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -7,7 +7,12 @@ use std::{
 };
 use unicode_normalization::UnicodeNormalization;
 
-const DATA: &[u8] = include_bytes!("../../../assets/dictionaries/words.zip");
+#[path = "dictionary_packages.rs"]
+mod packages;
+pub use packages::{
+    LookupError, Package, PackageId, PackageState, Store, data_version, package, package_id,
+    packages,
+};
 const MAX_DATA: u64 = 16 * 1024 * 1024;
 pub const MAX_QUERY_BYTES: usize = 256;
 pub const MAX_QUERY_WORDS: usize = 4;
@@ -223,81 +228,6 @@ impl Lexicon {
     }
 }
 
-type Cache = Option<(Language, Language, Arc<Lexicon>)>;
-static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(None));
-
-fn lexicon(source: Language, target: Language) -> Result<Arc<Lexicon>, String> {
-    let mut cache = CACHE
-        .lock()
-        .map_err(|_| "The dictionary cache is unavailable.")?;
-    if let Some((from, to, lexicon)) = cache.as_ref()
-        && *from == source
-        && *to == target
-    {
-        return Ok(lexicon.clone());
-    }
-    let mut archive = zip::ZipArchive::new(Cursor::new(DATA)).map_err(|e| e.to_string())?;
-    let manifest: Manifest = serde_json::from_reader(
-        archive
-            .by_name("manifest.json")
-            .map_err(|e| e.to_string())?
-            .take(64 * 1024),
-    )
-    .map_err(|e| e.to_string())?;
-    if manifest.version != 1 {
-        return Err("Unsupported dictionary package version.".into());
-    }
-    let pair = manifest
-        .pairs
-        .iter()
-        .find(|pair| pair.source == source.code() && pair.target == target.code())
-        .ok_or("No offline dictionary for this language pair.")?;
-    let mut file = archive
-        .by_name(&format!("{}-{}.tsv", pair.source, pair.target))
-        .map_err(|e| e.to_string())?;
-    if file.size() > MAX_DATA {
-        return Err("Dictionary exceeds the local size limit.".into());
-    }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_DATA + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_DATA || format!("{:x}", Sha256::digest(&bytes)) != pair.sha256 {
-        return Err("The local dictionary failed its integrity check.".into());
-    }
-    let lexicon = Arc::new(Lexicon::parse(
-        String::from_utf8(bytes).map_err(|e| e.to_string())?,
-        pair.provider.clone(),
-    )?);
-    *cache = Some((source, target, lexicon.clone()));
-    Ok(lexicon)
-}
-
-/// Run on a worker. Returns dictionary meanings, never generated sentence translations.
-pub fn lookup(
-    text: &str,
-    source: Language,
-    target: Language,
-) -> Result<Option<Translation>, String> {
-    let word = query(text, source).ok_or("Select a word or short phrase (up to 4 words).")?;
-    if !supported(source, target) {
-        return Err("No offline dictionary for this language pair.".into());
-    }
-    let lexicon = lexicon(source, target)?;
-    if let Some(result) = lexicon.find(&word, false) {
-        return Ok(Some(result));
-    }
-    if source == Language::English && !word.contains(' ') {
-        for candidate in english_bases(&word) {
-            if let Some(result) = lexicon.find(&candidate, true) {
-                return Ok(Some(result));
-            }
-        }
-    }
-    Ok(None)
-}
-
 fn english_bases(word: &str) -> Vec<String> {
     let irregular = match word {
         "ran" => Some("run"),
@@ -347,6 +277,41 @@ fn english_bases(word: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    struct Fixture {
+        store: Store,
+        path: std::path::PathBuf,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+    fn fixture() -> Fixture {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "simpl-dictionaries-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        Fixture {
+            store: Store::new(path.clone()),
+            path,
+        }
+    }
+    fn bytes(id: PackageId) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/dictionaries/packs")
+                .join(&package(id).unwrap().file),
+        )
+        .unwrap()
+    }
+    fn install(store: &Store, id: PackageId) {
+        store
+            .install(id, &bytes(id), &std::sync::atomic::AtomicBool::new(false))
+            .unwrap();
+    }
+
     #[test]
     fn normalization_preserves_language_and_bounds() {
         assert_eq!(
@@ -370,7 +335,29 @@ mod tests {
     }
 
     #[test]
-    fn bundled_pairs_pass_integrity_and_return_real_words() {
+    fn downloadable_pairs_pass_integrity_and_return_real_words() {
+        let fixture = fixture();
+        let store = &fixture.store;
+        for (i, p) in packages().iter().enumerate() {
+            assert_eq!(package_id(p.source, p.target), Some(PackageId(i)));
+            assert_eq!(
+                p.file,
+                format!(
+                    "{}-{}-{}.zip",
+                    p.source.code(),
+                    p.target.code(),
+                    data_version()
+                )
+            );
+            assert!(p.bytes < 8 * 1024 * 1024 && p.data_bytes <= MAX_DATA);
+            install(store, PackageId(i));
+        }
+        assert!(
+            store
+                .inventory()
+                .iter()
+                .all(|state| *state == PackageState::Installed)
+        );
         for (source, word, target) in [
             (Language::English, "book", Language::Turkish),
             (Language::Turkish, "kitap", Language::English),
@@ -382,11 +369,17 @@ mod tests {
             (Language::Chinese, "书", Language::English),
             (Language::Chinese, "書", Language::English),
         ] {
-            assert!(lookup(word, source, target).unwrap().is_some(), "{word}");
+            assert!(
+                store.lookup(word, source, target).unwrap().is_some(),
+                "{word}"
+            );
         }
         for target in Language::English.targets() {
             assert!(
-                lookup("book", Language::English, target).unwrap().is_some(),
+                store
+                    .lookup("book", Language::English, target)
+                    .unwrap()
+                    .is_some(),
                 "{target}"
             );
         }
@@ -394,17 +387,29 @@ mod tests {
 
     #[test]
     fn fallbacks_are_labeled_and_missing_entries_are_not_invented() {
-        let run = lookup("ran", Language::English, Language::Turkish)
+        let fixture = fixture();
+        let store = &fixture.store;
+        install(
+            store,
+            package_id(Language::English, Language::Turkish).unwrap(),
+        );
+        let run = store
+            .lookup("ran", Language::English, Language::Turkish)
             .unwrap()
             .unwrap();
         assert_eq!(run.headword, "run");
         assert!(run.base_form);
         assert!(
-            lookup("zzzzzzzzz", Language::English, Language::Turkish)
+            store
+                .lookup("zzzzzzzzz", Language::English, Language::Turkish)
                 .unwrap()
                 .is_none()
         );
-        assert!(lookup("book", Language::English, Language::Korean).is_err());
+        assert!(
+            store
+                .lookup("book", Language::English, Language::Korean)
+                .is_err()
+        );
         assert_eq!(
             Settings {
                 source: Language::Korean,
@@ -414,6 +419,71 @@ mod tests {
             .validated()
             .target,
             Language::English
+        );
+    }
+
+    #[test]
+    fn missing_corrupt_cancelled_and_removed_packages_preserve_storage_contract() {
+        let fixture = fixture();
+        let store = &fixture.store;
+        let id = package_id(Language::English, Language::Turkish).unwrap();
+        let lookup = || store.lookup("book", Language::English, Language::Turkish);
+        assert_eq!(
+            lookup(),
+            Err(LookupError::Unavailable {
+                package: id,
+                error: None
+            })
+        );
+        assert!(
+            !fixture.path.exists(),
+            "a lookup must not create or download a file"
+        );
+        install(store, id);
+        assert!(lookup().unwrap().is_some());
+        let valid = bytes(id);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            store
+                .install(id, &valid[..valid.len() - 1], &cancel)
+                .is_err()
+        );
+        let mut corrupt = valid.clone();
+        corrupt[0] ^= 1;
+        assert!(store.install(id, &corrupt, &cancel).is_err());
+        assert!(
+            store
+                .install(id, &valid, &std::sync::atomic::AtomicBool::new(true))
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(fixture.path.join(&package(id).unwrap().file)).unwrap(),
+            valid
+        );
+        store.remove(id).unwrap();
+        assert_eq!(
+            lookup(),
+            Err(LookupError::Unavailable {
+                package: id,
+                error: None
+            }),
+            "removal must invalidate the cached lexicon"
+        );
+        std::fs::write(fixture.path.join(&package(id).unwrap().file), corrupt).unwrap();
+        assert_eq!(store.inventory()[id.0], PackageState::Invalid);
+        assert!(matches!(
+            lookup(),
+            Err(LookupError::Unavailable { error: Some(_), .. })
+        ));
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/dictionaries/packs")
+            .join(&package(id).unwrap().file);
+        assert_eq!(store.import(&file, &cancel).unwrap(), id);
+        assert!(lookup().unwrap().is_some());
+        assert_eq!(
+            std::fs::read_dir(&fixture.path).unwrap().count(),
+            1,
+            "no temporary files remain"
         );
     }
 

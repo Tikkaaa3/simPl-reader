@@ -15,7 +15,7 @@ reader-workload = { path = "../reader-workload" }
 sha2 = { version = "=0.10.9", default-features = false }
 unicode-segmentation = "=1.13.3"
 shell-startup-markers = { path = "../shell-startup-markers" }
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Security"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_Security", "Win32_Networking_WinHttp"] }
 parking_lot = "=0.12.5"
 # SAPI read-aloud through the voices installed in Windows.
 windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Media_Audio", "Win32_Media_Speech", "Win32_System_Com"] }
@@ -24,6 +24,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 
 [dev-dependencies]
+iced_runtime = { version = "=0.14.0", default-features = false }
 iced_tiny_skia = { version = "=0.14.1", default-features = false }
 # Exercise the production CPU renderer without a native window or desktop helper.
 tiny-skia = { version = "=0.11.4", default-features = false, features = ["std", "simd"] }

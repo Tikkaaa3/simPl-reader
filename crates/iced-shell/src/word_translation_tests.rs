@@ -18,6 +18,21 @@ fn reader() -> Reader {
         fraction: 0.0,
     });
     settle_pagination(&mut reader);
+    static STORE: std::sync::LazyLock<Arc<Store>> = std::sync::LazyLock::new(|| {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/dictionary-ui-tests-{}",
+            std::process::id()
+        ));
+        let store = Arc::new(Store::new(root));
+        let id = dictionary::package_id(Language::English, Language::Turkish).unwrap();
+        let file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/dictionaries/packs")
+            .join(&dictionary::package(id).unwrap().file);
+        store.import(&file, &AtomicBool::new(false)).unwrap();
+        store
+    });
+    reader.word_translation.store = STORE.clone();
+    reader.word_translation.inventory = reader.word_translation.store.inventory();
     reader
 }
 
@@ -59,7 +74,10 @@ fn automatic_release_and_manual_context_menu_share_the_same_card() {
         reader.word_translation.popup.as_ref().unwrap().query,
         "book"
     );
-    let result = dictionary::lookup("book", Language::English, Language::Turkish);
+    let result = reader
+        .word_translation
+        .store
+        .lookup("book", Language::English, Language::Turkish);
     assert!(result.as_ref().unwrap().is_some());
     let _ = update_inner(&mut reader, Message::DictionaryReady { generation, result });
     assert!(
@@ -161,7 +179,7 @@ fn long_selections_use_normal_tools_and_late_results_never_reopen_cards() {
 }
 
 #[test]
-fn language_controls_only_offer_installed_pairs_and_keep_settings_valid() {
+fn language_controls_offer_available_pairs_and_keep_settings_valid() {
     let mut reader = reader();
     reader.show_settings = true;
     let _ = reader.dictionary_action(Action::Picker(Picker::Source));
@@ -185,6 +203,200 @@ fn language_controls_only_offer_installed_pairs_and_keep_settings_valid() {
     let _ = reader.dictionary_action(Action::ToggleAutomatic);
     assert!(!reader.word_translation.settings.automatic);
     assert!(reader.word_translation.picker.is_none());
+}
+
+fn missing_reader(label: &str) -> Reader {
+    let mut reader = reader();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../target/dictionary-ui-tests-{}-{label}",
+        std::process::id()
+    ));
+    reader.word_translation.store = Arc::new(Store::new(path));
+    reader.word_translation.inventory = reader.word_translation.store.inventory();
+    reader
+}
+
+fn finish_lookup(reader: &mut Reader) {
+    let popup = reader.word_translation.popup.as_ref().unwrap();
+    let settings = reader.word_translation.settings;
+    let result =
+        reader
+            .word_translation
+            .store
+            .lookup(&popup.query, settings.source, settings.target);
+    reader.dictionary_ready(reader.word_translation.generation, result);
+}
+
+#[test]
+fn missing_dictionary_shows_explicit_download_and_completion_retries_only_the_open_card() {
+    let mut reader = missing_reader("completion");
+    let id = dictionary::package_id(Language::English, Language::Turkish).unwrap();
+    reader.word_translation.store.remove(id).unwrap();
+    select(&mut reader, 7, 11);
+    let _ = reader.auto_translate_selection();
+    finish_lookup(&mut reader);
+    assert_eq!(
+        missing_package(reader.word_translation.popup.as_ref().unwrap()),
+        Some(id)
+    );
+    assert!(
+        reader
+            .dictionary_controls()
+            .contains(&Control::Dictionary(Focus::Download(id)))
+    );
+    assert!(
+        reader.word_translation.package_job.is_none(),
+        "automatic lookup must not start a download"
+    );
+    let old_lookup = reader.word_translation.generation;
+    let _ = reader.dictionary_action(Action::Download(id));
+    let job = reader
+        .word_translation
+        .package_job
+        .as_ref()
+        .unwrap()
+        .generation;
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/dictionaries/packs")
+        .join(&dictionary::package(id).unwrap().file);
+    reader
+        .word_translation
+        .store
+        .import(&file, &AtomicBool::new(false))
+        .unwrap();
+    let _ = reader.dictionary_package_ready(job, Ok(Some(id)));
+    assert!(reader.word_translation.popup.as_ref().unwrap().automatic);
+    assert!(reader.word_translation.popup.as_ref().unwrap().selection);
+    assert!(
+        reader
+            .word_translation
+            .popup
+            .as_ref()
+            .unwrap()
+            .result
+            .is_none()
+    );
+    reader.dictionary_ready(
+        old_lookup,
+        Err(LookupError::Unavailable {
+            package: id,
+            error: None,
+        }),
+    );
+    assert!(
+        reader
+            .word_translation
+            .popup
+            .as_ref()
+            .unwrap()
+            .result
+            .is_none(),
+        "late missing result must not replace the retry"
+    );
+    finish_lookup(&mut reader);
+    assert!(
+        reader
+            .dictionary_controls()
+            .contains(&Control::Dictionary(Focus::Copy))
+    );
+
+    let _ = reader.dictionary_action(Action::Download(id));
+    let job = reader
+        .word_translation
+        .package_job
+        .as_ref()
+        .unwrap()
+        .generation;
+    reader.word_translation.dismiss();
+    let _ = reader.dictionary_package_ready(job, Ok(Some(id)));
+    assert!(
+        reader.word_translation.popup.is_none(),
+        "completion must not reopen a dismissed card"
+    );
+}
+
+#[test]
+fn package_progress_cancellation_and_inventory_replies_are_generation_guarded() {
+    let mut reader = missing_reader("generation");
+    let id = dictionary::package_id(Language::English, Language::Turkish).unwrap();
+    let _ = reader.refresh_dictionaries();
+    let stale_inventory = reader.word_translation.inventory_generation;
+    let _ = reader.dictionary_action(Action::Download(id));
+    let generation = reader
+        .word_translation
+        .package_job
+        .as_ref()
+        .unwrap()
+        .generation;
+    reader.dictionary_progress(generation + 1, 100);
+    assert_eq!(
+        reader
+            .word_translation
+            .package_job
+            .as_ref()
+            .unwrap()
+            .downloaded,
+        0
+    );
+    reader.dictionary_progress(generation, 100);
+    reader.dictionary_progress(generation, 80);
+    assert_eq!(
+        reader
+            .word_translation
+            .package_job
+            .as_ref()
+            .unwrap()
+            .downloaded,
+        100
+    );
+    let cancel = reader
+        .word_translation
+        .package_job
+        .as_ref()
+        .unwrap()
+        .cancel
+        .clone();
+    let _ = reader.dictionary_action(Action::CancelDownload);
+    assert!(cancel.load(Ordering::Acquire));
+    let _ = reader.dictionary_action(Action::Download(PackageId(1)));
+    assert_eq!(
+        reader
+            .word_translation
+            .package_job
+            .as_ref()
+            .unwrap()
+            .generation,
+        generation,
+        "new jobs wait for cancellation to finish"
+    );
+    let _ = reader.dictionary_package_ready(generation + 1, Ok(Some(id)));
+    assert!(reader.word_translation.package_job.is_some());
+    let _ = reader.dictionary_package_ready(generation, Err("Download cancelled.".into()));
+    assert!(reader.word_translation.package_job.is_none());
+    reader.dictionary_inventory(
+        stale_inventory,
+        vec![PackageState::Installed; dictionary::packages().len()],
+    );
+    assert!(
+        reader
+            .word_translation
+            .inventory
+            .iter()
+            .all(|state| *state == PackageState::Missing)
+    );
+    let _ = reader.dictionary_action(Action::Download(id));
+    let cancel = reader
+        .word_translation
+        .package_job
+        .as_ref()
+        .unwrap()
+        .cancel
+        .clone();
+    reader.word_translation.package_job = None;
+    assert!(
+        cancel.load(Ordering::Acquire),
+        "closing the reader cancels its worker"
+    );
 }
 
 #[test]
@@ -350,7 +562,10 @@ fn render_dictionary_previews() {
             let _ = reader.translate_selection();
             reader.dictionary_ready(
                 reader.word_translation.generation,
-                dictionary::lookup("book", Language::English, Language::Turkish),
+                reader
+                    .word_translation
+                    .store
+                    .lookup("book", Language::English, Language::Turkish),
             );
             super::super::book_preview::render(
                 &mut reader,
@@ -369,4 +584,142 @@ fn render_dictionary_previews() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "Download UI visual QA: renders all package states without using the network"]
+fn render_downloadable_dictionary_previews() {
+    for bytes in ui::font_data() {
+        iced::advanced::graphics::text::font_system()
+            .write()
+            .unwrap()
+            .load_font(std::borrow::Cow::Borrowed(bytes));
+    }
+    let output =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/dictionary-download-previews");
+    std::fs::create_dir_all(&output).unwrap();
+    let id = dictionary::package_id(Language::English, Language::Turkish).unwrap();
+    let mut reader = missing_reader("preview");
+    reader.word_translation.store.remove(id).unwrap();
+    for (name, size) in [
+        ("wide", Size::new(1280.0, 800.0)),
+        ("narrow", Size::new(640.0, 480.0)),
+    ] {
+        reader.window_size = size;
+        for (tone, appearance) in [("light", Appearance::Light), ("dark", Appearance::Dark)] {
+            reader.appearance = appearance;
+            reader.show_settings = true;
+            reader.word_translation.packages_expanded = false;
+            reader.focused = Some(Control::Dictionary(Focus::Download(id)));
+            super::super::book_preview::render(
+                &mut reader,
+                &output.join(format!("selected-{name}-{tone}.png")),
+            );
+            reader.word_translation.packages_expanded = true;
+            for package in [id, PackageId(12)] {
+                reader.focused = Some(Control::Dictionary(Focus::Download(package)));
+                super::super::book_preview::render(
+                    &mut reader,
+                    &output.join(format!("manager-{}-{name}-{tone}.png", package.0)),
+                );
+            }
+            reader.show_settings = false;
+            reader.pointer = iced::Point::new(size.width - 60.0, size.height - 60.0);
+            select(&mut reader, 7, 11);
+            let _ = reader.auto_translate_selection();
+            finish_lookup(&mut reader);
+            reader.focused = None;
+            super::super::book_preview::render(
+                &mut reader,
+                &output.join(format!("missing-{name}-{tone}.png")),
+            );
+            let _ = reader.dictionary_action(Action::Download(id));
+            let generation = reader
+                .word_translation
+                .package_job
+                .as_ref()
+                .unwrap()
+                .generation;
+            reader.dictionary_progress(
+                generation,
+                dictionary::package(id).unwrap().bytes * 37 / 100,
+            );
+            super::super::book_preview::render(
+                &mut reader,
+                &output.join(format!("progress-{name}-{tone}.png")),
+            );
+            let _ = reader.dictionary_package_ready(
+                generation,
+                Err("Could not download dictionary. Check your connection and try again.".into()),
+            );
+            super::super::book_preview::render(
+                &mut reader,
+                &output.join(format!("retry-{name}-{tone}.png")),
+            );
+            reader.word_translation.dismiss();
+            reader.word_translation.package_notice = None;
+        }
+    }
+}
+
+#[test]
+#[ignore = "Live UI package worker QA: downloads one published dictionary into an owned test store"]
+fn published_download_stream_reports_progress_and_retries_the_open_card() {
+    use iced_futures::futures::{StreamExt, executor::block_on};
+    use iced_runtime::{Action as RuntimeAction, task::into_stream};
+    let mut reader = missing_reader("live-stream");
+    let id = dictionary::package_id(Language::English, Language::Turkish).unwrap();
+    select(&mut reader, 7, 11);
+    let _ = reader.auto_translate_selection();
+    finish_lookup(&mut reader);
+    assert_eq!(
+        missing_package(reader.word_translation.popup.as_ref().unwrap()),
+        Some(id)
+    );
+    let task = reader.dictionary_action(Action::Download(id));
+    let mut events = into_stream(task).unwrap();
+    let mut progress = 0;
+    let mut ready = false;
+    block_on(async {
+        while let Some(RuntimeAction::Output(message)) = events.next().await {
+            match message {
+                Message::DictionaryProgress { generation, bytes } => {
+                    assert!(!ready);
+                    assert!(bytes > 0);
+                    reader.dictionary_progress(generation, bytes);
+                    progress += 1;
+                }
+                Message::DictionaryPackageReady { generation, result } => {
+                    assert_eq!(result, Ok(Some(id)));
+                    assert!(progress > 0, "progress must be delivered before completion");
+                    let followup = reader.dictionary_package_ready(generation, result);
+                    let mut messages = into_stream(followup).unwrap();
+                    while let Some(RuntimeAction::Output(message)) = messages.next().await {
+                        match message {
+                            Message::DictionaryInventory { generation, states } => {
+                                reader.dictionary_inventory(generation, states)
+                            }
+                            Message::DictionaryReady { generation, result } => {
+                                reader.dictionary_ready(generation, result)
+                            }
+                            _ => panic!("unexpected follow-up event"),
+                        }
+                    }
+                    ready = true;
+                    break;
+                }
+                _ => panic!("unexpected package event"),
+            }
+        }
+    });
+    assert!(ready);
+    let popup = reader.word_translation.popup.as_ref().unwrap();
+    assert_eq!(popup.query, "book");
+    assert!(popup.automatic && popup.selection);
+    assert!(matches!(popup.result, Some(Ok(Some(_)))));
+    assert_eq!(
+        reader.word_translation.inventory[id.0],
+        PackageState::Installed
+    );
+    let _ = reader.word_translation.store.remove(id);
 }

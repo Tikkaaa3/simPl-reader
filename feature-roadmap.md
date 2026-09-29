@@ -122,15 +122,19 @@ menu, filter and sort by them.
 
 ## 7. Dictionary and translation lookup
 
-**Status: done for bundled word lookup.** Double-click or select a short phrase
+**Status: done for downloadable offline word lookup.** Double-click or select a short phrase
 to open an offline card in Book and PDF Document views. Persisted settings select
 automatic/manual mode and valid input/output pairs; right-click → Translate works
 in manual mode. Thirteen directions cover English ↔ Turkish, Spanish, German,
 French, Japanese, Chinese and Korean → English. Chinese → English adds CC-CEDICT
 for both scripts. Lookups run on workers with cancellation and generation guards.
-Data attribution, checksums and CC BY-SA 4.0 notices ship with the application.
-Sentence translation, Argos plugins, user-installed packs and full morphology
-remain open. See [bundled data](assets/dictionaries/README.md).
+All 13 directions are optional downloads, with per-direction size/status, progress,
+cancel/retry, removal and verified ZIP import in Settings. Missing-word cards can
+download the needed pair and retry in place. HTTPS downloads use an immutable
+data release and pinned SHA-256 checksums; installed files work offline. Data
+attribution and CC BY-SA 4.0 notices ship with each package and the application.
+Sentence translation, Argos plugins, arbitrary third-party dictionary formats and
+full morphology remain open. See [downloadable data](assets/dictionaries/README.md).
 
 **Goal.** Double-click a word to see a definition in a small popup, offline.
 

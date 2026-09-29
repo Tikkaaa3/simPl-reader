@@ -1,6 +1,6 @@
-# Bundled offline word dictionaries
+# Downloadable offline word dictionaries
 
-The dictionary data in `words.zip` and the adapted indexes are licensed under
+The dictionary data in `packs/*.zip` and the adapted indexes are licensed under
 **Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**:
 https://creativecommons.org/licenses/by-sa/4.0/
 The complete legal text is in `CC-BY-SA-4.0.txt`.
@@ -26,7 +26,9 @@ simPl's source and binary terms do not restrict the rights granted for this data
 
 No endorsement of simPl by these projects or contributors is implied.
 Original source URLs, SHA-256 checksums, resulting index checksums and entry
-counts are recorded in `manifest.json`, also included inside the archive.
+counts are recorded in `manifest.json`. Each package includes its own manifest,
+this attribution and the complete license. `catalog.json` records download sizes
+and package/index SHA-256 hashes for the immutable data release.
 
 ## Adaptations
 
@@ -38,16 +40,22 @@ UTF-8 bytes each; headword keys to 256 bytes. Korean glosses are extracted from
 senses. Chinese simplified and traditional entries retain explicit source forms.
 The adapted dictionary data remains CC BY-SA 4.0.
 
-The application embeds the archive and decompresses only the active pair.
-Packaged releases include the notices and manifest beside the executable;
-`words.zip` and its builder are available under `assets/dictionaries/` and
-`scripts/` in the source repository. The data may be copied, adapted and
+The application embeds only the small package catalog. No word data is included
+in its executable or normal portable/installer package. Users explicitly download
+their chosen language direction from the dictionary data release, or import the
+same ZIP file in Settings. Files are kept under `%LOCALAPPDATA%\simPl\dictionaries`
+and work offline after installation. Only the active direction is decompressed.
+Downloads transmit no selected text or document content; HTTPS is used only
+to fetch the selected ZIP. Packages and their builders are available under
+`assets/dictionaries/packs/` and `scripts/` in the source repository.
+The data may be copied, adapted and
 redistributed, including commercially, under CC BY-SA 4.0.
 It shows up to eight meanings per result. Available words and translation quality
 vary by pair; definitions are dictionary results, not sentence translations.
-No network request, Python installation, SQLite library or model is needed at runtime.
+No Python installation, SQLite library or model is needed at runtime.
 
 To rebuild, run `python scripts/build-dictionaries.py` from the repository.
-Python's standard library is sufficient. Downloads are cached in
+The script then packages each direction independently. Python's standard library
+is sufficient. Source downloads are cached in
 `target/dictionary-research/`; keep the matching source files for exact reproduction.
 Refreshing a moving upstream endpoint can change its checksum and results.

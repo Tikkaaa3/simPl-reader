@@ -202,3 +202,33 @@ open. Native previews and internal timing markers do not establish input-to-disp
 latency, dropped frames or full memory reclamation. The [roadmap](../../roadmap.md)
 tracks these boundaries. `Cargo.toml` and `Cargo.lock` are the dependency authority;
 old measurement and license snapshots are not current release manifests.
+
+## Downloadable dictionaries
+
+The executable embeds `assets/dictionaries/catalog.json` only. Settings → Word
+translation offers selected-pair downloads and an expandable 13-direction manager,
+with size, status, progress, cancel/retry, removal and ZIP import. A missing-word
+card offers the same download and retries its current selection after installation.
+No network requests run without an explicit Download action; selection text is
+never transmitted. One blocking Windows HTTPS worker feeds a bounded progress
+channel, leaving the UI event loop free. Packages are verified before an atomic
+write into `%LOCALAPPDATA%\simPl\dictionaries`. Only one direction is indexed in RAM.
+
+The frozen data release and package hashes are part of the app catalog; a new data
+version requires a matching updated catalog. `scripts/build-dictionaries.py`
+generates adapted indexes and `scripts/package-dictionaries.py` packages each
+direction with source attribution and its CC BY-SA 4.0 license. Pack ZIPs are
+release assets and test fixtures, excluded from the ordinary portable directory.
+
+Default tests cover missing/corrupt packages, cancellation, cache invalidation,
+import, stale async replies, popup retry and disabled controls. Opt-in QA commands:
+
+```powershell
+cargo test --release -p iced-shell render_downloadable_dictionary_previews --offline -- --ignored
+cargo test --release -p iced-shell published_packages_download_install_and_work_offline --offline -- --ignored --nocapture
+cargo test --release -p iced-shell published_download_stream_reports_progress_and_retries_the_open_card --offline -- --ignored --nocapture
+```
+
+The latter two contact the public data release and use isolated stores rather
+than the user's dictionaries. The preview test renders small/large windows in
+light/dark themes without opening a native window or starting network traffic.

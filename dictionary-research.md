@@ -86,9 +86,9 @@ formatı veya ekosistemdir; dosyanın formatı, içindeki sözlük verisinin lis
 Önce kelime/ifade araması ve sonradan eklenebilen veri paketleri. İlk paketler
 WikDict İngilizce→Türkçe, İspanyolca→İngilizce, Almanca→İngilizce,
 Fransızca→İngilizce olabilir. Japonca JMdict, Çince CC-CEDICT, Korece süzülmüş
-Kaikki verisiyle ayrı veri adaptörleri üzerinden eklenebilir. Bunlar bir öneri;
-başlangıç önerisiydi. Kelime araması şimdi 13 yönü kapsayan gömülü ve çevrimdışı
-sözlüklerle uygulandı; isteğe bağlı paket indirme henüz uygulanmadı.
+Kaikki verisiyle ayrı veri adaptörleri üzerinden eklenebilir. Bunlar başlangıç önerisiydi. Kelime araması şimdi 13 yönü kapsayan çevrimdışı
+sözlüklerle uygulandı. Kullanıcı kararıyla tüm sözlükler isteğe bağlı indirilebilir
+paketlere ayrıldı; ana uygulama kelime verisini taşımıyor.
 
 İlk sürüm için DLL çalıştıran genel eklenti sistemi yerine, kaynak/hedef dil,
 sürüm, kaynak bağlantısı, lisans ve hash içeren bir bildirim ile salt okunur
@@ -106,51 +106,48 @@ kelimeler, çok anlamlılık, çekimler, deyimler ve birkaç kısa paragraf dene
 Windows'ta ilk yükleme, tekrar arama, RAM ve CPU ölçülmeli. Bugün doğrulanan
 katalog kapsamıdır; kalite, sözlük indeksleme performansı ve model performansı açık.
 
-## Uygulanan sözlüklerin dağıtım boyutu — 30 Eylül 2026
+## Uygulanan indirilebilir sözlükler — 30 Eylül 2026
 
-Kaynak SQLite/JSONL boyutları son kullanıcıya gönderilen boyut değildir.
-`assets/dictionaries/words.zip` içindeki hazırlanmış, sıkıştırılmış indeksler
-toplam **19.659.286 bayt (19,66 MB / 18,75 MiB)**. Aşağıdaki MB değerleri
-ondalık; arşiv girdilerinin sıkıştırılmış boyutları toplandı. Ayrı paketlerin
-manifest ve lisans dosyaları küçük bir ek yük getirir.
+Tüm 13 dil yönü ayrı, isteğe bağlı paketlere ayrıldı. Ana exe yalnızca
+**5.175 bayt katalog** taşır; kelime verileri ve çeviri modelleri içermez.
+Kaynak SQLite/JSONL boyutu kullanıcıya gönderilen boyut değildir. Hazırlanan
+ZIP paketlerinin lisans ve kaynak bildirimleri dahil toplamı **19.769.702 bayt
+(19,77 MB)**. MB değerleri ondalıktır.
 
-| Dil paketi | Sıkıştırılmış veri | Açık TSV veri |
+| Dil paketi | İndirme toplamı | Açık TSV veri |
 | --- | ---: | ---: |
-| İngilizce ↔ Türkçe | 1,11 MB | 3,22 MB |
-| İngilizce ↔ İspanyolca | 2,20 MB | 7,07 MB |
-| İngilizce ↔ Almanca | 3,63 MB | 11,30 MB |
-| İngilizce ↔ Fransızca | 4,00 MB | 13,67 MB |
-| İngilizce ↔ Japonca | 1,56 MB | 4,31 MB |
-| İngilizce ↔ Çince | 5,89 MB | 16,40 MB |
+| İngilizce ↔ Türkçe | 1,13 MB | 3,22 MB |
+| İngilizce ↔ İspanyolca | 2,22 MB | 7,07 MB |
+| İngilizce ↔ Almanca | 3,65 MB | 11,30 MB |
+| İngilizce ↔ Fransızca | 4,02 MB | 13,67 MB |
+| İngilizce ↔ Japonca | 1,58 MB | 4,31 MB |
+| İngilizce ↔ Çince | 5,91 MB | 16,40 MB |
 | Korece → İngilizce | 1,26 MB | 3,36 MB |
 
-Mevcut uygulama tüm arşivi exe içinde taşır; ZIP'in kendisi ayrıca kuruluma
-kopyalanmaz. Yalnızca etkin yön açılır ve bellekte indekslenir. Açık TSV boyutu
-RAM tüketiminin tamamı değildir: dizeler ve arama indeksi de yer kaplar.
-Argos, Python, SQLite runtime veya çeviri modeli bu pakete dahil değildir.
+Yönler bağımsız indirilir. Örneğin yalnızca İngilizce→Türkçe **0,63 MB**;
+Türkçe→İngilizce **0,50 MB**. En büyük yön Çince→İngilizce **5,52 MB**.
+Dosyalar `%LOCALAPPDATA%\simPl\dictionaries` altında sıkıştırılmış ZIP olarak
+saklanır; yeniden açılışta internet gerekmez. Yalnızca etkin yön açılır ve
+bellekte indekslenir. Açık TSV boyutu RAM kullanımını belirtmez; dizeler ve
+arama indeksi de yer kaplar.
 
-Bu dalda hazırlanan Windows x64 build ölçümleri: exe **38.008.320 bayt
-(38,01 MB)**; PDFium dahil portable klasör **47.591.520 bayt (47,59 MB)**;
-DEFLATE seviye 9 portable ZIP **31.489.574 bayt (31,49 MB)**. ZIP CRC kontrolü
-geçti. Bunlar installer boyutu değildir; setup yeniden hazırlanmadı.
+Ayarlar seçili yönü, paket boyutunu ve durumunu gösterir. Manage dictionaries
+13 yönü açar; Download/Remove, ilerleme/Cancel, hata sonrası yeniden deneme ve
+Import ZIP bulunur. Eksik sözlükte kelime kartı da indirme sunar; başarılı
+kurulum aynı açık kartın sonucunu yeniler. Otomatik kelime araması otomatik
+indirme başlatmaz. Seçili metin veya belge içeriği internete gönderilmez.
 
-Dağıtım seçenekleri:
+Paketler ayrı GitHub veri sürümünden HTTPS ile alınır. Boyut ve SHA-256,
+exe içindeki değişmez katalogla doğrulanır; TSV ve manifest de doğrulanır.
+Dosyadan ekleme aynı doğrulama yolunu kullanır. İptal veya bozuk indirme mevcut
+geçerli paketi değiştirmez. Bir veri sürümünün dosyaları yerinde değiştirilmemeli;
+yeni sürüm farklı ad ve güncel uygulama kataloğu gerektirir. Genel üçüncü taraf
+sözlük biçimleri ve Argos motoru/model paketleri sonraki işlerdir.
 
-- **Hepsi gömülü:** sözlükler ilk açılıştan itibaren çevrimdışı çalışır;
-  yaklaşık 19,7 MB veri ana uygulamaya ve her uygulama güncellemesine eklenir.
-- **Öneri — İngilizce ↔ Türkçe gömülü, diğerleri isteğe bağlı:** varsayılan
-  sözlük hazır kalır; gömülü veri yaklaşık 1,1 MB olur. Diğer dil paketleri
-  bir kez indirilir ve yerelde saklanır. Ana exe'den yaklaşık 18,5 MB veri çıkar.
-- **Tüm sözlükler ayrı:** ana uygulamada sözlük verisi bulunmaz; ilk kullanımda
-  bir paket indirme veya dosyadan ekleme gerekir. İnternetsiz kurulum için
-  ayrıca tüm paketleri içeren bir portable dağıtım sunulabilir.
-
-İndirme kullanıcı tarafından başlatılmalı; paketler dil yönü, sürüm, SHA-256,
-kaynak ve lisans bildirimini taşımalı. Önerilen saklama yeri
-`%LOCALAPPDATA%\simPl\dictionaries`; çevrimdışı dosyadan ekleme de aynı
-doğrulama yolunu kullanabilir. Dil paketleri uygulama güncellemelerinden
-bağımsız yenilenebilir. Bunlar salt okunur sözlük verileridir; Argos sağlayıcısı
-daha sonra ayrı bir çalışma motoru ve model paketi olarak ele alınmalı.
-
-Bu bölüm bir dağıtım değerlendirmesidir; indirme sistemi veya sözlüklerin
-exe'den çıkarılması bu değişiklikte uygulanmadı.
+Önceki gömülü veri build'inde exe **38.008.320 bayt (38,01 MB)**, PDFium dahil
+portable klasör **47.591.520 bayt (47,59 MB)**, portable ZIP **31.489.574 bayt
+(31,49 MB)** idi. Yeni indirilebilir paket build'inde exe **18,444,288 bayt (18.44 MB)**,
+portable klasör **28,033,234 bayt (28.03 MB)**, portable ZIP
+**11,862,130 bayt (11.86 MB)**. Release ve portable exe SHA-256 eşleşti;
+ZIP CRC kontrolü geçti. Sözlük ZIP'leri normal portable paketine kopyalanmadı.
+Bunlar installer boyutu değildir.

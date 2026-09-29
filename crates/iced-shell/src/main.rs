@@ -7,6 +7,7 @@ mod app;
 mod book_pages;
 mod book_style;
 mod chrome;
+mod dictionary_download;
 mod document_scroll;
 mod find;
 mod notes;

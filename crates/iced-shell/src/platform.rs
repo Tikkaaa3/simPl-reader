@@ -18,6 +18,16 @@ pub fn mark_reader_running() {
 /// not from the UI update/view thread. Cancellation is not an error.
 #[cfg(windows)]
 pub fn open_document_dialog(locate: bool) -> Result<Option<PathBuf>, String> {
+    open_file_dialog(locate, false)
+}
+
+#[cfg(windows)]
+pub fn open_dictionary_dialog() -> Result<Option<PathBuf>, String> {
+    open_file_dialog(false, true)
+}
+
+#[cfg(windows)]
+fn open_file_dialog(locate: bool, dictionary: bool) -> Result<Option<PathBuf>, String> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -26,11 +36,17 @@ pub fn open_document_dialog(locate: bool) -> Result<Option<PathBuf>, String> {
     };
 
     // The filter is pairs of UTF-16 strings terminated by an extra NUL.
-    let filter: Vec<u16> =
-        "Documents (*.html;*.htm;*.xhtml;*.pdf;*.epub;*.txt;*.md)\0*.html;*.htm;*.xhtml;*.pdf;*.epub;*.txt;*.text;*.md;*.markdown\0EPUB books (*.epub)\0*.epub\0PDF files (*.pdf)\0*.pdf\0HTML files (*.html;*.htm;*.xhtml)\0*.html;*.htm;*.xhtml\0Text and Markdown (*.txt;*.md)\0*.txt;*.text;*.md;*.markdown\0All files (*.*)\0*.*\0\0"
-            .encode_utf16()
-            .collect();
-    let title: Vec<u16> = if locate {
+    let document_filter = "Documents (*.html;*.htm;*.xhtml;*.pdf;*.epub;*.txt;*.md)\0*.html;*.htm;*.xhtml;*.pdf;*.epub;*.txt;*.text;*.md;*.markdown\0EPUB books (*.epub)\0*.epub\0PDF files (*.pdf)\0*.pdf\0HTML files (*.html;*.htm;*.xhtml)\0*.html;*.htm;*.xhtml\0Text and Markdown (*.txt;*.md)\0*.txt;*.text;*.md;*.markdown\0All files (*.*)\0*.*\0\0";
+    let filter: Vec<u16> = if dictionary {
+        "simPl dictionary packages (*.zip)\0*.zip\0\0"
+    } else {
+        document_filter
+    }
+    .encode_utf16()
+    .collect();
+    let title: Vec<u16> = if dictionary {
+        "Import dictionary package\0"
+    } else if locate {
         "Locate moved document\0"
     } else {
         "Open document\0"
@@ -79,4 +95,9 @@ pub fn open_document_dialog(locate: bool) -> Result<Option<PathBuf>, String> {
 #[cfg(not(windows))]
 pub fn open_document_dialog(_locate: bool) -> Result<Option<PathBuf>, String> {
     Err("the native document picker requires Windows".into())
+}
+
+#[cfg(not(windows))]
+pub fn open_dictionary_dialog() -> Result<Option<PathBuf>, String> {
+    Err("the native dictionary picker requires Windows".into())
 }

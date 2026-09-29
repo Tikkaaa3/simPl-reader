@@ -108,9 +108,15 @@ English → Turkish. Escape, an outside click or page navigation closes the card
 Long passages keep the highlight/note menu. PDFs need selectable text and copy
 permission; scanned pages need OCR.
 
-The built-in pairs are English ↔ Turkish, Spanish, German, French, Japanese and
-Chinese, plus Korean → English. Chinese → English includes simplified and
-traditional forms. The compressed data is about 19 MB and only the current pair
+The downloadable pairs are English ↔ Turkish, Spanish, German, French, Japanese
+and Chinese, plus Korean → English. Chinese → English includes simplified and
+traditional forms. Settings → Word translation shows each direction’s size and
+Download/Remove controls; Manage dictionaries lists all 13. A missing-word card
+also offers Download and retries the selected word after installation. Downloads
+are explicit, support progress/cancel/retry, and send no document text. Import ZIP
+installs the same verified packages without a connection. All packages total
+19.77 MB; the executable contains only a 5 KB catalog. Installed files stay in
+`%LOCALAPPDATA%\simPl\dictionaries` and work offline; only the current direction
 is decompressed. Results are dictionary meanings; coverage varies and basic
 English base-form fallbacks are labeled. Full sentence translation and Argos
 plugins remain future work. [Data sources and license](assets/dictionaries/README.md).

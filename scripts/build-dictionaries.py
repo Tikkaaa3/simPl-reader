@@ -1,7 +1,7 @@
-"""Build the bundled CC BY-SA word data. Python standard library only.
+"""Build downloadable CC BY-SA word data. Python standard library only.
 
 Network is used only by this explicit maintenance script; the reader uses the
-checked-in archive offline. Source downloads are cached below target/.
+independently installed indexes offline. Source downloads are cached below target/.
 """
 import hashlib
 import gzip
@@ -11,6 +11,7 @@ import sqlite3
 import unicodedata
 import urllib.request
 import zipfile
+import runpy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -116,13 +117,14 @@ def main():
     manifest = dict(version=1, license="CC-BY-SA-4.0", generated="2026-09-30", pairs=records)
     payloads["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()
     # Stable metadata makes repeated builds byte-for-byte reproducible.
-    with zipfile.ZipFile(OUTPUT / "words.zip", "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(CACHE / "words.zip", "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, data in sorted(payloads.items()):
             info = zipfile.ZipInfo(name, (2026, 9, 30, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, data, compresslevel=9)
     (OUTPUT / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print("Archive bytes:", (OUTPUT / "words.zip").stat().st_size)
+    print("Intermediate archive bytes:", (CACHE / "words.zip").stat().st_size)
+    runpy.run_path(str(ROOT / "scripts" / "package-dictionaries.py"), run_name="__main__")
 
 
 if __name__ == "__main__":

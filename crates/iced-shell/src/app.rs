@@ -1312,7 +1312,22 @@ enum Message {
     Dictionary(word_translation::Action),
     DictionaryReady {
         generation: u64,
-        result: Result<Option<reader_document::dictionary::Translation>, String>,
+        result: Result<
+            Option<reader_document::dictionary::Translation>,
+            reader_document::dictionary::LookupError,
+        >,
+    },
+    DictionaryInventory {
+        generation: u64,
+        states: Vec<reader_document::dictionary::PackageState>,
+    },
+    DictionaryProgress {
+        generation: u64,
+        bytes: u64,
+    },
+    DictionaryPackageReady {
+        generation: u64,
+        result: Result<Option<reader_document::dictionary::PackageId>, String>,
     },
     DictionaryText {
         document: u64,
@@ -3295,6 +3310,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
     }
     match message {
         Message::Dictionary(action) => reader.dictionary_action(action),
+        Message::DictionaryInventory { generation, states } => {
+            reader.dictionary_inventory(generation, states);
+            Task::none()
+        }
+        Message::DictionaryProgress { generation, bytes } => {
+            reader.dictionary_progress(generation, bytes);
+            Task::none()
+        }
+        Message::DictionaryPackageReady { generation, result } => {
+            reader.dictionary_package_ready(generation, result)
+        }
         Message::DictionaryReady { generation, result } => {
             reader.dictionary_ready(generation, result);
             Task::none()
@@ -3395,7 +3421,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 } else {
                     Control::Chrome(chrome::Action::Settings)
                 });
-                Task::none()
+                if reader.show_settings {
+                    reader.refresh_dictionaries()
+                } else {
+                    Task::none()
+                }
             }
             action => reader.window.map_or_else(Task::none, |id| match action {
                 chrome::Action::Drag => window::drag(id),
