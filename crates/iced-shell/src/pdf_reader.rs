@@ -100,6 +100,7 @@ pub enum Message {
         generation: u64,
         x: f32,
         y: f32,
+        left: f32,
         top: f32,
         width: f32,
         height: f32,
@@ -124,6 +125,8 @@ pub enum Message {
     ZoomOut,
     ActualSize,
     FitWidth,
+    /// Ctrl+wheel or touchpad pinch, in wheel notches (positive zooms in).
+    ZoomBy(f32),
     SelectStart(TextPoint),
     SelectMove(TextPoint),
     ClearSelection,
@@ -147,6 +150,7 @@ pub struct Reader {
     size: Size,
     scale_factor: f64,
     viewport: Size,
+    viewport_left: f32,
     viewport_top: f32,
     offset: Point,
     geometry: HeightIndex,
@@ -202,6 +206,7 @@ impl Reader {
                 (window_size.width - 32.0).max(1.0),
                 (window_size.height - INITIAL_CHROME).max(1.0),
             ),
+            viewport_left: 16.0,
             viewport_top: INITIAL_CHROME,
             offset: Point::ORIGIN,
             geometry: HeightIndex::new(Vec::new()),
@@ -360,28 +365,80 @@ impl Reader {
     }
 
     fn set_zoom(&mut self, zoom: PdfZoom) -> Task<Message> {
+        self.zoom_around(zoom, None)
+    }
+
+    /// Changes zoom while keeping the document point under `focus` (a window
+    /// position, by default the viewport centre) in place. Existing rasters stay
+    /// visible, scaled, until pages are rendered at the new size.
+    fn zoom_around(&mut self, zoom: PdfZoom, focus: Option<Point>) -> Task<Message> {
         if self.zoom == zoom {
             return Task::none();
         }
         let anchor = self.anchor();
+        // Zooming about the left edge would show blank margin beside narrower
+        // pages (content is as wide as the widest page); keep the centre instead.
+        let focus = focus.or(Some(Point::new(
+            self.viewport_left + self.viewport.width / 2.0,
+            self.viewport_top + self.viewport.height / 2.0,
+        )));
+        let focus = focus.and_then(|point| {
+            let x = point.x - self.viewport_left;
+            let y = point.y - self.viewport_top;
+            if self.geometry.is_empty()
+                || !(0.0..=self.viewport.width).contains(&x)
+                || !(0.0..=self.viewport.height).contains(&y)
+            {
+                return None;
+            }
+            let document_y = self.offset.y + y;
+            let page = self.geometry.window(document_y, 0.0, 0.0).start;
+            let size = self.page_size(page);
+            let left = (self.content_width - size.width) / 2.0;
+            Some((
+                point,
+                page,
+                (self.offset.x + x - left) / size.width.max(1.0),
+                (document_y - self.geometry.start(page)) / size.height.max(1.0),
+            ))
+        });
         self.zoom = zoom;
-        self.clear_rasters();
+        self.generation = self.generation.wrapping_add(1);
+        self.failed.clear();
+        self.error = None;
         self.rebuild();
-        self.set_anchor(anchor);
+        if let Some((point, page, fx, fy)) = focus {
+            let size = self.page_size(page);
+            let left = (self.content_width - size.width) / 2.0;
+            self.offset.x = (left + fx * size.width - (point.x - self.viewport_left))
+                .clamp(0.0, (self.content_width - self.viewport.width).max(0.0));
+            self.offset.y = (self.geometry.start(page) + fy * size.height
+                - (point.y - self.viewport_top))
+                .clamp(0.0, (self.geometry.total() - self.viewport.height).max(0.0));
+            self.range = self.visible_range();
+            if !self.editing_page {
+                self.page_input = (self.anchor().page + 1).to_string();
+            }
+        } else {
+            self.set_anchor(anchor);
+        }
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    fn adjust_zoom(&mut self, multiplier: f32) -> Task<Message> {
-        let scale = match self.zoom {
+    /// The zoom currently shown, including the scale Fit width resolves to.
+    fn effective_scale(&self) -> f32 {
+        match self.zoom {
             PdfZoom::Scale(scale) => scale,
             PdfZoom::FitWidth => {
                 self.scale_for(self.document.pages[self.anchor().page as usize].width)
                     / POINT_TO_DIP
             }
-        };
-        self.set_zoom(PdfZoom::Scale(
-            (scale * multiplier).clamp(MIN_ZOOM, MAX_ZOOM),
-        ))
+        }
+    }
+
+    fn adjust_zoom(&mut self, multiplier: f32, focus: Option<Point>) -> Task<Message> {
+        let scale = (self.effective_scale() * multiplier).clamp(MIN_ZOOM, MAX_ZOOM);
+        self.zoom_around(PdfZoom::Scale(scale), focus)
     }
 
     pub fn resize(&mut self, window_size: Size, scale_factor: f64) -> Task<Message> {
@@ -619,10 +676,12 @@ impl Reader {
                 generation,
                 x,
                 y,
+                left,
                 top,
                 width,
                 height,
             } if generation == self.generation => {
+                self.viewport_left = left;
                 self.viewport_top = top;
                 if (width - self.viewport.width).abs() > 0.5
                     || (height - self.viewport.height).abs() > 0.5
@@ -742,8 +801,11 @@ impl Reader {
             Message::Next => self.jump(
                 (self.anchor().page as usize + 1).min(self.document.pages.len().saturating_sub(1)),
             ),
-            Message::ZoomIn => self.adjust_zoom(1.25),
-            Message::ZoomOut => self.adjust_zoom(0.8),
+            Message::ZoomIn => self.adjust_zoom(1.25, None),
+            Message::ZoomOut => self.adjust_zoom(0.8, None),
+            Message::ZoomBy(steps) if steps.is_finite() => {
+                self.adjust_zoom(1.1_f32.powf(steps.clamp(-10.0, 10.0)), self.pointer)
+            }
             Message::ActualSize => self.set_zoom(PdfZoom::Scale(1.0)),
             Message::FitWidth => self.set_zoom(PdfZoom::FitWidth),
             Message::SelectStart(point) => {
@@ -903,10 +965,8 @@ impl Reader {
 
     pub fn toolbar(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
-        let zoom_label = match self.zoom {
-            PdfZoom::FitWidth => "Fit".to_owned(),
-            PdfZoom::Scale(value) => format!("{:.0}%", value * 100.0),
-        };
+        // Show the size in use; Fit width stays marked on its own button.
+        let zoom_label = format!("{:.0}%", self.effective_scale() * 100.0);
         let navigation = row![
             focus_button(
                 "Prev",
@@ -1040,6 +1100,7 @@ impl Reader {
         );
         let generation = self.generation;
         content = content.push(crate::document_scroll::wrap(
+            Message::ZoomBy,
             scrollable(visible)
                 .id(scroll_id())
                 .direction(scrollable::Direction::Both {
@@ -1055,6 +1116,7 @@ impl Reader {
                         generation,
                         x: offset.x,
                         y: offset.y,
+                        left: bounds.x,
                         top: bounds.y,
                         width: bounds.width,
                         height: bounds.height,

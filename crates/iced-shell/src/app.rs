@@ -18,7 +18,7 @@ use iced::{Element, Length, Size, Subscription, Task, mouse, window};
 use iced_shell::{reader, selection, virtual_reader};
 use reader_document::library;
 use reader_document::position::{self, EpubReadingPosition, PdfReadingPosition, ReadingPosition};
-use reader_document::preferences::{self, Appearance};
+use reader_document::preferences::{self, Appearance, Preferences, WindowControls};
 use reader_document::recent::{self, DocumentKind, Entry};
 use reader_document::{BaseDirection, Endpoint, Item};
 
@@ -630,10 +630,10 @@ async fn load_pdf_book(
                 // even when that page is now preserved as an image.
                 let suffix = p
                     .item_id
-                    .strip_prefix("pdf-b1-")
-                    .or_else(|| p.item_id.strip_prefix("pdf-b2-"))
-                    .or_else(|| p.item_id.strip_prefix("pdf-b3-"))
-                    .or_else(|| p.item_id.strip_prefix("pdf-b4-"))?;
+                    .strip_prefix("pdf-b")?
+                    .split_once('-')
+                    .filter(|(version, _)| version.bytes().all(|byte| byte.is_ascii_digit()))?
+                    .1;
                 let migrated = format!("pdf-b{}-{suffix}", reader_pdf::book::VERSION);
                 if conversion.blocks.iter().any(|b| b.id == migrated) {
                     p.item_id = migrated;
@@ -675,6 +675,37 @@ async fn load_pdf_book(
                 font_size,
             })
     });
+    let structure: HashMap<_, _> = conversion
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let links: Vec<_> = block
+                .links
+                .iter()
+                .filter(|link| {
+                    link.start < link.end
+                        && link.end <= block.text.len()
+                        && block.text.is_char_boundary(link.start)
+                        && block.text.is_char_boundary(link.end)
+                })
+                .map(|link| reader_document::Link {
+                    start_byte: link.start,
+                    end_byte: link.end,
+                    href: link.href.clone(),
+                    kind: reader_document::LinkKind::Reference,
+                })
+                .collect();
+            (!links.is_empty()).then(|| {
+                (
+                    block.id.clone(),
+                    reader_document::BlockSemantics {
+                        links,
+                        ..Default::default()
+                    },
+                )
+            })
+        })
+        .collect();
     let items = conversion
         .blocks
         .iter()
@@ -695,7 +726,25 @@ async fn load_pdf_book(
                     id: block.id.clone(),
                     text: block.text.clone(),
                     base_direction: BaseDirection::Ltr,
-                    style_runs: Vec::new(),
+                    style_runs: block
+                        .styles
+                        .iter()
+                        .filter_map(|run| {
+                            let style = match (run.bold, run.italic) {
+                                (true, true) => reader_document::InlineStyle::BoldItalic,
+                                (true, false) => reader_document::InlineStyle::Bold,
+                                (false, true) => reader_document::InlineStyle::Italic,
+                                (false, false) => return None,
+                            };
+                            (run.start < run.end && run.end <= block.text.len()).then_some(
+                                reader_document::StyleRun {
+                                    start_byte: run.start,
+                                    end_byte: run.end,
+                                    style,
+                                },
+                            )
+                        })
+                        .collect(),
                 }
             }
         })
@@ -708,7 +757,7 @@ async fn load_pdf_book(
         fingerprint: document.fingerprint.clone(),
         items,
         images: HashMap::new(),
-        structure: HashMap::new(),
+        structure,
         anchors: HashMap::new(),
         page_breaks: Vec::new(),
         warnings,
@@ -762,6 +811,7 @@ struct Reader {
     scale_factor: f64,
     opening_task: Option<iced::task::Handle>,
     opening: Option<PathBuf>,
+    loading_frame: u8,
     recent: Vec<Entry>,
     shelf: shelf::Shelf,
     show_search: bool,
@@ -794,11 +844,13 @@ struct Reader {
     request: u64,
     generation: u64,
     appearance: Appearance,
-    appearance_loading: bool,
-    appearance_dirty: bool,
-    appearance_saving: bool,
-    appearance_writable: bool,
-    appearance_notice: Option<String>,
+    window_controls: WindowControls,
+    maximized: bool,
+    preferences_loading: bool,
+    preferences_dirty: bool,
+    preferences_saving: bool,
+    preferences_writable: bool,
+    preferences_notice: Option<String>,
     font_size: f32,
     zoom: f32,
     atlas: Option<Arc<book_map::Atlas>>,
@@ -836,6 +888,7 @@ impl Default for Reader {
             scale_factor: 1.0,
             opening_task: None,
             opening: None,
+            loading_frame: 0,
             recent: Vec::new(),
             shelf: shelf::Shelf::default(),
             show_search: false,
@@ -868,11 +921,13 @@ impl Default for Reader {
             request: 0,
             generation: 0,
             appearance: Appearance::Light,
-            appearance_loading: false,
-            appearance_dirty: false,
-            appearance_saving: false,
-            appearance_writable: true,
-            appearance_notice: None,
+            window_controls: WindowControls::default(),
+            maximized: false,
+            preferences_loading: false,
+            preferences_dirty: false,
+            preferences_saving: false,
+            preferences_writable: true,
+            preferences_notice: None,
             font_size: DEFAULT_FONT_SIZE,
             zoom: 1.0,
             atlas: None,
@@ -912,6 +967,7 @@ enum Control {
     DismissOverlay,
     SettingsFontDown,
     SettingsFontUp,
+    SettingsWindowControls(WindowControls),
     SettingsHelp,
     Close,
     ToggleToolbar,
@@ -977,6 +1033,7 @@ enum Message {
         request: u64,
         result: Result<LoadReply, String>,
     },
+    LoadingFrame(u8),
     Pdf {
         document: u64,
         message: pdf_reader::Message,
@@ -989,6 +1046,8 @@ enum Message {
     ContentsScrolled(f32),
     ScaleFactor(f64),
     Zoom(f32),
+    /// Ctrl+wheel or touchpad pinch over the page, in wheel notches.
+    ZoomBy(f32),
     PageInput(String),
     PageSubmit,
     AtlasReady {
@@ -996,8 +1055,10 @@ enum Message {
         result: Result<Option<book_map::Atlas>, String>,
     },
     ToggleAppearance,
-    AppearanceLoaded(Result<Appearance, String>),
-    AppearanceSaved(Result<(), String>),
+    PreferencesLoaded(Result<Preferences, String>),
+    SetWindowControls(WindowControls),
+    WindowMaximized(bool),
+    PreferencesSaved(Result<(), String>),
     BookMode,
     CancelConversion,
     DocumentMode {
@@ -1473,6 +1534,10 @@ impl Reader {
         if self.pagination.is_some() || self.book.is_none() || self.opening.is_some() {
             return Task::none();
         }
+        let pdf_book = self
+            .book
+            .as_ref()
+            .is_some_and(|book| book.pdf_source.is_some());
         let anchor = self.anchor();
         let mut changed = false;
         let mut pending = self.measurements.lock();
@@ -1480,12 +1545,20 @@ impl Reader {
             if generation != self.generation || width != self.width || row >= self.heights.len() {
                 continue;
             }
-            if self.measured_layout.is_none() && (self.heights.height(row) - height).abs() > 0.01 {
+            if (self.measured_layout.is_none() || pdf_book)
+                && (self.heights.height(row) - height).abs() > 0.01
+            {
                 self.heights.refine(row, height, self.offset);
                 changed = true;
             }
         }
         drop(pending);
+        if changed
+            && pdf_book
+            && let (Some(book), Some(atlas)) = (&self.book, &mut self.atlas)
+        {
+            book_map::refine_pdf(Arc::make_mut(atlas), book, &self.heights);
+        }
         // A native layout also acknowledges an exact estimate. Keeping the
         // anchor locked in that case would discard subsequent wheel scrolling.
         let restore = self.pending_anchor.take().is_some();
@@ -1601,28 +1674,31 @@ impl Reader {
         }
     }
 
-    fn persist_appearance(&mut self) -> Task<Message> {
-        if self.appearance_loading
-            || self.appearance_saving
-            || !self.appearance_dirty
-            || !self.appearance_writable
+    fn persist_preferences(&mut self) -> Task<Message> {
+        if self.preferences_loading
+            || self.preferences_saving
+            || !self.preferences_dirty
+            || !self.preferences_writable
         {
             return Task::none();
         }
-        self.appearance_dirty = false;
-        self.appearance_saving = true;
-        let appearance = self.appearance;
+        self.preferences_dirty = false;
+        self.preferences_saving = true;
+        let preferences = Preferences {
+            appearance: self.appearance,
+            window_controls: self.window_controls,
+        };
         Task::perform(
-            async move { preferences::save(appearance) },
-            Message::AppearanceSaved,
+            async move { preferences::save(preferences) },
+            Message::PreferencesSaved,
         )
     }
 
     fn exit_ready(&self) -> bool {
         self.removing.is_none()
-            && !self.appearance_loading
-            && !self.appearance_saving
-            && !(self.appearance_dirty && self.appearance_writable)
+            && !self.preferences_loading
+            && !self.preferences_saving
+            && !(self.preferences_dirty && self.preferences_writable)
             && !self.recent_loading
             && !self.recent_saving
             && !(self.recent_dirty && !self.history_corrupt)
@@ -1697,7 +1773,6 @@ impl Reader {
             (expanded && book.is_some() && self.zoom > 0.4).then_some(Control::FontDown),
             (expanded && book.is_some() && self.zoom < 3.0).then_some(Control::FontUp),
             expanded.then_some(Control::ToggleAppearance),
-            has_document.then_some(Control::ToggleToolbar),
         ];
         let secondary = [
             self.error.as_ref().map(|_| Control::DismissError),
@@ -1706,87 +1781,122 @@ impl Reader {
             (self.history_corrupt && self.history_notice.is_some()).then_some(Control::ResetRecent),
             history.then_some(Control::HideRecent),
         ];
-        [
-            (!overlay).then_some(Control::Chrome(chrome::Action::Close)),
-            (!overlay).then_some(Control::Chrome(chrome::Action::Minimize)),
-            (!overlay).then_some(Control::Chrome(chrome::Action::Maximize)),
-            (!overlay).then_some(Control::Chrome(chrome::Action::Search)),
-            (!overlay && !has_document)
-                .then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
-            (!overlay).then_some(Control::Chrome(chrome::Action::Settings)),
-            self.show_search.then_some(Control::SearchInput),
-            overlay.then_some(Control::DismissOverlay),
-            self.confirm_remove
-                .is_some()
-                .then_some(Control::ConfirmRemove),
-            (self.show_settings && self.zoom > 0.4).then_some(Control::SettingsFontDown),
-            (self.show_settings && self.zoom < 3.0).then_some(Control::SettingsFontUp),
-            self.show_settings.then_some(Control::SettingsHelp),
-        ]
-        .into_iter()
-        .flatten()
-        .chain(
-            primary
-                .into_iter()
-                .flatten()
-                .filter(move |_| has_document && !overlay),
-        )
-        .chain(
-            self.contents_range()
-                .map(Control::ContentsEntry)
-                .filter(move |_| expanded),
-        )
-        .chain(book.into_iter().flat_map(move |book| {
-            self.heights
-                .window(
-                    book_pages::content_offset(&self.pages(), &self.heights, self.offset),
-                    self.viewport,
-                    0.0,
-                )
-                .filter(move |_| !overlay)
-                .filter_map(|row| book.items.get(row).map(|item| (row, item)))
-                .flat_map(|(row, item)| {
-                    (0..book.structure.get(item.id()).map_or(0, |s| s.links.len()))
-                        .map(move |link| Control::BookLink(row, link))
-                })
-        }))
-        .chain(secondary.into_iter().flatten().filter(move |_| !overlay))
-        .chain(
-            (0..self.recent.len())
-                .filter(move |_| history)
-                .flat_map(|index| {
-                    [
-                        Control::OpenRecent(index),
-                        Control::LocateRecent(index),
-                        Control::RemoveRecent(index),
-                    ]
-                }),
-        )
-        .chain(
-            self.show_help
-                .then_some(Control::HideHelp)
-                .filter(move |_| !overlay),
-        )
-        .chain(
-            self.shelf
-                .controls()
-                .map(Control::Shelf)
-                .filter(move |_| !has_document && !overlay),
-        )
-        .chain(
-            self.search_results
-                .iter()
-                .copied()
-                .take(8)
-                .filter(move |_| self.show_search)
-                .flat_map(|index| {
-                    [
-                        Control::SearchResult(index),
-                        Control::LocateLibrary(index),
-                        Control::RemoveLibrary(index),
-                    ]
-                }),
-        )
+        // Title-bar focus follows the visual order of the chosen window controls.
+        let native = match self.window_controls {
+            WindowControls::Mac => [
+                Some(Control::Chrome(chrome::Action::Close)),
+                Some(Control::Chrome(chrome::Action::Minimize)),
+                Some(Control::Chrome(chrome::Action::Maximize)),
+                None,
+            ],
+            WindowControls::Windows => [
+                Some(Control::Chrome(chrome::Action::Minimize)),
+                Some(Control::Chrome(chrome::Action::Maximize)),
+                Some(Control::Chrome(chrome::Action::Close)),
+                None,
+            ],
+        };
+        let tools = match self.window_controls {
+            WindowControls::Mac => [
+                Some(Control::Chrome(chrome::Action::Search)),
+                (!has_document).then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
+                has_document.then_some(Control::ToggleToolbar),
+                Some(Control::Chrome(chrome::Action::Settings)),
+            ],
+            WindowControls::Windows => [
+                Some(Control::Chrome(chrome::Action::Settings)),
+                has_document.then_some(Control::ToggleToolbar),
+                (!has_document).then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
+                Some(Control::Chrome(chrome::Action::Search)),
+            ],
+        };
+        let (first, last) = match self.window_controls {
+            WindowControls::Mac => (native, tools),
+            WindowControls::Windows => (tools, native),
+        };
+        first
+            .into_iter()
+            .chain(last)
+            .flatten()
+            .filter(move |_| !overlay)
+            .map(Some)
+            .chain([
+                self.show_search.then_some(Control::SearchInput),
+                overlay.then_some(Control::DismissOverlay),
+                self.confirm_remove
+                    .is_some()
+                    .then_some(Control::ConfirmRemove),
+                (self.show_settings && self.zoom > 0.4).then_some(Control::SettingsFontDown),
+                (self.show_settings && self.zoom < 3.0).then_some(Control::SettingsFontUp),
+                self.show_settings
+                    .then_some(Control::SettingsWindowControls(WindowControls::Windows)),
+                self.show_settings
+                    .then_some(Control::SettingsWindowControls(WindowControls::Mac)),
+                self.show_settings.then_some(Control::SettingsHelp),
+            ])
+            .flatten()
+            .chain(
+                primary
+                    .into_iter()
+                    .flatten()
+                    .filter(move |_| has_document && !overlay),
+            )
+            .chain(
+                self.contents_range()
+                    .map(Control::ContentsEntry)
+                    .filter(move |_| expanded),
+            )
+            .chain(book.into_iter().flat_map(move |book| {
+                self.heights
+                    .window(
+                        book_pages::content_offset(&self.pages(), &self.heights, self.offset),
+                        self.viewport,
+                        0.0,
+                    )
+                    .filter(move |_| !overlay)
+                    .filter_map(|row| book.items.get(row).map(|item| (row, item)))
+                    .flat_map(|(row, item)| {
+                        (0..book.structure.get(item.id()).map_or(0, |s| s.links.len()))
+                            .map(move |link| Control::BookLink(row, link))
+                    })
+            }))
+            .chain(secondary.into_iter().flatten().filter(move |_| !overlay))
+            .chain(
+                (0..self.recent.len())
+                    .filter(move |_| history)
+                    .flat_map(|index| {
+                        [
+                            Control::OpenRecent(index),
+                            Control::LocateRecent(index),
+                            Control::RemoveRecent(index),
+                        ]
+                    }),
+            )
+            .chain(
+                self.show_help
+                    .then_some(Control::HideHelp)
+                    .filter(move |_| !overlay),
+            )
+            .chain(
+                self.shelf
+                    .controls()
+                    .map(Control::Shelf)
+                    .filter(move |_| !has_document && !overlay),
+            )
+            .chain(
+                self.search_results
+                    .iter()
+                    .copied()
+                    .take(8)
+                    .filter(move |_| self.show_search)
+                    .flat_map(|index| {
+                        [
+                            Control::SearchResult(index),
+                            Control::LocateLibrary(index),
+                            Control::RemoveLibrary(index),
+                        ]
+                    }),
+            )
     }
 
     fn activate(&mut self, control: Control) -> Task<Message> {
@@ -1809,6 +1919,7 @@ impl Reader {
             Control::FontDown | Control::SettingsFontDown => Message::Zoom(self.zoom - 0.1),
             Control::FontUp | Control::SettingsFontUp => Message::Zoom(self.zoom + 0.1),
             Control::ToggleAppearance => Message::ToggleAppearance,
+            Control::SettingsWindowControls(controls) => Message::SetWindowControls(controls),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
             Control::Back => Message::Back,
@@ -2005,8 +2116,29 @@ impl Reader {
         let Some(book) = &self.book else {
             return Task::none();
         };
-        if book.pdf_source.is_some() {
-            return Task::none();
+        if let Some(source) = &book.pdf_source {
+            let Some(page) = href
+                .strip_prefix("pdf-page:")
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
+                return Task::none();
+            };
+            let Some(row) = source.conversion.blocks.iter().position(|block| {
+                block
+                    .sources
+                    .first()
+                    .is_some_and(|source| source.page == page)
+            }) else {
+                return Task::none();
+            };
+            let navigation = self
+                .return_location()
+                .map_or(Navigation::Preserve, Navigation::Push);
+            self.commit_navigation(navigation);
+            self.show_contents = false;
+            self.selection.clear();
+            self.focused = None;
+            return self.rebuild_geometry(Anchor { row, fraction: 0.0 });
         }
         let target = if let Some(chapter) = &book.epub {
             chapter
@@ -2172,7 +2304,7 @@ impl Reader {
                     self.pending_exit = true;
                     Task::batch([
                         self.persist_recent(),
-                        self.persist_appearance(),
+                        self.persist_preferences(),
                         self.shelf.persist().map(Message::Shelf),
                     ])
                 } else {
@@ -2256,6 +2388,12 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
 
 fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
     match message {
+        Message::LoadingFrame(frame) => {
+            if reader.opening.is_some() || reader.pagination.is_some() {
+                reader.loading_frame = frame;
+            }
+            Task::none()
+        }
         Message::PdfBookRaster {
             document,
             page,
@@ -2475,34 +2613,49 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::ToggleAppearance if reader.interactive() => {
             reader.appearance = reader.appearance.toggled();
-            reader.appearance_dirty = true;
-            reader.persist_appearance()
+            reader.preferences_dirty = true;
+            reader.persist_preferences()
         }
-        Message::AppearanceLoaded(result) => {
-            reader.appearance_loading = false;
+        Message::WindowMaximized(maximized) => {
+            reader.maximized = maximized;
+            Task::none()
+        }
+        Message::SetWindowControls(controls) if reader.interactive() => {
+            if reader.window_controls == controls {
+                return Task::none();
+            }
+            reader.window_controls = controls;
+            reader.preferences_dirty = true;
+            reader.persist_preferences()
+        }
+        Message::PreferencesLoaded(result) => {
+            reader.preferences_loading = false;
             match result {
-                Ok(appearance) if !reader.appearance_dirty => reader.appearance = appearance,
+                Ok(loaded) if !reader.preferences_dirty => {
+                    reader.appearance = loaded.appearance;
+                    reader.window_controls = loaded.window_controls;
+                }
                 Ok(_) => {}
                 Err(error) => {
-                    reader.appearance_writable = false;
-                    reader.appearance_notice = Some(format!(
-                        "{error}. Appearance changes apply for this session; the existing preferences file is preserved."
+                    reader.preferences_writable = false;
+                    reader.preferences_notice = Some(format!(
+                        "{error}. Setting changes apply for this session; the existing preferences file is preserved."
                     ));
                 }
             }
-            let task = reader.persist_appearance();
+            let task = reader.persist_preferences();
             if reader.pending_exit && reader.exit_ready() {
                 iced::exit()
             } else {
                 task
             }
         }
-        Message::AppearanceSaved(result) => {
-            reader.appearance_saving = false;
-            reader.appearance_notice = result
+        Message::PreferencesSaved(result) => {
+            reader.preferences_saving = false;
+            reader.preferences_notice = result
                 .err()
-                .map(|error| format!("Could not save appearance: {error}"));
-            let task = reader.persist_appearance();
+                .map(|error| format!("Could not save settings: {error}"));
+            let task = reader.persist_preferences();
             if reader.pending_exit && reader.exit_ready() {
                 iced::exit()
             } else {
@@ -2853,6 +3006,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 ),
             ])
         }
+        Message::ZoomBy(notches) if notches.is_finite() => update_inner(
+            reader,
+            Message::Zoom(reader.zoom * 1.1_f32.powf(notches.clamp(-10.0, 10.0))),
+        ),
         Message::Zoom(zoom) if reader.interactive() && zoom.is_finite() => {
             let anchor = reader.anchor();
             reader.generation = reader.generation.wrapping_add(1);
@@ -3150,6 +3307,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         task,
                         reader.shelf.resize(size).map(Message::Shelf),
                         window::scale_factor(id).map(|scale| Message::ScaleFactor(scale.into())),
+                        window::is_maximized(id).map(Message::WindowMaximized),
                     ])
                 }
                 iced::Event::Window(window::Event::Resized(size)) => {
@@ -3172,6 +3330,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         task,
                         reader.shelf.resize(size).map(Message::Shelf),
                         window::scale_factor(id).map(|scale| Message::ScaleFactor(scale.into())),
+                        window::is_maximized(id).map(Message::WindowMaximized),
                     ])
                 }
                 iced::Event::Window(window::Event::CloseRequested) => {
@@ -3364,6 +3523,34 @@ fn measure_book(
     Some(heights)
 }
 
+fn book_item_size(book: &Book, index: usize, item: &Item, body: f32) -> f32 {
+    if let Some(source) = &book.pdf_source
+        && let Some(block) = source.conversion.blocks.get(index)
+    {
+        return body * block.size_ratio.clamp(0.8, 2.0);
+    }
+    MINIMAL.block_size(item, book.structure.get(item.id()), body)
+}
+
+fn segment_styles(
+    styles: &[reader_document::StyleRun],
+    start: usize,
+    end: usize,
+) -> Vec<reader_document::StyleRun> {
+    styles
+        .iter()
+        .filter_map(|run| {
+            let from = run.start_byte.max(start);
+            let to = run.end_byte.min(end);
+            (from < to).then_some(reader_document::StyleRun {
+                start_byte: from - start,
+                end_byte: to - start,
+                style: run.style,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 fn settle_pagination(reader: &mut Reader) {
     if let Some(cancel) = reader.pagination.clone() {
@@ -3384,7 +3571,19 @@ fn render_item(
     {
         let page = source.conversion.blocks[index].sources[0].page;
         let info = source.document.pages[page as usize];
-        let height = reader.width * info.height * (rect.bottom - rect.top)
+        // Keep the illustration's size and horizontal position relative to the
+        // printed text block instead of stretching it across the reading width.
+        let placement = source
+            .conversion
+            .placements
+            .get(item.id())
+            .copied()
+            .unwrap_or(reader_pdf::book::Placement {
+                offset: 0.0,
+                width: 1.0,
+            });
+        let width = reader.width * placement.width;
+        let height = width * info.height * (rect.bottom - rect.top)
             / (info.width * (rect.right - rect.left));
         let content: Element<'static, Message> = match reader
             .pdf_book_raster
@@ -3394,7 +3593,7 @@ fn render_item(
         {
             Some(Ok(assets)) => match assets.get(item.id()) {
                 Some(asset) => image(asset.handle.clone())
-                    .width(reader.width)
+                    .width(width)
                     .height(height)
                     .into(),
                 None => text("Illustration unavailable").size(14).into(),
@@ -3407,10 +3606,17 @@ fn render_item(
                 .style(ui::muted_text)
                 .into(),
         };
-        return container(content)
+        let figure = container(content)
+            .width(width)
+            .height(height)
+            .center_x(width);
+        return container(figure)
             .width(reader.width)
             .height(height)
-            .center_x(reader.width)
+            .padding(iced::Padding {
+                left: reader.width * placement.offset,
+                ..iced::Padding::ZERO
+            })
             .into();
     }
     if let Item::Image { asset_path, .. } = item {
@@ -3446,6 +3652,98 @@ fn render_item(
             (BaseDirection::Ltr, heading_style.as_slice())
         }
     };
+    let pdf_layout = book
+        .pdf_source
+        .as_ref()
+        .and_then(|source| source.conversion.blocks.get(index))
+        .map(|block| &block.layout);
+    if let Some(reader_pdf::book::BlockLayout::Toc {
+        number_start,
+        indent,
+    }) = pdf_layout
+        && *number_start <= logical.len()
+        && logical.is_char_boundary(*number_start)
+    {
+        let title_end = number_start.saturating_sub(1);
+        let title_text = &logical[..title_end];
+        let number_text = &logical[*number_start..];
+        let size = book_item_size(book, index, item, reader.font_size);
+        let selection = bounds.and_then(|bounds| bounds.range_for_item(index, logical));
+        let make_part = |source: &str, start: usize, end: usize, alignment| {
+            let part_styles = segment_styles(styles, start, end);
+            let part_links = book
+                .structure
+                .get(item.id())
+                .map_or_else(Vec::new, |semantics| {
+                    semantics
+                        .links
+                        .iter()
+                        .filter_map(|link| {
+                            let from = link.start_byte.max(start);
+                            let to = link.end_byte.min(end);
+                            (from < to).then(|| reader_document::Link {
+                                start_byte: from,
+                                end_byte: to,
+                                href: link.href.clone(),
+                                kind: link.kind,
+                            })
+                        })
+                        .collect()
+                });
+            let mapped = reader::map_document_paragraph(source, direction, &part_styles);
+            match mapped {
+                Ok(mapped) => selection::selectable_text(
+                    selection::SelectableParagraphConfig {
+                        item_id: item.id().to_owned(),
+                        logical_text: source.to_owned(),
+                        mapped,
+                        item_offset: start,
+                        alignment,
+                        font_size: size,
+                        line_height: size * MINIMAL.line_height,
+                        selection: selection.clone(),
+                        dragging: reader.selection.is_dragging(),
+                        track_hit_test: false,
+                        links: part_links,
+                        focused_link: None,
+                    },
+                    Message::SelectStart,
+                    |endpoint, _| Message::SelectMove(endpoint),
+                    Some(Message::FollowLink),
+                ),
+                Err(error) => text(format!("Cannot display this entry: {error}")).into(),
+            }
+        };
+        let title = make_part(
+            title_text,
+            0,
+            title_end,
+            iced::advanced::text::Alignment::Default,
+        );
+        let number = make_part(
+            number_text,
+            *number_start,
+            logical.len(),
+            iced::advanced::text::Alignment::Right,
+        );
+        let number_width =
+            (number_text.chars().count() as f32 * size * 0.85 + size).max(size * 3.0);
+        return container(
+            row![
+                container(title).width(Length::Fill),
+                container(number)
+                    .width(number_width)
+                    .align_x(iced::alignment::Horizontal::Right),
+            ]
+            .spacing(size * 0.5),
+        )
+        .width(reader.width)
+        .padding(iced::Padding {
+            left: reader.width * indent.clamp(0.0, 0.2),
+            ..iced::Padding::ZERO
+        })
+        .into();
+    }
     let mut mapped = match reader::map_document_paragraph(logical, direction, styles) {
         Ok(mapped) => mapped,
         Err(error) => return text(format!("Cannot display this paragraph: {error}")).into(),
@@ -3474,12 +3772,22 @@ fn render_item(
             };
         }
     }
-    let size = MINIMAL.block_size(item, semantics, reader.font_size);
+    let size = book_item_size(book, index, item, reader.font_size);
     let paragraph = selection::selectable_text(
         selection::SelectableParagraphConfig {
             item_id: item.id().to_owned(),
             logical_text: logical.to_owned(),
             mapped,
+            item_offset: 0,
+            alignment: match pdf_layout {
+                Some(reader_pdf::book::BlockLayout::Centered) => {
+                    iced::advanced::text::Alignment::Center
+                }
+                Some(reader_pdf::book::BlockLayout::Right) => {
+                    iced::advanced::text::Alignment::Right
+                }
+                _ => iced::advanced::text::Alignment::Default,
+            },
             font_size: size,
             line_height: size * MINIMAL.line_height,
             selection: bounds.and_then(|bounds| bounds.range_for_item(index, logical)),
@@ -3500,9 +3808,37 @@ fn render_item(
     );
     let kind = semantics.map(|s| s.kind).unwrap_or_default();
     let quote = semantics.is_some_and(|s| s.quote_depth > 0);
+    let mut padding = MINIMAL.block_padding(item, semantics, reader.font_size, reader.width);
+    if let Some(source) = &book.pdf_source
+        && let Some(block) = source.conversion.blocks.get(index)
+    {
+        let page = block.sources[0].page as usize;
+        if let Some(info) = source.document.pages.get(page) {
+            padding.top +=
+                reader.width * (info.height / info.width.max(1.0)) * block.top_gap.clamp(0.0, 0.55);
+        }
+    }
+    if let Some(
+        reader_pdf::book::BlockLayout::List { indent }
+        | reader_pdf::book::BlockLayout::Inset { indent },
+    ) = pdf_layout
+    {
+        padding.left += reader.width * indent.clamp(0.0, 0.2);
+    }
     let mut block = container(paragraph)
-        .padding(MINIMAL.block_padding(item, semantics, reader.font_size, reader.width))
+        .padding(padding)
         .style(move |theme| book_style::block_surface(theme, kind, quote));
+    match pdf_layout {
+        Some(reader_pdf::book::BlockLayout::Centered) => {
+            block = block.center_x(Length::Fill);
+        }
+        Some(reader_pdf::book::BlockLayout::Right) => {
+            block = block
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Right);
+        }
+        _ => {}
+    }
     if matches!(reader.focused, Some(Control::BookLink(row, _)) if row == index) {
         block = block.id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL));
     }
@@ -3869,6 +4205,13 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             .push(text("Scales Book pages without changing their boundaries or total count. Applies during this session.")
                 .size(12).style(ui::muted_text))
             .push(row![
+                text("Window controls").size(13), Space::new().width(Length::Fill),
+                window_controls_button(reader, WindowControls::Windows, "Windows"),
+                window_controls_button(reader, WindowControls::Mac, "macOS"),
+            ].spacing(8).align_y(iced::Alignment::Center))
+            .push(text("Windows places minimize, maximize and close at the right of the title bar; macOS uses round buttons at the left.")
+                .size(12).style(ui::muted_text))
+            .push(row![
                 control_button(reader, Control::SettingsHelp, text("Shortcuts").size(12), Some(Message::ToggleHelp)),
             ].spacing(8));
     }
@@ -3907,6 +4250,21 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             .center_y(Length::Fill)
     ]
     .into()
+}
+
+fn window_controls_button(
+    reader: &Reader,
+    controls: WindowControls,
+    label: &'static str,
+) -> Element<'static, Message> {
+    toned_button(
+        reader,
+        Control::SettingsWindowControls(controls),
+        text(label).size(12),
+        Some(Message::SetWindowControls(controls)),
+        ui::ButtonTone::Surface,
+        reader.window_controls == controls,
+    )
 }
 
 fn hinted_control<'a>(
@@ -4061,13 +4419,16 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
                     "Previous page (Left arrow)",
                     (active && reader.can_turn(false)).then_some(Message::BookPage(false))
                 ),
-                iced::widget::text_input("Page", reader.page_input.as_deref().unwrap_or(&current))
-                    .id(iced::advanced::widget::Id::new("book-page"))
-                    .on_input(Message::PageInput)
-                    .on_submit(Message::PageSubmit)
-                    .width(64)
-                    .size(13)
-                    .style(ui::input_style),
+                iced::widget::text_input(
+                    if current.is_empty() { "—" } else { "Page" },
+                    reader.page_input.as_deref().unwrap_or(&current),
+                )
+                .id(iced::advanced::widget::Id::new("book-page"))
+                .on_input(Message::PageInput)
+                .on_submit(Message::PageSubmit)
+                .width(64)
+                .size(13)
+                .style(ui::input_style),
                 text(format!("/ {}", reader.page_total()))
                     .size(12)
                     .style(ui::muted_text),
@@ -4149,15 +4510,25 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
         )
         .slice(page.content.clone());
         let content_height = page.content.end - content_start;
+        let fallback = book
+            .pdf_source
+            .as_ref()
+            .is_some_and(|source| source.conversion.fallback_pages.contains(&page.number));
+        let footer: Element<'static, Message> = if fallback {
+            iced::widget::Space::new().height(book_pages::BOTTOM).into()
+        } else {
+            container(text(page.label.clone()).size(12).style(ui::muted_text))
+                .center_x(Length::Fill)
+                .center_y(book_pages::BOTTOM)
+                .into()
+        };
         let sheet = container(column![
             iced::widget::Space::new().height(book_pages::TOP),
             blocks,
             iced::widget::Space::new().height(
                 (page.height - book_pages::TOP - book_pages::BOTTOM - content_height).max(0.0)
             ),
-            container(text(page.label.clone()).size(12).style(ui::muted_text))
-                .center_x(Length::Fill)
-                .center_y(book_pages::BOTTOM),
+            footer,
         ])
         .padding(iced::Padding {
             left: margin,
@@ -4179,6 +4550,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
         });
     let generation = reader.generation;
     container(crate::document_scroll::wrap(
+        Message::ZoomBy,
         scrollable(centered)
             .direction(iced::widget::scrollable::Direction::Both {
                 vertical: ui::scrollbar(),
@@ -4357,7 +4729,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         }
         auxiliary = auxiliary.push(panel);
     }
-    if let Some(notice) = &reader.appearance_notice {
+    if let Some(notice) = &reader.preferences_notice {
         auxiliary = auxiliary.push(
             container(text(notice).size(12).style(ui::danger_text))
                 .padding(12)
@@ -4377,20 +4749,31 @@ fn view(reader: &Reader) -> Element<'_, Message> {
                 .size(12)
                 .style(ui::muted_text),
         );
-    } else if let Some(path) = &reader.opening
-        && !reader.show_conversion
-    {
-        auxiliary = auxiliary.push(
-            container(
-                text(format!("Opening {}…", path.display()))
-                    .size(12)
-                    .style(ui::muted_text)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            )
-            .width(Length::Fill)
-            .clip(true),
-        );
     }
+    let loading: Element<'_, Message> = if reader.opening.is_some() || reader.pagination.is_some() {
+        let dots = ["● · ·", "· ● ·", "· · ●", "· ● ·"][usize::from(reader.loading_frame) % 4];
+        let label = if reader.pagination.is_some() {
+            "Preparing pages…"
+        } else if reader.show_conversion {
+            "Preparing Book…"
+        } else {
+            "Opening…"
+        };
+        container(
+            row![
+                text(dots).size(12).style(ui::accent_text),
+                text(label).size(12).style(ui::muted_text),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        )
+        .center_x(Length::Fill)
+        .height(22)
+        .style(ui::header)
+        .into()
+    } else {
+        iced::widget::Space::new().height(0).into()
+    };
     let mut page = column![
         chrome::view(
             reader.focused.and_then(|control| match control {
@@ -4400,11 +4783,16 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             }),
             active,
             reader.reading_title(),
+            chrome::Controls {
+                style: reader.window_controls,
+                maximized: reader.maximized,
+            },
             (!has_document).then_some(reader.appearance),
             has_document.then_some(reader.toolbar_expanded),
         )
         .map(Message::Chrome),
         toolbar,
+        loading,
         container(
             scrollable(auxiliary)
                 .id(iced::advanced::widget::Id::new("reader-panels"))
@@ -4469,7 +4857,7 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
     let active = reader.book.is_some() && reader.opening.is_none() && reader.pagination.is_none();
     let focus = reader.focus_pending.then_some(reader.focus_generation);
     let searching = reader.show_search;
-    subscription::filter_map(
+    let events = subscription::filter_map(
         (HtmlEvents, generation, pending, active, focus, searching),
         move |event| match event {
             Event::Interaction {
@@ -4511,6 +4899,43 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
             Event::Interaction { event, window, .. } => Some(Message::Event(event, window)),
             Event::SystemThemeChanged(_) => None,
         },
+    );
+    if reader.opening.is_some() || reader.pagination.is_some() {
+        Subscription::batch([
+            events,
+            Subscription::run(loading_frames).map(Message::LoadingFrame),
+        ])
+    } else {
+        events
+    }
+}
+
+fn loading_frames() -> impl iced_futures::futures::Stream<Item = u8> {
+    use iced_futures::futures::{SinkExt, StreamExt};
+
+    iced::stream::channel(
+        1,
+        |mut output: iced_futures::futures::channel::mpsc::Sender<u8>| async move {
+            let (mut sender, mut receiver) = iced_futures::futures::channel::mpsc::channel(1);
+            std::thread::spawn(move || {
+                let mut frame = 0_u8;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(180));
+                    frame = (frame + 1) % 4;
+                    if sender
+                        .try_send(frame)
+                        .is_err_and(|error| error.is_disconnected())
+                    {
+                        break;
+                    }
+                }
+            });
+            while let Some(frame) = receiver.next().await {
+                if output.send(frame).await.is_err() {
+                    break;
+                }
+            }
+        },
     )
 }
 
@@ -4519,11 +4944,11 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
         move || {
             let mut reader = Reader {
                 error: error.clone(),
-                appearance_loading: true,
+                preferences_loading: true,
                 ..Reader::default()
             };
             let tasks = [
-                Task::perform(async { preferences::load() }, Message::AppearanceLoaded),
+                Task::perform(async { preferences::load() }, Message::PreferencesLoaded),
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),
                 path.clone()
@@ -4748,10 +5173,18 @@ mod tests {
         use reader_pdf::book::{Block, Conversion, SourceRange};
         let conversion = Conversion {
             illustrations: Default::default(),
+            placements: Default::default(),
+            page_labels: Default::default(),
+            fallback_pages: Default::default(),
             blocks: vec![Block {
                 id: "pdf-b1-p000001-c0000010".into(),
                 text: "Across a page".into(),
                 heading: false,
+                layout: Default::default(),
+                size_ratio: 1.0,
+                top_gap: 0.0,
+                styles: Vec::new(),
+                links: Vec::new(),
                 sources: vec![
                     SourceRange {
                         page: 1,
@@ -5005,30 +5438,30 @@ mod tests {
                 .copy_text(&reader.book.as_ref().unwrap().items),
             selected
         );
-        assert!(reader.appearance_saving);
+        assert!(reader.preferences_saving);
     }
 
     #[test]
     fn appearance_load_cannot_override_a_new_choice_and_writes_are_serialized() {
         let mut reader = Reader {
-            appearance_loading: true,
+            preferences_loading: true,
             ..Reader::default()
         };
         let _ = update_inner(&mut reader, Message::ToggleAppearance);
-        assert!(!reader.appearance_saving);
+        assert!(!reader.preferences_saving);
         let _ = update_inner(
             &mut reader,
-            Message::AppearanceLoaded(Ok(Appearance::Light)),
+            Message::PreferencesLoaded(Ok(Preferences::default())),
         );
         assert_eq!(reader.appearance, Appearance::Dark);
-        assert!(reader.appearance_saving);
+        assert!(reader.preferences_saving);
         let _ = update_inner(&mut reader, Message::ToggleAppearance);
-        assert!(reader.appearance_dirty);
-        let _ = update_inner(&mut reader, Message::AppearanceSaved(Ok(())));
-        assert!(reader.appearance_saving);
-        assert!(!reader.appearance_dirty);
-        let _ = update_inner(&mut reader, Message::AppearanceSaved(Ok(())));
-        assert!(!reader.appearance_saving);
+        assert!(reader.preferences_dirty);
+        let _ = update_inner(&mut reader, Message::PreferencesSaved(Ok(())));
+        assert!(reader.preferences_saving);
+        assert!(!reader.preferences_dirty);
+        let _ = update_inner(&mut reader, Message::PreferencesSaved(Ok(())));
+        assert!(!reader.preferences_saving);
         assert_eq!(reader.appearance, Appearance::Light);
     }
 
@@ -5037,33 +5470,33 @@ mod tests {
         let mut reader = Reader::default();
         let _ = update_inner(
             &mut reader,
-            Message::AppearanceLoaded(Err("invalid data".into())),
+            Message::PreferencesLoaded(Err("invalid data".into())),
         );
         let _ = update_inner(&mut reader, Message::ToggleAppearance);
         assert_eq!(reader.appearance, Appearance::Dark);
-        assert!(!reader.appearance_writable);
-        assert!(!reader.appearance_saving);
+        assert!(!reader.preferences_writable);
+        assert!(!reader.preferences_saving);
         assert!(
             reader
-                .appearance_notice
+                .preferences_notice
                 .as_ref()
                 .unwrap()
                 .contains("preserved")
         );
-        reader.appearance_writable = true;
-        let _ = reader.persist_appearance();
+        reader.preferences_writable = true;
+        let _ = reader.persist_preferences();
         let _ = update_inner(
             &mut reader,
-            Message::AppearanceSaved(Err("disk full".into())),
+            Message::PreferencesSaved(Err("disk full".into())),
         );
         assert!(
             reader
-                .appearance_notice
+                .preferences_notice
                 .as_ref()
                 .unwrap()
                 .contains("disk full")
         );
-        assert!(!reader.appearance_saving);
+        assert!(!reader.preferences_saving);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use iced::{
 };
 
 use crate::ui;
+use reader_document::preferences::WindowControls;
 
 /// Requests for native window operations and the two header destinations.
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +39,8 @@ impl PartialEq for Action {
 impl Eq for Action {}
 
 const HEIGHT: f32 = 48.0;
+/// Width of a Windows caption button.
+const CAPTION: f32 = 46.0;
 const EDGE: f32 = 4.0;
 const CORNER: f32 = 8.0;
 
@@ -162,16 +165,59 @@ fn icon(
     hint(focus_marker(control, selected), caption)
 }
 
+/// A Windows caption button drawn with the system's Segoe MDL2 Assets glyphs.
+fn caption(
+    action: Action,
+    glyph: &'static str,
+    focused: Option<Action>,
+    tip: &'static str,
+) -> Element<'static, Action> {
+    let selected = focused == Some(action);
+    let close = action == Action::Close;
+    let control = button(
+        container(
+            text(glyph)
+                .font(iced::Font::with_name("Segoe MDL2 Assets"))
+                .size(10)
+                .line_height(1.0),
+        )
+        .center(Length::Fill),
+    )
+    .on_press(action)
+    .width(CAPTION)
+    .height(HEIGHT)
+    .padding(0)
+    .style(move |theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let mut style = button_style(theme, status, selected);
+        style.border.radius = 0.0.into();
+        if close && hovered {
+            style.background = Some(Color::from_rgb8(0xC4, 0x2B, 0x1C).into());
+            style.text_color = Color::WHITE;
+        }
+        style
+    });
+    hint(focus_marker(control, selected), tip)
+}
+
+/// Native window button style and state shown in the header.
+#[derive(Clone, Copy, Debug)]
+pub struct Controls {
+    pub style: WindowControls,
+    pub maximized: bool,
+}
+
 /// The 48-DIP draggable header. Controls receive events before the drag surface.
 /// `active` changes visual emphasis, never whether the native controls work.
 pub fn view<'a>(
     focused: Option<Action>,
     active: bool,
     document_title: Option<String>,
+    controls: Controls,
     appearance: Option<reader_document::preferences::Appearance>,
     toolbar: Option<bool>,
 ) -> Element<'a, Action> {
-    let left = row![
+    let dots = row![
         dot(
             Action::Close,
             |theme| blend(theme, ui::palette(theme).danger, 0.8),
@@ -192,14 +238,30 @@ pub fn view<'a>(
         ),
     ]
     .align_y(iced::Alignment::Center);
-    let mut right = row![icon(
-        Action::Search,
-        "\u{e8b6}",
-        focused,
-        "Search or switch (Ctrl+K)"
-    )];
-    if let Some(appearance) = appearance {
-        right = right.push(icon(
+    let captions = row![
+        caption(Action::Minimize, "\u{e921}", focused, "Minimize"),
+        if controls.maximized {
+            caption(Action::Maximize, "\u{e923}", focused, "Restore down")
+        } else {
+            caption(Action::Maximize, "\u{e922}", focused, "Maximize")
+        },
+        caption(Action::Close, "\u{e8bb}", focused, "Close"),
+    ];
+    // Mirror the complete tool order when window controls move to the right:
+    // Settings becomes the outside button on the Windows left edge.
+    let mut tools = row![];
+    if controls.style == WindowControls::Windows {
+        tools = tools.push(icon(Action::Settings, "\u{e8b8}", focused, "Settings"));
+    } else {
+        tools = tools.push(icon(
+            Action::Search,
+            "\u{e8b6}",
+            focused,
+            "Search or switch (Ctrl+K)",
+        ));
+    }
+    let appearance_icon = appearance.map(|appearance| {
+        icon(
             Action::ToggleAppearance,
             if appearance == reader_document::preferences::Appearance::Dark {
                 "☼"
@@ -208,10 +270,10 @@ pub fn view<'a>(
             },
             focused,
             appearance.toggle_label(),
-        ));
-    }
-    if let Some(expanded) = toolbar {
-        right = right.push(icon(
+        )
+    });
+    let toolbar_icon = toolbar.map(|expanded| {
+        icon(
             Action::ToggleToolbar,
             "▤",
             focused,
@@ -220,17 +282,33 @@ pub fn view<'a>(
             } else {
                 "Show reading toolbar (F8)"
             },
+        )
+    });
+    if controls.style == WindowControls::Windows {
+        if let Some(icon) = toolbar_icon {
+            tools = tools.push(icon);
+        }
+        if let Some(icon) = appearance_icon {
+            tools = tools.push(icon);
+        }
+        tools = tools.push(icon(
+            Action::Search,
+            "\u{e8b6}",
+            focused,
+            "Search or switch (Ctrl+K)",
         ));
-    }
-    let right = right
-        .push(icon(Action::Settings, "\u{e8b8}", focused, "Settings"))
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-    let side_width = if appearance.is_some() || toolbar.is_some() {
-        152
     } else {
-        112
-    };
+        if let Some(icon) = appearance_icon {
+            tools = tools.push(icon);
+        }
+        if let Some(icon) = toolbar_icon {
+            tools = tools.push(icon);
+        }
+        tools = tools.push(icon(Action::Settings, "\u{e8b8}", focused, "Settings"));
+    }
+    let tools = tools.spacing(8).align_y(iced::Alignment::Center);
+    let tool_count: f32 = 2.0 + f32::from(appearance.is_some()) + f32::from(toolbar.is_some());
+    let tools_width = tool_count * 32.0 + (tool_count - 1.0) * 8.0;
     // Library keeps the tracked wordmark; a document uses its own title.
     let title_style = move |theme: &Theme| text::Style {
         color: Some(if active {
@@ -257,11 +335,30 @@ pub fn view<'a>(
         .spacing(1.2)
         .into()
     };
+    // Both sides share one width so the title stays centred in the window.
+    let (left, right, side_width, right_padding): (Element<'a, Action>, Element<'a, Action>, _, _) =
+        match controls.style {
+            WindowControls::Mac => (dots.into(), tools.into(), tools_width + 40.0, 24.0),
+            // Caption buttons own the right edge, so the tools move to the left.
+            WindowControls::Windows => (
+                tools.into(),
+                captions.into(),
+                (tools_width + 48.0).max(3.0 * CAPTION),
+                0.0,
+            ),
+        };
     let content = row![
         container(left)
             .width(side_width)
             .height(HEIGHT)
-            .padding([0, 20])
+            .padding([
+                0,
+                if controls.style == WindowControls::Windows {
+                    24
+                } else {
+                    20
+                }
+            ])
             .align_y(iced::alignment::Vertical::Center),
         container(title)
             .width(Length::Fill)
@@ -272,7 +369,10 @@ pub fn view<'a>(
         container(right)
             .width(side_width)
             .height(HEIGHT)
-            .padding([0, 24])
+            .padding(iced::Padding {
+                right: right_padding,
+                ..iced::Padding::ZERO
+            })
             .align_x(iced::alignment::Horizontal::Right)
             .align_y(iced::alignment::Vertical::Center),
     ]

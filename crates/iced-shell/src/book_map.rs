@@ -34,6 +34,9 @@ impl Atlas {
     }
     pub fn target(&self, value: &str) -> Option<(usize, usize)> {
         let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
         let by_label = self.sections.iter().enumerate().find_map(|(s, section)| {
             section
                 .pages
@@ -215,6 +218,7 @@ fn build_spine(book: Arc<Book>, cancel: &AtomicBool) -> Result<Option<Atlas>, St
     if let Some(atlas) = cached(&book, count) {
         return Ok(Some(atlas));
     }
+    let started = std::time::Instant::now();
     let mut atlas = Atlas {
         version: VERSION,
         fingerprint: book.fingerprint.clone(),
@@ -241,7 +245,11 @@ fn build_spine(book: Arc<Book>, cancel: &AtomicBool) -> Result<Option<Atlas>, St
         } else {
             book.clone()
         };
-        let Some(heights) = measure_book(current.clone(), TEXT, DEFAULT_FONT_SIZE, cancel) else {
+        let Some(heights) = (if current.pdf_source.is_some() {
+            estimate_pdf_heights(&current, TEXT, DEFAULT_FONT_SIZE, cancel)
+        } else {
+            measure_book(current.clone(), TEXT, DEFAULT_FONT_SIZE, cancel)
+        }) else {
             return Ok(None);
         };
         let geometry = virtual_reader::HeightIndex::new(heights.clone());
@@ -260,11 +268,12 @@ fn build_spine(book: Arc<Book>, cancel: &AtomicBool) -> Result<Option<Atlas>, St
         let lines = current
             .items
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(row, item)| {
                 item.text().map(|_| {
                     let semantics = current.structure.get(item.id());
                     book_pages::Lines {
-                        height: MINIMAL.block_size(item, semantics, DEFAULT_FONT_SIZE)
+                        height: super::book_item_size(&current, row, item, DEFAULT_FONT_SIZE)
                             * MINIMAL.line_height,
                         top: MINIMAL
                             .block_padding(item, semantics, DEFAULT_FONT_SIZE, TEXT)
@@ -284,7 +293,17 @@ fn build_spine(book: Arc<Book>, cancel: &AtomicBool) -> Result<Option<Atlas>, St
         };
         for page in &mut pages {
             page.number += atlas.total as u32;
-            page.label = (page.number + 1).to_string();
+            page.label = current
+                .pdf_source
+                .as_ref()
+                .and_then(|source| {
+                    source
+                        .conversion
+                        .page_labels
+                        .get(&(page.number - atlas.total as u32))
+                })
+                .cloned()
+                .unwrap_or_else(|| (page.number + 1).to_string());
         }
         atlas.total += pages.len();
         if atlas.total > 100_000 {
@@ -370,5 +389,144 @@ fn build_spine(book: Arc<Book>, cancel: &AtomicBool) -> Result<Option<Atlas>, St
         return Ok(None);
     }
     persist(&atlas)?;
+    if book.pdf_source.is_some() && std::env::var_os("SIMPL_PDF_TIMING").is_some() {
+        eprintln!(
+            "PDF Book page atlas: {:?}, {} blocks, {} pages",
+            started.elapsed(),
+            book.items.len(),
+            atlas.total
+        );
+    }
     Ok(Some(atlas))
+}
+
+/// Native paragraph shaping is expensive on a long PDF (tens of thousands of
+/// blocks). Its physical source pages are already known, so build the atlas
+/// from bounded height estimates and refine only rows the reader displays.
+fn estimate_pdf_heights(
+    book: &Book,
+    width: f32,
+    body: f32,
+    cancel: &AtomicBool,
+) -> Option<Vec<f32>> {
+    let source = book.pdf_source.as_ref()?;
+    let mut heights = Vec::with_capacity(book.items.len());
+    for (index, item) in book.items.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let block = &source.conversion.blocks[index];
+        let height = if let Some(rect) = source.conversion.illustrations.get(item.id()) {
+            let info = source.document.pages[block.sources[0].page as usize];
+            let placement = source
+                .conversion
+                .placements
+                .get(item.id())
+                .copied()
+                .unwrap_or(reader_pdf::book::Placement {
+                    offset: 0.0,
+                    width: 1.0,
+                });
+            width * placement.width * info.height * (rect.bottom - rect.top)
+                / (info.width * (rect.right - rect.left))
+        } else {
+            let size = book_item_size(book, index, item, body);
+            let semantics = book.structure.get(item.id());
+            let mut padding = MINIMAL.block_padding(item, semantics, body, width);
+            if let Some(info) = source.document.pages.get(block.sources[0].page as usize) {
+                padding.top +=
+                    width * (info.height / info.width.max(1.0)) * block.top_gap.clamp(0.0, 0.55);
+            }
+            if let reader_pdf::book::BlockLayout::List { indent }
+            | reader_pdf::book::BlockLayout::Inset { indent } = block.layout
+            {
+                padding.left += width * indent.clamp(0.0, 0.2);
+            }
+            let usable = (width - padding.left - padding.right).max(size);
+            let text = item.text().unwrap_or_default();
+            let line_width = match block.layout {
+                reader_pdf::book::BlockLayout::Toc {
+                    number_start,
+                    indent,
+                } => {
+                    let number = text.get(number_start..).unwrap_or_default();
+                    let reserved = (number.chars().count() as f32 * size * 0.85 + size)
+                        .max(size * 3.0)
+                        + size * 0.5
+                        + width * indent.clamp(0.0, 0.2);
+                    estimated_text_width(
+                        text.get(..number_start.saturating_sub(1)).unwrap_or(text),
+                        size,
+                    ) / (usable - reserved).max(size)
+                }
+                _ => estimated_text_width(text, size) / usable,
+            };
+            let lines = line_width.ceil().max(1.0);
+            lines * size * MINIMAL.line_height + padding.top + padding.bottom
+        };
+        heights.push(
+            height.max(1.0)
+                + if index + 1 == book.items.len() {
+                    0.0
+                } else {
+                    MINIMAL.gap(body)
+                },
+        );
+    }
+    Some(heights)
+}
+
+fn estimated_text_width(text: &str, size: f32) -> f32 {
+    text.chars()
+        .map(|ch| {
+            let em = if ch.is_whitespace() {
+                0.32
+            } else if ch.is_ascii_punctuation() {
+                0.38
+            } else if ch.is_ascii_uppercase() {
+                0.68
+            } else if ch.is_ascii_digit() {
+                0.56
+            } else if ch.is_ascii() {
+                0.51
+            } else if ('\u{2e80}'..='\u{9fff}').contains(&ch) {
+                1.0
+            } else {
+                0.65
+            };
+            em * size
+        })
+        .sum::<f32>()
+        * 1.1
+}
+
+pub(super) fn refine_pdf(atlas: &mut Atlas, book: &Book, index: &virtual_reader::HeightIndex) {
+    let started = std::time::Instant::now();
+    let Some(source) = &book.pdf_source else {
+        return;
+    };
+    let Some(section) = atlas.sections.first_mut() else {
+        return;
+    };
+    section.heights = (0..index.len()).map(|row| index.height(row)).collect();
+    section.pages = book_pages::layout(
+        source
+            .conversion
+            .blocks
+            .iter()
+            .map(|block| block.sources[0].page),
+        index,
+        PAPER,
+    );
+    for page in &mut section.pages {
+        page.label = source
+            .conversion
+            .page_labels
+            .get(&page.number)
+            .cloned()
+            .unwrap_or_else(|| (page.number + 1).to_string());
+    }
+    if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
+        eprintln!("PDF Book visible-row refinement: {:?}", started.elapsed());
+    }
 }

@@ -20,8 +20,9 @@ with light and dark themes.
   page field that can jump across the whole book.
 - **Stable pages.** Zoom changes the size of the page without changing its number
   or the total. Switching PDF views keeps your current source page.
-- **Less chrome.** Collapse the toolbar to reclaim reading space. Geist for the
-  interface, Literata for the book, and bundled fonts for offline reading.
+- **Less chrome.** Collapse the toolbar to reclaim reading space. Choose Windows- or
+  macOS-style window buttons in Settings. Geist for the interface, Literata for the
+  book, and bundled fonts for offline reading.
 - **Keyboard access.** Navigate controls, switch books, turn pages and copy selected
   text without reaching for the mouse.
 
@@ -99,6 +100,7 @@ access to obtain dependencies and the pinned PDF runtime.
 | **↑ / ↓**, **Page Up / Page Down** | Scroll within the current Book page |
 | **Ctrl+L** | Focus the page field |
 | **Ctrl+plus / minus / 0** | Zoom in / out / reset |
+| **Ctrl+wheel**, touchpad pinch | Zoom in / out |
 | **Ctrl+T** in EPUB | Open contents |
 | **Alt+Left** | Return from an internal link |
 | **Ctrl+C** | Copy selected text |

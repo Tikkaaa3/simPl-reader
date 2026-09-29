@@ -1187,6 +1187,8 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
             item_id: item_id.to_owned(),
             logical_text: logical_text.to_owned(),
             mapped,
+            item_offset: 0,
+            alignment: iced::advanced::text::Alignment::Default,
             font_size,
             line_height,
             selection,

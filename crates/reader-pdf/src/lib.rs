@@ -4,7 +4,7 @@
 use futures_channel::oneshot;
 use pdfium_render::prelude::{
     PdfDocument, PdfDocumentMetadataTagType, PdfPage, PdfPageObjectCommon, PdfPageObjectsCommon,
-    PdfRenderConfig, Pdfium, PdfiumError, PdfiumInternalError,
+    PdfPoints, PdfRect, PdfRenderConfig, Pdfium, PdfiumError, PdfiumInternalError,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -44,6 +44,15 @@ pub struct Glyph {
     pub start: usize,
     pub end: usize,
     pub bounds: Option<Rect>,
+    /// Book-only typographic evidence. Document selection does not need it.
+    pub style: Option<GlyphStyle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphStyle {
+    pub size: f32,
+    pub bold: bool,
+    pub italic: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -440,7 +449,11 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                         }
                         let conversion = convert_book(document, &reply)?;
                         if !reply.is_canceled() {
+                            let save_start = std::time::Instant::now();
                             book_cache::save(key, &conversion);
+                            if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
+                                eprintln!("PDF Book cache save: {:?}", save_start.elapsed());
+                            }
                         }
                         Ok(conversion)
                     });
@@ -692,12 +705,13 @@ fn text_page(
         .set_target_size(width as i32, height as i32)
         .render_annotations(false)
         .render_form_data(false);
-    extract_text(&page, Some((&config, width, height)))
+    extract_text(&page, Some((&config, width, height)), false)
 }
 
 fn extract_text(
     page: &PdfPage<'_>,
     geometry: Option<(&PdfRenderConfig, u32, u32)>,
+    book_style: bool,
 ) -> Result<TextLayer, String> {
     let layer = page
         .text()
@@ -712,6 +726,12 @@ fn extract_text(
     let chars = layer.chars();
     let mut text = String::with_capacity(count as usize);
     let mut glyphs = Vec::with_capacity(count as usize);
+    // Page-to-device mapping is affine; derive it once per page instead of
+    // asking PDFium for every glyph corner.
+    let transform = match geometry {
+        Some((config, width, height)) => Some(PageTransform::new(page, config, width, height)?),
+        None => None,
+    };
     for index in 0..count as usize {
         let character = chars
             .get(index)
@@ -729,66 +749,117 @@ fn extract_text(
             unicode
         };
         text.push(unicode);
-        let character_bounds = if geometry.is_some() && !unicode.is_whitespace() {
-            character.loose_bounds().ok()
-        } else {
-            None
-        };
-        let bounds = match (geometry, character_bounds) {
-            (Some((config, width, height)), Some(rect)) => {
-                let points = [
-                    (rect.left(), rect.top()),
-                    (rect.right(), rect.top()),
-                    (rect.left(), rect.bottom()),
-                    (rect.right(), rect.bottom()),
-                ];
-                let mut xs = [0_f32; 4];
-                let mut ys = [0_f32; 4];
-                let mut valid = true;
-                for (position, (x, y)) in points.into_iter().enumerate() {
-                    if !x.value.is_finite() || !y.value.is_finite() {
-                        valid = false;
-                        break;
-                    }
-                    match page.points_to_pixels(x, y, config) {
-                        Ok((px, py)) => {
-                            xs[position] = px as f32 / width as f32;
-                            ys[position] = py as f32 / height as f32;
-                        }
-                        Err(_) => {
-                            valid = false;
-                            break;
-                        }
-                    }
-                }
-                if valid {
-                    let left = xs.into_iter().fold(f32::INFINITY, f32::min);
-                    let right = xs.into_iter().fold(f32::NEG_INFINITY, f32::max);
-                    let top = ys.into_iter().fold(f32::INFINITY, f32::min);
-                    let bottom = ys.into_iter().fold(f32::NEG_INFINITY, f32::max);
-                    let left = left.clamp(0.0, 1.0);
-                    let right = right.clamp(0.0, 1.0);
-                    let top = top.clamp(0.0, 1.0);
-                    let bottom = bottom.clamp(0.0, 1.0);
-                    (left < right && top < bottom).then_some(Rect {
-                        left,
-                        top,
-                        right,
-                        bottom,
-                    })
-                } else {
-                    None
-                }
+        let bounds = transform
+            .as_ref()
+            .filter(|_| !unicode.is_whitespace())
+            .and_then(|transform| transform.bounds(character.loose_bounds().ok()?));
+        let style = (book_style && !unicode.is_whitespace()).then(|| {
+            use pdfium_render::prelude::PdfFontWeight;
+            let reported_bold = matches!(
+                character.font_weight(),
+                Some(
+                    PdfFontWeight::Weight700Bold
+                        | PdfFontWeight::Weight800
+                        | PdfFontWeight::Weight900
+                )
+            );
+            // Standard PDF fonts often report a regular weight and omit the
+            // italic descriptor even when their face names carry the style.
+            let reported_italic = character.font_is_italic();
+            let name = if reported_bold && reported_italic {
+                String::new()
+            } else {
+                character.font_name().to_ascii_lowercase()
+            };
+            GlyphStyle {
+                size: character.scaled_font_size().value,
+                bold: reported_bold || name.contains("bold"),
+                italic: reported_italic || name.contains("italic") || name.contains("oblique"),
             }
-            _ => None,
-        };
+        });
         glyphs.push(Glyph {
             start,
             end: text.len(),
             bounds,
+            style,
         });
     }
     Ok(TextLayer::new(text, glyphs))
+}
+
+/// Affine page-point to normalized device mapping for one rendered page size.
+struct PageTransform {
+    origin: (f64, f64),
+    x_axis: (f64, f64),
+    y_axis: (f64, f64),
+    width: f64,
+    height: f64,
+}
+
+impl PageTransform {
+    fn new(
+        page: &PdfPage<'_>,
+        config: &PdfRenderConfig,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        // Reference points far apart keep PDFium's integer rounding negligible.
+        let span = f64::from(page.width().value.max(page.height().value)) * 16.0;
+        let device = |x: f64, y: f64| {
+            page.points_to_pixels(PdfPoints::new(x as f32), PdfPoints::new(y as f32), config)
+                .map(|(px, py)| (f64::from(px), f64::from(py)))
+                .map_err(|error| format!("Cannot map PDF page coordinates: {error}"))
+        };
+        let origin = device(0.0, 0.0)?;
+        let x = device(span, 0.0)?;
+        let y = device(0.0, span)?;
+        Ok(Self {
+            origin,
+            x_axis: ((x.0 - origin.0) / span, (x.1 - origin.1) / span),
+            y_axis: ((y.0 - origin.0) / span, (y.1 - origin.1) / span),
+            width: f64::from(width),
+            height: f64::from(height),
+        })
+    }
+
+    /// Normalized device bounds of a glyph box, rounded to device pixels like
+    /// PDFium's own point-to-pixel conversion.
+    fn bounds(&self, rect: PdfRect) -> Option<Rect> {
+        let corners = [
+            (rect.left(), rect.top()),
+            (rect.right(), rect.top()),
+            (rect.left(), rect.bottom()),
+            (rect.right(), rect.bottom()),
+        ];
+        let mut xs = [0_f32; 4];
+        let mut ys = [0_f32; 4];
+        for (position, (x, y)) in corners.into_iter().enumerate() {
+            if !x.value.is_finite() || !y.value.is_finite() {
+                return None;
+            }
+            let (x, y) = (f64::from(x.value), f64::from(y.value));
+            let px = (self.origin.0 + x * self.x_axis.0 + y * self.y_axis.0).round();
+            let py = (self.origin.1 + x * self.x_axis.1 + y * self.y_axis.1).round();
+            xs[position] = (px / self.width) as f32;
+            ys[position] = (py / self.height) as f32;
+        }
+        let left = xs.into_iter().fold(f32::INFINITY, f32::min).clamp(0.0, 1.0);
+        let right = xs
+            .into_iter()
+            .fold(f32::NEG_INFINITY, f32::max)
+            .clamp(0.0, 1.0);
+        let top = ys.into_iter().fold(f32::INFINITY, f32::min).clamp(0.0, 1.0);
+        let bottom = ys
+            .into_iter()
+            .fold(f32::NEG_INFINITY, f32::max)
+            .clamp(0.0, 1.0);
+        (left < right && top < bottom).then_some(Rect {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
 }
 
 fn convert_book(
@@ -805,23 +876,27 @@ fn convert_book(
     let count = document.pages().len() as usize;
     if count > book::MAX_PAGES {
         return Err(
-            "PDF Book supports at most 2,000 pages; use Document mode for this file.".into(),
+            "PDF Book supports at most 5,000 pages; use Document mode for this file.".into(),
         );
     }
     let mut builder = book::Builder::default();
     let mut timings = [std::time::Duration::ZERO; 4];
+    // Text extents of text-filled pages locate the book's usual text block.
+    let mut extents: Vec<Rect> = Vec::new();
     for page in 0..count {
         if reply.is_canceled() {
             return Err("PDF Book conversion canceled".into());
         }
         let stage = std::time::Instant::now();
         let source = page_at(document, page as u32)?;
+        builder.page_label(page as u32, source.label());
         let (width, height) = raster_size(&source, 1600)?;
         let config = PdfRenderConfig::new()
             .set_target_size(width as i32, height as i32)
             .render_annotations(false)
             .render_form_data(false);
-        let layer = extract_text(&source, Some((&config, width, height)))?;
+        let layer = extract_text(&source, Some((&config, width, height)), true)?;
+        builder.links(page as u32, extract_book_links(&source, &layer, count));
         timings[0] += stage.elapsed();
         let stage = std::time::Instant::now();
         let mut regions = Vec::new();
@@ -845,13 +920,24 @@ fn convert_book(
             }
         }
         timings[1] += stage.elapsed();
+        // Rasterizing a scan dominates conversion time. Pages whose text fills the
+        // usual text block cannot hold an illustration and are not rasterized.
         if scanned {
-            let stage = std::time::Instant::now();
-            let raster = render_source(&source, page as u32, 400)?;
-            timings[2] += stage.elapsed();
-            let stage = std::time::Instant::now();
-            regions = book::scan_regions(&raster, &layer);
-            timings[3] += stage.elapsed();
+            regions.clear();
+            if book::may_contain_illustration(&layer, typical_block(&extents)) {
+                let stage = std::time::Instant::now();
+                let raster = render_source(&source, page as u32, 400)?;
+                timings[2] += stage.elapsed();
+                let stage = std::time::Instant::now();
+                regions = book::scan_regions(&raster, &layer);
+                timings[3] += stage.elapsed();
+            }
+        }
+        // A small representative sample establishes the usual text block.
+        // Sorting every page's glyphs for this scan-only heuristic is costly
+        // in long, text-only PDFs and does not improve the median.
+        if extents.len() < 48 {
+            extents.extend(book::text_extent(&layer));
         }
         builder.illustrations(page as u32, regions);
         builder.push(page as u32, layer)?;
@@ -859,7 +945,90 @@ fn convert_book(
     if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
         eprintln!("PDF book text/objects/raster/regions: {timings:?}");
     }
-    builder.finish(|| reply.is_canceled())
+    let reconstruct_start = std::time::Instant::now();
+    let conversion = builder.finish(|| reply.is_canceled())?;
+    if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
+        eprintln!("PDF Book reconstruction: {:?}", reconstruct_start.elapsed());
+    }
+    Ok(conversion)
+}
+
+/// Locate same-document annotation links in the source UTF-8 stream before
+/// line wrapping changes their presentation coordinates.
+fn extract_book_links(
+    source: &PdfPage<'_>,
+    layer: &TextLayer,
+    pages: usize,
+) -> Vec<book::SourceLink> {
+    let mut result = Vec::new();
+    for link in source.links().iter() {
+        let target = link
+            .destination()
+            .and_then(|dest| dest.page_index().ok())
+            .or_else(|| {
+                link.action().and_then(|action| {
+                    action
+                        .as_local_destination_action()
+                        .and_then(|local| local.destination().ok())
+                        .and_then(|dest| dest.page_index().ok())
+                })
+            });
+        let Some(target) = target.filter(|page| (*page as usize) < pages) else {
+            continue;
+        };
+        let Ok(rect) = link.rect() else { continue };
+        let bounds = Rect {
+            left: rect.left().value / source.width().value,
+            right: rect.right().value / source.width().value,
+            top: 1.0 - rect.top().value / source.height().value,
+            bottom: 1.0 - rect.bottom().value / source.height().value,
+        };
+        if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
+            continue;
+        }
+        let mut start = usize::MAX;
+        let mut end = 0;
+        for glyph in &layer.glyphs {
+            let Some(ink) = glyph.bounds else { continue };
+            let x = (ink.left + ink.right) * 0.5;
+            let y = (ink.top + ink.bottom) * 0.5;
+            if x >= bounds.left - 0.003
+                && x <= bounds.right + 0.003
+                && y >= bounds.top - 0.003
+                && y <= bounds.bottom + 0.003
+                && !layer.text[glyph.start..glyph.end].trim().is_empty()
+            {
+                start = start.min(glyph.start);
+                end = end.max(glyph.end);
+            }
+        }
+        if start < end {
+            result.push(book::SourceLink {
+                start,
+                end,
+                href: format!("pdf-page:{target}"),
+            });
+        }
+    }
+    result
+}
+
+/// Median text block of the text-filled pages seen so far.
+fn typical_block(extents: &[Rect]) -> Option<Rect> {
+    if extents.len() < 5 {
+        return None;
+    }
+    let median = |value: fn(&Rect) -> f32| {
+        let mut values: Vec<f32> = extents.iter().map(value).collect();
+        values.sort_by(f32::total_cmp);
+        values[values.len() / 2]
+    };
+    Some(Rect {
+        left: median(|r| r.left),
+        top: median(|r| r.top),
+        right: median(|r| r.right),
+        bottom: median(|r| r.bottom),
+    })
 }
 
 fn copy_text(
@@ -896,7 +1065,7 @@ fn copy_text(
             return Err("PDF copy was canceled".into());
         }
         let page = page_at(document, page_index)?;
-        let layer = extract_text(&page, None)?;
+        let layer = extract_text(&page, None, false)?;
         let (first, last) = match selection {
             Some(selection) => {
                 let (from, to) = if selection.anchor <= selection.focus {

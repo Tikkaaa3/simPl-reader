@@ -223,11 +223,13 @@ mod tests {
                         right: 0.2,
                         bottom: 0.13,
                     }),
+                    style: None,
                 },
                 Glyph {
                     start: 2,
                     end: 3,
                     bounds: None,
+                    style: None,
                 },
                 Glyph {
                     start: 3,
@@ -238,6 +240,7 @@ mod tests {
                         right: 0.4,
                         bottom: 0.13,
                     }),
+                    style: None,
                 },
             ],
         );

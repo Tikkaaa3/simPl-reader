@@ -37,6 +37,11 @@ pub struct VisibleRows<'a, Message> {
     reports: LayoutReports,
 }
 
+#[derive(Debug)]
+struct VisibleRowsState {
+    first: usize,
+}
+
 impl<'a, Message> VisibleRows<'a, Message> {
     pub fn new(
         range: Range<usize>,
@@ -83,8 +88,38 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
     fn children(&self) -> Vec<Tree> {
         self.rows.iter().map(Tree::new).collect()
     }
+    fn tag(&self) -> iced::advanced::widget::tree::Tag {
+        iced::advanced::widget::tree::Tag::of::<VisibleRowsState>()
+    }
+    fn state(&self) -> iced::advanced::widget::tree::State {
+        iced::advanced::widget::tree::State::new(VisibleRowsState { first: self.first })
+    }
     fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.rows);
+        // The visible window moves by a row or two during scrolling. Preserve
+        // the paragraph state of each retained source row; index-wise diffing
+        // would reshape every paragraph whenever the first row changed.
+        let state = tree.state.downcast_mut::<VisibleRowsState>();
+        let old_first = state.first;
+        let mut old: Vec<_> = std::mem::take(&mut tree.children)
+            .into_iter()
+            .map(Some)
+            .collect();
+        tree.children = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(local, widget)| {
+                let row = self.first + local;
+                let mut child = row
+                    .checked_sub(old_first)
+                    .and_then(|index| old.get_mut(index))
+                    .and_then(Option::take)
+                    .unwrap_or_else(|| Tree::new(widget));
+                child.diff(widget);
+                child
+            })
+            .collect();
+        state.first = self.first;
     }
 
     fn layout(
@@ -474,7 +509,7 @@ mod tests {
         let make = |range: Range<usize>| {
             let rows: Vec<Element<'static, ()>> = range
                 .clone()
-                .map(|row| iced::widget::text(format!("row {row}")).into())
+                .map(|row| iced::widget::button(iced::widget::text(format!("row {row}"))).into())
                 .collect();
             VisibleRows::new(
                 range,
@@ -492,6 +527,24 @@ mod tests {
         let first = make(0..22);
         let mut tree = Tree::new(&first as &dyn Widget<(), Theme, iced::Renderer>);
         assert_eq!(tree.children.len(), 22);
+        let retained = match &tree.children[5].state {
+            iced::advanced::widget::tree::State::Some(state) => {
+                &**state as *const dyn std::any::Any as *const ()
+            }
+            _ => panic!("button row should own state"),
+        };
+        let shifted = make(1..23);
+        tree.diff(&shifted as &dyn Widget<(), Theme, iced::Renderer>);
+        let moved = match &tree.children[4].state {
+            iced::advanced::widget::tree::State::Some(state) => {
+                &**state as *const dyn std::any::Any as *const ()
+            }
+            _ => panic!("button row should keep state"),
+        };
+        assert_eq!(
+            retained, moved,
+            "scrolling must retain the overlapping row state"
+        );
         let far = make(190..200);
         tree.diff(&far as &dyn Widget<(), Theme, iced::Renderer>);
         assert_eq!(tree.children.len(), 10);

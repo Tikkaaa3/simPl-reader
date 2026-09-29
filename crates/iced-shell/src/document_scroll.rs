@@ -1,5 +1,7 @@
 //! Keep Iced's scrolling/virtualization and middle-button autoscroll, but provide
 //! a usable vertical thumb even when the document contains thousands of pages.
+//! Ctrl+wheel (also how Windows delivers touchpad pinch) zooms instead of scrolling.
+//! Dragging a selection towards or past the top or bottom edge scrolls the document.
 use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, Scrollable as ScrollState};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget};
 use iced::{Border, Element, Event, Length, Point, Rectangle, Size, Vector};
@@ -9,11 +11,21 @@ use crate::ui;
 const RAIL_WIDTH: f32 = 14.0;
 const THUMB_WIDTH: f32 = 8.0;
 const MIN_THUMB: f32 = 40.0;
+/// Pixel scroll deltas (precision touchpads) per wheel notch.
+const PIXELS_PER_NOTCH: f32 = 50.0;
+/// Distance from the top or bottom edge where a selection drag starts scrolling.
+const EDGE: f32 = 32.0;
+/// Scroll speed, in DIP per second, for each DIP the pointer is past `EDGE`.
+const EDGE_ACCELERATION: f32 = 18.0;
+const MAX_EDGE_SPEED: f32 = 3000.0;
 
+/// `zoom` receives Ctrl+wheel movement in notches; positive values zoom in.
 pub fn wrap<'a, Message: 'a>(
+    zoom: impl Fn(f32) -> Message + 'a,
     scrollable: iced::widget::Scrollable<'a, Message>,
 ) -> Element<'a, Message> {
     Element::new(DocumentScroll {
+        zoom: Box::new(zoom),
         content: scrollable
             .auto_scroll(true)
             .style(|theme, status| {
@@ -37,7 +49,16 @@ pub fn wrap<'a, Message: 'a>(
 }
 
 struct DocumentScroll<'a, Message> {
+    zoom: Box<dyn Fn(f32) -> Message + 'a>,
     content: Element<'a, Message>,
+}
+
+/// Whether Ctrl is held. Precision touchpads report pinch as wheel input with a
+/// synthetic Ctrl that is not always delivered as a keyboard event.
+fn control_pressed(modifiers: iced::keyboard::Modifiers) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+    // SAFETY: GetKeyState reads this thread's keyboard state; it has no preconditions.
+    modifiers.control() || unsafe { GetKeyState(i32::from(VK_CONTROL)) } < 0
 }
 
 #[derive(Clone, Copy, Default)]
@@ -80,6 +101,38 @@ impl Geometry {
         })
     }
 
+    /// The document area, excluding the vertical rail and horizontal scrollbar.
+    fn content_area(self) -> Rectangle {
+        let bottom = if self.content.width > self.viewport.width {
+            RAIL_WIDTH
+        } else {
+            0.0
+        };
+        Rectangle {
+            width: (self.viewport.width - RAIL_WIDTH).max(0.0),
+            height: (self.viewport.height - bottom).max(0.0),
+            ..self.viewport
+        }
+    }
+
+    /// Vertical scroll speed for a selection drag with the pointer at `y`.
+    fn edge_speed(self, y: f32) -> f32 {
+        if self.content.height <= self.viewport.height {
+            return 0.0;
+        }
+        let area = self.content_area();
+        let top = area.y + EDGE;
+        let bottom = area.y + area.height - EDGE;
+        let past = if y < top {
+            y - top
+        } else if y > bottom {
+            y - bottom
+        } else {
+            return 0.0;
+        };
+        (past * EDGE_ACCELERATION).clamp(-MAX_EDGE_SPEED, MAX_EDGE_SPEED)
+    }
+
     fn drag_offset(self, pointer_y: f32, grabbed_at: f32) -> f32 {
         let (Some(rail), Some(thumb)) = (self.rail(), self.thumb()) else {
             return 0.0;
@@ -99,6 +152,11 @@ struct State {
     grabbed_at: Option<f32>,
     hovered: bool,
     auto_scroll_origin: Option<Point>,
+    modifiers: iced::keyboard::Modifiers,
+    /// A left-button drag that started in the document (a text selection).
+    selecting: bool,
+    pointer: Option<Point>,
+    last_tick: Option<std::time::Instant>,
 }
 
 // The wrapped widget is the document scrollable itself. Do not traverse into
@@ -208,6 +266,98 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
             shell.request_redraw();
         }
         let was_auto_scrolling = state.auto_scroll_origin.is_some();
+        if let Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) = event {
+            state.modifiers = *modifiers;
+        }
+        if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
+            && cursor.is_over(layout.bounds())
+            && control_pressed(state.modifiers)
+        {
+            let notches = match delta {
+                mouse::ScrollDelta::Lines { y, .. } => *y,
+                mouse::ScrollDelta::Pixels { y, .. } => *y / PIXELS_PER_NOTCH,
+            };
+            if notches != 0.0 {
+                shell.publish((self.zoom)(notches));
+            }
+            shell.capture_event();
+            return;
+        }
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                state.pointer = cursor.position();
+                state.selecting = !over_rail
+                    && state
+                        .pointer
+                        .is_some_and(|p| state.geometry.content_area().contains(p));
+                state.last_tick = None;
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Window(iced::window::Event::Unfocused) => state.selecting = false,
+            Event::Mouse(mouse::Event::CursorMoved { position }) if state.selecting => {
+                state.pointer = Some(*position);
+                if state.geometry.edge_speed(position.y) != 0.0 {
+                    shell.request_redraw();
+                }
+            }
+            _ => {}
+        }
+        if let Event::Window(iced::window::Event::RedrawRequested(now)) = event
+            && state.selecting
+            && let Some(pointer) = state.pointer
+        {
+            let speed = state.geometry.edge_speed(pointer.y);
+            let elapsed = state.last_tick.map_or(1.0 / 60.0, |last| {
+                now.duration_since(last).as_secs_f32().min(0.05)
+            });
+            state.last_tick = (speed != 0.0).then_some(*now);
+            let current = state.geometry.offset.y;
+            let target = (current + speed * elapsed).clamp(
+                0.0,
+                (state.geometry.content.height - state.geometry.viewport.height).max(0.0),
+            );
+            if (target - current).abs() >= 0.5 {
+                let mut probe = Probe {
+                    target_y: Some(target),
+                    ..Probe::default()
+                };
+                self.content.as_widget_mut().operate(
+                    &mut tree.children[0],
+                    layout,
+                    renderer,
+                    &mut probe,
+                );
+                state.geometry = probe.geometry;
+                // The pointer may be outside the document or still; extend the
+                // selection to the text now at the nearest visible edge.
+                let area = state.geometry.content_area();
+                let point = Point::new(
+                    pointer
+                        .x
+                        .clamp(area.x + 1.0, (area.x + area.width - 1.0).max(area.x + 1.0)),
+                    pointer
+                        .y
+                        .clamp(area.y + 1.0, (area.y + area.height - 1.0).max(area.y + 1.0)),
+                );
+                self.content.as_widget_mut().update(
+                    &mut tree.children[0],
+                    &Event::Mouse(mouse::Event::CursorMoved { position: point }),
+                    layout,
+                    mouse::Cursor::Available(point),
+                    renderer,
+                    clipboard,
+                    shell,
+                    viewport,
+                );
+            }
+            if speed != 0.0 {
+                // A redraw requested while handling a redraw can be dropped on
+                // Windows; a timed request wakes the event loop reliably.
+                shell.request_redraw_at(iced::window::RedrawRequest::At(
+                    *now + std::time::Duration::from_millis(16),
+                ));
+            }
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle))
                 if !was_auto_scrolling && cursor.is_over(layout.bounds()) =>

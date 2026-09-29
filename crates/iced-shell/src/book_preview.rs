@@ -402,7 +402,12 @@ fn render(reader: &mut Reader, output: &Path) {
                 .as_widget_mut()
                 .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
         drop(element);
-        if reader.measured_layout.is_some() {
+        if reader.measured_layout.is_some()
+            && !reader
+                .book
+                .as_ref()
+                .is_some_and(|book| book.pdf_source.is_some())
+        {
             assert!(
                 reader
                     .measurements
@@ -908,6 +913,37 @@ fn render_pdf_book_previews() {
     origin.page = page;
     let book =
         Arc::new(complete(load_pdf_book(document.clone(), origin.clone(), 20.0, true)).unwrap());
+    if document
+        .path
+        .file_name()
+        .is_some_and(|name| name == "layout.pdf")
+    {
+        let entry = book
+            .items
+            .iter()
+            .position(|item| {
+                book.structure.get(item.id()).is_some_and(|semantics| {
+                    semantics.links.iter().any(|link| link.href == "pdf-page:2")
+                })
+            })
+            .expect("Contents link reached Book semantics");
+        let mut reading = Reader {
+            book: Some(book.clone()),
+            window_size: Size::new(1280.0, 800.0),
+            ..Reader::default()
+        };
+        let _ = reading.rebuild_geometry(Anchor {
+            row: entry,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reading);
+        let _ = reading.follow_link("pdf-page:2".into());
+        settle_pagination(&mut reading);
+        assert_eq!(reading.pdf_return_position().unwrap().page, 2);
+        let _ = reading.go_back();
+        settle_pagination(&mut reading);
+        assert_eq!(reading.pdf_return_position().unwrap().page, 1);
+    }
     if let Some(store) = std::env::var_os("SIMPL_PREVIEW_STORE") {
         assert_eq!(
             std::env::var_os("LOCALAPPDATA"),
@@ -1024,6 +1060,50 @@ fn render_pdf_book_previews() {
         .iter()
         .position(|b| b.sources[0].page >= page)
         .unwrap_or(0);
+    if std::env::var_os("SIMPL_SCROLL_PROBE").is_some() {
+        let mut reading = Reader {
+            book: Some(book.clone()),
+            window_size: Size::new(1280.0, 800.0),
+            ..Reader::default()
+        };
+        let _ = reading.rebuild_geometry(Anchor { row, fraction: 0.0 });
+        settle_pagination(&mut reading);
+        let sheet = reading.active_page().unwrap();
+        let size = reading.window_size;
+        let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+        let mut element = view(&reading);
+        let mut tree = Tree::new(&element);
+        let _ =
+            element
+                .as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        drop(element);
+        let mut reused = std::time::Duration::ZERO;
+        let mut fresh = std::time::Duration::ZERO;
+        for step in 1..=12 {
+            reading.offset = sheet.top + (step as f32 * 20.0).min((sheet.height - 800.0).max(0.0));
+            let mut element = view(&reading);
+            let start = std::time::Instant::now();
+            tree.diff(&element);
+            let _ = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(size, size),
+            );
+            reused += start.elapsed();
+            let start = std::time::Instant::now();
+            let mut new_tree = Tree::new(&element);
+            let _ = element.as_widget_mut().layout(
+                &mut new_tree,
+                &renderer,
+                &layout::Limits::new(size, size),
+            );
+            fresh += start.elapsed();
+            drop(element);
+            let _ = reading.refine_geometry();
+        }
+        println!("PDF Book 12 scroll layouts: retained state {reused:?}, fresh state {fresh:?}");
+    }
     for (appearance, label) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
         for (width, font, name) in [
             (1280.0, 20.0, "wide"),
@@ -1033,6 +1113,11 @@ fn render_pdf_book_previews() {
             let mut reader = Reader {
                 book: Some(book.clone()),
                 appearance,
+                window_controls: if std::env::var_os("SIMPL_PREVIEW_WINDOWS").is_some() {
+                    WindowControls::Windows
+                } else {
+                    WindowControls::Mac
+                },
                 zoom: font / DEFAULT_FONT_SIZE,
                 window_size: Size::new(width, 800.0),
                 focused: Some(Control::DocumentMode),

@@ -1,8 +1,8 @@
 //! Disposable, versioned reconstruction cache keyed by the source file's SHA-256.
-use crate::book::{Conversion, VERSION};
+use crate::book::{BlockLayout, Conversion, VERSION};
 use std::{fs, io::Read, path::PathBuf};
 
-const MAX_CACHE: u64 = 64 * 1024 * 1024;
+const MAX_CACHE: u64 = 256 * 1024 * 1024;
 
 fn path(key: &str) -> Option<PathBuf> {
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -31,12 +31,50 @@ pub(crate) fn load(key: &str, pages: usize) -> Option<Conversion> {
 }
 
 fn valid(book: &Conversion, pages: usize) -> bool {
-    if pages == 0 || pages > crate::book::MAX_PAGES || book.blocks.len() > 100_000 {
+    if pages == 0 || pages > crate::book::MAX_PAGES || book.blocks.len() > 1_000_000 {
         return false;
     }
     let mut represented = vec![false; pages];
     for block in &book.blocks {
-        if block.sources.is_empty() {
+        if block.sources.is_empty()
+            || !block.size_ratio.is_finite()
+            || block.size_ratio <= 0.0
+            || !block.top_gap.is_finite()
+            || !(0.0..=1.0).contains(&block.top_gap)
+            || !match block.layout {
+                BlockLayout::Flow | BlockLayout::Centered | BlockLayout::Right => true,
+                BlockLayout::List { indent } | BlockLayout::Inset { indent } => {
+                    indent.is_finite() && (0.0..=1.0).contains(&indent)
+                }
+                BlockLayout::Toc {
+                    number_start,
+                    indent,
+                } => {
+                    number_start > 0
+                        && number_start < block.text.len()
+                        && block.text.is_char_boundary(number_start)
+                        && indent.is_finite()
+                        && (0.0..=1.0).contains(&indent)
+                }
+            }
+            || !block.styles.iter().all(|style| {
+                style.start < style.end
+                    && style.end <= block.text.len()
+                    && block.text.is_char_boundary(style.start)
+                    && block.text.is_char_boundary(style.end)
+            })
+            || !block.links.iter().all(|link| {
+                link.start < link.end
+                    && link.end <= block.text.len()
+                    && block.text.is_char_boundary(link.start)
+                    && block.text.is_char_boundary(link.end)
+                    && link
+                        .href
+                        .strip_prefix("pdf-page:")
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .is_some_and(|page| page < pages)
+            })
+        {
             return false;
         }
         for source in &block.sources {
@@ -49,15 +87,32 @@ fn valid(book: &Conversion, pages: usize) -> bool {
             *page = true;
         }
     }
+    let ids: std::collections::HashSet<&str> = book.blocks.iter().map(|b| b.id.as_str()).collect();
     represented.iter().all(|p| *p)
+        && book
+            .fallback_pages
+            .iter()
+            .all(|page| (*page as usize) < pages)
+        && book
+            .page_labels
+            .iter()
+            .all(|(page, label)| (*page as usize) < pages && label.len() <= 256)
         && book.illustrations.iter().all(|(id, rect)| {
-            book.blocks.iter().any(|b| &b.id == id)
+            ids.contains(id.as_str())
                 && rect.left >= 0.0
                 && rect.top >= 0.0
                 && rect.right <= 1.0
                 && rect.bottom <= 1.0
                 && rect.left < rect.right
                 && rect.top < rect.bottom
+        })
+        && book.placements.iter().all(|(id, placement)| {
+            ids.contains(id.as_str())
+                && placement.offset.is_finite()
+                && placement.width.is_finite()
+                && (0.0..=1.0).contains(&placement.offset)
+                && (0.0..=1.0).contains(&placement.width)
+                && placement.offset + placement.width <= 1.001
         })
 }
 

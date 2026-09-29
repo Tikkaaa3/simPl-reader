@@ -28,6 +28,9 @@ against the active document/generation so stale work cannot replace a newer view
   page; previous/next and the global page field change the page.
 - PDF Book preserves source page counts and boundaries. Explicit view switches
   use the current page; reopening restores the saved Book position.
+- Its page atlas starts from inexpensive height estimates and corrects the
+  visible rows with native layout as the reader moves. Scrolling retains the
+  layout state of rows that remain visible.
 - EPUB/HTML use source page markers when available, otherwise a canonical first
   layout. Window resizing and zoom do not change those saved boundaries.
 - The toolbar collapses to zero height. F8 and the title-bar control restore it;
@@ -84,13 +87,22 @@ native focus, DPI behavior or displayed-frame timing.
 ## PDF Book conversion and QA
 
 The converter reconstructs prose and headings from the existing text layer.
-Full-page scan analysis masks OCR glyphs and locates illustration regions;
-only active-page illustrations are rasterized at reading resolution. Prose is
-not replaced by a screenshot. There is no OCR engine. Ambiguous multi-column or
-unreliable text retains its source slot with a Document-view explanation.
-Extraction restrictions are respected.
+It retains relative heading size, bold and italic runs, centered titles,
+numbered entries, Contents indentation and right-aligned folios. Same-document
+PDF links in reconstructed text jump to their source page. Printed Roman or
+Arabic footers become page labels when supported by the PDF label or a sequence.
+Two-column pages (dictionaries, encyclopedias) are read left column first; in
+columns, extra leading between lines also separates entries. Full-page scan
+analysis masks OCR glyphs and locates illustration regions. Scans are only
+rasterized for this when their text leaves room for an illustration inside the
+book's usual text block. Illustrations keep their width and horizontal position
+relative to that text block (or their column). Only active-page illustrations are
+rasterized at reading resolution. Ordinary prose remains selectable. There is
+no OCR engine. Complex tables, ambiguous multi-column layouts and unreliable
+text use the original page image in their source slot; text on those pages is
+selectable in Document mode. Extraction restrictions are respected.
 
-Conversion limits are 2,000 pages, 16 MiB of extracted UTF-8 text and 100,000 source
+Conversion limits are 5,000 pages, 64 MiB of extracted UTF-8 text and 1,000,000 source
 lines. Cancellation is checked between pages and during reconstruction. Source
 anchors contain converter version, page and original byte offset; older versions
 migrate through the source page. PDF atlas caches also carry converter version.

@@ -264,6 +264,9 @@ pub struct SelectableParagraphConfig {
     pub logical_text: String,
     /// Existing reader adapter text/style mapping.
     pub mapped: crate::reader::MappedParagraph,
+    /// Byte offset of this visual segment in the complete logical item.
+    pub item_offset: usize,
+    pub alignment: iced::advanced::text::Alignment,
     /// Shared recipe font size.
     pub font_size: f32,
     /// Shared recipe line height.
@@ -290,6 +293,8 @@ pub fn selectable_text<Message: 'static>(
         item_id,
         logical_text,
         mapped,
+        item_offset,
+        alignment,
         font_size,
         line_height,
         selection,
@@ -300,26 +305,39 @@ pub fn selectable_text<Message: 'static>(
     } = config;
     let leading_rlm = mapped.text.starts_with(LEADING_RLM)
         && mapped.text.strip_prefix(LEADING_RLM) == Some(logical_text.as_str());
-    let selection = selection.filter(|range| {
-        range.start <= range.end
-            && range.end <= logical_text.len()
-            && is_grapheme_boundary(&logical_text, range.start)
-            && is_grapheme_boundary(&logical_text, range.end)
+    let selection = selection.and_then(|range| {
+        let start = range.start.max(item_offset).checked_sub(item_offset)?;
+        let end = range
+            .end
+            .min(item_offset + logical_text.len())
+            .checked_sub(item_offset)?;
+        (start < end
+            && is_grapheme_boundary(&logical_text, start)
+            && is_grapheme_boundary(&logical_text, end))
+        .then_some(start..end)
     });
     let mapped_selection = selection.as_ref().map(|range| {
         let prefix = usize::from(leading_rlm) * LEADING_RLM.len();
         range.start + prefix..range.end + prefix
     });
-    links.retain(|link| {
+    links.retain_mut(|link| {
+        if link.start_byte < item_offset || link.end_byte > item_offset + logical_text.len() {
+            return false;
+        }
+        link.start_byte -= item_offset;
+        link.end_byte -= item_offset;
         link.start_byte < link.end_byte
-            && link.end_byte <= logical_text.len()
             && logical_text.is_char_boundary(link.start_byte)
             && logical_text.is_char_boundary(link.end_byte)
     });
-    let spans = mapped_span_keys(&mapped, selection, leading_rlm);
+    // Shaping ignores the selection, so dragging never reshapes the paragraph;
+    // the highlight is drawn separately from the native glyph bounds.
+    let spans = mapped_span_keys(&mapped, None, leading_rlm);
     iced::Element::new(SelectableParagraph {
         item_id,
         logical_text,
+        item_offset,
+        alignment,
         mapped_text: mapped.text,
         leading_rlm,
         mapped_selection,
@@ -394,6 +412,25 @@ fn mapped_span_keys(
     result
 }
 
+/// Joins touching glyph rectangles on one line, so a highlight is drawn as a
+/// few quads per line rather than one per glyph (costly for CPU rendering).
+fn merge_lines(mut glyphs: Vec<iced::Rectangle>) -> Vec<iced::Rectangle> {
+    glyphs.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    let mut lines: Vec<iced::Rectangle> = Vec::new();
+    for glyph in glyphs {
+        if let Some(last) = lines.last_mut()
+            && (last.y - glyph.y).abs() < 0.5
+            && (last.height - glyph.height).abs() < 0.5
+            && glyph.x <= last.x + last.width + 0.5
+        {
+            last.width = (glyph.x + glyph.width).max(last.x + last.width) - last.x;
+        } else {
+            lines.push(glyph);
+        }
+    }
+    lines
+}
+
 fn selected_glyph_bounds(
     paragraph: &NativeParagraph,
     selection: Option<&Range<usize>>,
@@ -461,11 +498,15 @@ struct ParagraphState {
     item_id: String,
     link_press: Option<(usize, iced::Point)>,
     link_dragged: bool,
+    /// Last endpoint reported during a drag; unchanged hits are not re-sent.
+    last_move: Option<Endpoint>,
 }
 
 struct SelectableParagraph<Message> {
     item_id: String,
     logical_text: String,
+    item_offset: usize,
+    alignment: iced::advanced::text::Alignment,
     mapped_text: String,
     leading_rlm: bool,
     mapped_selection: Option<Range<usize>>,
@@ -485,24 +526,10 @@ impl<Message> SelectableParagraph<Message> {
     fn link_bounds(&self, state: &ParagraphState, index: usize) -> Vec<iced::Rectangle> {
         let link = &self.links[index];
         let prefix = usize::from(self.leading_rlm) * LEADING_RLM.len();
-        let mut glyphs = selected_glyph_bounds(
+        merge_lines(selected_glyph_bounds(
             &state.paragraph,
             Some(&(link.start_byte + prefix..link.end_byte + prefix)),
-        );
-        glyphs.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
-        let mut lines: Vec<iced::Rectangle> = Vec::new();
-        for glyph in glyphs {
-            if let Some(last) = lines.last_mut()
-                && (last.y - glyph.y).abs() < 0.5
-                && (last.height - glyph.height).abs() < 0.5
-                && glyph.x <= last.x + last.width + 0.5
-            {
-                last.width = (glyph.x + glyph.width).max(last.x + last.width) - last.x;
-            } else {
-                lines.push(glyph);
-            }
-        }
-        lines
+        ))
     }
     fn link_at(&self, state: &ParagraphState, point: iced::Point) -> Option<usize> {
         self.links.iter().enumerate().find_map(|(index, _)| {
@@ -518,7 +545,17 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
     for SelectableParagraph<Message>
 {
     fn size(&self) -> iced::Size<iced::Length> {
-        iced::Size::new(iced::Length::Fill, iced::Length::Shrink)
+        iced::Size::new(
+            if matches!(
+                self.alignment,
+                iced::advanced::text::Alignment::Center | iced::advanced::text::Alignment::Right
+            ) {
+                iced::Length::Shrink
+            } else {
+                iced::Length::Fill
+            },
+            iced::Length::Shrink,
+        )
     }
 
     fn tag(&self) -> tree::Tag {
@@ -532,6 +569,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
             item_id: String::new(),
             link_press: None,
             link_dragged: false,
+            last_move: None,
         })
     }
 
@@ -561,7 +599,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         };
 
         let limits = layout::Limits::new(iced::Size::ZERO, bounds);
-        layout::sized(&limits, iced::Length::Fill, iced::Length::Shrink, |_| {
+        layout::sized(&limits, self.size().width, iced::Length::Shrink, |_| {
             if state.spans != self.spans {
                 state.paragraph = NativeParagraph::with_spans(text);
                 state.spans.clone_from(&self.spans);
@@ -607,7 +645,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         }
         let state = tree.state.downcast_ref::<ParagraphState>();
         let translation = layout.position() - iced::Point::ORIGIN;
-        for bounds in selected_glyph_bounds(&state.paragraph, self.mapped_selection.as_ref()) {
+        for bounds in merge_lines(selected_glyph_bounds(
+            &state.paragraph,
+            self.mapped_selection.as_ref(),
+        )) {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: bounds + translation,
@@ -665,13 +706,12 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         shell: &mut iced::advanced::Shell<'_, Message>,
         viewport: &iced::Rectangle,
     ) {
-        let hit = || {
+        let hit = |state: &ParagraphState| {
             let point = cursor.position()?;
             if !viewport.contains(point) {
                 return None;
             }
             let position = cursor.position_in(layout.bounds())?;
-            let state = tree.state.downcast_ref::<ParagraphState>();
             let native_offset = state.paragraph.hit_test(position)?.cursor();
             project_native_hit(
                 &self.item_id,
@@ -680,8 +720,11 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                 native_offset,
                 self.leading_rlm,
             )
+            .map(|mut endpoint| {
+                endpoint.byte_offset += self.item_offset;
+                endpoint
+            })
         };
-        let endpoint = hit();
         let point = cursor
             .position_in(layout.bounds())
             .filter(|_| cursor.position().is_some_and(|p| viewport.contains(p)));
@@ -691,7 +734,8 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                 state.link_press =
                     point.and_then(|point| self.link_at(state, point).map(|index| (index, point)));
                 state.link_dragged = false;
-                if let Some(endpoint) = endpoint {
+                state.last_move = None;
+                if let Some(endpoint) = hit(state) {
                     shell.publish((self.on_press)(endpoint));
                     shell.capture_event();
                 }
@@ -705,7 +749,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                         .is_none_or(|point| point.distance(start) > 4.0);
                     state.link_dragged |= moved;
                 }
-                if let Some(endpoint) = endpoint {
+                if let Some(endpoint) = hit(state)
+                    && state.last_move.as_ref() != Some(&endpoint)
+                {
+                    state.last_move = Some(endpoint.clone());
                     shell.publish((self.on_move)(endpoint, *position));
                 }
             }
@@ -816,6 +863,8 @@ mod tests {
                         style_runs,
                     )
                     .unwrap(),
+                    item_offset: 0,
+                    alignment: iced::advanced::text::Alignment::Default,
                     font_size: 20.0,
                     line_height: 32.0,
                     selection: None,
@@ -988,6 +1037,8 @@ mod tests {
                     item_id: "p".into(),
                     logical_text: source.into(),
                     mapped: crate::reader::map_document_paragraph(source, direction, &[]).unwrap(),
+                    item_offset: 0,
+                    alignment: iced::advanced::text::Alignment::Default,
                     font_size: 20.0,
                     line_height: 32.0,
                     selection: None,

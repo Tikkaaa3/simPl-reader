@@ -33,11 +33,30 @@ impl Appearance {
     }
 }
 
+/// Placement and style of the minimize, maximize and close buttons.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowControls {
+    /// Round buttons at the left of the title bar.
+    #[default]
+    Mac,
+    /// Minimize, maximize and close glyphs at the right of the title bar.
+    Windows,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Preferences {
+    pub appearance: Appearance,
+    pub window_controls: WindowControls,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Record {
     version: u32,
     #[serde(default)]
     appearance: Appearance,
+    #[serde(default)]
+    window_controls: WindowControls,
 }
 
 fn path() -> PathBuf {
@@ -48,46 +67,50 @@ fn path() -> PathBuf {
         .join("simPl/preferences.json")
 }
 
-pub fn load() -> Result<Appearance, String> {
+pub fn load() -> Result<Preferences, String> {
     load_from(&path())
 }
 
-pub fn save(appearance: Appearance) -> Result<(), String> {
-    save_to(&path(), appearance)
+pub fn save(preferences: Preferences) -> Result<(), String> {
+    save_to(&path(), preferences)
 }
 
-fn load_from(path: &Path) -> Result<Appearance, String> {
+fn load_from(path: &Path) -> Result<Preferences, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Appearance::default());
+            return Ok(Preferences::default());
         }
-        Err(error) => return Err(format!("Cannot open appearance preferences: {error}")),
+        Err(error) => return Err(format!("Cannot open preferences: {error}")),
     };
     let mut bytes = Vec::new();
     file.take(MAX_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("Cannot read appearance preferences: {error}"))?;
+        .map_err(|error| format!("Cannot read preferences: {error}"))?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("Appearance preferences exceed size limit".into());
+        return Err("Preferences exceed size limit".into());
     }
-    let record: Record = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Invalid appearance preferences: {error}"))?;
+    let record: Record =
+        serde_json::from_slice(&bytes).map_err(|error| format!("Invalid preferences: {error}"))?;
     if record.version != VERSION {
         return Err(format!(
             "Unsupported preferences version {}",
             record.version
         ));
     }
-    Ok(record.appearance)
+    Ok(Preferences {
+        appearance: record.appearance,
+        window_controls: record.window_controls,
+    })
 }
 
-fn save_to(path: &Path, appearance: Appearance) -> Result<(), String> {
+fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
     let bytes = serde_json::to_vec(&Record {
         version: VERSION,
-        appearance,
+        appearance: preferences.appearance,
+        window_controls: preferences.window_controls,
     })
-    .map_err(|error| format!("Cannot encode appearance preferences: {error}"))?;
+    .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
 }
 
@@ -112,10 +135,16 @@ mod tests {
     #[test]
     fn missing_preferences_default_to_light_and_saved_choices_round_trip() {
         let path = test_path();
-        assert_eq!(load_from(&path).unwrap(), Appearance::Light);
+        assert_eq!(load_from(&path).unwrap(), Preferences::default());
         for appearance in [Appearance::Dark, Appearance::Light] {
-            save_to(&path, appearance).unwrap();
-            assert_eq!(load_from(&path).unwrap(), appearance);
+            for window_controls in [WindowControls::Windows, WindowControls::Mac] {
+                let preferences = Preferences {
+                    appearance,
+                    window_controls,
+                };
+                save_to(&path, preferences).unwrap();
+                assert_eq!(load_from(&path).unwrap(), preferences);
+            }
         }
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -126,7 +155,15 @@ mod tests {
         let path = test_path();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, br#"{"version":1}"#).unwrap();
-        assert_eq!(load_from(&path).unwrap(), Appearance::Light);
+        assert_eq!(load_from(&path).unwrap(), Preferences::default());
+        fs::write(&path, br#"{"version":1,"appearance":"dark"}"#).unwrap();
+        assert_eq!(
+            load_from(&path).unwrap(),
+            Preferences {
+                appearance: Appearance::Dark,
+                window_controls: WindowControls::Mac,
+            }
+        );
         for bytes in [
             b"broken".to_vec(),
             br#"{"version":2,"appearance":"dark"}"#.to_vec(),

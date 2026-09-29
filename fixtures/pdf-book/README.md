@@ -1,6 +1,6 @@
 # PDF Book regression inputs
 
-`build_fixtures.py` authors four QA PDFs under `target/book-milestone3/fixtures/`.
+`build_fixtures.py` authors five QA PDFs under `target/book-milestone3/fixtures/`.
 They are diagnostic inputs, not application assets.
 
 ```powershell
@@ -15,6 +15,7 @@ python -m venv target\pdf-book-fixture-env
 | `columns.pdf` | Ambiguous column order retains the page slot with a Document-view explanation. The source PDF remains readable. |
 | `scanned.pdf` | The illustration is retained; no OCR text is invented. |
 | `restricted.pdf` | Opens without a password, but extraction permission is denied and Book conversion fails. |
+| `layout.pdf` | Centered title, Contents rows with a same-document link, bold/italic numbered entries, Roman printed and PDF page labels, and a complex table page using original-page fallback. |
 
 See the [developer guide](../../crates/iced-shell/README.md#pdf-book-conversion-and-qa)
 for native rendering and isolated persistence checks. Permission-denial checks use
