@@ -2,7 +2,7 @@
 
 **A quiet place for your books.**
 
-A native, offline reader for **PDF, EPUB and HTML**, built with Rust for Windows x64.
+A native, offline reader for **PDF, EPUB, HTML, text and Markdown**, built with Rust for Windows x64.
 Keep a local library, pick up where you stopped, and read in a minimal interface
 with light and dark themes.
 
@@ -66,6 +66,7 @@ Windows profile rather than beside the executable.
 | **PDF · Book** | Reconstructed text in simPl's reading style, with extracted illustrations and the original source-page count. Switching back to Document keeps the current page. |
 | **EPUB** | Reflowable EPUB 2/3, contents navigation, internal links and footnotes. Publisher page lists are used when available. |
 | **HTML** | Local UTF-8 HTML/XHTML, supported document structure and local images. HTML book folders can also be imported; scripts and remote resources are not executed or fetched. |
+| **TXT · Markdown** | `.txt`, `.md` and `.markdown` files are converted to a private HTML page when imported, then read like HTML. Encodings: UTF-8, UTF-16 with a byte-order mark, or the Windows ANSI code page. Markdown supports headings, emphasis, lists, tables, code, footnotes and local images; the shelf lists them as HTML. |
 
 When EPUB or HTML has no source page list, simPl creates a fixed page map on its
 first preparation. The **− / +** controls zoom that map; they do not repaginate it.
@@ -77,11 +78,20 @@ of a large scanned PDF with an existing text layer can take time. Converted cont
 and illustration regions are cached for subsequent view switches and reopenings.
 Blank source pages remain blank.
 
+Select text to choose a highlight color or add a note. Right-click a saved
+highlight to change its color, edit its note or remove it. Same-color overlapping
+highlights merge without darkening; different colors can overlap. Right-click a
+page to bookmark it. The bookmarks and notes sidebar opens from the arrow at
+the right edge or with Ctrl+B. Click a note in the sidebar to read its full text;
+long notes scroll within the list.
+Bookmarks and highlights are stored per book under
+`%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
+
 ## Library and local data
 
 **Add Document** and file drops copy documents into
 `%LOCALAPPDATA%\simPl\documents\`. Reading positions, library metadata, preferences,
-cover thumbnails and disposable conversion/page caches also stay under
+cover thumbnails, bookmarks, highlights, notes and disposable conversion/page caches also stay under
 `%LOCALAPPDATA%\simPl\`.
 
 Hover a library card to favourite or remove it. Favourites appear in their own
@@ -108,6 +118,9 @@ access to obtain dependencies and the pinned PDF runtime.
 | **Ctrl+T** in EPUB | Open contents |
 | **Alt+Left** | Return from an internal link |
 | **Ctrl+C** | Copy selected text |
+| **Ctrl+H** | Highlight selected text with the last used color |
+| **Ctrl+D** | Add or remove a bookmark on the current page |
+| **Ctrl+B** | Show or hide bookmarks, highlights and notes |
 | **F8** | Hide / show the reading toolbar |
 | **Tab / Shift+Tab** | Move between controls |
 | **F1** | Show shortcut help |
@@ -150,7 +163,7 @@ it does not embed a browser or WebView.
 | Component | Responsibility |
 | --- | --- |
 | [`iced-shell`](crates/iced-shell) | Library, reader, native window, selection and page layout |
-| [`reader-document`](crates/reader-document) | HTML/EPUB parsing, managed imports and reading state |
+| [`reader-document`](crates/reader-document) | HTML/EPUB parsing, text and Markdown conversion, managed imports and reading state |
 | [`reader-pdf`](crates/reader-pdf) | PDFium worker, PDF text/graphics and Book conversion |
 | [`reader-workload`](crates/reader-workload) | Authored diagnostic workloads and assets |
 | [`process-measure`](crates/process-measure) | Opt-in process measurements |

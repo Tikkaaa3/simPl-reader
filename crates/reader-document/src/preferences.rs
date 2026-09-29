@@ -173,7 +173,11 @@ mod tests {
             }
         );
         // A newer record with a theme loads, and older readers would ignore the extra field.
-        fs::write(&path, br#"{"version":1,"appearance":"dark","theme":"clear"}"#).unwrap();
+        fs::write(
+            &path,
+            br#"{"version":1,"appearance":"dark","theme":"clear"}"#,
+        )
+        .unwrap();
         assert_eq!(load_from(&path).unwrap().theme, "clear");
         for bytes in [
             b"broken".to_vec(),

@@ -10,7 +10,7 @@ use std::sync::{
 use crate::{
     book_pages,
     book_style::{self, BookStyle, MINIMAL},
-    chrome, find, pdf_reader, shelf, themes, ui,
+    chrome, find, notes, pdf_reader, shelf, themes, ui,
 };
 use iced::keyboard::{self, Key, key};
 use iced::widget::{column, container, image, row, scrollable, text};
@@ -26,6 +26,8 @@ use reader_document::{BaseDirection, Endpoint, Item};
 mod book_map;
 #[path = "book_zoom.rs"]
 mod book_zoom;
+#[path = "notes_ui.rs"]
+mod notes_ui;
 
 const DEFAULT_FONT_SIZE: f32 = MINIMAL.default_size;
 const OVERSCAN: f32 = 600.0;
@@ -342,7 +344,7 @@ fn document_kind(path: &Path) -> Result<DocumentKind, String> {
         Some("pdf") => Ok(DocumentKind::Pdf),
         Some("epub") => Ok(DocumentKind::Epub),
         _ => Err(format!(
-            "Unsupported document format: {}. Open an HTML, XHTML, PDF or EPUB file.",
+            "Unsupported document format: {}. Open an HTML, XHTML, PDF, EPUB, text or Markdown file.",
             path.display()
         )),
     }
@@ -924,8 +926,12 @@ struct Reader {
     pagination_end: bool,
     measured_layout: Option<(f32, f32)>,
     selection: selection::SelectionState,
+    notes: notes::Notes,
+    /// Last known pointer position in window coordinates.
+    pointer: iced::Point,
     saving: bool,
     failed_close: Option<CloseAction>,
+    pending_notes_close: Option<CloseAction>,
     window: Option<window::Id>,
 }
 
@@ -1007,8 +1013,11 @@ impl Default for Reader {
             pagination_end: false,
             measured_layout: None,
             selection: Default::default(),
+            notes: Default::default(),
+            pointer: iced::Point::ORIGIN,
             saving: false,
             failed_close: None,
+            pending_notes_close: None,
             window: None,
         }
     }
@@ -1063,6 +1072,7 @@ enum Control {
     LocateRecent(usize),
     RemoveRecent(usize),
     HideHelp,
+    Notes(notes::Focus),
 }
 
 #[derive(Clone, Debug)]
@@ -1152,6 +1162,26 @@ enum Message {
     Back,
     SelectStart(Endpoint),
     SelectMove(Endpoint),
+    /// Right click on text of a reflowed book.
+    Context(Endpoint),
+    /// Right click on the page but not on text.
+    ContextBlank,
+    Notes(notes::Action),
+    NotesLoaded {
+        fingerprint: String,
+        result: Result<reader_document::annotations::Annotations, String>,
+    },
+    NotesSaved(Result<(), String>),
+    /// The text of a PDF selection, read so it can be saved with its highlight.
+    PdfHighlightText {
+        document: u64,
+        from: reader_document::annotations::PdfPoint,
+        to: reader_document::annotations::PdfPoint,
+        merge_ids: Vec<u64>,
+        color: reader_document::annotations::HighlightColor,
+        then_note: bool,
+        result: Result<String, String>,
+    },
     Copy,
     LayoutReady(u64),
     Scroll {
@@ -1358,18 +1388,7 @@ impl Reader {
         let Some((section, page)) = atlas.target(&value) else {
             return Task::none();
         };
-        let Some(book) = &self.book else {
-            return Task::none();
-        };
-        if book.epub.as_ref().is_some_and(|c| c.index != section) {
-            let fingerprint = book.fingerprint.clone();
-            let task = self.navigate(Some(section), None, None, Navigation::Preserve);
-            if self.opening.is_some() {
-                self.pending_page = Some((fingerprint, section, page));
-            }
-            return task;
-        }
-        self.go_to_local_page(page)
+        self.go_to_atlas_page(section, page)
     }
 
     fn go_to_local_page(&mut self, page: usize) -> Task<Message> {
@@ -1870,6 +1889,7 @@ impl Reader {
             && !self.recent_loading
             && !self.recent_saving
             && !(self.recent_dirty && !self.history_corrupt)
+            && self.notes.settled()
             && !self.shelf.loading
             && !self.shelf.saving
             && !(self.shelf.dirty && !self.shelf.blocked)
@@ -2058,6 +2078,11 @@ impl Reader {
                     .filter(move |_| !overlay),
             )
             .chain(
+                self.notes_controls()
+                    .into_iter()
+                    .filter(move |_| has_document && !overlay),
+            )
+            .chain(
                 self.shelf
                     .controls()
                     .map(Control::Shelf)
@@ -2169,6 +2194,7 @@ impl Reader {
             Control::OpenRecent(index) => Message::OpenRecent(index),
             Control::LocateRecent(index) => Message::LocateRecent(index),
             Control::RemoveRecent(index) => Message::RemoveRecent(index),
+            Control::Notes(focus) => Message::Notes(focus.action()),
         };
         update_inner(self, message)
     }
@@ -2484,11 +2510,26 @@ impl Reader {
 
     fn finish_close(&mut self, action: CloseAction) -> Task<Message> {
         self.failed_close = None;
+        // A note being written is kept, not lost, when the book or window closes.
+        let note = if self.notes.editor.is_some() {
+            self.notes_action(notes::Action::SaveNote)
+        } else {
+            self.persist_notes()
+        };
+        if self.notes.editor.is_some() {
+            return note;
+        }
+        if !self.notes.settled() {
+            self.pending_notes_close = Some(action);
+            return note;
+        }
+        self.pending_notes_close = None;
         match action {
             CloseAction::Window => {
                 if !self.exit_ready() {
                     self.pending_exit = true;
                     Task::batch([
+                        note,
                         self.persist_recent(),
                         self.persist_preferences(),
                         self.shelf.persist().map(Message::Shelf),
@@ -2503,8 +2544,10 @@ impl Reader {
                 self.clear_content();
                 self.reset_find();
                 self.adapted.clear();
+                self.notes.reset(None);
                 self.error = None;
                 Task::batch([
+                    note,
                     self.shelf.persist().map(Message::Shelf),
                     self.shelf.show(true).map(Message::Shelf),
                 ])
@@ -2517,6 +2560,7 @@ impl Reader {
             return Task::none();
         }
         self.failed_close = None;
+        self.notes.failed_save = false;
         self.cancel_open();
         self.selection.end_drag();
         self.show_search = false;
@@ -3483,6 +3527,32 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         });
                     reader.book = Some(book);
                     reader.error = None;
+                    let anchor = if let Some(id) = reader.notes.pending_reveal.take() {
+                        reader.refresh_marks();
+                        match reader.notes.marks.iter().find(|mark| mark.id == id) {
+                            Some(mark) => {
+                                let row = mark.bounds.start_item;
+                                let length = reader
+                                    .book
+                                    .as_ref()
+                                    .and_then(|book| book.items.get(row))
+                                    .and_then(Item::text)
+                                    .map_or(1, |text| text.len().max(1));
+                                Anchor {
+                                    row,
+                                    fraction: (mark.bounds.start_byte as f32 / length as f32)
+                                        .clamp(0.0, 1.0),
+                                }
+                            }
+                            None => {
+                                reader.error =
+                                    Some("This passage was not found in the book any more.".into());
+                                anchor
+                            }
+                        }
+                    } else {
+                        anchor
+                    };
                     reader.selection.clear();
                     if same_document {
                         reader.restore_find_selection();
@@ -3515,11 +3585,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }) => {
                     reader.clear_content();
                     reader.reset_find();
+                    if reader.notes.book.as_deref() != Some(document.fingerprint.as_str()) {
+                        reader.notes.list = None;
+                    }
                     let id = document.id;
                     let (pdf, task) = pdf_reader::Reader::new(
                         document,
                         restored,
-                        reader.window_size,
+                        reader.document_view_size(),
                         reader.scale_factor,
                     );
                     reader.pdf = Some(pdf);
@@ -3528,6 +3601,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     forward_pdf(id, task)
                 }
                 Err(error) => {
+                    reader.notes.pending_reveal = None;
                     reader.missing_recent = relocated.or(recent_open);
                     reader.error = Some(if let Some(entry) = &reader.missing_recent {
                         format!(
@@ -3541,21 +3615,33 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
             };
             reader.capture_progress();
+            let notes_task = reader.sync_notes();
             let has_document = reader.book.is_some() || reader.pdf.is_some();
             Task::batch([
                 content_task,
+                notes_task,
                 history_task,
                 library_task,
                 reader.shelf.show(!has_document).map(Message::Shelf),
             ])
         }
         Message::Pdf { document, message } => {
-            if let Some(pdf) = &mut reader.pdf
-                && pdf.document().id == document
-            {
-                forward_pdf(document, pdf.update(message))
-            } else {
-                Task::none()
+            if reader.pdf.as_ref().map(|pdf| pdf.document().id) != Some(document) {
+                return Task::none();
+            }
+            match &message {
+                pdf_reader::Message::Context(point) => {
+                    reader.context_pdf(*point);
+                    return Task::none();
+                }
+                pdf_reader::Message::SelectStart(point) => {
+                    reader.notes.pressed = reader.pdf.as_ref().and_then(|pdf| pdf.mark_at(*point));
+                }
+                _ => {}
+            }
+            match &mut reader.pdf {
+                Some(pdf) => forward_pdf(document, pdf.update(message)),
+                None => Task::none(),
             }
         }
         Message::EpubChapter { index, fragment } => reader.open_chapter(index, fragment),
@@ -3601,8 +3687,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 return Task::none();
             }
             reader.scale_factor = scale;
+            let view_size = reader.document_view_size();
             if let Some(pdf) = &mut reader.pdf {
-                forward_pdf(pdf.document().id, pdf.resize(reader.window_size, scale))
+                forward_pdf(pdf.document().id, pdf.resize(view_size, scale))
             } else {
                 Task::none()
             }
@@ -3692,9 +3779,48 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.restore_book_scroll()
         }
         Message::SelectStart(endpoint) if reader.interactive() => {
+            reader.notes.pressed = reader
+                .book
+                .as_ref()
+                .and_then(|book| notes::mark_at(&reader.notes.marks, &book.items, &endpoint));
             reader.selection.begin(endpoint);
             Task::none()
         }
+        Message::Context(endpoint) => {
+            reader.context_at(endpoint);
+            Task::none()
+        }
+        Message::ContextBlank => {
+            if reader.book.is_some() {
+                reader.open_popup(notes::Target::Page, true);
+            }
+            Task::none()
+        }
+        Message::Notes(action) => reader.notes_action(action),
+        Message::NotesLoaded {
+            fingerprint,
+            result,
+        } => {
+            reader.notes_loaded(fingerprint, result);
+            Task::none()
+        }
+        Message::NotesSaved(result) => {
+            let task = reader.notes_saved(result);
+            if reader.pending_exit && reader.exit_ready() {
+                iced::exit()
+            } else {
+                task
+            }
+        }
+        Message::PdfHighlightText {
+            document,
+            from,
+            to,
+            merge_ids,
+            color,
+            then_note,
+            result,
+        } => reader.pdf_highlight_text(document, (from, to), merge_ids, color, then_note, result),
         Message::SelectMove(endpoint) if reader.interactive() => {
             reader.selection.extend(endpoint);
             Task::none()
@@ -3738,10 +3864,44 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::CloseWithoutSaving => reader
-            .failed_close
-            .map_or_else(Task::none, |action| reader.finish_close(action)),
+        Message::CloseWithoutSaving => reader.failed_close.map_or_else(Task::none, |action| {
+            reader.notes.discard_failed_save();
+            reader.finish_close(action)
+        }),
         Message::Event(event, id) => {
+            if let iced::Event::Mouse(mouse::Event::CursorMoved { position }) = &event {
+                reader.pointer = *position;
+            }
+            // The note editor is modal: it keeps the keyboard until it is saved or cancelled.
+            if reader.notes.editor.is_some()
+                && let iced::Event::Keyboard(keyboard_event) = &event
+            {
+                if let keyboard::Event::KeyPressed { key, modifiers, .. } = keyboard_event {
+                    match key.as_ref() {
+                        Key::Named(key::Named::Escape) => {
+                            return reader.notes_action(notes::Action::CancelNote);
+                        }
+                        Key::Named(key::Named::Enter) if modifiers.control() => {
+                            return reader.notes_action(notes::Action::SaveNote);
+                        }
+                        _ => {}
+                    }
+                }
+                return Task::none();
+            }
+            // A click anywhere but the menu, or scrolling, puts the menu away.
+            if reader.notes.popup.is_some()
+                && (matches!(
+                    &event,
+                    iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                ) && !reader.popup_contains(reader.pointer)
+                    || matches!(
+                        &event,
+                        iced::Event::Mouse(mouse::Event::WheelScrolled { .. })
+                    ))
+            {
+                reader.notes.popup = None;
+            }
             if reader.confirm_remove.is_some() && matches!(&event, iced::Event::Keyboard(_)) {
                 if let iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key,
@@ -3787,6 +3947,37 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 && reader.interactive()
             {
                 match key.as_ref() {
+                    Key::Named(key::Named::Escape) if !repeat && reader.notes.popup.is_some() => {
+                        reader.notes.popup = None;
+                        reader.focused = None;
+                        return Task::none();
+                    }
+                    Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
+                        if reader.notes.popup.is_some() =>
+                    {
+                        reader.step_popup_focus(matches!(
+                            key.as_ref(),
+                            Key::Named(key::Named::ArrowDown)
+                        ));
+                        return Task::none();
+                    }
+                    // Ctrl+D bookmarks the page, Ctrl+H highlights the selection, Ctrl+B lists them.
+                    Key::Character(value)
+                        if modifiers.control()
+                            && !modifiers.shift()
+                            && !repeat
+                            && (reader.book.is_some() || reader.pdf.is_some())
+                            && !reader.show_search
+                            && !reader.show_settings
+                            && matches!(value.to_ascii_lowercase().as_str(), "d" | "h" | "b") =>
+                    {
+                        reader.notes.popup = None;
+                        return match value.to_ascii_lowercase().as_str() {
+                            "d" => reader.toggle_bookmark(),
+                            "h" => reader.highlight_shortcut(),
+                            _ => reader.notes_action(notes::Action::ToggleList),
+                        };
+                    }
                     Key::Character(value)
                         if modifiers.control() && value.eq_ignore_ascii_case("k") && !repeat =>
                     {
@@ -3990,11 +4181,19 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             if pdf_input && !global_shortcut && !reader.show_search && !reader.show_settings {
                 let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
                 if let Some(pdf) = &mut reader.pdf {
-                    return if accepted {
+                    let was_dragging = pdf.is_dragging();
+                    let task = if accepted {
                         forward_pdf(pdf.document().id, pdf.event(&event))
                     } else {
                         Task::none()
                     };
+                    if matches!(
+                        &event,
+                        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                    ) {
+                        reader.selection_released(was_dragging);
+                    }
+                    return task;
                 }
             }
             match event {
@@ -4003,8 +4202,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.window_size = size;
                     reader.width = reader.reading_width(size.width);
                     reader.viewport = (size.height - 100.0).max(100.0);
+                    let view_size = reader.document_view_size();
                     let task = if let Some(pdf) = &mut reader.pdf {
-                        forward_pdf(pdf.document().id, pdf.resize(size, reader.scale_factor))
+                        forward_pdf(
+                            pdf.document().id,
+                            pdf.resize(view_size, reader.scale_factor),
+                        )
                     } else if reader.book.is_some() {
                         reader.rebuild_geometry(reader.anchor())
                     } else {
@@ -4026,8 +4229,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         + (size.height - reader.window_size.height) / reader.zoom)
                         .max(1.0);
                     reader.window_size = size;
+                    let view_size = reader.document_view_size();
                     let task = if let Some(pdf) = &mut reader.pdf {
-                        forward_pdf(pdf.document().id, pdf.resize(size, reader.scale_factor))
+                        forward_pdf(
+                            pdf.document().id,
+                            pdf.resize(view_size, reader.scale_factor),
+                        )
                     } else if width_changed && reader.book.is_some() {
                         reader.rebuild_geometry(anchor)
                     } else {
@@ -4056,7 +4263,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
                 iced::Event::Window(window::Event::Unfocused)
                 | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    let was_dragging = reader.selection.is_dragging();
                     reader.selection.end_drag();
+                    if matches!(event, iced::Event::Mouse(_)) {
+                        reader.selection_released(was_dragging);
+                    }
                     Task::none()
                 }
                 iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -4410,6 +4621,14 @@ fn render_item(
         };
     }
     let logical = item.text().unwrap_or_default();
+    let marks: Vec<selection::TextMark> = notes::ranges_for(&reader.notes.marks, index, logical)
+        .into_iter()
+        .map(|(range, color, note)| selection::TextMark {
+            range,
+            tint: notes::tint(color),
+            note,
+        })
+        .collect();
     let heading_style;
     let (direction, styles) = match item {
         Item::Paragraph {
@@ -4482,10 +4701,12 @@ fn render_item(
                         links: part_links,
                         focused_link: None,
                         font_family: family,
+                        marks: marks.clone(),
                     },
                     Message::SelectStart,
                     |endpoint, _| Message::SelectMove(endpoint),
                     Some(Message::FollowLink),
+                    Some(Message::Context),
                 ),
                 Err(error) => text(format!("Cannot display this entry: {error}")).into(),
             }
@@ -4578,10 +4799,12 @@ fn render_item(
                 _ => None,
             },
             font_family: family,
+            marks,
         },
         Message::SelectStart,
         |endpoint, _| Message::SelectMove(endpoint),
         Some(Message::FollowLink),
+        Some(Message::Context),
     );
     let kind = semantics.map(|s| s.kind).unwrap_or_default();
     let quote = semantics.is_some_and(|s| s.quote_depth > 0);
@@ -4810,9 +5033,15 @@ fn find_id() -> iced::advanced::widget::Id {
 
 fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, Message> {
     use iced::widget::{Space, mouse_area, opaque, stack, text_input};
+    if reader.notes.editor.is_some() {
+        return notes_ui::editor_overlay(reader, base);
+    }
     if !reader.show_search && !reader.show_settings && reader.confirm_remove.is_none() {
         // Keep the reader and shelf in the same widget-tree slot when a modal opens.
-        return stack![base].into();
+        return match notes_ui::popup_layer(reader) {
+            Some(popup) => stack![base, popup].into(),
+            None => stack![base].into(),
+        };
     }
     let heading = row![
         text(if reader.confirm_remove.is_some() {
@@ -5475,38 +5704,45 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
         })
         .width(paper_width)
         .style(book_style::paper);
-        sheets = sheets.push(sheet);
+        sheets = sheets.push(iced::widget::stack![
+            sheet,
+            notes_ui::ribbon(reader, paper_width)
+        ]);
     }
+    let available_width = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
+    let side_padding = MINIMAL.side_padding(available_width);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
-        .center_x(
-            (reader.window_size.width - MINIMAL.side_padding(reader.window_size.width) * 2.0)
-                .max(paper_width * reader.zoom + 14.0),
-        )
+        .center_x((available_width - side_padding * 2.0).max(paper_width * reader.zoom + 14.0))
         .padding(iced::Padding {
             right: 14.0,
             ..Default::default()
         });
     let generation = reader.generation;
-    container(crate::document_scroll::wrap(
-        Message::ZoomBy,
-        scrollable(centered)
-            .direction(iced::widget::scrollable::Direction::Both {
-                vertical: ui::scrollbar(),
-                horizontal: ui::scrollbar(),
-            })
-            .id(scroll_id())
-            .height(Length::Fill)
-            .on_scroll(move |viewport| Message::Scroll {
-                generation,
-                page_top: page.top,
-                offset: viewport.absolute_offset().y,
-                viewport: viewport.bounds().height,
-            }),
-    ))
-    .padding([0.0, MINIMAL.side_padding(reader.window_size.width)])
-    .style(book_style::desk)
-    .clip(true)
-    .height(Length::Fill)
+    // A right click on text opens the note menu from the paragraph; a click on
+    // the desk or margins reaches this area instead.
+    iced::widget::mouse_area(
+        container(crate::document_scroll::wrap(
+            Message::ZoomBy,
+            scrollable(centered)
+                .direction(iced::widget::scrollable::Direction::Both {
+                    vertical: ui::scrollbar(),
+                    horizontal: ui::scrollbar(),
+                })
+                .id(scroll_id())
+                .height(Length::Fill)
+                .on_scroll(move |viewport| Message::Scroll {
+                    generation,
+                    page_top: page.top,
+                    offset: viewport.absolute_offset().y,
+                    viewport: viewport.bounds().height,
+                }),
+        ))
+        .padding([0.0, side_padding])
+        .style(book_style::desk)
+        .clip(true)
+        .height(Length::Fill),
+    )
+    .on_right_press(Message::ContextBlank)
     .into()
 }
 
@@ -5664,6 +5900,8 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             text("Book  Left / Right: previous / next page · Up / Down: scroll within page").size(12).style(ui::secondary_text),
             text("Ctrl+L  Page    Ctrl+F  Find, again to close (Enter / Shift+Enter next / previous)    EPUB  Ctrl+T contents · Ctrl+Page Up / Down chapters    PDF  Ctrl+Shift+F fit width / back")
                 .size(12).style(ui::muted_text),
+            text("Select text to highlight or add a note    Right-click a highlight to edit or remove it    Right-click a page to bookmark    Ctrl+H  Highlight    Ctrl+D  Bookmark page    Ctrl+B  Notes sidebar")
+                .size(12).style(ui::muted_text),
             text("Hold middle button  Scroll · Move away to change speed · Release / Escape to stop    F8 / title-bar panel icon  Hide / show toolbar")
                 .size(12).style(ui::muted_text),
         ]
@@ -5749,32 +5987,38 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         .max_height(reader.window_size.height * 0.38)
         .padding([0, 20]),
     ];
-    if let Some(pdf) = &reader.pdf {
+    let content: Element<'_, Message> = if let Some(pdf) = &reader.pdf {
         let document = pdf.document().id;
-        page = page.push(
-            pdf.view()
-                .map(move |message| Message::Pdf { document, message }),
-        );
+        pdf.view()
+            .map(move |message| Message::Pdf { document, message })
     } else if let Some(book) = &reader.book {
-        page = page.push(paged_book_view(reader, book));
+        paged_book_view(reader, book)
     } else {
-        page = page.push(
-            reader
-                .shelf
-                .view(
-                    reader.focused.and_then(|control| {
-                        if let Control::Shelf(control) = control {
-                            Some(control)
-                        } else {
-                            None
-                        }
-                    }),
-                    active,
-                    reader.dropping,
-                )
-                .map(Message::Shelf),
-        );
-    }
+        reader
+            .shelf
+            .view(
+                reader.focused.and_then(|control| {
+                    if let Control::Shelf(control) = control {
+                        Some(control)
+                    } else {
+                        None
+                    }
+                }),
+                active,
+                reader.dropping,
+            )
+            .map(Message::Shelf)
+    };
+    page = page.push(if has_document {
+        row![
+            container(content).width(Length::Fill).height(Length::Fill),
+            notes_ui::sidebar(reader, active),
+        ]
+        .height(Length::Fill)
+        .into()
+    } else {
+        content
+    });
     let base = container(page)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -5803,9 +6047,10 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
     let focus = reader.focus_pending.then_some(reader.focus_generation);
     let searching = reader.show_search;
     let finding = reader.find.is_some();
+    let noting = reader.notes.editor.is_some();
     let events = subscription::filter_map(
         (
-            HtmlEvents, generation, pending, active, focus, searching, finding,
+            HtmlEvents, generation, pending, active, focus, searching, finding, noting,
         ),
         move |event| match event {
             Event::Interaction {
@@ -5841,6 +6086,9 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                         &key,
                         Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
                     ))
+                && !(noting
+                    && modifiers.control()
+                    && matches!(&key, Key::Named(key::Named::Enter)))
                 && !(finding
                     && match &key {
                         Key::Named(key::Named::Enter) => true,

@@ -142,13 +142,19 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
             path.display()
         ));
     }
+    load_html_bytes(path, &bytes)
+}
+
+/// Parse `bytes` as if they were the HTML file at `path`; local images resolve next to `path`.
+/// Used for generated pages (text, Markdown) whose images live beside the original source.
+pub(crate) fn load_html_bytes(path: PathBuf, bytes: &[u8]) -> Result<Document, String> {
     let mut resources = LocalResources {
         parent: path
             .parent()
             .ok_or("HTML file has no parent directory")?
             .to_path_buf(),
     };
-    Ok(parse_html(path, &bytes, &mut resources)?.document)
+    Ok(parse_html(path, bytes, &mut resources)?.document)
 }
 
 pub(crate) fn parse_html(

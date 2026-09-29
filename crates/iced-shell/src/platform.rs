@@ -27,7 +27,7 @@ pub fn open_document_dialog(locate: bool) -> Result<Option<PathBuf>, String> {
 
     // The filter is pairs of UTF-16 strings terminated by an extra NUL.
     let filter: Vec<u16> =
-        "Documents (*.html;*.htm;*.xhtml;*.pdf;*.epub)\0*.html;*.htm;*.xhtml;*.pdf;*.epub\0EPUB books (*.epub)\0*.epub\0PDF files (*.pdf)\0*.pdf\0HTML files (*.html;*.htm;*.xhtml)\0*.html;*.htm;*.xhtml\0All files (*.*)\0*.*\0\0"
+        "Documents (*.html;*.htm;*.xhtml;*.pdf;*.epub;*.txt;*.md)\0*.html;*.htm;*.xhtml;*.pdf;*.epub;*.txt;*.text;*.md;*.markdown\0EPUB books (*.epub)\0*.epub\0PDF files (*.pdf)\0*.pdf\0HTML files (*.html;*.htm;*.xhtml)\0*.html;*.htm;*.xhtml\0Text and Markdown (*.txt;*.md)\0*.txt;*.text;*.md;*.markdown\0All files (*.*)\0*.*\0\0"
             .encode_utf16()
             .collect();
     let title: Vec<u16> = if locate {

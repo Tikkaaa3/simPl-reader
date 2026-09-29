@@ -281,6 +281,17 @@ pub struct SelectableParagraphConfig {
     pub focused_link: Option<usize>,
     /// Bundled family that replaces the default reading face (Literata), if any.
     pub font_family: Option<&'static str>,
+    /// Saved highlights, oldest first, in logical source bytes of the whole item.
+    pub marks: Vec<TextMark>,
+}
+
+/// A saved highlight painted behind the text of one paragraph.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextMark {
+    pub range: Range<usize>,
+    pub tint: iced::Color,
+    /// A note is attached: the highlight also gets a solid underline.
+    pub note: bool,
 }
 
 /// Builds a renderer-backed, selectable paragraph element from the same
@@ -290,6 +301,7 @@ pub fn selectable_text<Message: 'static>(
     on_press: impl Fn(Endpoint) -> Message + 'static,
     on_move: impl Fn(Endpoint, iced::Point) -> Message + 'static,
     on_link: Option<fn(String) -> Message>,
+    on_context: Option<fn(Endpoint) -> Message>,
 ) -> iced::Element<'static, Message> {
     let SelectableParagraphConfig {
         item_id,
@@ -305,6 +317,7 @@ pub fn selectable_text<Message: 'static>(
         mut links,
         focused_link,
         font_family,
+        marks,
     } = config;
     let leading_rlm = mapped.text.starts_with(LEADING_RLM)
         && mapped.text.strip_prefix(LEADING_RLM) == Some(logical_text.as_str());
@@ -323,6 +336,25 @@ pub fn selectable_text<Message: 'static>(
         let prefix = usize::from(leading_rlm) * LEADING_RLM.len();
         range.start + prefix..range.end + prefix
     });
+    let mark_prefix = usize::from(leading_rlm) * LEADING_RLM.len();
+    let marks: Vec<TextMark> = marks
+        .into_iter()
+        .filter_map(|mark| {
+            let start = mark.range.start.max(item_offset).checked_sub(item_offset)?;
+            let end = mark
+                .range
+                .end
+                .min(item_offset + logical_text.len())
+                .checked_sub(item_offset)?;
+            (start < end
+                && is_grapheme_boundary(&logical_text, start)
+                && is_grapheme_boundary(&logical_text, end))
+            .then(|| TextMark {
+                range: start + mark_prefix..end + mark_prefix,
+                ..mark
+            })
+        })
+        .collect();
     links.retain_mut(|link| {
         if link.start_byte < item_offset || link.end_byte > item_offset + logical_text.len() {
             return false;
@@ -359,6 +391,8 @@ pub fn selectable_text<Message: 'static>(
         links,
         focused_link,
         on_link,
+        on_context,
+        marks,
     })
 }
 
@@ -560,6 +594,9 @@ struct SelectableParagraph<Message> {
     links: Vec<reader_document::Link>,
     focused_link: Option<usize>,
     on_link: Option<fn(String) -> Message>,
+    on_context: Option<fn(Endpoint) -> Message>,
+    /// Highlights in mapped (shaped) byte coordinates.
+    marks: Vec<TextMark>,
 }
 
 impl<Message> SelectableParagraph<Message> {
@@ -685,6 +722,34 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         }
         let state = tree.state.downcast_ref::<ParagraphState>();
         let translation = layout.position() - iced::Point::ORIGIN;
+        for mark in &self.marks {
+            for bounds in merge_lines(selected_glyph_bounds(&state.paragraph, Some(&mark.range))) {
+                let bounds = bounds + translation;
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        ..Default::default()
+                    },
+                    iced::Background::Color(mark.tint),
+                );
+                if mark.note {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: iced::Rectangle {
+                                y: bounds.y + bounds.height - 2.0,
+                                height: 2.0,
+                                ..bounds
+                            },
+                            ..Default::default()
+                        },
+                        iced::Background::Color(iced::Color {
+                            a: 1.0,
+                            ..mark.tint
+                        }),
+                    );
+                }
+            }
+        }
         for bounds in merge_lines(selected_glyph_bounds(
             &state.paragraph,
             self.mapped_selection.as_ref(),
@@ -777,6 +842,14 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                 state.last_move = None;
                 if let Some(endpoint) = hit(state) {
                     shell.publish((self.on_press)(endpoint));
+                    shell.capture_event();
+                }
+            }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some(on_context) = self.on_context
+                    && let Some(endpoint) = hit(state)
+                {
+                    shell.publish(on_context(endpoint));
                     shell.capture_event();
                 }
             }
@@ -913,9 +986,11 @@ mod tests {
                     links: vec![],
                     focused_link: None,
                     font_family: None,
+                    marks: Vec::new(),
                 },
                 Message::Start,
                 |endpoint, _| Message::Move(endpoint),
+                None,
                 None,
             );
             let mut tree = Tree::new(&element);
@@ -1093,10 +1168,12 @@ mod tests {
                     }],
                     focused_link: None,
                     font_family: None,
+                    marks: Vec::new(),
                 },
                 |_| Message::Start,
                 |_, _| Message::Move,
                 Some(Message::Link),
+                None,
             );
             let mut tree = Tree::new(&element);
             let node = element.as_widget_mut().layout(

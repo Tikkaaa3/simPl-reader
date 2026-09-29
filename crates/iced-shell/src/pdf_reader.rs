@@ -129,9 +129,22 @@ pub enum Message {
     ZoomBy(f32),
     SelectStart(TextPoint),
     SelectMove(TextPoint),
+    /// Right click on a page; the point is set when it is on text.
+    Context(Option<TextPoint>),
     ClearSelection,
     Copy,
     CopyFinished(Result<String, String>),
+}
+
+/// A saved highlight drawn on the pages: inclusive glyph range from `from` to `to`.
+#[derive(Clone, Debug)]
+pub struct Mark {
+    pub id: u64,
+    pub from: reader_document::annotations::PdfPoint,
+    pub to: reader_document::annotations::PdfPoint,
+    pub tint: iced::Color,
+    /// A note is attached, so the highlight also gets an underline.
+    pub note: bool,
 }
 
 #[derive(Debug)]
@@ -177,6 +190,9 @@ pub struct Reader {
     pending_reveal: Option<(u32, usize, usize)>,
     /// The zoom to return to when Ctrl+Shift+F is pressed again.
     zoom_before_fit: Option<PdfZoom>,
+    marks: Vec<Mark>,
+    /// Pages that carry a bookmark ribbon.
+    bookmarked: Vec<u32>,
 }
 
 impl Reader {
@@ -235,6 +251,8 @@ impl Reader {
             pointer: None,
             pending_reveal: None,
             zoom_before_fit: None,
+            marks: Vec::new(),
+            bookmarked: Vec::new(),
         };
         reader.rebuild();
         let anchor = restored.map_or(
@@ -670,9 +688,48 @@ impl Reader {
         self.jump(page as usize)
     }
 
-    #[cfg(test)]
     pub(crate) fn selection(&self) -> Option<Selection> {
         self.selection.filter(|_| self.selection_ready)
+    }
+
+    /// A selection is being dragged now.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    pub fn set_marks(&mut self, marks: Vec<Mark>, bookmarked: Vec<u32>) {
+        self.marks = marks;
+        self.bookmarked = bookmarked;
+    }
+
+    /// The topmost saved highlight that contains this glyph.
+    pub fn mark_at(&self, point: TextPoint) -> Option<u64> {
+        self.marks
+            .iter()
+            .rev()
+            .find(|mark| {
+                let key = (point.page, point.index);
+                (mark.from.page, mark.from.index) <= key && key <= (mark.to.page, mark.to.index)
+            })
+            .map(|mark| mark.id)
+    }
+
+    /// Turns to a page.
+    pub fn go_to_page(&mut self, page: usize) -> Task<Message> {
+        self.jump(page.min(self.document.pages.len().saturating_sub(1)))
+    }
+
+    /// Brings glyphs `first..=last` of `page` into view without selecting them.
+    pub fn reveal(&mut self, page: u32, first: usize, last: usize) -> Task<Message> {
+        if page as usize >= self.document.pages.len() {
+            return Task::none();
+        }
+        self.pending_reveal = None;
+        if self.glyph_position(page, first, last).is_some() {
+            return self.scroll_to_glyph(page, first, last);
+        }
+        self.pending_reveal = Some((page, first, last));
+        self.jump(page as usize)
     }
 
     pub fn clear_selection(&mut self) {
@@ -1191,6 +1248,8 @@ impl Reader {
                     text: cached.and_then(|entry| entry.text.as_ref()),
                     selection: selected,
                     dragging: self.dragging,
+                    marks: &self.marks,
+                    bookmarked: self.bookmarked.contains(&(index as u32)),
                 }
                 .into();
                 container(page_widget)

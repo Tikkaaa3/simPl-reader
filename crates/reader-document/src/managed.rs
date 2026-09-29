@@ -96,30 +96,62 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if !matches!(ext.as_str(), "html" | "htm" | "xhtml" | "pdf" | "epub") {
+    let text_source = crate::text::is_text_extension(&ext);
+    if !text_source && !matches!(ext.as_str(), "html" | "htm" | "xhtml" | "pdf" | "epub") {
         return Err("Unsupported document format".into());
     }
-    let name = source
+    let source_name = source
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or("Invalid document filename")?;
+    // Text and Markdown are stored as the generated HTML page, read by the HTML reader.
+    let generated_name;
+    let name = if text_source {
+        generated_name = format!(
+            "{}.html",
+            source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("Invalid document filename")?
+        );
+        generated_name.as_str()
+    } else {
+        source_name
+    };
     let mut hash = Sha256::new();
     hash.update(source.to_string_lossy().as_bytes());
     let mut content = Sha256::new();
-    let mut file = fs::File::open(&source).map_err(|e| e.to_string())?;
-    let mut buffer = [0; 64 * 1024];
-    let mut read = 0;
-    loop {
-        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
+    let mut generated = None;
+    if text_source {
+        if meta.len() > crate::text::MAX_TEXT_BYTES {
+            return Err("Text file exceeds the 16 MiB import limit".into());
         }
-        read += n as u64;
-        if read > MAX_BYTES {
-            return Err("Document grew beyond the import limit".into());
+        let mut bytes = Vec::new();
+        fs::File::open(&source)
+            .map_err(|e| e.to_string())?
+            .take(crate::text::MAX_TEXT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > crate::text::MAX_TEXT_BYTES {
+            return Err("Text file grew beyond the import limit".into());
         }
-        hash.update(&buffer[..n]);
-        content.update(&buffer[..n]);
+        generated = Some(crate::text::to_html(&source, &ext, &bytes)?);
+    } else {
+        let mut file = fs::File::open(&source).map_err(|e| e.to_string())?;
+        let mut buffer = [0; 64 * 1024];
+        let mut read = 0;
+        loop {
+            let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            read += n as u64;
+            if read > MAX_BYTES {
+                return Err("Document grew beyond the import limit".into());
+            }
+            hash.update(&buffer[..n]);
+            content.update(&buffer[..n]);
+        }
     }
     let folder = root.join(format!("{:x}", hash.finalize()));
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
@@ -136,7 +168,12 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     {
         return Ok(existing);
     }
-    let assets = if matches!(ext.as_str(), "html" | "htm" | "xhtml") {
+    let assets = if let Some(page) = &generated {
+        crate::html::load_html_bytes(source.clone(), page.as_bytes())?
+            .images
+            .into_keys()
+            .collect::<Vec<_>>()
+    } else if matches!(ext.as_str(), "html" | "htm" | "xhtml") {
         crate::load_html(&source)?
             .images
             .into_keys()
@@ -146,9 +183,22 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     };
     fs::create_dir(&folder).map_err(|e| e.to_string())?;
     let copied = (|| {
-        copy(&source, &target)?;
+        if let Some(page) = &generated {
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map_err(|e| e.to_string())?;
+            output
+                .write_all(page.as_bytes())
+                .map_err(|e| e.to_string())?;
+        } else {
+            copy(&source, &target)?;
+        }
         let source_parent = source.parent().ok_or("Missing source directory")?;
-        let mut total = meta.len();
+        let mut total = generated
+            .as_ref()
+            .map_or(meta.len(), |page| page.len() as u64);
         for key in assets {
             let relative = Path::new(&key);
             if !relative
@@ -371,6 +421,57 @@ mod tests {
         let empty = dir.join("empty-folder");
         fs::create_dir(&empty).unwrap();
         assert!(import_at(&root, &empty).unwrap_err().contains("no HTML"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn text_and_markdown_import_as_generated_html_with_their_images() {
+        let dir = std::env::temp_dir().join(format!(
+            "simpl-import-text-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("img")).unwrap();
+        fs::write(
+            dir.join("img/dot.png"),
+            include_bytes!("../../../fixtures/reader-workload/assets/images/reader-sample.png"),
+        )
+        .unwrap();
+        let markdown = dir.join("Notes.MD");
+        fs::write(
+            &markdown,
+            "# Field notes\n\nSome text.\n\n![dot](img/dot.png)\n",
+        )
+        .unwrap();
+        let plain = dir.join("story.txt");
+        fs::write(&plain, "Once upon\na time.\n\nThe end.\n").unwrap();
+        let root = dir.join("managed");
+
+        let md = import_at(&root, &markdown).unwrap();
+        assert_eq!(md.file_name().unwrap(), "Notes.html");
+        assert!(md.parent().unwrap().join("img/dot.png").is_file());
+        let document = crate::load_html(&md).unwrap();
+        assert_eq!(document.title, "Field notes");
+        assert_eq!(document.images.len(), 1);
+        assert_eq!(import_at(&root, &markdown).unwrap(), md);
+
+        let txt = import_at(&root, &plain).unwrap();
+        assert_eq!(crate::load_html(&txt).unwrap().title, "story");
+        assert_eq!(crate::load_html(&txt).unwrap().items.len(), 2);
+
+        remove_at(&root, &md).unwrap();
+        assert!(!md.exists());
+        assert!(markdown.exists() && plain.exists());
+        let binary = dir.join("blob.txt");
+        fs::write(&binary, b"ab\0cd").unwrap();
+        assert!(import_at(&root, &binary).is_err());
+        // An image outside the source folder is left out rather than copied.
+        fs::write(dir.join("escape.md"), "![x](../outside.png)").unwrap();
+        let escaped = import_at(&root, &dir.join("escape.md")).unwrap();
+        assert_eq!(fs::read_dir(escaped.parent().unwrap()).unwrap().count(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
 

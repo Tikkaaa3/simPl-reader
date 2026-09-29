@@ -16,4 +16,5 @@ serde_json = "=1.0.151"
 windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem", "Win32_Globalization"] }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 roxmltree = "=0.21.1"
+pulldown-cmark = { version = "=0.13.4", default-features = false, features = ["html"] }
 parking_lot = "=0.12.5"

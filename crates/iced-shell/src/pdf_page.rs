@@ -5,9 +5,32 @@ use iced::{Element, Length, Point, Rectangle, Size};
 use reader_pdf::{Selection, TextLayer, TextPoint};
 use std::sync::Arc;
 
-use super::Message;
+use super::{Mark, Message};
 
 const HIGHLIGHT: iced::Color = iced::Color::from_rgba8(0x38, 0x80, 0xe0, 0.48);
+const RIBBON: iced::Color = iced::Color::from_rgb(0.78, 0.20, 0.17);
+
+/// Joins glyph boxes that sit on one line, so a highlight is a few quads per line.
+fn merge_lines(boxes: Vec<Rectangle>) -> Vec<Rectangle> {
+    let mut lines: Vec<Rectangle> = Vec::new();
+    for glyph in boxes {
+        if let Some(last) = lines.last_mut()
+            && (last.y - glyph.y).abs() < 1.5
+            && (last.height - glyph.height).abs() < 3.0
+            && glyph.x >= last.x - 0.5
+            && glyph.x <= last.x + last.width + 4.0
+        {
+            let right = (glyph.x + glyph.width).max(last.x + last.width);
+            let bottom = (glyph.y + glyph.height).max(last.y + last.height);
+            last.y = last.y.min(glyph.y);
+            last.width = right - last.x;
+            last.height = bottom - last.y;
+        } else {
+            lines.push(glyph);
+        }
+    }
+    lines
+}
 
 pub(super) struct Page<'a> {
     pub number: u32,
@@ -17,6 +40,9 @@ pub(super) struct Page<'a> {
     pub text: Option<&'a Arc<TextLayer>>,
     pub selection: Option<Selection>,
     pub dragging: bool,
+    /// Saved highlights, oldest first.
+    pub marks: &'a [Mark],
+    pub bookmarked: bool,
 }
 
 pub(super) fn hit(
@@ -83,6 +109,90 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
                 bounds,
                 clip,
             );
+        }
+        if self.bookmarked {
+            renderer.with_layer(clip, |renderer| {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle::new(
+                            Point::new(bounds.x + bounds.width - 44.0, bounds.y),
+                            Size::new(20.0, 36.0),
+                        ),
+                        border: iced::Border {
+                            radius: iced::border::Radius {
+                                top_left: 0.0,
+                                top_right: 0.0,
+                                bottom_right: 6.0,
+                                bottom_left: 6.0,
+                            },
+                            ..iced::Border::default()
+                        },
+                        ..Default::default()
+                    },
+                    iced::Background::Color(RIBBON),
+                );
+            });
+        }
+        if let Some(text) = self.text {
+            let spans = crate::notes::coalesce_colored_ranges(
+                self.marks
+                    .iter()
+                    .filter_map(|mark| {
+                        crate::notes::pdf_range_on_page(
+                            mark.from,
+                            mark.to,
+                            self.number,
+                            text.glyphs.len(),
+                        )
+                        .map(|range| (range, mark.tint, mark.note))
+                    })
+                    .collect(),
+            );
+            for (range, tint, note) in spans {
+                let boxes = text.glyphs[range]
+                    .iter()
+                    .filter_map(|glyph| glyph.bounds)
+                    .map(|rect| {
+                        Rectangle::new(
+                            Point::new(
+                                bounds.x + rect.left * bounds.width,
+                                bounds.y + rect.top * bounds.height,
+                            ),
+                            Size::new(
+                                (rect.right - rect.left).max(0.0) * bounds.width,
+                                (rect.bottom - rect.top).max(0.0) * bounds.height,
+                            ),
+                        )
+                    })
+                    .collect();
+                renderer.with_layer(clip, |renderer| {
+                    for line in merge_lines(boxes) {
+                        if line.intersection(&clip).is_none() {
+                            continue;
+                        }
+                        renderer.fill_quad(
+                            renderer::Quad {
+                                bounds: line,
+                                ..Default::default()
+                            },
+                            iced::Background::Color(tint),
+                        );
+                        if note {
+                            renderer.fill_quad(
+                                renderer::Quad {
+                                    bounds: Rectangle {
+                                        y: line.y + line.height - 2.0,
+                                        height: 2.0,
+                                        ..line
+                                    },
+                                    ..Default::default()
+                                },
+                                iced::Background::Color(iced::Color { a: 1.0, ..tint }),
+                            );
+                        }
+                    }
+                });
+            }
         }
         if let (Some(text), Some(selection)) = (self.text, self.selection) {
             let (start, end) = if selection.anchor <= selection.focus {
@@ -157,6 +267,18 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
                         .text
                         .and_then(|text| hit(text, self.number, layout.bounds(), position, true));
                     shell.publish(point.map_or(Message::ClearSelection, Message::SelectStart));
+                }
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Right)) => {
+                if let Some(position) = cursor
+                    .position_over(layout.bounds())
+                    .filter(|position| viewport.contains(*position))
+                {
+                    let point = self
+                        .text
+                        .and_then(|text| hit(text, self.number, layout.bounds(), position, true));
+                    shell.publish(Message::Context(point));
+                    shell.capture_event();
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { .. }) if self.dragging => {

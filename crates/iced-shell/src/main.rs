@@ -9,6 +9,7 @@ mod book_style;
 mod chrome;
 mod document_scroll;
 mod find;
+mod notes;
 mod pdf_reader;
 mod platform;
 mod shelf;
@@ -1187,6 +1188,7 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
             links: Vec::new(),
             focused_link: None,
             font_family: None,
+            marks: Vec::new(),
             item_id: item_id.to_owned(),
             logical_text: logical_text.to_owned(),
             mapped,
@@ -1200,6 +1202,7 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
         },
         Message::ReaderSelectionStart,
         |endpoint, point| Message::ReaderSelectionMove { endpoint, point },
+        None,
         None,
     )
 }
@@ -1455,7 +1458,7 @@ fn main() {
             _ => (
                 None,
                 Some(
-                    "Pass one local HTML, PDF or EPUB path, or use Open to choose a file."
+                    "Pass one local HTML, PDF, EPUB, text or Markdown path, or use Open to choose a file."
                         .to_owned(),
                 ),
             ),

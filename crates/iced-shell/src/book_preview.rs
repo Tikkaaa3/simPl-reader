@@ -498,6 +498,128 @@ fn render(reader: &mut Reader, output: &Path) {
 }
 
 #[test]
+#[ignore = "Annotation visual QA: set SIMPL_PREVIEW_OUTPUT"]
+fn render_annotation_views() {
+    for bytes in ui::font_data() {
+        iced::advanced::graphics::text::font_system()
+            .write()
+            .unwrap()
+            .load_font(std::borrow::Cow::Borrowed(bytes));
+    }
+    let output = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/book-structure/structured.html");
+    let book = Arc::new(display_book(
+        reader_document::load_html(&path).unwrap(),
+        None,
+        None,
+    ));
+    let fingerprint = book.fingerprint.clone();
+    let mut reader = Reader {
+        book: Some(book.clone()),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let (row, source) = book
+        .items
+        .iter()
+        .enumerate()
+        .find_map(|(row, item)| {
+            item.text()
+                .filter(|text| text.len() > 12)
+                .map(|text| (row, text))
+        })
+        .unwrap();
+    let quote = source.get(..12).unwrap().to_owned();
+    let mut data = reader_document::annotations::Annotations::new(&fingerprint).unwrap();
+    let id = data
+        .add_highlight(
+            reader_document::annotations::Place::Reflow {
+                chapter: None,
+                from: reader_document::annotations::ReflowPoint {
+                    item_id: book.items[row].id().to_owned(),
+                    byte: 0,
+                },
+                to: reader_document::annotations::ReflowPoint {
+                    item_id: book.items[row].id().to_owned(),
+                    byte: quote.len(),
+                },
+            },
+            reader_document::annotations::HighlightColor::Yellow,
+            "1".into(),
+            quote,
+        )
+        .unwrap();
+    data.set_note(id, "A short note for this passage.").unwrap();
+    let _ = data
+        .add_bookmark(
+            reader_document::annotations::BookmarkPlace::Reflow {
+                chapter: None,
+                item_id: book.items[row].id().to_owned(),
+                within: 0.0,
+                page_number: reader.active_page().unwrap().number,
+            },
+            "1".into(),
+            "Opening passage".into(),
+        )
+        .unwrap();
+    reader.notes.book = Some(fingerprint);
+    reader.notes.data = Some(data);
+    reader.refresh_marks();
+    reader.context_at(Endpoint {
+        item_id: book.items[row].id().to_owned(),
+        byte_offset: 4,
+    });
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Highlight(id))
+    );
+    assert_eq!(
+        reader.notes.popup.as_ref().unwrap().entries().last(),
+        Some(&notes::PopupItem::RemoveHighlight)
+    );
+    reader.notes.popup = None;
+    render(&mut reader, &output.join("annotations-closed.png"));
+    reader.notes.list = Some(notes::ListTab::Highlights);
+    render(&mut reader, &output.join("annotations-list.png"));
+    reader.notes.popup = Some(notes::Popup {
+        at: Point::new(500.0, 250.0),
+        target: notes::Target::Highlight(id),
+        menu: true,
+    });
+    render(&mut reader, &output.join("annotations-menu.png"));
+    reader.notes.popup = None;
+    let _ = reader.notes_action(notes::Action::EditNote(id));
+    render(&mut reader, &output.join("annotations-editor.png"));
+    reader.notes.editor = None;
+    let long_note = format!("A long note remains readable.\n{}", "a".repeat(500));
+    reader
+        .notes
+        .data
+        .as_mut()
+        .unwrap()
+        .set_note(id, &long_note)
+        .unwrap();
+    let _ = reader.notes_action(notes::Action::ToggleNote(id));
+    assert_eq!(reader.notes.expanded_note, Some(id));
+    render(&mut reader, &output.join("annotations-expanded-note.png"));
+    let _ = reader.notes_action(notes::Action::EditNote(id));
+    render(
+        &mut reader,
+        &output.join("annotations-editor-long-note.png"),
+    );
+    reader.notes.editor = None;
+    assert!(reader.page_is_bookmarked());
+    let _ = reader.notes_action(notes::Action::ToggleBookmark);
+    assert!(!reader.page_is_bookmarked());
+}
+
+#[test]
 #[ignore = "Visual QA: set SIMPL_PREVIEW_HTML, SIMPL_PREVIEW_EPUB and SIMPL_PREVIEW_OUTPUT"]
 fn render_book_previews() {
     for bytes in ui::font_data() {

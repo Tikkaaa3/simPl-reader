@@ -60,6 +60,8 @@ guarantee or the page-number stability.
 
 ## 4. TXT and Markdown support
 
+**Status: done.** `.txt`, `.text`, `.md` and `.markdown` are converted to one generated HTML page when imported (`crates/reader-document/src/text.rs`, `managed.rs`), so the HTML reader, find, page map and positions work unchanged. Markdown uses `pulldown-cmark` 0.13.4 (MIT; with `pulldown-cmark-escape` and `unicase`, all permissive, notices collected by `scripts/collect-licenses.ps1`). Encodings: UTF-8 (BOM or not), UTF-16 with a BOM, otherwise the Windows ANSI code page. Local Markdown images are copied beside the page. Known limits: the shelf shows these books as HTML; an edited source is not re-imported (same as HTML today); the `.txt`/`.md` installer registrations and their checks in `scripts/test-installer.ps1` were added but not run (needs Inno Setup).
+
 **Goal.** Open `.txt` and `.md` files in the same reader as HTML.
 
 **Research.**
@@ -73,6 +75,17 @@ guarantee or the page-number stability.
 **Risk.** Dependency size and license inventory updates.
 
 ## 5. Bookmarks, highlights and notes
+
+**Status: done.** A selection opens a small highlight and note menu; right-click
+also offers page bookmarks and removal of an existing highlight. The list is a
+right sidebar with a persistent edge toggle. Overlapping highlights of the same
+color merge without darkening, while different colors remain independent.
+Ctrl+H, Ctrl+D and Ctrl+B provide keyboard access
+without another toolbar control. A versioned file per book fingerprint stores
+bookmarks, highlights and notes under the local simPl profile. Reflow highlights
+use item IDs and UTF-8 offsets, with selected-text recovery if IDs change; PDF
+highlights use page and glyph indices. Notes can be edited from a highlight or
+from the list, and saved entries navigate back to their passage or page.
 
 **Goal.** Bookmark a page, highlight selected text, attach a note. Data
 follows the book's fingerprint so it survives moves and re-imports.

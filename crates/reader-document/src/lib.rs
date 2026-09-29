@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
+pub mod annotations;
 pub mod epub;
 mod html;
 pub mod library;
@@ -11,6 +12,7 @@ pub mod managed;
 pub mod position;
 pub mod preferences;
 pub mod recent;
+mod text;
 pub use html::load_html;
 
 /// Gutenberg's NCX labels sometimes wrap printed page numbers in braces.

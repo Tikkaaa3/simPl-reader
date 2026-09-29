@@ -33,7 +33,7 @@ No default file associations or startup entries are changed.
 
 ## Open with and default apps
 
-Setup registers simPl for `.pdf`, `.html` and `.epub` through per-user ProgIDs,
+Setup registers simPl for `.pdf`, `.html`, `.epub`, `.txt` and `.md` through per-user ProgIDs,
 `OpenWithProgids` and `RegisteredApplications` capabilities. Windows is notified
 after installation/removal. Right-click a supported file → **Open with** →
 **simPl Reader** (or **Choose another app** if it is not in the short menu).
