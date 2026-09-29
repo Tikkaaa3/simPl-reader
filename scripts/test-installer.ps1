@@ -110,6 +110,11 @@ function Assert-AssociationsRemoved {
 New-Item -ItemType Directory -Path (Join-Path $testProfile 'documents'),(Join-Path $testProfile 'positions') -Force | Out-Null
 Set-Content (Join-Path $testProfile 'documents\test-book.html') '<p>Installer QA book</p>'
 Set-Content (Join-Path $testProfile 'positions\sentinel.txt') 'saved-page-22'
+$dictionaryDir = Join-Path $testProfile 'dictionaries'
+New-Item -ItemType Directory -Path $dictionaryDir -Force | Out-Null
+$dictionary = Join-Path $dictionaryDir 'en-tr-2026-09-30.zip'
+Copy-Item -LiteralPath (Join-Path $root 'assets/dictionaries/packs/en-tr-2026-09-30.zip') -Destination $dictionary
+$dictionaryHash = (Get-FileHash -LiteralPath $dictionary -Algorithm SHA256).Hash
 Set-Content (Join-Path $original 'original-book.html') '<p>Original must survive</p>'
 $originalHash = (Get-FileHash (Join-Path $original 'original-book.html')).Hash
 
@@ -150,6 +155,7 @@ Assert-That (Test-Path -LiteralPath $desktop) 'Selected desktop shortcut missing
 $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($desktop)
 Assert-That ($shortcut.TargetPath -eq (Join-Path $app 'simPl.exe')) 'Shortcut points to the wrong application.'
 Assert-That ((Get-Content (Join-Path $testProfile 'positions\sentinel.txt') -Raw).Trim() -eq 'saved-page-22') 'Upgrade changed reading data.'
+Assert-That ((Get-FileHash -LiteralPath $dictionary -Algorithm SHA256).Hash -eq $dictionaryHash) 'Upgrade changed an installed dictionary.'
 
 $null = Invoke-Setup (Get-QAUninstaller) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $sandbox 'keep-library.log') + '"'))
 Assert-That (-not (Test-Path $registry)) 'Uninstall registration remained.'
@@ -158,9 +164,11 @@ Assert-That (-not (Test-Path -LiteralPath $desktop)) 'Desktop shortcut remained.
 Assert-That (-not (Test-Path -LiteralPath $startMenu)) 'Start menu shortcuts remained.'
 Assert-That (-not (Test-Path -LiteralPath (Join-Path $app 'simPl.exe'))) 'Reader executable remained.'
 Assert-That (Test-Path -LiteralPath (Join-Path $testProfile 'documents\test-book.html')) 'Default uninstall deleted the library.'
+Assert-That ((Get-FileHash -LiteralPath $dictionary -Algorithm SHA256).Hash -eq $dictionaryHash) 'Keep-data uninstall deleted an installed dictionary.'
 
 Install-QA $setup '' 'reinstall.log'
 Assert-That (Test-Path -LiteralPath (Join-Path $testProfile 'positions\sentinel.txt')) 'Reinstall lost saved data.'
+Assert-That ((Get-FileHash -LiteralPath $dictionary -Algorithm SHA256).Hash -eq $dictionaryHash) 'Reinstall changed an installed dictionary.'
 # DelTree must remove the link itself, never follow it into an original folder.
 New-Item -ItemType Junction -Path (Join-Path $testProfile 'documents\external-link') -Target $original | Out-Null
 $null = Invoke-Setup (Get-QAUninstaller) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/PURGEUSERDATA', ('/LOG="' + (Join-Path $sandbox 'delete-library.log') + '"'))

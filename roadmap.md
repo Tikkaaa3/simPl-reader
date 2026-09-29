@@ -13,6 +13,13 @@ search, bookmarks/highlights/notes and offline Windows read-aloud are implemente
 Listen toggles speech off; pause/resume remains available. The toolbar collapses.
 The 0.1.1 consolidation and current validation limits are recorded in
 [stabilization-report.md](stabilization-report.md).
+The [2026-09-30 release audit](release-audit-2026-09-30.md) supersedes its test
+counts and package measurements for the current candidate. Word dictionaries
+now use 13 optional verified downloads; automatic selection lookup and manual
+context-menu lookup share a local result card. The audit covers all five source
+formats on a real Windows desktop, save-error recovery, native speech and
+installer data retention. High-DPI CPU frame costs and independent machine
+qualification remain explicit follow-ups.
 Independent clean-Windows and accessibility qualification remain open.
 
 ## Product goal and present reality

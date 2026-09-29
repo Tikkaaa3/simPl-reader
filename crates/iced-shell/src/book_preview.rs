@@ -2035,3 +2035,58 @@ fn render_reading_themes() {
         render(&mut reader, &output.join(format!("settings-{label}.png")));
     }
 }
+
+#[test]
+#[ignore = "Release audit visuals: production empty/populated shelves at responsive breakpoints"]
+fn render_release_audit_shelves() {
+    use reader_document::{library::SourceFormat, recent::DocumentKind};
+    let output = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_OUTPUT").expect("output directory"));
+    std::fs::create_dir_all(&output).unwrap();
+    for bytes in ui::font_data() {
+        iced::advanced::graphics::text::font_system()
+            .write()
+            .unwrap()
+            .load_font(std::borrow::Cow::Borrowed(bytes));
+    }
+    for populated in [false, true] {
+        for width in [540.0, 640.0, 767.0, 768.0, 900.0, 1024.0, 1280.0] {
+            for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+                let mut reader = Reader {
+                    window_size: Size::new(width, 800.0),
+                    appearance,
+                    ..Default::default()
+                };
+                let mut entries = if populated {
+                    shelf::sample_entries(&[
+                        ("Notes for a quiet afternoon", DocumentKind::Html),
+                        ("Markdown — Café & 日本語", DocumentKind::Html),
+                        ("Pride and Prejudice", DocumentKind::Epub),
+                        (
+                            "A long document title that should fit every supported shelf card without covering the controls",
+                            DocumentKind::Pdf,
+                        ),
+                    ])
+                } else {
+                    Vec::new()
+                };
+                if populated {
+                    entries[0].source_kind = Some(SourceFormat::Text);
+                    entries[1].source_kind = Some(SourceFormat::Markdown);
+                }
+                let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+                let _ = reader
+                    .shelf
+                    .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+                let _ = reader.shelf.resize(reader.window_size);
+                reader.focused = Some(Control::Shelf(shelf::Control::Add));
+                render(
+                    &mut reader,
+                    &output.join(format!(
+                        "shelf-{}-{width}-{name}.png",
+                        if populated { "populated" } else { "empty" }
+                    )),
+                );
+            }
+        }
+    }
+}

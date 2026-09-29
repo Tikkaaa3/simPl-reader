@@ -29,6 +29,7 @@ pub enum Sort {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     Add,
+    RetrySave,
     Resume(usize),
     Document(usize),
     FavouriteDocument(usize),
@@ -86,6 +87,7 @@ pub struct Shelf {
     pub saving: bool,
     pub dirty: bool,
     pub blocked: bool,
+    save_failed: bool,
     pub visible: bool,
     pending: Vec<(Entry, Option<std::path::PathBuf>)>,
     covers: HashMap<String, Option<image::Handle>>,
@@ -103,6 +105,7 @@ pub struct Shelf {
     shelves_saving: bool,
     shelves_dirty: bool,
     shelves_blocked: bool,
+    shelves_save_failed: bool,
     filter: Option<u64>,
     menu: Option<(usize, bool)>,
     naming: Option<Naming>,
@@ -117,6 +120,7 @@ impl Default for Shelf {
             saving: false,
             dirty: false,
             blocked: false,
+            save_failed: false,
             visible: true,
             pending: Vec::new(),
             covers: HashMap::new(),
@@ -134,6 +138,7 @@ impl Default for Shelf {
             shelves_saving: false,
             shelves_dirty: false,
             shelves_blocked: false,
+            shelves_save_failed: false,
             filter: None,
             menu: None,
             naming: None,
@@ -154,6 +159,37 @@ impl Shelf {
         !self.shelves_saving && !(self.shelves_dirty && !self.shelves_blocked)
     }
 
+    pub fn has_failed_save(&self) -> bool {
+        self.save_failed || self.shelves_save_failed
+    }
+
+    /// An explicit retry writes the current state, including edits made since the failure.
+    pub fn retry_failed_saves(&mut self) -> Task<Message> {
+        let library = std::mem::take(&mut self.save_failed);
+        let shelves = std::mem::take(&mut self.shelves_save_failed);
+        Task::batch([
+            if library {
+                self.persist()
+            } else {
+                Task::none()
+            },
+            if shelves {
+                self.persist_shelves()
+            } else {
+                Task::none()
+            },
+        ])
+    }
+
+    pub fn discard_failed_saves(&mut self) {
+        if std::mem::take(&mut self.save_failed) {
+            self.dirty = false;
+        }
+        if std::mem::take(&mut self.shelves_save_failed) {
+            self.shelves_dirty = false;
+        }
+    }
+
     /// Escape closes the shelf-name field, then the shelf menu.
     pub fn dismiss(&mut self) -> bool {
         if self.naming.take().is_some() {
@@ -166,6 +202,7 @@ impl Shelf {
         if !self.shelves_loaded
             || self.shelves_saving
             || self.shelves_blocked
+            || self.shelves_save_failed
             || !self.shelves_dirty
         {
             return Task::none();
@@ -242,6 +279,7 @@ impl Shelf {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Activate(Control::RetrySave) => self.retry_failed_saves(),
             Message::Hover(control) => {
                 // The shelf menu belongs to its card: leaving the card closes it,
                 // unless a new shelf is being named there.
@@ -278,7 +316,11 @@ impl Shelf {
             Message::ShelvesSaved(result) => {
                 self.shelves_saving = false;
                 if let Err(error) = result {
+                    self.shelves_dirty = true;
+                    self.shelves_save_failed = true;
                     self.notice = Some(format!("Could not save your shelves: {error}"));
+                } else if !self.save_failed && !self.blocked && !self.shelves_blocked {
+                    self.notice = None;
                 }
                 self.persist_shelves()
             }
@@ -372,8 +414,10 @@ impl Shelf {
             Message::Saved(result) => {
                 self.saving = false;
                 if let Err(error) = result {
+                    self.dirty = true;
+                    self.save_failed = true;
                     self.notice = Some(format!("Could not save the library: {error}"));
-                } else {
+                } else if !self.shelves_save_failed && !self.blocked && !self.shelves_blocked {
                     self.notice = None;
                 }
                 self.persist()
@@ -411,7 +455,7 @@ impl Shelf {
     }
 
     pub fn persist(&mut self) -> Task<Message> {
-        if self.loading || self.saving || self.blocked || !self.dirty {
+        if self.loading || self.saving || self.blocked || self.save_failed || !self.dirty {
             return Task::none();
         }
         self.saving = true;
@@ -850,6 +894,12 @@ impl Shelf {
     ) -> Element<'_, Message> {
         let m = self.metrics();
         let wide = self.size.width >= 768.0;
+        let add_width = 280.0;
+        let intro_width = if wide {
+            m.width - add_width - 24.0
+        } else {
+            m.width
+        };
         let intro = column![
             row![
                 container(Space::new().width(8).height(8))
@@ -872,7 +922,7 @@ impl Shelf {
                 .shaping(text::Shaping::Advanced),
         ]
         .spacing(8)
-        .width(448.0_f32.min(m.width));
+        .width(448.0_f32.min(intro_width));
         let add = card_button(
             row![
                 container(icon("\u{e145}", 18).style(ui::accent_text))
@@ -891,7 +941,7 @@ impl Shelf {
             false,
         )
         .padding([12, 20])
-        .width(224)
+        .width(add_width)
         .height(58)
         .style(move |theme, status| {
             card_style(
@@ -1086,12 +1136,11 @@ impl Shelf {
             })
             .width(Length::Fill)
             .max_width(1240);
-        let footer_left =
-            label("simPl Reader — Continuous Distraction-Free Synthesis", 11).style(ui::muted_text);
+        let footer_left = label("simPl Reader", 11).style(ui::muted_text);
         let footer_right = row![
             label("Ctrl+K  Quick Switcher", 11).style(ui::muted_text),
             icon("\u{e86f}", 14).style(ui::muted_text),
-            label("UTF-8 Engine", 11).style(ui::muted_text)
+            label("Offline reading", 11).style(ui::muted_text)
         ]
         .spacing(12)
         .align_y(Alignment::Center);
@@ -1160,7 +1209,7 @@ impl Shelf {
                 container(
                     label(
                         if self.entries.is_empty() {
-                            "Your library is empty. Add local EPUB, PDF, or HTML files above."
+                            "Your library is empty. Add a local document above."
                         } else if self.filter.is_some() {
                             "No books on this shelf yet. Open a book's ⋯ menu to add it."
                         } else {
@@ -2155,6 +2204,42 @@ mod tests {
             .find(|shelf| shelf.name == name)
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn failed_library_save_retains_edits_and_waits_for_explicit_retry() {
+        let mut shelf = shelf_with(&["Alpha", "Beta"]);
+        let _ = shelf.update(Message::Activate(Control::Favourite(0, false)));
+        assert!(shelf.saving);
+        let _ = shelf.update(Message::Saved(Err("disk full".into())));
+        assert!(shelf.dirty && shelf.has_failed_save() && !shelf.saving);
+        let _ = shelf.persist();
+        assert!(!shelf.saving, "a failure must not start a retry loop");
+        let _ = shelf.update(Message::Activate(Control::Favourite(1, false)));
+        assert!(shelf.entries.iter().all(|entry| entry.favourite));
+        assert!(!shelf.saving);
+        let _ = shelf.update(Message::Activate(Control::RetrySave));
+        assert!(shelf.saving && !shelf.dirty && !shelf.has_failed_save());
+        let _ = shelf.update(Message::Saved(Ok(())));
+        assert!(shelf.notice.is_none() && !shelf.dirty);
+        assert!(shelf.entries.iter().all(|entry| entry.favourite));
+    }
+
+    #[test]
+    fn failed_shelves_save_retains_the_latest_names_and_can_be_discarded() {
+        let mut shelf = shelf_with(&["Alpha"]);
+        name(&mut shelf, Control::NewShelf, "First");
+        let _ = shelf.update(Message::ShelvesSaved(Err("disk full".into())));
+        assert!(shelf.has_failed_save() && !shelf.shelves_settled());
+        name(&mut shelf, Control::NewShelf, "Second");
+        assert_eq!(shelf.shelves.shelves.len(), 2);
+        assert!(!shelf.shelves_saving);
+        let _ = shelf.retry_failed_saves();
+        assert!(shelf.shelves_saving);
+        let _ = shelf.update(Message::ShelvesSaved(Err("still unavailable".into())));
+        shelf.discard_failed_saves();
+        assert!(!shelf.has_failed_save() && shelf.shelves_settled());
+        assert_eq!(shelf.shelves.shelves.len(), 2);
     }
 
     #[test]

@@ -172,17 +172,20 @@ impl Lexicon {
         let mut offset = 0;
         let mut previous = "";
         for line in text.split_inclusive('\n') {
-            let fields: Vec<_> = line.trim_end_matches('\n').split('\t').collect();
-            if fields.len() != 3
-                || fields[0].is_empty()
-                || fields[1].is_empty()
-                || fields[2].is_empty()
-                || fields[0] <= previous
+            let mut fields = line.trim_end_matches('\n').split('\t');
+            let key = fields.next().unwrap_or_default();
+            let headword = fields.next().unwrap_or_default();
+            let meanings = fields.next().unwrap_or_default();
+            if fields.next().is_some()
+                || key.is_empty()
+                || headword.is_empty()
+                || meanings.is_empty()
+                || key <= previous
                 || line.len() > 24 * 1024
             {
                 return Err("The local dictionary index is invalid.".into());
             }
-            previous = fields[0];
+            previous = key;
             lines.push(offset as u32);
             offset += line.len();
         }
@@ -310,6 +313,49 @@ mod tests {
         store
             .install(id, &bytes(id), &std::sync::atomic::AtomicBool::new(false))
             .unwrap();
+    }
+
+    #[test]
+    #[ignore = "Release lookup timing: installed source fixtures in an owned temporary store"]
+    fn profile_installed_dictionary_lookup() {
+        let fixture = fixture();
+        for (index, p) in packages().iter().enumerate() {
+            let id = PackageId(index);
+            install(&fixture.store, id);
+            let word = match p.source {
+                Language::English => "book",
+                Language::Turkish => "kitap",
+                Language::Spanish => "libro",
+                Language::German => "Buch",
+                Language::French => "livre",
+                Language::Japanese => "本",
+                Language::Chinese => "書",
+                Language::Korean => "책",
+            };
+            let mut first = Vec::new();
+            for _ in 0..5 {
+                let reopened = Store::new(fixture.path.clone());
+                let started = std::time::Instant::now();
+                assert!(reopened.lookup(word, p.source, p.target).unwrap().is_some());
+                first.push(started.elapsed().as_micros());
+            }
+            first.sort_unstable();
+            let reopened = Store::new(fixture.path.clone());
+            assert!(reopened.lookup(word, p.source, p.target).unwrap().is_some());
+            let started = std::time::Instant::now();
+            for _ in 0..1000 {
+                assert!(
+                    std::hint::black_box(reopened.lookup(word, p.source, p.target).unwrap())
+                        .is_some()
+                );
+            }
+            println!(
+                "{} first_median_us={} warm_mean_us={:.2}",
+                p.label(),
+                first[2],
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 
     #[test]

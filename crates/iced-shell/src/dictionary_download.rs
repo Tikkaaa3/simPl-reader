@@ -195,6 +195,29 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Live download error QA: one missing asset and one cancelled HTTPS transfer"]
+    fn published_failure_and_midstream_cancel_do_not_return_installable_bytes() {
+        let package = dictionary::package(PackageId(0)).unwrap();
+        let cancel = AtomicBool::new(false);
+        let error = download_url(
+            &format!("{}.missing", package.url()),
+            package.bytes,
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.contains("HTTP 404"), "{error}");
+        let mut received = 0;
+        let error = download(package, &cancel, |bytes| {
+            received = bytes;
+            cancel.store(true, Ordering::Release);
+        })
+        .unwrap_err();
+        assert!(received > 0 && received < package.bytes);
+        assert_eq!(error, "Download cancelled.");
+    }
+
+    #[test]
     #[ignore = "Published data QA: fetches all 13 GitHub packages into an owned temporary store"]
     fn published_packages_download_install_and_work_offline() {
         let root =

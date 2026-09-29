@@ -81,7 +81,11 @@ fn button_style(theme: &Theme, status: button::Status, focused: bool) -> button:
 fn hint(
     content: impl Into<Element<'static, Action>>,
     caption: &'static str,
+    enabled: bool,
 ) -> Element<'static, Action> {
+    if !enabled {
+        return content.into();
+    }
     tooltip(
         content,
         text(caption)
@@ -121,6 +125,7 @@ fn dot(
     action: Action,
     color: impl Fn(&Theme) -> Color + 'static,
     focused: Option<Action>,
+    hints: bool,
     caption: &'static str,
 ) -> Element<'static, Action> {
     let selected = focused == Some(action);
@@ -138,13 +143,14 @@ fn dot(
         .height(30)
         .padding([9, 4])
         .style(move |theme, status| button_style(theme, status, selected));
-    hint(focus_marker(control, selected), caption)
+    hint(focus_marker(control, selected), caption, hints)
 }
 
 fn icon(
     action: Action,
     name: &'static str,
     focused: Option<Action>,
+    hints: bool,
     caption: &'static str,
 ) -> Element<'static, Action> {
     let selected = focused == Some(action);
@@ -166,7 +172,7 @@ fn icon(
     .height(32)
     .padding(6)
     .style(move |theme, status| button_style(theme, status, selected));
-    hint(focus_marker(control, selected), caption)
+    hint(focus_marker(control, selected), caption, hints)
 }
 
 /// A Windows caption button drawn with the system's Segoe MDL2 Assets glyphs.
@@ -174,6 +180,7 @@ fn caption(
     action: Action,
     glyph: &'static str,
     focused: Option<Action>,
+    hints: bool,
     tip: &'static str,
 ) -> Element<'static, Action> {
     let selected = focused == Some(action);
@@ -201,7 +208,7 @@ fn caption(
         }
         style
     });
-    hint(focus_marker(control, selected), tip)
+    hint(focus_marker(control, selected), tip, hints)
 }
 
 /// Native window button style and state shown in the header.
@@ -209,6 +216,8 @@ fn caption(
 pub struct Controls {
     pub style: WindowControls,
     pub maximized: bool,
+    /// Suppress background hover overlays while a product modal is open.
+    pub tooltips: bool,
 }
 
 /// The 48-DIP draggable header. Controls receive events before the drag surface.
@@ -226,30 +235,57 @@ pub fn view<'a>(
             Action::Close,
             |theme| blend(theme, ui::palette(theme).danger, 0.8),
             focused,
+            controls.tooltips,
             "Close window"
         ),
         dot(
             Action::Minimize,
             |theme| blend(theme, ui::palette(theme).muted, 0.6),
             focused,
+            controls.tooltips,
             "Minimize window"
         ),
         dot(
             Action::Maximize,
             |theme| blend(theme, ui::palette(theme).border, 0.8),
             focused,
+            controls.tooltips,
             "Maximize or restore window"
         ),
     ]
     .align_y(iced::Alignment::Center);
     let captions = row![
-        caption(Action::Minimize, "\u{e921}", focused, "Minimize"),
+        caption(
+            Action::Minimize,
+            "\u{e921}",
+            focused,
+            controls.tooltips,
+            "Minimize"
+        ),
         if controls.maximized {
-            caption(Action::Maximize, "\u{e923}", focused, "Restore down")
+            caption(
+                Action::Maximize,
+                "\u{e923}",
+                focused,
+                controls.tooltips,
+                "Restore down",
+            )
         } else {
-            caption(Action::Maximize, "\u{e922}", focused, "Maximize")
+            caption(
+                Action::Maximize,
+                "\u{e922}",
+                focused,
+                controls.tooltips,
+                "Maximize",
+            )
         },
-        caption(Action::Close, "\u{e8bb}", focused, "Close"),
+        caption(
+            Action::Close,
+            "\u{e8bb}",
+            focused,
+            controls.tooltips,
+            "Close"
+        ),
     ]
     .spacing(CAPTION_GAP)
     .align_y(iced::Alignment::Center);
@@ -257,12 +293,19 @@ pub fn view<'a>(
     // Settings becomes the outside button on the Windows left edge.
     let mut tools = row![];
     if controls.style == WindowControls::Windows {
-        tools = tools.push(icon(Action::Settings, "\u{e8b8}", focused, "Settings"));
+        tools = tools.push(icon(
+            Action::Settings,
+            "\u{e8b8}",
+            focused,
+            controls.tooltips,
+            "Settings",
+        ));
     } else {
         tools = tools.push(icon(
             Action::Search,
             "\u{e8b6}",
             focused,
+            controls.tooltips,
             "Search or switch (Ctrl+K)",
         ));
     }
@@ -275,6 +318,7 @@ pub fn view<'a>(
                 "☾"
             },
             focused,
+            controls.tooltips,
             appearance.toggle_label(),
         )
     });
@@ -283,6 +327,7 @@ pub fn view<'a>(
             Action::ToggleToolbar,
             "▤",
             focused,
+            controls.tooltips,
             if expanded {
                 "Hide reading toolbar (F8)"
             } else {
@@ -301,6 +346,7 @@ pub fn view<'a>(
             Action::Search,
             "\u{e8b6}",
             focused,
+            controls.tooltips,
             "Search or switch (Ctrl+K)",
         ));
     } else {
@@ -310,7 +356,13 @@ pub fn view<'a>(
         if let Some(icon) = toolbar_icon {
             tools = tools.push(icon);
         }
-        tools = tools.push(icon(Action::Settings, "\u{e8b8}", focused, "Settings"));
+        tools = tools.push(icon(
+            Action::Settings,
+            "\u{e8b8}",
+            focused,
+            controls.tooltips,
+            "Settings",
+        ));
     }
     let tools = tools.spacing(8).align_y(iced::Alignment::Center);
     let tool_count: f32 = 2.0 + f32::from(appearance.is_some()) + f32::from(toolbar.is_some());

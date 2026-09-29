@@ -157,6 +157,7 @@ Those books are not repository fixtures.
 After a release build, choose the driver appropriate to the change:
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File crates\iced-shell\tests\release-smoke.ps1 -EvidenceDirectory target\release-audit\native-fresh
 powershell -NoProfile -ExecutionPolicy Bypass -File crates\iced-shell\tests\reader-poc.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File crates\iced-shell\tests\virtual-reader.ps1 -EvidenceDirectory target\virtual-fresh
 powershell -NoProfile -ExecutionPolicy Bypass -File crates\iced-shell\tests\selection-copy.ps1 -EvidenceDirectory target\selection-fresh
@@ -166,6 +167,25 @@ These drivers own the processes they launch and require an idle, unobscured Wind
 desktop. They move focus/pointer state; selection checks overwrite the clipboard.
 Use fresh output directories. Additional drivers under `tests/` cover native input,
 runtime evidence, BiDi and interaction timing; inspect their parameters before use.
+
+`release-smoke.ps1` exercises the normal release reader with authored TXT,
+Markdown, HTML, EPUB and PDF documents. It checks the native picker, shortcuts,
+double-click word selection, an explicit dictionary download and checksum,
+source-format persistence and normal window close. It writes screenshots for
+visual review, uses its own `LOCALAPPDATA` profile, checks that its reader owns
+foreground focus before sending input, and leaves the clipboard untouched.
+Generate the authored EPUB and PDF fixtures first (see their fixture guides).
+Its screenshots are evidence for the desktop's actual DPI, not other monitors.
+
+The opt-in `production_format_workflows` test drives real application updates
+and asynchronous storage tasks, then renders production widgets at 540, 900
+and 1280 DIP in both palettes. Set `SIMPL_PREVIEW_STORE` and `LOCALAPPDATA`
+to the same fresh disposable directory, and set `SIMPL_PREVIEW_OUTPUT` before
+running it with `cargo test --release -p iced-shell --locked --offline
+production_format_workflows -- --ignored --nocapture --test-threads=1`.
+Window/clipboard actions are excluded from this state-and-storage probe.
+The [2026-09-30 release audit](../../release-audit-2026-09-30.md) records the
+tested build, corrections, measurements and remaining qualification work.
 
 `--reader-poc` and `--reader-poc-large` load authored 1,000/10,000-paragraph workloads
 from `fixtures/reader-workload`. They are diagnostic modes, not the normal reader.

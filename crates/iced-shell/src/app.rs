@@ -33,6 +33,10 @@ mod read_aloud;
 #[path = "word_translation.rs"]
 pub(crate) mod word_translation;
 
+#[cfg(test)]
+#[path = "release_audit.rs"]
+mod release_audit;
+
 const DEFAULT_FONT_SIZE: f32 = MINIMAL.default_size;
 const OVERSCAN: f32 = 600.0;
 const CONTENT_ROW_HEIGHT: f32 = 34.0;
@@ -2163,6 +2167,9 @@ impl Reader {
             self.error.as_ref().map(|_| Control::DismissError),
             self.missing_recent.as_ref().map(|_| Control::LocateMissing),
             self.failed_close.map(|_| Control::CloseWithoutSaving),
+            self.shelf
+                .has_failed_save()
+                .then_some(Control::Shelf(shelf::Control::RetrySave)),
             (self.history_corrupt && self.history_notice.is_some()).then_some(Control::ResetRecent),
             history.then_some(Control::HideRecent),
         ];
@@ -2740,6 +2747,12 @@ impl Reader {
         self.pending_notes_close = None;
         match action {
             CloseAction::Window => {
+                if self.shelf.has_failed_save() {
+                    self.pending_exit = false;
+                    self.failed_close = Some(action);
+                    self.error = self.shelf.notice.clone();
+                    return note;
+                }
                 if !self.exit_ready() {
                     self.pending_exit = true;
                     Task::batch([
@@ -2776,6 +2789,7 @@ impl Reader {
         }
         self.failed_close = None;
         self.notes.failed_save = false;
+        let library_retry = self.shelf.retry_failed_saves().map(Message::Shelf);
         self.cancel_open();
         self.selection.end_drag();
         self.show_search = false;
@@ -2783,11 +2797,14 @@ impl Reader {
         self.capture_progress();
         if let Some(position) = self.document_position() {
             self.saving = true;
-            Task::perform(async move { position.save() }, move |result| {
-                Message::Saved { action, result }
-            })
+            Task::batch([
+                library_retry,
+                Task::perform(async move { position.save() }, move |result| {
+                    Message::Saved { action, result }
+                }),
+            ])
         } else {
-            self.finish_close(action)
+            Task::batch([library_retry, self.finish_close(action)])
         }
     }
 
@@ -3469,8 +3486,20 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             | shelf::Control::DeleteShelf,
         )) if !reader.interactive() => Task::none(),
         Message::Shelf(message) => {
+            if matches!(message, shelf::Message::Activate(shelf::Control::RetrySave))
+                && matches!(reader.failed_close, Some(CloseAction::Window))
+            {
+                reader.failed_close = None;
+                reader.error = None;
+                reader.pending_exit = true;
+            }
             let task = reader.shelf.update(message).map(Message::Shelf);
-            if reader.pending_exit && reader.exit_ready() {
+            if reader.pending_exit && reader.shelf.has_failed_save() {
+                reader.pending_exit = false;
+                reader.failed_close = Some(CloseAction::Window);
+                reader.error = reader.shelf.notice.clone();
+                task
+            } else if reader.pending_exit && reader.exit_ready() {
                 iced::exit()
             } else {
                 task
@@ -4290,6 +4319,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::CloseWithoutSaving => reader.failed_close.map_or_else(Task::none, |action| {
             reader.notes.discard_failed_save();
+            reader.shelf.discard_failed_saves();
             reader.finish_close(action)
         }),
         Message::Event(event, id) => {
@@ -5701,7 +5731,7 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 .style(ui::muted_text),
             )
             .push(
-                text("Remove only forgets the library entry; your file stays on disk.")
+                text("Remove deletes simPl’s copy; your original file is kept.")
                     .size(11)
                     .style(ui::muted_text),
             );
@@ -6536,8 +6566,24 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         );
     }
     if let Some(notice) = &reader.shelf.notice {
+        let mut content = row![
+            text(notice)
+                .size(12)
+                .style(ui::danger_text)
+                .width(Length::Fill)
+        ];
+        if reader.shelf.has_failed_save() {
+            content = content.push(control_button(
+                reader,
+                Control::Shelf(shelf::Control::RetrySave),
+                text("Retry save").size(12),
+                Some(Message::Shelf(shelf::Message::Activate(
+                    shelf::Control::RetrySave,
+                ))),
+            ));
+        }
         auxiliary = auxiliary.push(
-            container(text(notice).size(12).style(ui::danger_text))
+            container(content.spacing(8).align_y(iced::Alignment::Center))
                 .padding(12)
                 .style(ui::panel),
         );
@@ -6585,6 +6631,10 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             chrome::Controls {
                 style: reader.window_controls,
                 maximized: reader.maximized,
+                tooltips: !reader.show_settings
+                    && !reader.show_search
+                    && reader.confirm_remove.is_none()
+                    && reader.notes.editor.is_none(),
             },
             (!has_document).then_some(reader.appearance),
             has_document.then_some(reader.toolbar_expanded),
@@ -8038,6 +8088,47 @@ mod tests {
         );
         assert!(reader.find.is_none());
         assert!(reader.selection.endpoints().is_none());
+    }
+
+    #[test]
+    fn failed_library_write_stops_window_close_until_retry_or_discard() {
+        for retry in [true, false] {
+            let mut reader = Reader {
+                preferences_loading: false,
+                recent_loading: false,
+                ..Default::default()
+            };
+            let _ = reader.shelf.update(shelf::Message::Loaded(Ok(Vec::new())));
+            let _ = reader
+                .shelf
+                .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+            reader.pending_exit = true;
+            let _ = update_inner(
+                &mut reader,
+                Message::Shelf(shelf::Message::Saved(Err("disk full".into()))),
+            );
+            assert!(!reader.pending_exit && !reader.exit_ready());
+            assert!(matches!(reader.failed_close, Some(CloseAction::Window)));
+            assert!(
+                reader
+                    .controls()
+                    .any(|c| c == Control::Shelf(shelf::Control::RetrySave))
+            );
+            if retry {
+                let _ = update_inner(
+                    &mut reader,
+                    Message::Shelf(shelf::Message::Activate(shelf::Control::RetrySave)),
+                );
+                assert!(reader.pending_exit && reader.failed_close.is_none());
+                assert!(reader.shelf.saving);
+                let _ = update_inner(&mut reader, Message::Shelf(shelf::Message::Saved(Ok(()))));
+                assert!(reader.exit_ready() && !reader.shelf.has_failed_save());
+            } else {
+                let _ = update_inner(&mut reader, Message::CloseWithoutSaving);
+                assert!(reader.exit_ready() && !reader.shelf.has_failed_save());
+                assert!(reader.failed_close.is_none());
+            }
+        }
     }
 
     #[test]
