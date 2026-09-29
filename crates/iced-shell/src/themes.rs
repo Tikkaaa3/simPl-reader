@@ -66,7 +66,7 @@ const fn palette(
 
 /// The order here is the order shown in the settings panel; the first is the default.
 pub static THEMES: [ReadingTheme; 4] = [
-    // simPl's own look: slate with an ice-blue accent.
+    // The look simPl always had, with an ice-blue accent.
     ReadingTheme {
         id: DEFAULT_ID,
         name: "Default",

@@ -5743,7 +5743,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     let available_width = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
     let side_padding = MINIMAL.side_padding(available_width);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
-        .center_x((available_width - side_padding * 2.0).max(paper_width * reader.zoom + 14.0))
+        .center_x(available_width.max(paper_width * reader.zoom + 14.0 + side_padding * 2.0))
         .padding(iced::Padding {
             right: 14.0,
             ..Default::default()
@@ -5768,7 +5768,6 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
                     viewport: viewport.bounds().height,
                 }),
         ))
-        .padding([0.0, side_padding])
         .style(book_style::desk)
         .clip(true)
         .height(Length::Fill),
@@ -6042,10 +6041,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     };
     page = page.push(if has_document {
         row![
-            column![
-                container(content).width(Length::Fill).height(Length::Fill),
-                reading_progress(reader),
-            ],
+            container(content).width(Length::Fill).height(Length::Fill),
             notes_ui::sidebar(reader, active),
         ]
         .height(Length::Fill)
@@ -6060,28 +6056,6 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     chrome::frame(overlays(reader, base), |direction| {
         Message::Chrome(chrome::Action::Resize(direction))
     })
-}
-
-/// A 2px progress hairline along the bottom of the reading area.
-fn reading_progress(reader: &Reader) -> Element<'_, Message> {
-    let progress = if let Some(pdf) = &reader.pdf {
-        let total = pdf.document().pages.len();
-        (total > 0).then(|| (pdf.page_index() + 1) as f32 / total as f32)
-    } else {
-        let total = reader.page_total();
-        let pages = reader.pages();
-        book_pages::current(&pages, reader.offset)
-            .filter(|_| total > 0)
-            .map(|page| page.number as f32 / total as f32)
-    };
-    iced::widget::progress_bar(0.0..=1.0, progress.unwrap_or(0.0).clamp(0.0, 1.0))
-        .girth(2)
-        .style(|theme| iced::widget::progress_bar::Style {
-            background: ui::palette(theme).border.scale_alpha(0.5).into(),
-            bar: ui::palette(theme).accent.into(),
-            border: iced::Border::default(),
-        })
-        .into()
 }
 
 fn title(reader: &Reader) -> String {

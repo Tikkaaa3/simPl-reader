@@ -21,33 +21,33 @@ pub struct Palette {
     pub control_border: Color,
 }
 
-/// Slate surfaces with a restrained ice-blue accent (design/DESIGN.md).
+/// Neutral surfaces with a restrained ice-blue accent.
 pub(crate) const DARK: Palette = Palette {
-    background: Color::from_rgb8(0x0d, 0x11, 0x17),
-    surface: Color::from_rgb8(0x16, 0x1b, 0x22),
-    raised: Color::from_rgb8(0x1c, 0x22, 0x2b),
-    lowest: Color::from_rgb8(0x0d, 0x11, 0x17),
-    border: Color::from_rgb8(0x30, 0x36, 0x3d),
-    text: Color::from_rgb8(0xe6, 0xed, 0xf3),
-    secondary: Color::from_rgb8(0xb1, 0xba, 0xc4),
-    muted: Color::from_rgb8(0x8b, 0x94, 0x9e),
+    background: Color::from_rgb8(0x0c, 0x0c, 0x0c),
+    surface: Color::from_rgb8(0x10, 0x10, 0x10),
+    raised: Color::from_rgb8(0x16, 0x16, 0x16),
+    lowest: Color::from_rgb8(0x0c, 0x0c, 0x0c),
+    border: Color::from_rgb8(0x27, 0x27, 0x27),
+    text: Color::from_rgb8(0xed, 0xed, 0xed),
+    secondary: Color::from_rgb8(0xb5, 0xb5, 0xb5),
+    muted: Color::from_rgb8(0x85, 0x85, 0x85),
     accent: Color::from_rgb8(0x58, 0xa6, 0xff),
     danger: Color::from_rgb8(0xff, 0xb4, 0xab),
-    control_border: Color::from_rgb8(0x30, 0x36, 0x3d),
+    control_border: Color::from_rgb8(0x2a, 0x2a, 0x2a),
 };
 
 pub(crate) const LIGHT: Palette = Palette {
     background: Color::from_rgb8(0xff, 0xff, 0xff),
-    surface: Color::from_rgb8(0xf6, 0xf8, 0xfa),
+    surface: Color::from_rgb8(0xf6, 0xf6, 0xf6),
     raised: Color::from_rgb8(0xff, 0xff, 0xff),
     lowest: Color::from_rgb8(0xff, 0xff, 0xff),
-    border: Color::from_rgb8(0xd8, 0xde, 0xe4),
-    text: Color::from_rgb8(0x1f, 0x23, 0x28),
-    secondary: Color::from_rgb8(0x59, 0x63, 0x6e),
-    muted: Color::from_rgb8(0x6e, 0x77, 0x81),
+    border: Color::from_rgb8(0xe5, 0xe5, 0xe5),
+    text: Color::from_rgb8(0x10, 0x10, 0x10),
+    secondary: Color::from_rgb8(0x52, 0x52, 0x52),
+    muted: Color::from_rgb8(0x73, 0x73, 0x73),
     accent: Color::from_rgb8(0x09, 0x69, 0xda),
-    danger: Color::from_rgb8(0xcf, 0x22, 0x2e),
-    control_border: Color::from_rgb8(0xd0, 0xd7, 0xde),
+    danger: Color::from_rgb8(0xa3, 0x2b, 0x2b),
+    control_border: Color::from_rgb8(0xe2, 0xe2, 0xe2),
 };
 pub fn palette(theme: &Theme) -> Palette {
     crate::themes::palette_of(theme).unwrap_or(if theme.extended_palette().is_dark {

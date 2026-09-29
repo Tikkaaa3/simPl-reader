@@ -1421,33 +1421,45 @@ pub(super) fn ribbon<'a>(reader: &Reader, paper_width: f32) -> Element<'a, Messa
 pub(super) fn sidebar(reader: &Reader, active: bool) -> Element<'_, Message> {
     let open = reader.notes.list.is_some();
     let focus = reader.focused == Some(Control::Notes(Focus::ToggleList));
-    let toggle = iced::widget::button(text(if open { "›" } else { "‹" }).size(30))
-        .padding(0)
-        .width(26)
-        .height(42)
-        .on_press_maybe(active.then_some(Message::Notes(Action::ToggleList)))
-        .style(move |theme, status| {
-            let palette = ui::palette(theme);
-            iced::widget::button::Style {
-                text_color: if focus || matches!(status, iced::widget::button::Status::Hovered) {
+    let toggle = iced::widget::button(
+        container(text(if open { "›" } else { "‹" }).size(20).line_height(1.0)).center(20),
+    )
+    .padding(0)
+    .width(20)
+    .height(56)
+    .on_press_maybe(active.then_some(Message::Notes(Action::ToggleList)))
+    .style(move |theme, status| {
+        let palette = ui::palette(theme);
+        let hovered = matches!(
+            status,
+            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+        );
+        iced::widget::button::Style {
+            text_color: if focus || hovered || open {
+                palette.accent
+            } else {
+                palette.secondary
+            },
+            background: Some(
+                if hovered {
+                    palette.raised
+                } else {
+                    palette.surface
+                }
+                .into(),
+            ),
+            border: iced::Border {
+                color: if focus {
                     palette.accent
                 } else {
-                    palette.secondary
+                    palette.border
                 },
-                background: matches!(status, iced::widget::button::Status::Hovered)
-                    .then_some(palette.surface.into()),
-                border: if focus {
-                    iced::Border {
-                        color: palette.accent,
-                        width: 1.0,
-                        radius: 4.0.into(),
-                    }
-                } else {
-                    iced::Border::default()
-                },
-                ..Default::default()
-            }
-        });
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        }
+    });
     let toggle: Element<'_, Message> = tooltip(
         toggle,
         text(if open {
@@ -1459,20 +1471,11 @@ pub(super) fn sidebar(reader: &Reader, active: bool) -> Element<'_, Message> {
         tooltip::Position::Left,
     )
     .into();
-    let line = || {
-        container(
-            container(Space::new().width(1).height(Length::Fill)).style(|theme| container::Style {
-                background: Some(ui::palette(theme).control_border.into()),
-                ..container::Style::default()
-            }),
-        )
+    let edge = container(toggle)
         .width(26)
         .height(Length::Fill)
         .center_x(26)
-    };
-    let edge = column![line(), toggle, line()]
-        .width(26)
-        .height(Length::Fill);
+        .center_y(Length::Fill);
     match reader.notes.list {
         Some(tab) => row![edge, list_panel(reader, active, tab)]
             .height(Length::Fill)
