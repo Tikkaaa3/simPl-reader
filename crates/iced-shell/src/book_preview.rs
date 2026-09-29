@@ -1913,12 +1913,12 @@ fn hybrid_pdf_and_html_folder() {
         epub.author.clone(),
         false,
     );
-    assert_eq!(entry.format(), DocumentKind::Html);
+    assert_eq!(entry.format(), library::SourceFormat::Html);
     entry.source_kind = None;
     library::save(&[entry]).unwrap();
     std::fs::remove_file(managed.parent().unwrap().join(".simpl-source-format")).unwrap();
     let entries = library::load().unwrap();
-    assert_eq!(entries[0].format(), DocumentKind::Html);
+    assert_eq!(entries[0].format(), library::SourceFormat::Html);
     let mut shelf = Reader::default();
     let _ = shelf.shelf.update(shelf::Message::Loaded(Ok(entries)));
     render(&mut shelf, &output.join("html-library-format.png"));

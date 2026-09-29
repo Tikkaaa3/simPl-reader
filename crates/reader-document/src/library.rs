@@ -23,6 +23,26 @@ const MAX_SOURCE_RGBA: usize = 128 * 1024 * 1024;
 const COVER_WIDTH: u32 = 240;
 const COVER_HEIGHT: u32 = 360;
 
+/// Source format shown in the library, independent of the reader's internal container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceFormat {
+    Html,
+    Pdf,
+    Epub,
+    Text,
+    Markdown,
+}
+
+impl From<recent::DocumentKind> for SourceFormat {
+    fn from(kind: recent::DocumentKind) -> Self {
+        match kind {
+            recent::DocumentKind::Html => Self::Html,
+            recent::DocumentKind::Pdf => Self::Pdf,
+            recent::DocumentKind::Epub => Self::Epub,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
@@ -37,12 +57,13 @@ pub struct Entry {
     #[serde(default)]
     pub favourite: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_kind: Option<recent::DocumentKind>,
+    pub source_kind: Option<SourceFormat>,
 }
 
 impl Entry {
-    pub fn format(&self) -> recent::DocumentKind {
-        self.source_kind.unwrap_or(self.document.kind)
+    pub fn format(&self) -> SourceFormat {
+        self.source_kind
+            .unwrap_or_else(|| self.document.kind.into())
     }
 }
 
@@ -453,6 +474,30 @@ mod tests {
         let mut legacy = serde_json::to_value(original).unwrap();
         legacy.as_object_mut().unwrap().remove("favourite");
         assert!(!serde_json::from_value::<Entry>(legacy).unwrap().favourite);
+    }
+
+    #[test]
+    fn source_format_round_trips_independently_of_the_reader_container() {
+        for format in [
+            SourceFormat::Text,
+            SourceFormat::Markdown,
+            SourceFormat::Html,
+        ] {
+            let mut original = entry(1);
+            original.document.kind = DocumentKind::Html;
+            original.source_kind = Some(format);
+            let decoded: Entry =
+                serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+            assert_eq!(decoded.format(), format);
+            assert_eq!(decoded.document.kind, DocumentKind::Html);
+        }
+        // Existing v1 records use the same Html/Pdf/Epub spellings.
+        let mut original = entry(1);
+        original.source_kind = Some(SourceFormat::Html);
+        let encoded = serde_json::to_value(&original).unwrap();
+        assert_eq!(encoded["source_kind"], "Html");
+        original.source_kind = None;
+        assert_eq!(original.format(), SourceFormat::Epub);
     }
 
     #[test]

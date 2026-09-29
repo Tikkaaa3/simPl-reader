@@ -10,7 +10,8 @@ use iced::widget::{
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Size, Task,
 };
-use reader_document::library::{self, Entry};
+use reader_document::library::{self, Entry, SourceFormat};
+#[cfg(test)]
 use reader_document::recent::DocumentKind;
 use reader_document::shelves::{self, Shelves};
 
@@ -1790,7 +1791,7 @@ impl Shelf {
             label(format_name(entry.format()), 10)
                 .font(ui::SEMIBOLD)
                 .style(move |theme| iced::widget::text::Style {
-                    color: Some(if entry.format() == DocumentKind::Epub {
+                    color: Some(if entry.format() == SourceFormat::Epub {
                         ui::palette(theme).accent
                     } else {
                         ui::palette(theme).secondary
@@ -1840,11 +1841,13 @@ struct Metrics {
     grid_top: f32,
 }
 
-pub fn format_name(kind: DocumentKind) -> &'static str {
+pub fn format_name(kind: SourceFormat) -> &'static str {
     match kind {
-        DocumentKind::Html => "HTML",
-        DocumentKind::Pdf => "PDF",
-        DocumentKind::Epub => "EPUB",
+        SourceFormat::Html => "HTML",
+        SourceFormat::Pdf => "PDF",
+        SourceFormat::Epub => "EPUB",
+        SourceFormat::Text => "TXT",
+        SourceFormat::Markdown => "Markdown",
     }
 }
 
@@ -2117,6 +2120,13 @@ pub(crate) fn sample_entries(titles: &[(&str, DocumentKind)]) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_formats_have_distinct_library_labels() {
+        assert_eq!(format_name(SourceFormat::Text), "TXT");
+        assert_eq!(format_name(SourceFormat::Markdown), "Markdown");
+        assert_eq!(format_name(SourceFormat::Html), "HTML");
+    }
 
     fn shelf_with(titles: &[&str]) -> Shelf {
         let mut shelf = Shelf::default();

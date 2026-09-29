@@ -97,6 +97,11 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let text_source = crate::text::is_text_extension(&ext);
+    let source_format = match ext.as_str() {
+        "txt" | "text" => Some("txt"),
+        "md" | "markdown" => Some("markdown"),
+        _ => None,
+    };
     if !text_source && !matches!(ext.as_str(), "html" | "htm" | "xhtml" | "pdf" | "epub") {
         return Err("Unsupported document format".into());
     }
@@ -159,6 +164,11 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let target = folder.join(name);
     if folder.exists() {
         if owned_folder(root, &target)?.is_some() && regular(&target)?.is_file() {
+            // Repair metadata on copies imported before source formats were retained.
+            if let Some(format) = source_format {
+                fs::write(folder.join(".simpl-source-format"), format)
+                    .map_err(|e| e.to_string())?;
+            }
             return Ok(target);
         }
         return Err("An incomplete import already occupies this document folder".into());
@@ -221,6 +231,9 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
             if destination != target {
                 copy(&original, &destination)?;
             }
+        }
+        if let Some(format) = source_format {
+            fs::write(folder.join(".simpl-source-format"), format).map_err(|e| e.to_string())?;
         }
         fs::write(folder.join(MARKER), name).map_err(|e| e.to_string())?;
         Ok(target.clone())
@@ -316,23 +329,34 @@ fn remove_at(root: &Path, path: &Path) -> Result<(), String> {
 }
 
 /// Original user-facing format can differ from the internal chapter container.
-pub fn source_kind(path: &Path) -> Option<crate::recent::DocumentKind> {
-    if path.file_name()?.to_str()? != "book.epub" {
+pub fn source_kind(path: &Path) -> Option<crate::library::SourceFormat> {
+    source_kind_at(&root(), path)
+}
+
+fn source_kind_at(root: &Path, path: &Path) -> Option<crate::library::SourceFormat> {
+    use crate::library::SourceFormat;
+    let ext = path.extension()?.to_str()?;
+    if !ext.eq_ignore_ascii_case("html") && path.file_name()?.to_str()? != "book.epub" {
         return None;
     }
-    owned_folder(&root(), path).ok()??;
+    owned_folder(root, path).ok()??;
     let parent = path.parent()?;
-    if fs::read_to_string(parent.join(".simpl-source-format"))
+    match fs::read_to_string(parent.join(".simpl-source-format"))
         .ok()
         .as_deref()
-        == Some("html")
     {
-        return Some(crate::recent::DocumentKind::Html);
+        Some("html") => return Some(SourceFormat::Html),
+        Some("txt") => return Some(SourceFormat::Text),
+        Some("markdown") => return Some(SourceFormat::Markdown),
+        _ => {}
+    }
+    if path.file_name()?.to_str()? != "book.epub" {
+        return None;
     }
     // Recognize packages produced before source-format metadata was introduced.
     let mut archive = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
     if archive.by_name("_simpl.opf").is_ok() && archive.by_name("_simpl-nav.xhtml").is_ok() {
-        Some(crate::recent::DocumentKind::Html)
+        Some(SourceFormat::Html)
     } else {
         None
     }
@@ -450,8 +474,18 @@ mod tests {
         fs::write(&plain, "Once upon\na time.\n\nThe end.\n").unwrap();
         let root = dir.join("managed");
 
+        // An external HTML file with a similarly named sidecar is not our converted copy.
+        let external = dir.join("external.html");
+        fs::write(&external, "<p>Original HTML</p>").unwrap();
+        fs::write(dir.join(".simpl-source-format"), "txt").unwrap();
+        assert_eq!(source_kind_at(&root, &external), None);
+
         let md = import_at(&root, &markdown).unwrap();
         assert_eq!(md.file_name().unwrap(), "Notes.html");
+        assert_eq!(
+            source_kind_at(&root, &md),
+            Some(crate::library::SourceFormat::Markdown)
+        );
         assert!(md.parent().unwrap().join("img/dot.png").is_file());
         let document = crate::load_html(&md).unwrap();
         assert_eq!(document.title, "Field notes");
@@ -459,8 +493,24 @@ mod tests {
         assert_eq!(import_at(&root, &markdown).unwrap(), md);
 
         let txt = import_at(&root, &plain).unwrap();
+        assert_eq!(
+            source_kind_at(&root, &txt),
+            Some(crate::library::SourceFormat::Text)
+        );
         assert_eq!(crate::load_html(&txt).unwrap().title, "story");
         assert_eq!(crate::load_html(&txt).unwrap().items.len(), 2);
+
+        // Reimport repairs legacy metadata without replacing content or changing its path.
+        let marker = txt.parent().unwrap().join(".simpl-source-format");
+        let bytes = fs::read(&txt).unwrap();
+        fs::remove_file(marker).unwrap();
+        assert_eq!(source_kind_at(&root, &txt), None);
+        assert_eq!(import_at(&root, &plain).unwrap(), txt);
+        assert_eq!(
+            source_kind_at(&root, &txt),
+            Some(crate::library::SourceFormat::Text)
+        );
+        assert_eq!(fs::read(&txt).unwrap(), bytes);
 
         remove_at(&root, &md).unwrap();
         assert!(!md.exists());
@@ -471,7 +521,7 @@ mod tests {
         // An image outside the source folder is left out rather than copied.
         fs::write(dir.join("escape.md"), "![x](../outside.png)").unwrap();
         let escaped = import_at(&root, &dir.join("escape.md")).unwrap();
-        assert_eq!(fs::read_dir(escaped.parent().unwrap()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(escaped.parent().unwrap()).unwrap().count(), 3);
         fs::remove_dir_all(dir).unwrap();
     }
 
