@@ -188,6 +188,14 @@ selection/copy cases. The verified cases do not establish general Unicode confor
 
 ## Qualification boundaries
 
+Settings scrolling uses an opaque, clipped content fill and retained renderer
+corrections for redundant damage regions and cached control glyph clipping.
+The pinned package provenance, scope and verification commands are documented in
+[the damage patch](../../patches/iced_graphics-0.14.0/SIMPL-PATCH.md) and
+[the CPU text clip patch](../../patches/iced_tiny_skia-0.14.1/SIMPL-PATCH.md).
+The default settings regression checks damage fragmentation; the opt-in release
+probe also compares incremental painting to full redraws and records CPU timings.
+
 Keyboard navigation is implemented; screen-reader support is not validated.
 Independent clean-Windows packaging and cross-DPI/multi-monitor qualification remain
 open. Native previews and internal timing markers do not establish input-to-display

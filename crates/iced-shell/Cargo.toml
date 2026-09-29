@@ -24,5 +24,6 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 
 [dev-dependencies]
+iced_tiny_skia = { version = "=0.14.1", default-features = false }
 # Exercise the production CPU renderer without a native window or desktop helper.
 tiny-skia = { version = "=0.11.4", default-features = false, features = ["std", "simd"] }

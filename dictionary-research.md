@@ -87,7 +87,8 @@ formatı veya ekosistemdir; dosyanın formatı, içindeki sözlük verisinin lis
 WikDict İngilizce→Türkçe, İspanyolca→İngilizce, Almanca→İngilizce,
 Fransızca→İngilizce olabilir. Japonca JMdict, Çince CC-CEDICT, Korece süzülmüş
 Kaikki verisiyle ayrı veri adaptörleri üzerinden eklenebilir. Bunlar bir öneri;
-paketlerin dağıtımı veya uygulaması henüz yapılmadı.
+başlangıç önerisiydi. Kelime araması şimdi 13 yönü kapsayan gömülü ve çevrimdışı
+sözlüklerle uygulandı; isteğe bağlı paket indirme henüz uygulanmadı.
 
 İlk sürüm için DLL çalıştıran genel eklenti sistemi yerine, kaynak/hedef dil,
 sürüm, kaynak bağlantısı, lisans ve hash içeren bir bildirim ile salt okunur
@@ -104,3 +105,52 @@ Karardan önce her hedef dil için ortak bir küçük değerlendirme setiyle nad
 kelimeler, çok anlamlılık, çekimler, deyimler ve birkaç kısa paragraf denenmeli.
 Windows'ta ilk yükleme, tekrar arama, RAM ve CPU ölçülmeli. Bugün doğrulanan
 katalog kapsamıdır; kalite, sözlük indeksleme performansı ve model performansı açık.
+
+## Uygulanan sözlüklerin dağıtım boyutu — 30 Eylül 2026
+
+Kaynak SQLite/JSONL boyutları son kullanıcıya gönderilen boyut değildir.
+`assets/dictionaries/words.zip` içindeki hazırlanmış, sıkıştırılmış indeksler
+toplam **19.659.286 bayt (19,66 MB / 18,75 MiB)**. Aşağıdaki MB değerleri
+ondalık; arşiv girdilerinin sıkıştırılmış boyutları toplandı. Ayrı paketlerin
+manifest ve lisans dosyaları küçük bir ek yük getirir.
+
+| Dil paketi | Sıkıştırılmış veri | Açık TSV veri |
+| --- | ---: | ---: |
+| İngilizce ↔ Türkçe | 1,11 MB | 3,22 MB |
+| İngilizce ↔ İspanyolca | 2,20 MB | 7,07 MB |
+| İngilizce ↔ Almanca | 3,63 MB | 11,30 MB |
+| İngilizce ↔ Fransızca | 4,00 MB | 13,67 MB |
+| İngilizce ↔ Japonca | 1,56 MB | 4,31 MB |
+| İngilizce ↔ Çince | 5,89 MB | 16,40 MB |
+| Korece → İngilizce | 1,26 MB | 3,36 MB |
+
+Mevcut uygulama tüm arşivi exe içinde taşır; ZIP'in kendisi ayrıca kuruluma
+kopyalanmaz. Yalnızca etkin yön açılır ve bellekte indekslenir. Açık TSV boyutu
+RAM tüketiminin tamamı değildir: dizeler ve arama indeksi de yer kaplar.
+Argos, Python, SQLite runtime veya çeviri modeli bu pakete dahil değildir.
+
+Bu dalda hazırlanan Windows x64 build ölçümleri: exe **38.008.320 bayt
+(38,01 MB)**; PDFium dahil portable klasör **47.591.520 bayt (47,59 MB)**;
+DEFLATE seviye 9 portable ZIP **31.489.574 bayt (31,49 MB)**. ZIP CRC kontrolü
+geçti. Bunlar installer boyutu değildir; setup yeniden hazırlanmadı.
+
+Dağıtım seçenekleri:
+
+- **Hepsi gömülü:** sözlükler ilk açılıştan itibaren çevrimdışı çalışır;
+  yaklaşık 19,7 MB veri ana uygulamaya ve her uygulama güncellemesine eklenir.
+- **Öneri — İngilizce ↔ Türkçe gömülü, diğerleri isteğe bağlı:** varsayılan
+  sözlük hazır kalır; gömülü veri yaklaşık 1,1 MB olur. Diğer dil paketleri
+  bir kez indirilir ve yerelde saklanır. Ana exe'den yaklaşık 18,5 MB veri çıkar.
+- **Tüm sözlükler ayrı:** ana uygulamada sözlük verisi bulunmaz; ilk kullanımda
+  bir paket indirme veya dosyadan ekleme gerekir. İnternetsiz kurulum için
+  ayrıca tüm paketleri içeren bir portable dağıtım sunulabilir.
+
+İndirme kullanıcı tarafından başlatılmalı; paketler dil yönü, sürüm, SHA-256,
+kaynak ve lisans bildirimini taşımalı. Önerilen saklama yeri
+`%LOCALAPPDATA%\simPl\dictionaries`; çevrimdışı dosyadan ekleme de aynı
+doğrulama yolunu kullanabilir. Dil paketleri uygulama güncellemelerinden
+bağımsız yenilenebilir. Bunlar salt okunur sözlük verileridir; Argos sağlayıcısı
+daha sonra ayrı bir çalışma motoru ve model paketi olarak ele alınmalı.
+
+Bu bölüm bir dağıtım değerlendirmesidir; indirme sistemi veya sözlüklerin
+exe'den çıkarılması bu değişiklikte uygulanmadı.

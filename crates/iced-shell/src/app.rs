@@ -5735,10 +5735,20 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             ].spacing(8).align_y(iced::Alignment::Center));
     }
     let panel = container(
-        scrollable(container(contents).padding(iced::Padding {
-            right: 14.0,
-            ..Default::default()
-        }))
+        scrollable(
+            container(contents)
+                .padding(iced::Padding {
+                    right: 14.0,
+                    ..Default::default()
+                })
+                // Keep scrolling damage contiguous. Otherwise tiny-skia repaints
+                // the underlying reader once for each moving text/control region.
+                // This moving fill has the panel color and is clipped by the scrollable.
+                .style(|theme| container::Style {
+                    background: Some(ui::palette(theme).surface.into()),
+                    ..container::Style::default()
+                }),
+        )
         .id(iced::advanced::widget::Id::new("workspace-overlay"))
         .height(Length::Shrink)
         .direction(ui::vertical_scrollbar())
@@ -6764,6 +6774,9 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
 #[cfg(test)]
 #[path = "book_preview.rs"]
 mod book_preview;
+#[cfg(test)]
+#[path = "settings_profile.rs"]
+mod settings_profile;
 
 #[cfg(test)]
 mod tests {

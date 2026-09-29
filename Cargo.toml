@@ -15,6 +15,10 @@ members = [
 # passes the retained visual/copy cases. See crates/iced-shell/README.md.
 [patch.crates-io]
 cosmic-text = { path = "patches/cosmic-text-0.15.0" }
+# Avoid repainting contained damage regions repeatedly in the CPU compositor.
+iced_graphics = { path = "patches/iced_graphics-0.14.0" }
+# Cached control icons must respect the scroll layer clip at every offset.
+iced_tiny_skia = { path = "patches/iced_tiny_skia-0.14.1" }
 
 [workspace.package]
 version = "0.0.0"
