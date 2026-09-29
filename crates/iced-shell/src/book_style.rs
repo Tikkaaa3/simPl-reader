@@ -10,6 +10,7 @@ pub const MINIMAL: BookStyle = BookStyle {
     heading_scales: [1.6, 1.3, 1.1],
 };
 
+#[derive(Clone, Copy, Debug)]
 pub struct BookStyle {
     pub default_size: f32,
     pub line_height: f32,

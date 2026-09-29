@@ -391,7 +391,7 @@ fn render(reader: &mut Reader, output: &Path) {
     }
     let size = reader.window_size;
     let bounds = Rectangle::with_size(size);
-    let theme = ui::theme(reader.appearance);
+    let theme = ui::theme(reader.appearance, reader.theme);
     let mut renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
     // Settle native paragraph heights before drawing the final tree.
     for _ in 0..3 {
@@ -1751,4 +1751,67 @@ fn hybrid_pdf_and_html_folder() {
     reader_document::managed::remove(&managed).unwrap();
     assert!(source.join("index.html").is_file());
     assert!(!managed.exists());
+}
+
+#[test]
+#[ignore = "Reading-theme QA: set SIMPL_PREVIEW_HTML and SIMPL_PREVIEW_OUTPUT"]
+fn render_reading_themes() {
+    for bytes in ui::font_data() {
+        iced::advanced::graphics::text::font_system()
+            .write()
+            .unwrap()
+            .load_font(std::borrow::Cow::Borrowed(bytes));
+    }
+    let output = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_OUTPUT").expect("output directory"));
+    std::fs::create_dir_all(&output).unwrap();
+    let html = reader_document::load_html(&PathBuf::from(
+        std::env::var_os("SIMPL_PREVIEW_HTML").expect("HTML path"),
+    ))
+    .unwrap();
+    let book = Arc::new(display_book(html, None, None));
+    let row = std::env::var("SIMPL_PREVIEW_ROW")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+        .min(book.items.len() - 1);
+    let mut totals = Vec::new();
+    for (index, theme) in themes::THEMES.iter().enumerate() {
+        for (appearance, label) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+            let mut reader = Reader {
+                book: Some(book.clone()),
+                appearance,
+                window_size: Size::new(1280.0, 800.0),
+                ..Reader::default()
+            };
+            let _ = reader.rebuild_geometry(Anchor { row, fraction: 0.0 });
+            settle_pagination(&mut reader);
+            let _ = update_inner(&mut reader, Message::SetTheme(index));
+            settle_theme(&mut reader);
+            totals.push((theme.id, reader.page_total(), reader.pages().len()));
+            render(
+                &mut reader,
+                &output.join(format!("theme-{}-{label}.png", theme.id)),
+            );
+        }
+    }
+    // Every theme, light and dark, must report the same fixed page count.
+    assert!(
+        totals
+            .windows(2)
+            .all(|pair| pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2),
+        "{totals:?}"
+    );
+    println!("page counts per theme: {totals:?}");
+    for (appearance, label) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        let mut reader = Reader {
+            book: Some(book.clone()),
+            appearance,
+            show_settings: true,
+            window_size: Size::new(1280.0, 800.0),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor { row, fraction: 0.0 });
+        settle_pagination(&mut reader);
+        render(&mut reader, &output.join(format!("settings-{label}.png")));
+    }
 }

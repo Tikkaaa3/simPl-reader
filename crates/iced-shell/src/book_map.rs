@@ -530,3 +530,102 @@ pub(super) fn refine_pdf(atlas: &mut Atlas, book: &Book, index: &virtual_reader:
         eprintln!("PDF Book visible-row refinement: {:?}", started.elapsed());
     }
 }
+
+/// Lays one section out for a reading theme while keeping the page boundaries of
+/// the default layout, so every page keeps its number and starts at the same
+/// passage whatever the theme. The section is measured again with the theme's
+/// font and spacing; each default page cut becomes a cut in the theme's layout
+/// (at the same row, or, inside a long paragraph, at the matching line). A page
+/// that comes out shorter than the default sheet keeps the sheet's size and is
+/// left partly blank; a longer one grows.
+pub fn adapt_section(
+    book: Arc<Book>,
+    canonical: &Section,
+    theme: &'static themes::ReadingTheme,
+    cancel: &AtomicBool,
+) -> Result<Option<Section>, String> {
+    let Some(heights) = measure_book_for(book.clone(), TEXT, DEFAULT_FONT_SIZE, cancel, theme)
+    else {
+        return Ok(None);
+    };
+    if heights.len() != canonical.heights.len() || canonical.pages.is_empty() {
+        return Err("the default page layout does not match this section".into());
+    }
+    let old = virtual_reader::HeightIndex::new(canonical.heights.clone());
+    let new = virtual_reader::HeightIndex::new(heights.clone());
+    let style = style_for(theme, &book);
+    // Lines of a paragraph in a layout: (line height, space above the text, line count).
+    let grid = |style: &BookStyle, index: &virtual_reader::HeightIndex, row: usize| {
+        let item = book.items.get(row)?;
+        item.text()?;
+        let semantics = book.structure.get(item.id());
+        let size = styled_item_size(style, &book, row, item, DEFAULT_FONT_SIZE);
+        let line = size * style.line_height;
+        let padding = style.block_padding(item, semantics, DEFAULT_FONT_SIZE, TEXT);
+        let gap = if row + 1 == index.len() {
+            0.0
+        } else {
+            style.gap(DEFAULT_FONT_SIZE)
+        };
+        let text = (index.height(row) - gap - padding.top - padding.bottom).max(line);
+        Some((line, padding.top, (text / line).round().max(1.0) as usize))
+    };
+    let map_cut = |cut: f32| -> f32 {
+        if cut <= 0.0 {
+            return 0.0;
+        }
+        if cut >= old.total() {
+            return new.total();
+        }
+        let row = old.window(cut, 0.0, 0.0).start;
+        let within = cut - old.start(row);
+        if within < 0.5 {
+            return new.start(row);
+        }
+        match (grid(&MINIMAL, &old, row), grid(style, &new, row)) {
+            (Some((line, top, lines)), Some((new_line, new_top, new_lines))) if new_lines >= 2 => {
+                let above = ((within - top) / line)
+                    .round()
+                    .clamp(1.0, (lines.max(2) - 1) as f32);
+                let mapped = (above * new_lines as f32 / lines.max(1) as f32)
+                    .round()
+                    .clamp(1.0, (new_lines - 1) as f32);
+                new.start(row) + new_top + mapped * new_line
+            }
+            // Images and one-line blocks are never split.
+            _ => new.start(row),
+        }
+    };
+    let mut cuts = vec![0.0_f32];
+    for page in canonical.pages.iter().skip(1) {
+        let previous = *cuts.last().unwrap_or(&0.0);
+        cuts.push(map_cut(page.content.start).clamp(previous, new.total()));
+    }
+    cuts.push(new.total());
+    let mut top = book_pages::GAP;
+    let pages = canonical
+        .pages
+        .iter()
+        .enumerate()
+        .map(|(i, page)| {
+            let (start, end) = (cuts[i], cuts[i + 1]);
+            let mut rows = new.window(start, end - start, 0.0);
+            if end - start < 0.5 {
+                // A page the theme leaves without text shows nothing rather than a neighbor's.
+                rows = rows.start..rows.start;
+            }
+            let height = (end - start + book_pages::TOP + book_pages::BOTTOM).max(page.height);
+            let adapted = book_pages::Page {
+                number: page.number,
+                label: page.label.clone(),
+                rows,
+                content: start..end,
+                top,
+                height,
+            };
+            top += height + book_pages::GAP;
+            adapted
+        })
+        .collect();
+    Ok(Some(Section { heights, pages }))
+}

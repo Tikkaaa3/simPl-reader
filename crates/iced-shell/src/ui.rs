@@ -1,12 +1,12 @@
 //! Shared chrome styles and keyboard-focus visibility for the normal reader.
 
-use std::{cell::RefCell, sync::LazyLock};
+use std::cell::RefCell;
 
 use iced::advanced::widget::{Id, Operation, operation};
 use iced::widget::{button, container, scrollable, text_input};
 use iced::{Border, Color, Font, Rectangle, Theme, Vector};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub background: Color,
     pub surface: Color,
@@ -24,7 +24,7 @@ pub struct Palette {
     pub control_border: Color,
 }
 
-const DARK: Palette = Palette {
+pub(crate) const DARK: Palette = Palette {
     background: Color::from_rgb8(0x0c, 0x0c, 0x0c),
     surface: Color::from_rgb8(0x10, 0x10, 0x10),
     raised: Color::from_rgb8(0x16, 0x16, 0x16),
@@ -41,7 +41,7 @@ const DARK: Palette = Palette {
     control_border: Color::from_rgb8(0x2a, 0x2a, 0x2a),
 };
 
-const LIGHT: Palette = Palette {
+pub(crate) const LIGHT: Palette = Palette {
     background: Color::from_rgb8(0xff, 0xff, 0xff),
     surface: Color::from_rgb8(0xf6, 0xf6, 0xf6),
     raised: Color::from_rgb8(0xff, 0xff, 0xff),
@@ -58,11 +58,11 @@ const LIGHT: Palette = Palette {
     control_border: Color::from_rgb8(0xe2, 0xe2, 0xe2),
 };
 pub fn palette(theme: &Theme) -> Palette {
-    if theme.extended_palette().is_dark {
+    crate::themes::palette_of(theme).unwrap_or(if theme.extended_palette().is_dark {
         DARK
     } else {
         LIGHT
-    }
+    })
 }
 
 pub fn primary_text(theme: &Theme) -> iced::widget::text::Style {
@@ -103,7 +103,7 @@ pub const ICONS: Font = Font::with_name("Material Symbols Outlined");
 
 /// The text faces retain upstream glyph coverage; native fallback handles other scripts.
 /// Embedded bytes keep the portable executable independent of installed fonts.
-pub fn font_data() -> [&'static [u8]; 8] {
+pub fn font_data() -> [&'static [u8]; 18] {
     [
         include_bytes!("../../../assets/fonts/Geist-Variable-Latin.ttf"),
         include_bytes!("../../../assets/fonts/Geist-UI-560.ttf"),
@@ -113,10 +113,21 @@ pub fn font_data() -> [&'static [u8]; 8] {
         include_bytes!("../../../assets/fonts/Literata-Italic.ttf"),
         include_bytes!("../../../assets/fonts/Literata-BoldItalic.ttf"),
         include_bytes!("../../../assets/fonts/MaterialSymbolsOutlined-Subset.ttf"),
+        // Reading families offered by the bundled themes (see themes.rs).
+        include_bytes!("../../../assets/fonts/Spectral-Regular.ttf"),
+        include_bytes!("../../../assets/fonts/Spectral-Medium.ttf"),
+        include_bytes!("../../../assets/fonts/Spectral-Bold.ttf"),
+        include_bytes!("../../../assets/fonts/Spectral-Italic.ttf"),
+        include_bytes!("../../../assets/fonts/Spectral-BoldItalic.ttf"),
+        include_bytes!("../../../assets/fonts/FiraSans-Regular.ttf"),
+        include_bytes!("../../../assets/fonts/FiraSans-Medium.ttf"),
+        include_bytes!("../../../assets/fonts/FiraSans-Bold.ttf"),
+        include_bytes!("../../../assets/fonts/FiraSans-Italic.ttf"),
+        include_bytes!("../../../assets/fonts/FiraSans-BoldItalic.ttf"),
     ]
 }
 
-fn make_theme(colors: Palette, name: &str) -> Theme {
+pub(crate) fn make_theme(colors: Palette, name: &str) -> Theme {
     Theme::custom(
         name.to_owned(),
         iced::theme::Palette {
@@ -129,14 +140,11 @@ fn make_theme(colors: Palette, name: &str) -> Theme {
         },
     )
 }
-static LIGHT_THEME: LazyLock<Theme> = LazyLock::new(|| make_theme(LIGHT, "simPl Light"));
-static DARK_THEME: LazyLock<Theme> = LazyLock::new(|| make_theme(DARK, "simPl Dark"));
-
-pub fn theme(appearance: reader_document::preferences::Appearance) -> Theme {
-    match appearance {
-        reader_document::preferences::Appearance::Light => LIGHT_THEME.clone(),
-        reader_document::preferences::Appearance::Dark => DARK_THEME.clone(),
-    }
+pub fn theme(
+    appearance: reader_document::preferences::Appearance,
+    reading: &crate::themes::ReadingTheme,
+) -> Theme {
+    crate::themes::iced_theme(reading, appearance)
 }
 
 #[derive(Clone, Copy)]

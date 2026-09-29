@@ -279,6 +279,8 @@ pub struct SelectableParagraphConfig {
     pub track_hit_test: bool,
     pub links: Vec<reader_document::Link>,
     pub focused_link: Option<usize>,
+    /// Bundled family that replaces the default reading face (Literata), if any.
+    pub font_family: Option<&'static str>,
 }
 
 /// Builds a renderer-backed, selectable paragraph element from the same
@@ -302,6 +304,7 @@ pub fn selectable_text<Message: 'static>(
         track_hit_test,
         mut links,
         focused_link,
+        font_family,
     } = config;
     let leading_rlm = mapped.text.starts_with(LEADING_RLM)
         && mapped.text.strip_prefix(LEADING_RLM) == Some(logical_text.as_str());
@@ -332,7 +335,12 @@ pub fn selectable_text<Message: 'static>(
     });
     // Shaping ignores the selection, so dragging never reshapes the paragraph;
     // the highlight is drawn separately from the native glyph bounds.
-    let spans = mapped_span_keys(&mapped, None, leading_rlm);
+    let mut spans = mapped_span_keys(&mapped, None, leading_rlm);
+    if let Some(family) = font_family {
+        for span in &mut spans {
+            span.font = with_reading_family(span.font, family);
+        }
+    }
     iced::Element::new(SelectableParagraph {
         item_id,
         logical_text,
@@ -352,6 +360,19 @@ pub fn selectable_text<Message: 'static>(
         focused_link,
         on_link,
     })
+}
+
+/// Swaps the default reading face (Literata) for another bundled family, keeping
+/// weight and style; monospace and other faces are left alone.
+pub fn with_reading_family(font: iced::Font, family: &'static str) -> iced::Font {
+    if font.family == iced::font::Family::Name("Literata") {
+        iced::Font {
+            family: iced::font::Family::Name(family),
+            ..font
+        }
+    } else {
+        font
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -473,6 +494,25 @@ fn selected_glyph_bounds(
 }
 
 type NativeParagraph = <iced::Renderer as TextRenderer>::Paragraph;
+
+/// Natural width of one unwrapped line, as the real text renderer shapes it.
+pub fn text_width(text: &str, font: iced::Font, size: f32) -> f32 {
+    let spans: Vec<Span<'static, (), iced::Font>> =
+        vec![Span::new(text.to_owned()).font(font).size(size)];
+    NativeParagraph::with_spans(iced::advanced::Text {
+        content: spans.as_slice(),
+        bounds: iced::Size::new(1_000_000.0, 1_000_000.0),
+        size: iced::Pixels(size),
+        line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(size * 1.5)),
+        font: iced::Font::with_name("Noto Sans"),
+        align_x: iced::advanced::text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: iced::advanced::text::Shaping::Advanced,
+        wrapping: iced::advanced::text::Wrapping::None,
+    })
+    .min_bounds()
+    .width
+}
 
 fn native_spans(
     spans: &[SpanKey],
@@ -872,6 +912,7 @@ mod tests {
                     track_hit_test: false,
                     links: vec![],
                     focused_link: None,
+                    font_family: None,
                 },
                 Message::Start,
                 |endpoint, _| Message::Move(endpoint),
@@ -1051,6 +1092,7 @@ mod tests {
                         kind: reader_document::LinkKind::Note,
                     }],
                     focused_link: None,
+                    font_family: None,
                 },
                 |_| Message::Start,
                 |_, _| Message::Move,

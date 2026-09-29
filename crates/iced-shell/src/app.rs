@@ -9,8 +9,8 @@ use std::sync::{
 
 use crate::{
     book_pages,
-    book_style::{self, MINIMAL},
-    chrome, find, pdf_reader, shelf, ui,
+    book_style::{self, BookStyle, MINIMAL},
+    chrome, find, pdf_reader, shelf, themes, ui,
 };
 use iced::keyboard::{self, Key, key};
 use iced::widget::{column, container, image, row, scrollable, text};
@@ -795,6 +795,19 @@ enum Navigation {
     Pop,
 }
 
+/// A section laid out for the chosen reading theme: its own row heights, and the
+/// same page boundaries (and so the same page numbers) as the default layout.
+#[derive(Debug)]
+struct AdaptedLayout {
+    fingerprint: String,
+    section: usize,
+    theme: &'static str,
+    layout: book_map::Section,
+}
+
+/// Sections kept laid out for the current theme, so turning back a chapter is instant.
+const ADAPTED_SECTIONS: usize = 6;
+
 /// The open find bar and its results, in reading order.
 #[derive(Debug, Default)]
 struct Find {
@@ -837,6 +850,8 @@ struct FindIndex {
 #[derive(Debug)]
 struct Reader {
     book: Option<Arc<Book>>,
+    theme: &'static themes::ReadingTheme,
+    adapted: Vec<AdaptedLayout>,
     find: Option<Find>,
     find_index: Option<FindIndex>,
     pdf_find_index: Option<PdfFindIndex>,
@@ -918,6 +933,8 @@ impl Default for Reader {
     fn default() -> Self {
         Self {
             book: None,
+            theme: themes::default_theme(),
+            adapted: Vec::new(),
             find: None,
             find_index: None,
             pdf_find_index: None,
@@ -1016,6 +1033,7 @@ enum Control {
     SettingsFontUp,
     SettingsWindowControls(WindowControls),
     SettingsHelp,
+    SettingsTheme(usize),
     Close,
     ToggleToolbar,
     FontDown,
@@ -1111,6 +1129,13 @@ enum Message {
     AtlasReady {
         generation: u64,
         result: Result<Option<book_map::Atlas>, String>,
+    },
+    SetTheme(usize),
+    ThemeLayoutReady {
+        generation: u64,
+        section: usize,
+        theme: &'static str,
+        result: Result<Option<book_map::Section>, String>,
     },
     ToggleAppearance,
     PreferencesLoaded(Result<Preferences, String>),
@@ -1249,11 +1274,70 @@ impl Reader {
         if self.heights.len() != book.items.len() {
             return vec![];
         }
+        self.section_layout()
+            .map_or_else(Vec::new, |section| section.pages.clone())
+    }
+
+    /// Whether this book is laid out for the theme rather than with the default
+    /// measurements. PDF Book keeps the default typography (its colors still follow the theme).
+    fn line_height(&self) -> f32 {
+        self.book.as_ref().map_or(MINIMAL.line_height, |book| {
+            style_for(self.theme, book).line_height
+        })
+    }
+
+    fn needs_adaptation(&self) -> bool {
+        self.theme.id != themes::DEFAULT_ID
+            && self
+                .book
+                .as_ref()
+                .is_some_and(|book| book.pdf_source.is_none())
+    }
+
+    /// Row heights and pages of the current section for the current theme, if ready.
+    fn section_layout(&self) -> Option<&book_map::Section> {
+        let book = self.book.as_ref()?;
+        let section = book.epub.as_ref().map_or(0, |c| c.index);
+        if self.needs_adaptation() {
+            return self
+                .adapted
+                .iter()
+                .find(|a| {
+                    a.fingerprint == book.fingerprint
+                        && a.section == section
+                        && a.theme == self.theme.id
+                })
+                .map(|a| &a.layout);
+        }
         self.atlas
             .as_ref()
             .filter(|a| a.fingerprint == book.fingerprint)
-            .and_then(|a| a.section(book.epub.as_ref().map_or(0, |c| c.index)))
-            .map_or_else(Vec::new, |section| section.pages.clone())
+            .and_then(|a| a.section(section))
+    }
+
+    /// Switches the reading theme. Pages keep their numbers and boundaries; only the
+    /// look and the way each page is filled change, so the reading place is kept.
+    fn apply_theme(&mut self, theme: &'static themes::ReadingTheme) -> Task<Message> {
+        if self.theme.id == theme.id {
+            return Task::none();
+        }
+        let relayout = self.switch_theme(theme);
+        self.preferences_dirty = true;
+        Task::batch([self.persist_preferences(), relayout])
+    }
+
+    /// Changes the theme and lays the open book out for it, without saving anything.
+    fn switch_theme(&mut self, theme: &'static themes::ReadingTheme) -> Task<Message> {
+        if self.theme.id == theme.id {
+            return Task::none();
+        }
+        let anchor = self.book.is_some().then(|| self.anchor());
+        self.theme = theme;
+        self.adapted.clear();
+        match anchor {
+            Some(anchor) if self.pagination.is_none() => self.rebuild_geometry(anchor),
+            _ => Task::none(),
+        }
     }
 
     fn reading_width(&self, _window: f32) -> f32 {
@@ -1527,13 +1611,38 @@ impl Reader {
             return Task::none();
         };
         let section = book.epub.as_ref().map_or(0, |c| c.index);
-        if let Some(layout) = self
+        let canonical = self
             .atlas
             .as_ref()
             .filter(|a| a.fingerprint == book.fingerprint)
             .and_then(|a| a.section(section))
-        {
-            self.heights = virtual_reader::HeightIndex::new(layout.heights.clone());
+            .cloned();
+        if let Some(canonical) = canonical {
+            if self.needs_adaptation() && self.section_layout().is_none() {
+                // The theme measures text differently: lay this section out for it,
+                // cutting pages at the same places as the default layout.
+                self.measured_layout = None;
+                self.heights = virtual_reader::HeightIndex::new(Vec::new());
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.pagination = Some(cancel.clone());
+                let book = book.clone();
+                let theme = self.theme;
+                let generation = self.generation;
+                return Task::perform(
+                    async move { book_map::adapt_section(book, &canonical, theme, &cancel) },
+                    move |result| Message::ThemeLayoutReady {
+                        generation,
+                        section,
+                        theme: theme.id,
+                        result,
+                    },
+                );
+            }
+            let heights = self.section_layout().map_or_else(
+                || canonical.heights.clone(),
+                |layout| layout.heights.clone(),
+            );
+            self.heights = virtual_reader::HeightIndex::new(heights);
             self.measured_layout = Some((self.width, self.font_size));
             self.offset = self.offset_for(anchor);
             if let Some((fingerprint, target_section, page)) = self.pending_page.take()
@@ -1745,6 +1854,7 @@ impl Reader {
         let preferences = Preferences {
             appearance: self.appearance,
             window_controls: self.window_controls,
+            theme: self.theme.id.to_owned(),
         };
         Task::perform(
             async move { preferences::save(preferences) },
@@ -1901,6 +2011,11 @@ impl Reader {
             ])
             .flatten()
             .chain(
+                (0..themes::THEMES.len())
+                    .filter(move |_| self.show_settings)
+                    .map(Control::SettingsTheme),
+            )
+            .chain(
                 primary
                     .into_iter()
                     .flatten()
@@ -1981,6 +2096,7 @@ impl Reader {
             Control::Close => Message::Close(CloseAction::Document),
             Control::ToggleToolbar => Message::ToggleToolbar,
             Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
+            Control::SettingsTheme(index) => Message::SetTheme(index),
             Control::FontDown | Control::SettingsFontDown => Message::Zoom(self.zoom - 0.1),
             Control::FontUp | Control::SettingsFontUp => Message::Zoom(self.zoom + 0.1),
             Control::ToggleAppearance => Message::ToggleAppearance,
@@ -2386,6 +2502,7 @@ impl Reader {
                 self.cancel_open();
                 self.clear_content();
                 self.reset_find();
+                self.adapted.clear();
                 self.error = None;
                 Task::batch([
                     self.shelf.persist().map(Message::Shelf),
@@ -3114,10 +3231,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::PreferencesLoaded(result) => {
             reader.preferences_loading = false;
+            let mut theme_task = Task::none();
             match result {
                 Ok(loaded) if !reader.preferences_dirty => {
                     reader.appearance = loaded.appearance;
                     reader.window_controls = loaded.window_controls;
+                    // A book opened from the command line may already be on screen.
+                    theme_task = reader.switch_theme(themes::find(&loaded.theme));
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -3131,7 +3251,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             if reader.pending_exit && reader.exit_ready() {
                 iced::exit()
             } else {
-                task
+                Task::batch([theme_task, task])
             }
         }
         Message::PreferencesSaved(result) => {
@@ -3368,6 +3488,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         reader.restore_find_selection();
                     } else {
                         reader.reset_find();
+                        reader.adapted.clear();
                     }
                     let task = reader.rebuild_geometry(anchor);
                     if at_end && reader.pagination.is_some() {
@@ -3487,6 +3608,62 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             }
         }
         Message::AtlasReady { generation, result } => reader.finish_atlas(generation, result),
+        Message::SetTheme(index) if reader.interactive() => {
+            let theme = &themes::THEMES[index.min(themes::THEMES.len() - 1)];
+            reader.apply_theme(theme)
+        }
+        Message::ThemeLayoutReady {
+            generation,
+            section,
+            theme,
+            result,
+        } => {
+            if generation != reader.generation || reader.pagination.is_none() {
+                return Task::none();
+            }
+            let anchor = reader.pending_anchor.unwrap_or(Anchor {
+                row: 0,
+                fraction: 0.0,
+            });
+            match result {
+                Ok(Some(layout)) => {
+                    let Some(fingerprint) = reader.book.as_ref().map(|b| b.fingerprint.clone())
+                    else {
+                        return Task::none();
+                    };
+                    reader.adapted.retain(|a| {
+                        !(a.fingerprint == fingerprint && a.section == section && a.theme == theme)
+                    });
+                    reader.adapted.push(AdaptedLayout {
+                        fingerprint,
+                        section,
+                        theme,
+                        layout,
+                    });
+                    if reader.adapted.len() > ADAPTED_SECTIONS {
+                        reader.adapted.remove(0);
+                    }
+                    let end = reader.pagination_end;
+                    let task = reader.rebuild_geometry(anchor);
+                    reader.pagination_end = false;
+                    if end {
+                        return reader.go_to_local_page(reader.pages().len().saturating_sub(1));
+                    }
+                    task
+                }
+                Ok(None) => Task::none(),
+                Err(error) => {
+                    // Fall back to the default layout rather than leaving the book blank.
+                    reader.pagination = None;
+                    reader.error = Some(format!("Could not lay out the {theme} theme: {error}"));
+                    reader.theme = themes::default_theme();
+                    reader.adapted.clear();
+                    reader.preferences_dirty = true;
+                    let saved = reader.persist_preferences();
+                    Task::batch([saved, reader.rebuild_geometry(anchor)])
+                }
+            }
+        }
         Message::PageInput(value) => {
             reader.page_input = Some(value.chars().take(32).collect());
             Task::none()
@@ -3951,10 +4128,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             ))
                         }
                         Key::Named(key::Named::ArrowUp) => {
-                            reader.jump(reader.offset - reader.font_size * MINIMAL.line_height)
+                            reader.jump(reader.offset - reader.font_size * reader.line_height())
                         }
                         Key::Named(key::Named::ArrowDown) => {
-                            reader.jump(reader.offset + reader.font_size * MINIMAL.line_height)
+                            reader.jump(reader.offset + reader.font_size * reader.line_height())
                         }
                         Key::Named(key::Named::PageDown | key::Named::Space) => {
                             reader.jump(reader.offset + reader.viewport * 0.9)
@@ -4023,10 +4200,23 @@ fn measure_book(
     font_size: f32,
     cancel: &AtomicBool,
 ) -> Option<Vec<f32>> {
+    measure_book_for(book, width, font_size, cancel, themes::default_theme())
+}
+
+/// Row heights of `book` as the reader draws them under `theme`.
+fn measure_book_for(
+    book: Arc<Book>,
+    width: f32,
+    font_size: f32,
+    cancel: &AtomicBool,
+    theme: &'static themes::ReadingTheme,
+) -> Option<Vec<f32>> {
     use iced::advanced::{layout, widget::Tree};
+    let style = style_for(theme, &book);
     let reader = Reader {
         width,
         font_size,
+        theme,
         ..Reader::default()
     };
     let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
@@ -4046,20 +4236,43 @@ fn measure_book(
                 + if index + 1 == book.items.len() {
                     0.0
                 } else {
-                    MINIMAL.gap(font_size)
+                    style.gap(font_size)
                 },
         );
     }
     Some(heights)
 }
 
+/// Spacing and heading scales for a book: the theme's, except that PDF Book
+/// keeps the default typography its layout was built around.
+fn style_for(theme: &'static themes::ReadingTheme, book: &Book) -> &'static BookStyle {
+    if book.pdf_source.is_some() {
+        &MINIMAL
+    } else {
+        &theme.style
+    }
+}
+
+/// The bundled family replacing Literata for this book's text, if the theme has one.
+fn family_for(theme: &'static themes::ReadingTheme, book: &Book) -> Option<&'static str> {
+    if book.pdf_source.is_some() {
+        None
+    } else {
+        theme.family
+    }
+}
+
 fn book_item_size(book: &Book, index: usize, item: &Item, body: f32) -> f32 {
+    styled_item_size(&MINIMAL, book, index, item, body)
+}
+
+fn styled_item_size(style: &BookStyle, book: &Book, index: usize, item: &Item, body: f32) -> f32 {
     if let Some(source) = &book.pdf_source
         && let Some(block) = source.conversion.blocks.get(index)
     {
         return body * block.size_ratio.clamp(0.8, 2.0);
     }
-    MINIMAL.block_size(item, book.structure.get(item.id()), body)
+    style.block_size(item, book.structure.get(item.id()), body)
 }
 
 fn segment_styles(
@@ -4087,6 +4300,36 @@ fn settle_pagination(reader: &mut Reader) {
         let result = book_map::build(reader.book.clone().unwrap(), &cancel);
         let _ = reader.finish_atlas(reader.generation, result);
     }
+    settle_theme(reader);
+}
+
+/// Completes the pending theme layout (if the theme needs one) on this thread.
+#[cfg(test)]
+fn settle_theme(reader: &mut Reader) {
+    while let Some(cancel) = reader.pagination.clone() {
+        let book = reader.book.clone().unwrap();
+        let section = book.epub.as_ref().map_or(0, |c| c.index);
+        let Some(canonical) = reader
+            .atlas
+            .as_ref()
+            .and_then(|atlas| atlas.section(section))
+            .cloned()
+        else {
+            return;
+        };
+        let theme = reader.theme;
+        let result = book_map::adapt_section(book, &canonical, theme, &cancel);
+        let generation = reader.generation;
+        let _ = update_inner(
+            reader,
+            Message::ThemeLayoutReady {
+                generation,
+                section,
+                theme: theme.id,
+                result,
+            },
+        );
+    }
 }
 
 fn render_item(
@@ -4096,6 +4339,8 @@ fn render_item(
     item: &Item,
     bounds: Option<selection::SelectionBounds>,
 ) -> Element<'static, Message> {
+    let style = style_for(reader.theme, book);
+    let family = family_for(reader.theme, book);
     if let Some(source) = &book.pdf_source
         && let Some(rect) = source.conversion.illustrations.get(item.id())
     {
@@ -4197,7 +4442,7 @@ fn render_item(
         let title_end = number_start.saturating_sub(1);
         let title_text = &logical[..title_end];
         let number_text = &logical[*number_start..];
-        let size = book_item_size(book, index, item, reader.font_size);
+        let size = styled_item_size(style, book, index, item, reader.font_size);
         let selection = bounds.and_then(|bounds| bounds.range_for_item(index, logical));
         let make_part = |source: &str, start: usize, end: usize, alignment| {
             let part_styles = segment_styles(styles, start, end);
@@ -4230,12 +4475,13 @@ fn render_item(
                         item_offset: start,
                         alignment,
                         font_size: size,
-                        line_height: size * MINIMAL.line_height,
+                        line_height: size * style.line_height,
                         selection: selection.clone(),
                         dragging: reader.selection.is_dragging(),
                         track_hit_test: false,
                         links: part_links,
                         focused_link: None,
+                        font_family: family,
                     },
                     Message::SelectStart,
                     |endpoint, _| Message::SelectMove(endpoint),
@@ -4302,7 +4548,7 @@ fn render_item(
             };
         }
     }
-    let size = book_item_size(book, index, item, reader.font_size);
+    let size = styled_item_size(style, book, index, item, reader.font_size);
     let paragraph = selection::selectable_text(
         selection::SelectableParagraphConfig {
             item_id: item.id().to_owned(),
@@ -4319,7 +4565,7 @@ fn render_item(
                 _ => iced::advanced::text::Alignment::Default,
             },
             font_size: size,
-            line_height: size * MINIMAL.line_height,
+            line_height: size * style.line_height,
             selection: bounds.and_then(|bounds| bounds.range_for_item(index, logical)),
             dragging: reader.selection.is_dragging(),
             track_hit_test: false,
@@ -4331,6 +4577,7 @@ fn render_item(
                 Some(Control::BookLink(row, link)) if row == index => Some(link),
                 _ => None,
             },
+            font_family: family,
         },
         Message::SelectStart,
         |endpoint, _| Message::SelectMove(endpoint),
@@ -4338,7 +4585,7 @@ fn render_item(
     );
     let kind = semantics.map(|s| s.kind).unwrap_or_default();
     let quote = semantics.is_some_and(|s| s.quote_depth > 0);
-    let mut padding = MINIMAL.block_padding(item, semantics, reader.font_size, reader.width);
+    let mut padding = style.block_padding(item, semantics, reader.font_size, reader.width);
     if let Some(source) = &book.pdf_source
         && let Some(block) = source.conversion.blocks.get(index)
     {
@@ -4724,10 +4971,10 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             );
     } else {
         contents = contents
-            .push(text("Literata").font(ui::SERIF).size(28).shaping(text::Shaping::Advanced))
-            .push(text("A calm, readable measure. Your books, without distractions.")
-                .font(ui::SERIF).size(reader.font_size).line_height(MINIMAL.line_height)
-                .shaping(text::Shaping::Advanced))
+            .push(text("Theme").font(ui::MEDIUM).size(13))
+            .push(theme_picker(reader))
+            .push(text("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme.")
+                .size(12).style(ui::muted_text))
             .push(row![
                 text("Book zoom").size(13), Space::new().width(Length::Fill),
                 control_button(reader, Control::SettingsFontDown, text("−").size(14),
@@ -4854,6 +5101,67 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
         );
     }
     container(bar).padding([8, 12]).style(ui::panel).into()
+}
+
+/// The bundled reading themes as cards, each previewing its own font and colors.
+fn theme_picker(reader: &Reader) -> Element<'_, Message> {
+    let card = |index: usize| -> Element<'_, Message> {
+        let theme = &themes::THEMES[index];
+        let colors = theme.palette(reader.appearance);
+        let font = theme.family.map_or(ui::SERIF, iced::Font::with_name);
+        let sample = container(
+            column![
+                text("Aa")
+                    .font(font)
+                    .size(26)
+                    .color(colors.text)
+                    .shaping(text::Shaping::Advanced),
+                text("İyi okumalar, ğüşöç.")
+                    .font(font)
+                    .size(13)
+                    .color(colors.secondary)
+                    .shaping(text::Shaping::Advanced),
+            ]
+            .spacing(2),
+        )
+        .padding(10)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(colors.surface.into()),
+            border: iced::Border {
+                color: colors.border,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        });
+        let label = column![
+            text(theme.name).font(ui::MEDIUM).size(14),
+            text(theme.summary).size(11).style(ui::muted_text),
+            sample,
+        ]
+        .spacing(6)
+        .width(Length::Fill);
+        container(toned_button(
+            reader,
+            Control::SettingsTheme(index),
+            label,
+            Some(Message::SetTheme(index)),
+            ui::ButtonTone::Surface,
+            reader.theme.id == theme.id,
+        ))
+        .width(Length::Fill)
+        .into()
+    };
+    let mut rows = column![].spacing(8);
+    for pair in (0..themes::THEMES.len()).collect::<Vec<_>>().chunks(2) {
+        let mut line = row![].spacing(8);
+        for &index in pair {
+            line = line.push(card(index));
+        }
+        rows = rows.push(line);
+    }
+    rows.into()
 }
 
 fn window_controls_button(
@@ -5130,7 +5438,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
             range,
             &reader.heights,
             reader.width,
-            MINIMAL.gap(reader.font_size),
+            style_for(reader.theme, book).gap(reader.font_size),
             rows,
             virtual_reader::LayoutReports {
                 measurements: reader.measurements.clone(),
@@ -5609,7 +5917,7 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
     )
     .title(title)
     .subscription(subscription)
-    .theme(|reader: &Reader| ui::theme(reader.appearance))
+    .theme(|reader: &Reader| ui::theme(reader.appearance, reader.theme))
     .settings(iced::Settings {
         default_font: ui::SANS,
         default_text_size: 13.into(),
@@ -6277,6 +6585,276 @@ mod tests {
                 .controls()
                 .any(|control| control == Control::FindInput)
         );
+    }
+
+    fn themed_reader(paragraphs: usize) -> Reader {
+        let mut source = Arc::try_unwrap(book("themed")).unwrap();
+        let sentence = "A readable paragraph with enough words to wrap over several lines. ";
+        source.items = (0..paragraphs)
+            .map(|index| Item::Paragraph {
+                id: format!("paragraph-{index}"),
+                text: sentence.repeat(6 + index % 40),
+                base_direction: BaseDirection::Ltr,
+                style_runs: Vec::new(),
+            })
+            .collect();
+        let mut reader = Reader {
+            book: Some(Arc::new(source)),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        reader
+    }
+
+    #[test]
+    fn every_theme_keeps_the_same_pages_and_page_numbers() {
+        let mut reader = themed_reader(60);
+        let default_pages = reader.pages();
+        let total = reader.page_total();
+        assert!(default_pages.len() > 10, "the fixture must span many pages");
+        for index in 1..themes::THEMES.len() {
+            let _ = update_inner(&mut reader, Message::SetTheme(index));
+            settle_theme(&mut reader);
+            let name = themes::THEMES[index].name;
+            let pages = reader.pages();
+            assert_eq!(pages.len(), default_pages.len(), "{name}: page count");
+            assert_eq!(reader.page_total(), total, "{name}: total");
+            assert_eq!(
+                reader.heights.len(),
+                reader.book.as_ref().unwrap().items.len()
+            );
+            for (adapted, original) in pages.iter().zip(&default_pages) {
+                assert_eq!(adapted.number, original.number, "{name}");
+                assert_eq!(adapted.label, original.label, "{name}");
+                assert!(
+                    adapted.height >= original.height - 0.01,
+                    "{name}: sheet size"
+                );
+                if adapted.content.end - adapted.content.start > 0.5 {
+                    // Each page starts in the same paragraph as in the default layout.
+                    assert_eq!(
+                        adapted.rows.start, original.rows.start,
+                        "{name}: page {}",
+                        adapted.number
+                    );
+                }
+            }
+            for pair in pages.windows(2) {
+                assert_eq!(
+                    pair[0].content.end, pair[1].content.start,
+                    "{name}: contiguous"
+                );
+                assert!(pair[1].top > pair[0].top, "{name}: pages stack");
+            }
+            assert_eq!(pages[0].content.start, 0.0);
+            assert_eq!(pages.last().unwrap().content.end, reader.heights.total());
+        }
+        // Back to the default theme restores the original layout exactly.
+        let _ = update_inner(&mut reader, Message::SetTheme(0));
+        settle_theme(&mut reader);
+        let restored = reader.pages();
+        assert_eq!(restored.len(), default_pages.len());
+        assert!(
+            restored
+                .iter()
+                .zip(&default_pages)
+                .all(|(a, b)| a.top == b.top && a.content == b.content)
+        );
+    }
+
+    #[test]
+    fn changing_theme_keeps_the_reading_place() {
+        let mut reader = themed_reader(60);
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 30,
+            fraction: 0.4,
+        });
+        settle_pagination(&mut reader);
+        let before = reader.active_page().unwrap().number;
+        let row_before = reader.anchor().row;
+        for index in [1, 2, 3, 0] {
+            let _ = update_inner(&mut reader, Message::SetTheme(index));
+            settle_theme(&mut reader);
+            assert_eq!(
+                reader.anchor().row,
+                row_before,
+                "theme {index}: same paragraph"
+            );
+            assert_eq!(
+                reader.active_page().unwrap().number,
+                before,
+                "theme {index}: same page"
+            );
+        }
+    }
+
+    #[test]
+    fn a_theme_chosen_before_opening_a_book_lays_it_out_directly() {
+        let default_total = themed_reader(40).page_total();
+        for (index, theme) in themes::THEMES.iter().enumerate().skip(1) {
+            let mut source = Arc::try_unwrap(book("startup")).unwrap();
+            let sentence = "A readable paragraph with enough words to wrap over several lines. ";
+            source.items = (0..40)
+                .map(|i| Item::Paragraph {
+                    id: format!("paragraph-{i}"),
+                    text: sentence.repeat(6 + i % 40),
+                    base_direction: BaseDirection::Ltr,
+                    style_runs: Vec::new(),
+                })
+                .collect();
+            let mut reader = Reader {
+                theme,
+                book: Some(Arc::new(source)),
+                ..Reader::default()
+            };
+            let _ = reader.rebuild_geometry(Anchor {
+                row: 0,
+                fraction: 0.0,
+            });
+            settle_pagination(&mut reader);
+            assert!(
+                reader.pagination.is_none(),
+                "{}: still preparing",
+                theme.name
+            );
+            assert!(reader.section_layout().is_some(), "{index}");
+            assert!(!reader.pages().is_empty(), "{}", theme.name);
+            assert_eq!(
+                reader.page_total(),
+                default_total,
+                "{}: same page count",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn saved_theme_reaches_a_book_that_is_already_open() {
+        let mut reader = themed_reader(40);
+        let total = reader.page_total();
+        let loaded = reader_document::preferences::Preferences {
+            appearance: Appearance::Dark,
+            window_controls: WindowControls::Mac,
+            theme: "clear".into(),
+        };
+        let _ = update_inner(&mut reader, Message::PreferencesLoaded(Ok(loaded)));
+        assert_eq!(reader.theme.id, "clear");
+        assert!(
+            !reader.preferences_dirty,
+            "loading a saved theme is not a change to save"
+        );
+        settle_theme(&mut reader);
+        assert!(reader.section_layout().is_some());
+        assert_eq!(reader.page_total(), total);
+        // An unknown theme in the file means the default.
+        let mut other = themed_reader(10);
+        let unknown = reader_document::preferences::Preferences {
+            theme: "from-a-newer-version".into(),
+            ..Default::default()
+        };
+        let _ = update_inner(&mut other, Message::PreferencesLoaded(Ok(unknown)));
+        assert_eq!(other.theme.id, themes::DEFAULT_ID);
+    }
+
+    #[test]
+    fn choosing_a_theme_is_saved_and_unknown_choices_fall_back() {
+        let mut reader = themed_reader(20);
+        let _ = update_inner(&mut reader, Message::SetTheme(2));
+        assert_eq!(reader.theme.id, "clear");
+        assert!(
+            reader.preferences_saving,
+            "the choice is written to preferences"
+        );
+        let _ = update_inner(&mut reader, Message::SetTheme(999));
+        assert_eq!(
+            reader.theme.id,
+            themes::THEMES.last().unwrap().id,
+            "out of range picks the last"
+        );
+        assert_eq!(themes::find("no-such-theme").id, themes::DEFAULT_ID);
+        // The window theme follows the choice and the light/dark mode.
+        let light = ui::theme(Appearance::Light, reader.theme);
+        let dark = ui::theme(Appearance::Dark, reader.theme);
+        assert_ne!(ui::palette(&light).surface, ui::palette(&dark).surface);
+        assert_eq!(
+            ui::palette(&light).surface,
+            reader.theme.palette(Appearance::Light).surface
+        );
+    }
+
+    #[test]
+    fn theme_controls_are_reachable_from_the_keyboard_and_activate_the_theme() {
+        let mut reader = themed_reader(10);
+        reader.show_settings = true;
+        for index in 0..themes::THEMES.len() {
+            assert!(
+                reader
+                    .controls()
+                    .any(|c| c == Control::SettingsTheme(index))
+            );
+        }
+        let _ = reader.activate(Control::SettingsTheme(1));
+        assert_eq!(reader.theme.id, "soft");
+    }
+
+    /// Width of one line of text in a bundled reading face, shaped by the real renderer.
+    fn line_width(family: Option<&'static str>, role: reader::FontRole) -> f32 {
+        for bytes in ui::font_data() {
+            iced::advanced::graphics::text::font_system()
+                .write()
+                .unwrap()
+                .load_font(std::borrow::Cow::Borrowed(bytes));
+        }
+        let font = family.map_or(role.iced_font(), |family| {
+            selection::with_reading_family(role.iced_font(), family)
+        });
+        selection::text_width("Hamburgefonstiv Quickly, İstanbul ğüşöç", font, 20.0)
+    }
+
+    #[test]
+    fn every_bundled_reading_face_resolves_to_its_own_font_file() {
+        // A family name that matched no font file would silently fall back to one
+        // default face, and then every weight of that family would measure the same.
+        let mut regular = Vec::new();
+        for theme in &themes::THEMES {
+            if theme.family.is_none() && theme.id != themes::DEFAULT_ID {
+                continue;
+            }
+            let widths: Vec<(&str, f32)> = [
+                ("regular", reader::FontRole::EditorialRegular),
+                ("medium", reader::FontRole::EditorialMedium),
+                ("bold", reader::FontRole::EditorialBold),
+                ("italic", reader::FontRole::EditorialItalic),
+                ("bold italic", reader::FontRole::EditorialBoldItalic),
+            ]
+            .into_iter()
+            .map(|(name, role)| (name, line_width(theme.family, role)))
+            .collect();
+            for (i, (name, width)) in widths.iter().enumerate() {
+                assert!(*width > 50.0, "{} {name}: {width}", theme.name);
+                for (other, other_width) in &widths[i + 1..] {
+                    assert!(
+                        (width - other_width).abs() > 0.05,
+                        "{}: {name} and {other} measure alike ({width} px), so a face is not found",
+                        theme.name
+                    );
+                }
+            }
+            regular.push((theme.name, widths[0].1));
+        }
+        // Different families look different, too.
+        for (i, (name, width)) in regular.iter().enumerate() {
+            for (other, other_width) in &regular[i + 1..] {
+                assert!(
+                    (width - other_width).abs() > 0.5,
+                    "{name} and {other} share a face"
+                );
+            }
+        }
     }
 
     #[test]

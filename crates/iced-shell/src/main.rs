@@ -12,6 +12,7 @@ mod find;
 mod pdf_reader;
 mod platform;
 mod shelf;
+mod themes;
 mod ui;
 
 use iced::event;
@@ -1185,6 +1186,7 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
         selection::SelectableParagraphConfig {
             links: Vec::new(),
             focused_link: None,
+            font_family: None,
             item_id: item_id.to_owned(),
             logical_text: logical_text.to_owned(),
             mapped,

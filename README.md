@@ -20,9 +20,13 @@ with light and dark themes.
   page field that can jump across the whole book.
 - **Stable pages.** Zoom changes the size of the page without changing its number
   or the total. Switching PDF views keeps your current source page.
+- **Reading themes.** Pick Default, Soft, Clear or Compact in Settings: each sets the
+  reading font, line and paragraph spacing, and its own light and dark colors. Page
+  numbers and page boundaries stay the same in every theme, and text size stays your
+  own. All fonts are bundled, so nothing is downloaded.
 - **Less chrome.** Collapse the toolbar to reclaim reading space. Choose Windows- or
-  macOS-style window buttons in Settings. Geist for the interface, Literata for the
-  book, and bundled fonts for offline reading.
+  macOS-style window buttons in Settings. Geist for the interface, Literata (or the
+  theme's font) for the book, and bundled fonts for offline reading.
 - **Keyboard access.** Navigate controls, switch books, turn pages and copy selected
   text without reaching for the mouse.
 

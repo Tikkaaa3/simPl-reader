@@ -44,10 +44,12 @@ pub enum WindowControls {
     Windows,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub appearance: Appearance,
     pub window_controls: WindowControls,
+    /// Id of the chosen reading theme; empty or unknown ids mean the default theme.
+    pub theme: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,6 +59,8 @@ struct Record {
     appearance: Appearance,
     #[serde(default)]
     window_controls: WindowControls,
+    #[serde(default)]
+    theme: String,
 }
 
 fn path() -> PathBuf {
@@ -101,6 +105,7 @@ fn load_from(path: &Path) -> Result<Preferences, String> {
     Ok(Preferences {
         appearance: record.appearance,
         window_controls: record.window_controls,
+        theme: record.theme.chars().take(64).collect(),
     })
 }
 
@@ -109,6 +114,7 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         version: VERSION,
         appearance: preferences.appearance,
         window_controls: preferences.window_controls,
+        theme: preferences.theme,
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -141,8 +147,9 @@ mod tests {
                 let preferences = Preferences {
                     appearance,
                     window_controls,
+                    theme: "soft".into(),
                 };
-                save_to(&path, preferences).unwrap();
+                save_to(&path, preferences.clone()).unwrap();
                 assert_eq!(load_from(&path).unwrap(), preferences);
             }
         }
@@ -162,8 +169,12 @@ mod tests {
             Preferences {
                 appearance: Appearance::Dark,
                 window_controls: WindowControls::Mac,
+                theme: String::new(),
             }
         );
+        // A newer record with a theme loads, and older readers would ignore the extra field.
+        fs::write(&path, br#"{"version":1,"appearance":"dark","theme":"clear"}"#).unwrap();
+        assert_eq!(load_from(&path).unwrap().theme, "clear");
         for bytes in [
             b"broken".to_vec(),
             br#"{"version":2,"appearance":"dark"}"#.to_vec(),
