@@ -41,7 +41,7 @@ try {
     # Font binaries are embedded in simPl.exe; ship their notices alongside Rust notices.
     $fontNotices = Join-Path $staging 'third-party\fonts'
     New-Item -ItemType Directory -Path $fontNotices | Out-Null
-    foreach ($notice in @('Geist-OFL.txt', 'Inter-OFL.txt', 'Literata-OFL.txt', 'Material-Symbols-LICENSE.txt', 'Material-Symbols-CHANGES.txt', 'Typeface-SOURCES.txt')) {
+    foreach ($notice in @('Geist-OFL.txt', 'Inter-OFL.txt', 'Literata-OFL.txt', 'Spectral-OFL.txt', 'FiraSans-OFL.txt', 'Material-Symbols-LICENSE.txt', 'Material-Symbols-CHANGES.txt', 'Typeface-SOURCES.txt')) {
         $source = Join-Path $root "assets\licenses\$notice"
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Bundled font notice missing: $source" }
         Copy-Item -LiteralPath $source -Destination (Join-Path $fontNotices $notice)
