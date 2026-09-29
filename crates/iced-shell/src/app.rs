@@ -1,9 +1,9 @@
 //! The normal, fixture-independent local HTML, PDF and EPUB reader.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -28,6 +28,8 @@ mod book_map;
 mod book_zoom;
 #[path = "notes_ui.rs"]
 mod notes_ui;
+#[path = "read_aloud.rs"]
+mod read_aloud;
 
 const DEFAULT_FONT_SIZE: f32 = MINIMAL.default_size;
 const OVERSCAN: f32 = 600.0;
@@ -55,6 +57,7 @@ struct PdfBook {
     document: Arc<reader_pdf::Document>,
     conversion: reader_pdf::book::Conversion,
     original_position: PdfReadingPosition,
+    illustration_pages: HashSet<u32>,
 }
 
 #[derive(Debug)]
@@ -73,6 +76,7 @@ struct Book {
     restored: Option<ReadingPosition>,
     epub: Option<EpubChapter>,
     pdf_source: Option<PdfBook>,
+    contents: OnceLock<Vec<reader_document::epub::TocEntry>>,
 }
 
 fn load_book(
@@ -166,6 +170,7 @@ fn display_book(
         restored,
         epub,
         pdf_source: None,
+        contents: OnceLock::new(),
     }
 }
 
@@ -751,6 +756,12 @@ async fn load_pdf_book(
             }
         })
         .collect();
+    let illustration_pages = conversion
+        .blocks
+        .iter()
+        .filter(|block| conversion.illustrations.contains_key(&block.id))
+        .filter_map(|block| block.sources.first().map(|source| source.page))
+        .collect();
     Ok(Book {
         path: document.path.clone(),
         title: document.title.clone(),
@@ -765,10 +776,12 @@ async fn load_pdf_book(
         warnings,
         restored,
         epub: None,
+        contents: OnceLock::new(),
         pdf_source: Some(PdfBook {
             document,
             conversion,
             original_position,
+            illustration_pages,
         }),
     })
 }
@@ -820,6 +833,7 @@ struct Find {
     current: Option<usize>,
     /// The text of the rest of the book is still being read.
     indexing: bool,
+    searching: bool,
     /// Why search cannot cover everything, if it cannot.
     notice: Option<String>,
 }
@@ -839,14 +853,106 @@ struct PdfFindIndex {
     truncated: bool,
 }
 
-/// Stops reading PDF text after this much, to bound memory.
-const MAX_PDF_INDEX_BYTES: usize = 64 * 1024 * 1024;
+/// Bounds the retained EPUB/PDF search text (item and index metadata are additional).
+const MAX_FIND_INDEX_BYTES: usize = 64 * 1024 * 1024;
+const ASYNC_FIND_BYTES: usize = 64 * 1024;
 
 /// Text of every EPUB chapter, kept while the book stays open so search spans the book.
 #[derive(Clone, Debug)]
 struct FindIndex {
     fingerprint: String,
     chapters: Arc<Vec<Vec<Item>>>,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+struct FindJob {
+    _handle: iced::task::Handle,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for FindJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+enum SearchCorpus {
+    Book(Arc<Book>),
+    Chapters(Arc<Vec<Vec<Item>>>),
+    Pdf(Arc<Vec<String>>),
+}
+
+#[derive(Clone, Debug)]
+enum SearchOrigin {
+    Book(Option<usize>, usize, usize),
+    Pdf(u32, usize),
+}
+
+#[derive(Clone, Debug)]
+struct SearchResults {
+    origin: SearchOrigin,
+    matches: Vec<find::Match>,
+    pdf_matches: Vec<find::PdfMatch>,
+}
+
+impl SearchCorpus {
+    fn is_large(&self) -> bool {
+        let mut bytes = 0;
+        let mut large = |size| {
+            bytes += size;
+            bytes >= ASYNC_FIND_BYTES
+        };
+        match self {
+            Self::Book(book) => book
+                .items
+                .iter()
+                .filter_map(Item::text)
+                .any(|text| large(text.len())),
+            Self::Chapters(chapters) => chapters
+                .iter()
+                .flatten()
+                .filter_map(Item::text)
+                .any(|text| large(text.len())),
+            Self::Pdf(pages) => pages.iter().any(|text| large(text.len())),
+        }
+    }
+
+    fn search(&self, needle: &[char], origin: SearchOrigin, cancel: &AtomicBool) -> SearchResults {
+        let mut results = SearchResults {
+            origin,
+            matches: Vec::new(),
+            pdf_matches: Vec::new(),
+        };
+        match self {
+            Self::Book(book) => find::search_items_cancellable(
+                &book.items,
+                book.epub.as_ref().map(|chapter| chapter.index),
+                needle,
+                &mut results.matches,
+                cancel,
+            ),
+            Self::Chapters(chapters) => {
+                for (chapter, items) in chapters.iter().enumerate() {
+                    if results.matches.len() >= find::MAX_MATCHES || cancel.load(Ordering::Relaxed)
+                    {
+                        break;
+                    }
+                    find::search_items_cancellable(
+                        items,
+                        Some(chapter),
+                        needle,
+                        &mut results.matches,
+                        cancel,
+                    );
+                }
+            }
+            Self::Pdf(pages) => {
+                find::search_pages_cancellable(pages, needle, &mut results.pdf_matches, cancel)
+            }
+        }
+        results
+    }
 }
 
 #[derive(Debug)]
@@ -857,7 +963,10 @@ struct Reader {
     find: Option<Find>,
     find_index: Option<FindIndex>,
     pdf_find_index: Option<PdfFindIndex>,
-    find_task: Option<iced::task::Handle>,
+    find_task: Option<FindJob>,
+    find_generation: u64,
+    query_task: Option<FindJob>,
+    query_generation: u64,
     pdf_book_raster: Option<PdfBookRaster>,
     pdf_book_pending: Option<(u64, u32)>,
     returns: Vec<ReturnLocation>,
@@ -927,6 +1036,9 @@ struct Reader {
     measured_layout: Option<(f32, f32)>,
     selection: selection::SelectionState,
     notes: notes::Notes,
+    read_aloud: read_aloud::ReadAloud,
+    /// Installed voices, read when the settings panel opens.
+    voice_choices: Vec<read_aloud::VoiceChoice>,
     /// Last known pointer position in window coordinates.
     pointer: iced::Point,
     saving: bool,
@@ -945,6 +1057,9 @@ impl Default for Reader {
             find_index: None,
             pdf_find_index: None,
             find_task: None,
+            find_generation: 0,
+            query_task: None,
+            query_generation: 0,
             pdf_book_raster: None,
             pdf_book_pending: None,
             returns: Vec::new(),
@@ -1014,6 +1129,8 @@ impl Default for Reader {
             measured_layout: None,
             selection: Default::default(),
             notes: Default::default(),
+            read_aloud: Default::default(),
+            voice_choices: Vec::new(),
             pointer: iced::Point::ORIGIN,
             saving: false,
             failed_close: None,
@@ -1073,6 +1190,10 @@ enum Control {
     RemoveRecent(usize),
     HideHelp,
     Notes(notes::Focus),
+    ReadAloud,
+    ReadAloudPause,
+    ReadAloudSlower,
+    ReadAloudFaster,
 }
 
 #[derive(Clone, Debug)]
@@ -1134,8 +1255,18 @@ enum Message {
     FindChanged(String),
     FindStep(bool),
     FindClose,
-    FindIndexed(Result<FindIndex, String>),
-    PdfFindIndexed(Result<PdfFindIndex, String>),
+    FindIndexed {
+        generation: u64,
+        result: Result<FindIndex, String>,
+    },
+    PdfFindIndexed {
+        generation: u64,
+        result: Result<PdfFindIndex, String>,
+    },
+    FindSearched {
+        generation: u64,
+        results: SearchResults,
+    },
     AtlasReady {
         generation: u64,
         result: Result<Option<book_map::Atlas>, String>,
@@ -1172,6 +1303,21 @@ enum Message {
         result: Result<reader_document::annotations::Annotations, String>,
     },
     NotesSaved(Result<(), String>),
+    ReadAloud(read_aloud::Action),
+    ReadAloudTick,
+    /// The text of a PDF selection to read aloud.
+    ReadAloudText {
+        document: u64,
+        generation: u64,
+        result: Result<String, String>,
+    },
+    /// The text of a PDF page to read aloud.
+    ReadAloudPdfPage {
+        document: u64,
+        generation: u64,
+        page: usize,
+        result: Result<String, String>,
+    },
     /// The text of a PDF selection, read so it can be saved with its highlight.
     PdfHighlightText {
         document: u64,
@@ -1218,9 +1364,7 @@ impl Reader {
         let Some(page) = self.active_page().map(|p| p.number) else {
             return Task::none();
         };
-        if !source.conversion.blocks.iter().any(|b| {
-            b.sources[0].page == page && source.conversion.illustrations.contains_key(&b.id)
-        }) {
+        if !source.illustration_pages.contains(&page) {
             self.pdf_book_raster = None;
             self.pdf_book_pending = None;
             return Task::none();
@@ -1247,31 +1391,33 @@ impl Reader {
         )
     }
 
-    fn contents(&self) -> Vec<reader_document::epub::TocEntry> {
+    fn contents(&self) -> &[reader_document::epub::TocEntry] {
         let Some(book) = &self.book else {
-            return vec![];
+            return &[];
         };
         if let Some(chapter) = &book.epub {
-            return chapter.document.contents.clone();
+            return &chapter.document.contents;
         }
         if book.pdf_source.is_some() {
-            return vec![];
+            return &[];
         }
-        book.items
-            .iter()
-            .enumerate()
-            .filter_map(|(row, item)| match item {
-                Item::Heading { text, level, .. } if *level <= 2 => {
-                    Some(reader_document::epub::TocEntry {
-                        label: text.clone(),
-                        chapter: row,
-                        fragment: None,
-                        depth: level.saturating_sub(1) as usize,
-                    })
-                }
-                _ => None,
-            })
-            .collect()
+        book.contents.get_or_init(|| {
+            book.items
+                .iter()
+                .enumerate()
+                .filter_map(|(row, item)| match item {
+                    Item::Heading { text, level, .. } if *level <= 2 => {
+                        Some(reader_document::epub::TocEntry {
+                            label: text.clone(),
+                            chapter: row,
+                            fragment: None,
+                            depth: level.saturating_sub(1) as usize,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
     }
 
     fn reading_title(&self) -> Option<String> {
@@ -1285,11 +1431,12 @@ impl Reader {
                 .section(chapter.index)
                 .map(|c| c.title.clone())
         } else {
+            let row = self.anchor().row;
             self.contents()
-                .into_iter()
+                .iter()
                 .rev()
-                .find(|c| c.chapter <= self.anchor().row)
-                .map(|c| c.label)
+                .find(|c| c.chapter <= row)
+                .map(|c| c.label.clone())
         };
         Some(match section.filter(|s| s != &book.title) {
             Some(section) => format!("{} ~ {section}", book.title),
@@ -1297,15 +1444,15 @@ impl Reader {
         })
     }
 
-    fn pages(&self) -> Vec<book_pages::Page> {
+    fn pages(&self) -> &[book_pages::Page] {
         let Some(book) = &self.book else {
-            return vec![];
+            return &[];
         };
         if self.heights.len() != book.items.len() {
-            return vec![];
+            return &[];
         }
         self.section_layout()
-            .map_or_else(Vec::new, |section| section.pages.clone())
+            .map_or(&[], |section| section.pages.as_slice())
     }
 
     /// Whether this book is laid out for the theme rather than with the default
@@ -1393,7 +1540,7 @@ impl Reader {
 
     fn go_to_local_page(&mut self, page: usize) -> Task<Message> {
         let pages = self.pages();
-        let Some(page) = pages.get(page) else {
+        let Some(page) = pages.get(page).cloned() else {
             return Task::none();
         };
         self.generation = self.generation.wrapping_add(1);
@@ -1408,7 +1555,7 @@ impl Reader {
     }
 
     fn active_page(&self) -> Option<book_pages::Page> {
-        book_pages::current(&self.pages(), self.offset).cloned()
+        book_pages::current(self.pages(), self.offset).cloned()
     }
 
     fn local_offset(&self) -> f32 {
@@ -1425,7 +1572,7 @@ impl Reader {
             return false;
         }
         let pages = self.pages();
-        let Some(page) = book_pages::current(&pages, self.offset) else {
+        let Some(page) = book_pages::current(pages, self.offset) else {
             return false;
         };
         if next && pages.last().is_some_and(|p| p.top > page.top)
@@ -1455,7 +1602,7 @@ impl Reader {
             return Task::none();
         }
         let pages = self.pages();
-        let Some(page) = book_pages::current(&pages, self.offset) else {
+        let Some(page) = book_pages::current(pages, self.offset) else {
             return Task::none();
         };
         let current = pages.iter().position(|p| p.top == page.top).unwrap_or(0);
@@ -1498,7 +1645,7 @@ impl Reader {
                 fraction: 0.0,
             };
         }
-        let offset = book_pages::content_offset(&self.pages(), &self.heights, self.offset);
+        let offset = book_pages::content_offset(self.pages(), &self.heights, self.offset);
         let row = self.heights.window(offset, 0.0, 0.0).start;
         Anchor {
             row,
@@ -1849,7 +1996,7 @@ impl Reader {
                 .progress(&pdf.document().path, fraction, position.page + 1, total);
         } else if let Some(book) = &self.book {
             let pages = self.pages();
-            let Some(page) = book_pages::current(&pages, self.offset) else {
+            let Some(page) = book_pages::current(pages, self.offset) else {
                 return;
             };
             let total = self.page_total() as u32;
@@ -1874,6 +2021,8 @@ impl Reader {
             appearance: self.appearance,
             window_controls: self.window_controls,
             theme: self.theme.id.to_owned(),
+            voice: self.read_aloud.voice.clone(),
+            speech_rate: self.read_aloud.rate,
         };
         Task::perform(
             async move { preferences::save(preferences) },
@@ -1933,7 +2082,14 @@ impl Reader {
             (finding && has_matches).then_some(Control::FindPrevious),
             (finding && has_matches).then_some(Control::FindNext),
             finding.then_some(Control::FindClose),
+            (has_document && !overlay && self.read_aloud.active())
+                .then_some(Control::ReadAloudSlower),
+            (has_document && !overlay && self.read_aloud.active())
+                .then_some(Control::ReadAloudFaster),
+            (has_document && !overlay && self.read_aloud.active())
+                .then_some(Control::ReadAloudPause),
             expanded.then_some(Control::Find),
+            expanded.then_some(Control::ReadAloud),
             (expanded && self.book.is_some()).then_some(Control::BookPageInput),
             (expanded && self.can_turn(false)).then_some(Control::PreviousBookPage),
             (expanded && self.can_turn(true)).then_some(Control::NextBookPage),
@@ -2028,6 +2184,10 @@ impl Reader {
                     .then_some(Control::SettingsWindowControls(WindowControls::Windows)),
                 self.show_settings
                     .then_some(Control::SettingsWindowControls(WindowControls::Mac)),
+                (self.show_settings && self.read_aloud.rate > crate::speech::MIN_RATE)
+                    .then_some(Control::ReadAloudSlower),
+                (self.show_settings && self.read_aloud.rate < crate::speech::MAX_RATE)
+                    .then_some(Control::ReadAloudFaster),
                 self.show_settings.then_some(Control::SettingsHelp),
             ])
             .flatten()
@@ -2050,7 +2210,7 @@ impl Reader {
             .chain(book.into_iter().flat_map(move |book| {
                 self.heights
                     .window(
-                        book_pages::content_offset(&self.pages(), &self.heights, self.offset),
+                        book_pages::content_offset(self.pages(), &self.heights, self.offset),
                         self.viewport,
                         0.0,
                     )
@@ -2171,6 +2331,21 @@ impl Reader {
                 ));
             }
             Control::Find => Message::FindOpen,
+            Control::ReadAloud => Message::ReadAloud(read_aloud::Action::Toggle),
+            Control::ReadAloudPause => Message::ReadAloud(
+                if self
+                    .read_aloud
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.paused)
+                {
+                    read_aloud::Action::Resume
+                } else {
+                    read_aloud::Action::Pause
+                },
+            ),
+            Control::ReadAloudSlower => Message::ReadAloud(read_aloud::Action::Slower),
+            Control::ReadAloudFaster => Message::ReadAloud(read_aloud::Action::Faster),
             Control::FindInput => return iced::widget::operation::focus(find_id()),
             Control::FindPrevious => Message::FindStep(false),
             Control::FindNext => Message::FindStep(true),
@@ -2245,7 +2420,7 @@ impl Reader {
         let mut original = source.original_position.clone();
         let range = pdf_source_range(&source.conversion, self.anchor());
         let pages = self.pages();
-        let page = book_pages::current(&pages, self.offset)
+        let page = book_pages::current(pages, self.offset)
             .map(|p| p.number)
             .or_else(|| range.map(|r| r.page))?;
         original.page = page;
@@ -2593,26 +2768,49 @@ impl Reader {
             {
                 let document = chapter.document.clone();
                 let fingerprint = book.fingerprint.clone();
+                self.find_generation = self.find_generation.wrapping_add(1);
+                let generation = self.find_generation;
+                let cancel = Arc::new(AtomicBool::new(false));
+                let worker_cancel = cancel.clone();
                 let (task, handle) = Task::perform(
                     async move {
-                        let chapters = (0..document.chapters.len())
-                            .map(|index| {
-                                // An unreadable chapter must not stop the rest from being searched.
-                                document
-                                    .load_chapter_text(index)
-                                    .map(|chapter| chapter.document.items)
-                                    .unwrap_or_default()
-                            })
-                            .collect();
+                        let mut chapters = Vec::new();
+                        let mut total = 0;
+                        let mut truncated = false;
+                        for index in 0..document.chapters.len() {
+                            if worker_cancel.load(Ordering::Relaxed) {
+                                return Err("Search cancelled".to_owned());
+                            }
+                            // Preserve chapter indices when a chapter cannot be read.
+                            let items = document
+                                .load_chapter_text(index)
+                                .map(|chapter| chapter.document.items)
+                                .unwrap_or_default();
+                            let bytes = items
+                                .iter()
+                                .filter_map(Item::text)
+                                .map(str::len)
+                                .sum::<usize>();
+                            if bytes > MAX_FIND_INDEX_BYTES.saturating_sub(total) {
+                                truncated = true;
+                                break;
+                            }
+                            total += bytes;
+                            chapters.push(items);
+                        }
                         Ok(FindIndex {
                             fingerprint,
                             chapters: Arc::new(chapters),
+                            truncated,
                         })
                     },
-                    Message::FindIndexed,
+                    move |result| Message::FindIndexed { generation, result },
                 )
                 .abortable();
-                self.find_task = Some(handle.abort_on_drop());
+                self.find_task = Some(FindJob {
+                    _handle: handle.abort_on_drop(),
+                    cancel,
+                });
                 tasks.push(task);
             }
         } else if let Some(pdf) = &self.pdf {
@@ -2625,19 +2823,26 @@ impl Reader {
                 .is_none_or(|index| index.document != document.id)
                 && self.find_task.is_none()
             {
+                self.find_generation = self.find_generation.wrapping_add(1);
+                let generation = self.find_generation;
+                let cancel = Arc::new(AtomicBool::new(false));
+                let worker_cancel = cancel.clone();
                 let (task, handle) = Task::perform(
                     async move {
                         let mut pages = Vec::with_capacity(document.pages.len());
                         let (mut total, mut truncated) = (0, false);
                         for page in 0..document.pages.len() as u32 {
+                            if worker_cancel.load(Ordering::Relaxed) {
+                                return Err("Search cancelled".to_owned());
+                            }
                             // Each page is its own worker request, so page renders interleave.
                             let text = document.session.page_text(page).await.unwrap_or_default();
-                            total += text.len();
-                            pages.push(text);
-                            if total > MAX_PDF_INDEX_BYTES {
+                            if text.len() > MAX_FIND_INDEX_BYTES.saturating_sub(total) {
                                 truncated = true;
                                 break;
                             }
+                            total += text.len();
+                            pages.push(text);
                         }
                         Ok(PdfFindIndex {
                             document: document.id,
@@ -2645,10 +2850,13 @@ impl Reader {
                             truncated,
                         })
                     },
-                    Message::PdfFindIndexed,
+                    move |result| Message::PdfFindIndexed { generation, result },
                 )
                 .abortable();
-                self.find_task = Some(handle.abort_on_drop());
+                self.find_task = Some(FindJob {
+                    _handle: handle.abort_on_drop(),
+                    cancel,
+                });
                 tasks.push(task);
             }
         } else {
@@ -2668,7 +2876,7 @@ impl Reader {
         self.find = None;
         self.find_index = None;
         self.pdf_find_index = None;
-        self.find_task = None;
+        self.cancel_find_jobs();
     }
 
     /// A chapter load clears the highlight; bring it back if the match is in this chapter.
@@ -2688,6 +2896,13 @@ impl Reader {
         }
     }
 
+    fn cancel_find_jobs(&mut self) {
+        self.find_task = None;
+        self.query_task = None;
+        self.find_generation = self.find_generation.wrapping_add(1);
+        self.query_generation = self.query_generation.wrapping_add(1);
+    }
+
     fn close_find(&mut self) {
         if self.find.take().is_some() {
             self.selection.clear();
@@ -2695,7 +2910,7 @@ impl Reader {
                 pdf.clear_selection();
             }
         }
-        self.find_task = None;
+        self.cancel_find_jobs();
         if self.focused.is_some_and(|control| {
             matches!(
                 control,
@@ -2715,58 +2930,35 @@ impl Reader {
         let Some(book) = self.book.clone() else {
             return Task::none();
         };
+        let reading_origin = SearchOrigin::Book(
+            book.epub.as_ref().map(|chapter| chapter.index),
+            self.anchor().row,
+            0,
+        );
         let Some(find) = &mut self.find else {
             return Task::none();
         };
         let origin = find
             .current
             .and_then(|index| find.matches.get(index))
-            .map(|m| (m.chapter, m.item_index, m.start));
+            .map_or(reading_origin, |m| {
+                SearchOrigin::Book(m.chapter, m.item_index, m.start)
+            });
         find.query = query;
         find.matches.clear();
         find.current = None;
-        let Some(needle) = find::needle(&find.query) else {
-            self.selection.clear();
-            return Task::none();
-        };
-        match self
+        let index = self
             .find_index
             .as_ref()
-            .filter(|index| index.fingerprint == book.fingerprint)
-        {
-            Some(index) => {
-                for (chapter, items) in index.chapters.iter().enumerate() {
-                    find::search_items(items, Some(chapter), &needle, &mut find.matches);
-                }
-            }
-            None => find::search_items(
-                &book.items,
-                book.epub.as_ref().map(|chapter| chapter.index),
-                &needle,
-                &mut find.matches,
-            ),
-        }
-        let origin = origin.unwrap_or_else(|| {
-            (
-                book.epub.as_ref().map(|chapter| chapter.index),
-                self.anchor().row,
-                0,
-            )
-        });
-        let Some(find) = &mut self.find else {
-            return Task::none();
-        };
-        find.current = (!find.matches.is_empty()).then(|| {
-            find.matches
-                .iter()
-                .position(|m| (m.chapter, m.item_index, m.start) >= origin)
-                .unwrap_or(0)
-        });
-        if find.current.is_none() {
-            self.selection.clear();
-            return Task::none();
-        }
-        self.reveal_match()
+            .filter(|index| index.fingerprint == book.fingerprint);
+        find.notice = index
+            .filter(|index| index.truncated)
+            .map(|index| format!("Searching the first {} chapters", index.chapters.len()));
+        let corpus = index.map_or_else(
+            || SearchCorpus::Book(book),
+            |index| SearchCorpus::Chapters(index.chapters.clone()),
+        );
+        self.start_query(corpus, origin)
     }
 
     fn search_pdf(&mut self, query: String) -> Task<Message> {
@@ -2775,13 +2967,16 @@ impl Reader {
         };
         let document = pdf.document().id;
         let reading_page = pdf.page_index() as u32;
+        let can_copy = pdf.document().can_copy;
         let Some(find) = &mut self.find else {
             return Task::none();
         };
         let origin = find
             .current
             .and_then(|index| find.pdf_matches.get(index))
-            .map_or((reading_page, 0), |m| (m.page, m.first));
+            .map_or(SearchOrigin::Pdf(reading_page, 0), |m| {
+                SearchOrigin::Pdf(m.page, m.first)
+            });
         find.query = query;
         find.pdf_matches.clear();
         find.current = None;
@@ -2789,22 +2984,82 @@ impl Reader {
             .pdf_find_index
             .as_ref()
             .filter(|index| index.document == document);
-        find.notice = index
-            .filter(|index| index.truncated)
-            .map(|index| format!("Searching the first {} pages", index.pages.len()));
-        if let (Some(needle), Some(index)) = (find::needle(&find.query), index) {
-            find::search_pages(&index.pages, &needle, &mut find.pdf_matches);
+        find.notice = if !can_copy {
+            Some("This PDF does not permit text search".to_owned())
+        } else {
+            index
+                .filter(|index| index.truncated)
+                .map(|index| format!("Searching the first {} pages", index.pages.len()))
+        };
+        let corpus = SearchCorpus::Pdf(
+            index.map_or_else(|| Arc::new(Vec::new()), |index| index.pages.clone()),
+        );
+        self.start_query(corpus, origin)
+    }
+
+    fn start_query(&mut self, corpus: SearchCorpus, origin: SearchOrigin) -> Task<Message> {
+        self.query_task = None;
+        self.query_generation = self.query_generation.wrapping_add(1);
+        let generation = self.query_generation;
+        let Some(find) = &mut self.find else {
+            return Task::none();
+        };
+        find.searching = false;
+        self.selection.clear();
+        if let Some(pdf) = &mut self.pdf {
+            pdf.clear_selection();
         }
-        find.current = (!find.pdf_matches.is_empty()).then(|| {
-            find.pdf_matches
-                .iter()
-                .position(|m| (m.page, m.first) >= origin)
-                .unwrap_or(0)
+        let Some(needle) = find::needle(&find.query) else {
+            return Task::none();
+        };
+        if !corpus.is_large() {
+            let results = corpus.search(&needle, origin, &AtomicBool::new(false));
+            return self.finish_query(generation, results);
+        }
+        find.searching = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let (task, handle) = Task::perform(
+            async move { corpus.search(&needle, origin, &worker_cancel) },
+            move |results| Message::FindSearched {
+                generation,
+                results,
+            },
+        )
+        .abortable();
+        self.query_task = Some(FindJob {
+            _handle: handle.abort_on_drop(),
+            cancel,
         });
+        task
+    }
+
+    fn finish_query(&mut self, generation: u64, results: SearchResults) -> Task<Message> {
+        if generation != self.query_generation {
+            return Task::none();
+        }
+        let Some(find) = &mut self.find else {
+            return Task::none();
+        };
+        self.query_task = None;
+        find.searching = false;
+        find.matches = results.matches;
+        find.pdf_matches = results.pdf_matches;
+        find.current = match results.origin {
+            SearchOrigin::Book(chapter, item, start) => (!find.matches.is_empty()).then(|| {
+                find.matches
+                    .iter()
+                    .position(|m| (m.chapter, m.item_index, m.start) >= (chapter, item, start))
+                    .unwrap_or(0)
+            }),
+            SearchOrigin::Pdf(page, first) => (!find.pdf_matches.is_empty()).then(|| {
+                find.pdf_matches
+                    .iter()
+                    .position(|m| (m.page, m.first) >= (page, first))
+                    .unwrap_or(0)
+            }),
+        };
         if find.current.is_none() {
-            if let Some(pdf) = &mut self.pdf {
-                pdf.clear_selection();
-            }
             return Task::none();
         }
         self.reveal_match()
@@ -2957,6 +3212,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
+    reader.sync_read_aloud();
     let task = Task::batch([task, reader.request_pdf_book_raster()]);
     let panels_changed =
         previous_panels != (reader.show_recent, reader.show_help, reader.show_contents);
@@ -3061,6 +3317,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             }
             chrome::Action::Settings if reader.interactive() => {
                 reader.show_settings = !reader.show_settings;
+                if reader.show_settings {
+                    reader.voice_choices = reader.read_aloud.choices();
+                }
                 reader.show_search = false;
                 reader.focused = Some(if reader.show_settings {
                     Control::DismissOverlay
@@ -3078,6 +3337,22 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 _ => Task::none(),
             }),
         },
+        Message::ReadAloud(action) => reader.read_aloud(action),
+        Message::ReadAloudTick => reader.read_aloud_tick(),
+        Message::ReadAloudText {
+            document,
+            generation,
+            result,
+        } => {
+            reader.read_aloud_text(document, generation, result);
+            Task::none()
+        }
+        Message::ReadAloudPdfPage {
+            document,
+            generation,
+            page,
+            result,
+        } => reader.read_aloud_pdf_page(document, generation, page, result),
         Message::Shelf(shelf::Message::Activate(shelf::Control::Add)) => {
             update_inner(reader, Message::OpenDialog)
         }
@@ -3200,7 +3475,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.close_find();
             iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
         }
-        Message::FindIndexed(result) => {
+        Message::FindSearched {
+            generation,
+            results,
+        } => reader.finish_query(generation, results),
+        Message::FindIndexed { generation, result } => {
+            if generation != reader.find_generation || reader.find.is_none() {
+                return Task::none();
+            }
             reader.find_task = None;
             let Ok(index) = result else {
                 if let Some(find) = &mut reader.find {
@@ -3223,7 +3505,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             // Widen a search typed while chapters were still being read to the whole book.
             query.map_or_else(Task::none, |query| reader.search_document(query))
         }
-        Message::PdfFindIndexed(result) => {
+        Message::PdfFindIndexed { generation, result } => {
+            if generation != reader.find_generation || reader.find.is_none() {
+                return Task::none();
+            }
             reader.find_task = None;
             let Ok(index) = result else {
                 if let Some(find) = &mut reader.find {
@@ -3281,6 +3566,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 Ok(loaded) if !reader.preferences_dirty => {
                     reader.appearance = loaded.appearance;
                     reader.window_controls = loaded.window_controls;
+                    reader.read_aloud.voice = loaded.voice;
+                    reader.read_aloud.rate = loaded.speech_rate;
                     // A book opened from the command line may already be on screen.
                     theme_task = reader.switch_theme(themes::find(&loaded.theme));
                 }
@@ -3978,6 +4265,19 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             "h" => reader.highlight_shortcut(),
                             _ => reader.notes_action(notes::Action::ToggleList),
                         };
+                    }
+                    // Ctrl+Shift+U reads aloud, or stops reading.
+                    Key::Character(value)
+                        if modifiers.control()
+                            && modifiers.shift()
+                            && value.eq_ignore_ascii_case("u")
+                            && !repeat
+                            && (reader.book.is_some() || reader.pdf.is_some())
+                            && !reader.show_search
+                            && !reader.show_settings =>
+                    {
+                        reader.notes.popup = None;
+                        return reader.read_aloud(read_aloud::Action::Toggle);
                     }
                     Key::Character(value)
                         if modifiers.control() && value.eq_ignore_ascii_case("k") && !repeat =>
@@ -5205,7 +5505,12 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 .size(11)
                 .style(ui::muted_text)
         };
-        let note = |value: &'static str| text(value).size(12).style(ui::muted_text);
+        let note = |value: &'static str| {
+            text(value)
+                .size(12)
+                .width(Length::Fill)
+                .style(ui::muted_text)
+        };
         let rule = || {
             container(Space::new().height(1))
                 .width(Length::Fill)
@@ -5237,6 +5542,9 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 note("Windows places minimize, maximize and close at the right of the title bar; macOS uses round buttons at the left."),
             ].spacing(6))
             .push(rule())
+            .push(section("Read aloud"))
+            .push(read_aloud::settings(reader, reader.voice_choices.clone()))
+            .push(rule())
             .push(row![
                 column![
                     text("Keyboard shortcuts").font(ui::MEDIUM).size(13),
@@ -5247,11 +5555,14 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             ].spacing(8).align_y(iced::Alignment::Center));
     }
     let panel = container(
-        scrollable(contents)
-            .id(iced::advanced::widget::Id::new("workspace-overlay"))
-            .height(Length::Shrink)
-            .direction(ui::vertical_scrollbar())
-            .style(ui::scroll_style),
+        scrollable(container(contents).padding(iced::Padding {
+            right: 14.0,
+            ..Default::default()
+        }))
+        .id(iced::advanced::widget::Id::new("workspace-overlay"))
+        .height(Length::Shrink)
+        .direction(ui::vertical_scrollbar())
+        .style(ui::scroll_style),
     )
     .padding(24)
     .width(
@@ -5300,6 +5611,8 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
     let count = find.count();
     let status = if find.query.trim().is_empty() {
         String::new()
+    } else if find.searching {
+        "Searching…".to_owned()
     } else if count == 0 {
         "No matches".to_owned()
     } else {
@@ -5490,6 +5803,30 @@ fn find_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     )
 }
 
+fn listen_button(reader: &Reader, active: bool) -> Element<'static, Message> {
+    iced::widget::tooltip(
+        toned_button(
+            reader,
+            Control::ReadAloud,
+            text("Listen").font(ui::MEDIUM).size(13),
+            active.then_some(Message::ReadAloud(read_aloud::Action::Toggle)),
+            ui::ButtonTone::Surface,
+            reader.read_aloud.active(),
+        ),
+        text(if reader.read_aloud.active() {
+            "Stop reading aloud (Ctrl+Shift+U)"
+        } else {
+            "Read aloud the selection or from this page (Ctrl+Shift+U)"
+        })
+        .size(12),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .padding(6)
+    .style(ui::panel)
+    .into()
+}
+
 fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
     if reader.book.is_none() && reader.pdf.is_none() {
         return iced::widget::Space::new().height(0).into();
@@ -5536,6 +5873,7 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
                         mode,
                         iced::widget::Space::new().width(Length::Fill),
                         find_button(reader, active),
+                        listen_button(reader, active),
                         appearance_button(reader, active)
                     ]
                     .spacing(8)
@@ -5558,6 +5896,7 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
                         row![
                             pdf.zoom_controls(focused).map(forward),
                             find_button(reader, active),
+                            listen_button(reader, active),
                             appearance_button(reader, active)
                         ]
                         .spacing(8)
@@ -5583,6 +5922,7 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
             }
             let fonts = row![
                 find_button(reader, active),
+                listen_button(reader, active),
                 hinted_control(
                     reader,
                     Control::FontDown,
@@ -5613,7 +5953,7 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
                 ));
             }
             let pages = reader.pages();
-            let current = book_pages::current(&pages, reader.offset)
+            let current = book_pages::current(pages, reader.offset)
                 .map_or_else(|| "1".to_owned(), |p| p.label.clone());
             let mut navigation = row![
                 hinted_control(
@@ -5656,16 +5996,31 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
                     reader.show_contents,
                 ));
             }
-            row![
-                container(library).width(Length::FillPortion(1)),
-                navigation,
-                container(row![fonts].spacing(4).align_y(iced::Alignment::Center))
-                    .width(Length::FillPortion(1))
-                    .align_x(iced::alignment::Horizontal::Right)
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center)
-            .into()
+            if reader.window_size.width < 900.0 {
+                column![
+                    row![
+                        library,
+                        iced::widget::Space::new().width(Length::Fill),
+                        fonts
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                    container(navigation).center_x(Length::Fill),
+                ]
+                .spacing(6)
+                .into()
+            } else {
+                row![
+                    container(library).width(Length::FillPortion(1)),
+                    navigation,
+                    container(row![fonts].spacing(4).align_y(iced::Alignment::Center))
+                        .width(Length::FillPortion(1))
+                        .align_x(iced::alignment::Horizontal::Right)
+                ]
+                .spacing(4)
+                .align_y(iced::Alignment::Center)
+                .into()
+            }
         }
     };
     container(toolbar)
@@ -5796,6 +6151,9 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         .filter(|_| reader.book.is_some() || reader.pdf.is_some())
     {
         auxiliary = auxiliary.push(find_bar(reader, find, active));
+    }
+    if reader.read_aloud.active() {
+        auxiliary = auxiliary.push(read_aloud::player(reader, active));
     }
     let contents = reader.contents();
     if !contents.is_empty() && reader.show_contents && reader.toolbar_expanded {
@@ -5937,6 +6295,8 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             text("Ctrl+L  Page    Ctrl+F  Find, again to close (Enter / Shift+Enter next / previous)    EPUB  Ctrl+T contents · Ctrl+Page Up / Down chapters    PDF  Ctrl+Shift+F fit width / back")
                 .size(12).style(ui::muted_text),
             text("Select text to highlight or add a note    Right-click a highlight to edit or remove it    Right-click a page to bookmark    Ctrl+H  Highlight    Ctrl+D  Bookmark page    Ctrl+B  Notes sidebar")
+                .size(12).style(ui::muted_text),
+            text("Ctrl+Shift+U  Read aloud / stop    Listen reads the selection, or continues from the current page")
                 .size(12).style(ui::muted_text),
             text("Hold middle button  Scroll · Move away to change speed · Release / Escape to stop    F8 / title-bar panel icon  Hide / show toolbar")
                 .size(12).style(ui::muted_text),
@@ -6140,14 +6500,14 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
             Event::SystemThemeChanged(_) => None,
         },
     );
+    let mut subscriptions = vec![events];
     if reader.opening.is_some() || reader.pagination.is_some() {
-        Subscription::batch([
-            events,
-            Subscription::run(loading_frames).map(Message::LoadingFrame),
-        ])
-    } else {
-        events
+        subscriptions.push(Subscription::run(loading_frames).map(Message::LoadingFrame));
     }
+    if reader.read_aloud.ticking() {
+        subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
+    }
+    Subscription::batch(subscriptions)
 }
 
 fn loading_frames() -> impl iced_futures::futures::Stream<Item = u8> {
@@ -6801,6 +7161,7 @@ mod tests {
             restored: None,
             epub: None,
             pdf_source: None,
+            contents: OnceLock::new(),
         })
     }
 
@@ -6835,6 +7196,150 @@ mod tests {
             .selection
             .bounds(items)
             .map(|bounds| bounds.start_item)
+    }
+
+    #[test]
+    fn superseded_large_queries_are_cancelled_and_cannot_replace_new_results() {
+        let mut reader = searchable_reader();
+        reader.find = Some(Find {
+            query: "lighthouse".into(),
+            ..Find::default()
+        });
+        let corpus = SearchCorpus::Pdf(Arc::new(vec!["a".repeat(ASYNC_FIND_BYTES)]));
+        let _ = reader.start_query(corpus, SearchOrigin::Pdf(0, 0));
+        assert!(reader.find.as_ref().unwrap().searching);
+        let old_generation = reader.query_generation;
+        let cancelled = reader.query_task.as_ref().unwrap().cancel.clone();
+        let _ = reader.search_document("lighthouse".into());
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(!reader.find.as_ref().unwrap().searching);
+        assert_eq!(reader.find.as_ref().unwrap().count(), 3);
+        let _ = reader.finish_query(
+            old_generation,
+            SearchResults {
+                origin: SearchOrigin::Book(None, 0, 0),
+                matches: Vec::new(),
+                pdf_matches: Vec::new(),
+            },
+        );
+        assert_eq!(reader.find.as_ref().unwrap().count(), 3);
+        reader.close_find();
+        let _ = reader.finish_query(
+            reader.query_generation,
+            SearchResults {
+                origin: SearchOrigin::Book(None, 0, 0),
+                matches: Vec::new(),
+                pdf_matches: Vec::new(),
+            },
+        );
+        assert!(reader.find.is_none());
+    }
+
+    #[test]
+    fn closed_find_index_result_cannot_finish_a_reopened_job() {
+        let mut reader = searchable_reader();
+        let _ = reader.open_find();
+        let old_generation = reader.find_generation;
+        reader.close_find();
+        let _ = reader.open_find();
+        reader.find.as_mut().unwrap().indexing = true;
+        let (_, handle) = Task::<Message>::none().abortable();
+        let cancel = Arc::new(AtomicBool::new(false));
+        reader.find_task = Some(FindJob {
+            _handle: handle.abort_on_drop(),
+            cancel: cancel.clone(),
+        });
+        let _ = update_inner(
+            &mut reader,
+            Message::FindIndexed {
+                generation: old_generation,
+                result: Err("old error".into()),
+            },
+        );
+        assert!(reader.find_task.is_some());
+        assert!(reader.find.as_ref().unwrap().indexing);
+        assert!(!cancel.load(Ordering::Relaxed));
+        reader.reset_find();
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn blank_query_cancels_pending_search_without_leaving_searching_status() {
+        let mut reader = searchable_reader();
+        reader.find = Some(Find {
+            query: "needle".into(),
+            ..Find::default()
+        });
+        let _ = reader.start_query(
+            SearchCorpus::Pdf(Arc::new(vec!["a".repeat(ASYNC_FIND_BYTES)])),
+            SearchOrigin::Pdf(0, 0),
+        );
+        let cancel = reader.query_task.as_ref().unwrap().cancel.clone();
+        let _ = reader.search_document(String::new());
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(reader.query_task.is_none());
+        assert!(!reader.find.as_ref().unwrap().searching);
+        assert_eq!(reader.find.as_ref().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn book_toolbar_controls_fit_the_supported_window_widths() {
+        use iced::advanced::{
+            Layout, layout,
+            widget::{Id, Operation, Tree},
+        };
+        #[derive(Default)]
+        struct FocusBounds(Option<iced::Rectangle>);
+        impl Operation for FocusBounds {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+            fn container(&mut self, id: Option<&Id>, bounds: iced::Rectangle) {
+                if id == Some(&Id::new(ui::FOCUSED_CONTROL)) {
+                    self.0 = Some(bounds);
+                }
+            }
+        }
+        let mut reader = searchable_reader();
+        reader.returns.push(ReturnLocation {
+            chapter: None,
+            item_id: "paragraph-2".into(),
+            within: 0.0,
+        });
+        let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+        for width in [540.0, 780.0, 899.0, 900.0, 1050.0, 1280.0] {
+            reader.window_size.width = width;
+            for control in [
+                Control::Close,
+                Control::Back,
+                Control::Find,
+                Control::ReadAloud,
+                Control::FontDown,
+                Control::FontUp,
+                Control::ToggleAppearance,
+            ] {
+                reader.focused = Some(control);
+                let mut toolbar = document_toolbar(&reader, true);
+                let mut tree = Tree::new(&toolbar);
+                let node = toolbar.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, Size::new(width, 800.0)),
+                );
+                let mut bounds = FocusBounds::default();
+                toolbar.as_widget_mut().operate(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &mut bounds,
+                );
+                let bounds = bounds.0.expect("focused toolbar control is present");
+                assert!(
+                    bounds.x >= 0.0 && bounds.x + bounds.width <= width + 0.5,
+                    "{control:?} at {width}: {bounds:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6897,7 +7402,7 @@ mod tests {
     #[test]
     fn every_theme_keeps_the_same_pages_and_page_numbers() {
         let mut reader = themed_reader(60);
-        let default_pages = reader.pages();
+        let default_pages = reader.pages().to_vec();
         let total = reader.page_total();
         assert!(default_pages.len() > 10, "the fixture must span many pages");
         for index in 1..themes::THEMES.len() {
@@ -7024,6 +7529,7 @@ mod tests {
             appearance: Appearance::Dark,
             window_controls: WindowControls::Mac,
             theme: "clear".into(),
+            ..Default::default()
         };
         let _ = update_inner(&mut reader, Message::PreferencesLoaded(Ok(loaded)));
         assert_eq!(reader.theme.id, "clear");
@@ -7254,13 +7760,17 @@ mod tests {
         let _ = update_inner(&mut reader, Message::FindChanged("lighthouse".into()));
         assert_eq!(reader.find.as_ref().unwrap().count(), 0);
         let text = complete(document.session.page_text(0)).unwrap();
+        let generation = reader.find_generation;
         let _ = update_inner(
             &mut reader,
-            Message::PdfFindIndexed(Ok(PdfFindIndex {
-                document: document.id,
-                pages: Arc::new(vec![text]),
-                truncated: false,
-            })),
+            Message::PdfFindIndexed {
+                generation,
+                result: Ok(PdfFindIndex {
+                    document: document.id,
+                    pages: Arc::new(vec![text]),
+                    truncated: false,
+                }),
+            },
         );
         let find = reader.find.as_ref().unwrap();
         assert!(!find.indexing);

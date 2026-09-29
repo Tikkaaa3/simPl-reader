@@ -15,6 +15,7 @@ The active UI is Iced 0.14 with tiny-skia and softbuffer. WGPU is disabled.
 | `book_pages`, `book_map` | Single-page boundaries and persistent global page maps |
 | `virtual_reader`, `selection` | Visible content, height indexes and source-aware selection |
 | `pdf_reader`, `pdf_page`, `document_scroll` | Original PDF rendering and navigation |
+| `speech`, `read_aloud` | Offline Windows SAPI voices, playback and page/chapter following |
 | `book_preview` | Opt-in production-widget rendering to PNG for visual QA |
 
 `reader-document` owns HTML/EPUB structure, managed imports and saved state.
@@ -66,6 +67,21 @@ Run process timing tests without competing builds or heavy image conversion.
 Use Windows PowerShell 5.1 for the repository scripts and their child processes.
 Generated screenshots, PDFs, reports and local test profiles belong in `target/`.
 Do not commit personal books or user library data.
+
+For native speech checks, initialize MSVC as above and run:
+
+```powershell
+cargo test -p iced-shell --bin iced-shell --locked --offline installed_voices_speak -- --ignored --nocapture
+python fixtures/read-aloud/build_epub.py
+$env:SIMPL_TTS_EPUB = Join-Path $PWD 'target\tts-qa.epub'
+cargo test -p iced-shell --bin iced-shell --locked --offline native_read_aloud -- --ignored --nocapture
+```
+
+These checks use the installed Windows voices with their volume set to zero.
+The PDF regression checks require `pdfium.dll` beside the test executable.
+The authored EPUB alternates empty and short Turkish/English chapters.
+`render_read_aloud_previews` renders player/settings views at 1280 and 540 pixels
+to `target/tts-previews` without desktop input.
 
 ## Book appearance visual QA
 

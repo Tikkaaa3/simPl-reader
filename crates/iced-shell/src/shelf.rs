@@ -879,7 +879,7 @@ impl Shelf {
                     .style(|theme| fill(ui::palette(theme).raised, 4.0)),
                 column![
                     label("Add document", 13).style(ui::primary_text),
-                    label("Drop .epub, .pdf, or .html", 11).style(ui::secondary_text)
+                    label("Drop PDF, EPUB, HTML, TXT or MD", 11).style(ui::secondary_text)
                 ]
             ]
             .spacing(12)

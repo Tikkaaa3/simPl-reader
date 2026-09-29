@@ -275,35 +275,47 @@ fn optional_run_context(declared: &BTreeMap<String, String>) -> BTreeMap<String,
     })
     .collect()
 }
-fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), String> {
+fn write_manifest(path: &Path, manifest: &impl serde::Serialize) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     let tmp = path.with_extension("json.tmp");
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| e.to_string())?;
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| e.to_string())?;
+    // Only this invocation owns the new temporary file. A failed write or
+    // replacement must not leave it blocking the final manifest update.
+    let result = (|| {
         serde_json::to_writer_pretty(&mut f, manifest).map_err(|e| e.to_string())?;
         f.write_all(b"\n").map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
+        drop(f);
+        let from: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        for attempt in 0..10 {
+            if unsafe {
+                MoveFileExW(
+                    from.as_ptr(),
+                    to.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            } != 0
+            {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            // File scanners or concurrent observers can hold a short Windows lock.
+            if attempt == 9 || !matches!(error.raw_os_error(), Some(5 | 32 | 33)) {
+                return Err(format!("manifest replacement failed: {error}"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        unreachable!()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    let from: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(format!(
-            "manifest replacement failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
+    result
 }
 
 mod orchestrator;
@@ -322,6 +334,36 @@ impl From<ApiError> for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_manifest_replacement_preserves_old_data_and_can_be_retried() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let name = format!(
+            "process-measure-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(name);
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("manifest.json");
+        write_manifest(&path, &serde_json::json!({"state":"old"})).unwrap();
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        assert!(write_manifest(&path, &serde_json::json!({"state":"new"})).is_err());
+        assert!(!path.with_extension("json.tmp").exists());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("old"));
+        drop(locked);
+        write_manifest(&path, &serde_json::json!({"state":"new"})).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("new"));
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn absent_optional_machine_context_is_explicitly_not_recorded() {

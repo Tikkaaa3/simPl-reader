@@ -50,6 +50,10 @@ pub struct Preferences {
     pub window_controls: WindowControls,
     /// Id of the chosen reading theme; empty or unknown ids mean the default theme.
     pub theme: String,
+    /// Read-aloud voice token id; empty means choose automatically.
+    pub voice: String,
+    /// Read-aloud speed step, -10 (slowest) to 10 (fastest); 0 is normal.
+    pub speech_rate: i8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,6 +65,14 @@ struct Record {
     window_controls: WindowControls,
     #[serde(default)]
     theme: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    voice: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    speech_rate: i8,
+}
+
+fn is_zero(value: &i8) -> bool {
+    *value == 0
 }
 
 fn path() -> PathBuf {
@@ -106,6 +118,12 @@ fn load_from(path: &Path) -> Result<Preferences, String> {
         appearance: record.appearance,
         window_controls: record.window_controls,
         theme: record.theme.chars().take(64).collect(),
+        voice: if record.voice.len() > 512 {
+            String::new()
+        } else {
+            record.voice
+        },
+        speech_rate: record.speech_rate.clamp(-10, 10),
     })
 }
 
@@ -115,6 +133,8 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         appearance: preferences.appearance,
         window_controls: preferences.window_controls,
         theme: preferences.theme,
+        voice: preferences.voice,
+        speech_rate: preferences.speech_rate,
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -148,6 +168,8 @@ mod tests {
                     appearance,
                     window_controls,
                     theme: "soft".into(),
+                    voice: r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\X".into(),
+                    speech_rate: -3,
                 };
                 save_to(&path, preferences.clone()).unwrap();
                 assert_eq!(load_from(&path).unwrap(), preferences);
@@ -169,7 +191,7 @@ mod tests {
             Preferences {
                 appearance: Appearance::Dark,
                 window_controls: WindowControls::Mac,
-                theme: String::new(),
+                ..Preferences::default()
             }
         );
         // A newer record with a theme loads, and older readers would ignore the extra field.
@@ -179,6 +201,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_from(&path).unwrap().theme, "clear");
+        fs::write(&path, br#"{"version":1,"speech_rate":40}"#).unwrap();
+        assert_eq!(load_from(&path).unwrap().speech_rate, 10);
         for bytes in [
             b"broken".to_vec(),
             br#"{"version":2,"appearance":"dark"}"#.to_vec(),

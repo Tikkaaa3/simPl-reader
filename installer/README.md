@@ -1,7 +1,7 @@
 # Windows installer
 
 `scripts/installer.ps1` builds a single, self-contained Windows x64 setup executable
-for website downloads. The default installer release version is **0.1.0**; this is
+for website downloads. The default installer release version is **0.1.1**; this is
 independent of the internal Cargo workspace's development version.
 
 ## User experience
@@ -61,11 +61,11 @@ Its SHA-256 is
 the publisher signature was verified as Pyrsys B.V. during setup.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.1
 
 # With cached dependencies and an explicit compiler location:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 `
-  -Version 0.1.0 -Offline -CompilerPath 'C:\Tools\Inno Setup 6\ISCC.exe'
+  -Version 0.1.1 -Offline -CompilerPath 'C:\Tools\Inno Setup 6\ISCC.exe'
 ```
 
 The script creates a fresh payload in `target\installer-payload`, leaving the
@@ -77,8 +77,8 @@ Outputs in `target\installer`:
 
 | File | Purpose |
 | --- | --- |
-| `simPl-0.1.0-windows-x64-setup.exe` | Website download; runs without downloading runtime dependencies |
-| `simPl-0.1.0-windows-x64-setup.exe.sha256` | SHA-256 checksum for the exact executable |
+| `simPl-0.1.1-windows-x64-setup.exe` | Website download; runs without downloading runtime dependencies |
+| `simPl-0.1.1-windows-x64-setup.exe.sha256` | SHA-256 checksum for the exact executable |
 | `release.json` | Version, platform, filename, byte count, checksum and signature status |
 
 Host the executable unchanged over HTTPS and point the website's Windows download
@@ -97,7 +97,7 @@ In an initialized signing environment, an example command string is:
 ```powershell
 $signingCommand = 'signtool.exe sign /sha1 CERTIFICATE_THUMBPRINT /fd SHA256 /tr HTTPS_TIMESTAMP_SERVICE /td SHA256 $f'
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 `
-  -Version 0.1.0 -Offline -SignToolCommand $signingCommand
+  -Version 0.1.1 -Offline -SignToolCommand $signingCommand
 ```
 
 Replace the placeholders with your certificate and timestamp service. Keep private
@@ -110,7 +110,7 @@ does not itself guarantee SmartScreen reputation.
 
 ```powershell
 # No launch; select both shortcuts. Standard Inno /DIR and /LANG are supported.
-.\simPl-0.1.0-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="desktopicon,startmenuicon"
+.\simPl-0.1.1-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="desktopicon,startmenuicon"
 ```
 
 Use the registered `QuietUninstallString` to remove the app silently. Silent
@@ -131,7 +131,7 @@ Only that QA build accepts the test profile definition; the shipped script's
 production path is fixed and has no runtime data-directory override.
 
 The test verifies English-only setup and queries the Windows Shell to confirm simPl
-is a recommended handler for all three extensions. It checks that existing default
+is a recommended handler for all five registered extensions. It checks that existing default
 apps remain unchanged and that uninstall removes simPl's association registrations.
 It performs real installs, launches the installed reader, verifies the running
 app guard, checks optional shortcuts and Windows registration, upgrades 0.1.0 to
@@ -141,8 +141,9 @@ survive. Temporary QA shortcuts and registration are removed; logs remain under
 `target\installer-tests`. Tests refuse to overwrite an existing QA installation.
 
 Interactive wizard appearance and independent clean-Windows qualification still
-require a desktop/host pass. The native Computer Use helper was unavailable in the
-build session; automated installation tests do not claim interactive visual QA.
+require a desktop/host pass. Automated installation tests do not claim interactive visual QA. With
+`-SkipReaderLaunch`, the test omits installed-reader launch and its running-app
+guard check; use this only when desktop interaction is unavailable or stopped.
 
 The project-authored icon is in `simPl.svg` with a multi-resolution `simPl.ico` for
 Setup, shortcuts and the Installed apps entry. The installer uses no downloaded

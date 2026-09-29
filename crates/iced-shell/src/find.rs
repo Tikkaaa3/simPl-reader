@@ -3,6 +3,8 @@
 //! selection highlight the reader already draws.
 
 use reader_document::{Endpoint, Item};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Enough for any realistic reading search; keeps the result list bounded.
@@ -56,24 +58,55 @@ pub fn needle(query: &str) -> Option<Vec<char>> {
 }
 
 /// Appends the non-overlapping matches in `items`, stopping at `MAX_MATCHES`.
+#[cfg(test)]
 pub fn search_items(
     items: &[Item],
     chapter: Option<usize>,
     needle: &[char],
     matches: &mut Vec<Match>,
 ) {
+    search_items_cancellable(items, chapter, needle, matches, &AtomicBool::new(false));
+}
+
+pub fn search_items_cancellable(
+    items: &[Item],
+    chapter: Option<usize>,
+    needle: &[char],
+    matches: &mut Vec<Match>,
+    cancel: &AtomicBool,
+) {
     for (item_index, item) in items.iter().enumerate() {
-        if matches.len() >= MAX_MATCHES {
+        if matches.len() >= MAX_MATCHES || cancel.load(Ordering::Relaxed) {
             return;
         }
         let Some(text) = item.text() else {
             continue;
         };
-        for hit in scan(text, needle) {
-            if matches.len() >= MAX_MATCHES {
-                return;
+        let mut graphemes = text.grapheme_indices(true).peekable();
+        for hit in scan(
+            text,
+            needle,
+            MAX_MATCHES.saturating_sub(matches.len()),
+            cancel,
+        ) {
+            // Matches arrive in source order. Walk graphemes once rather than
+            // rescanning the paragraph from its start for every highlight.
+            while graphemes
+                .peek()
+                .is_some_and(|(offset, g)| offset + g.len() <= hit.start)
+            {
+                graphemes.next();
             }
-            let (start, end) = snap_to_graphemes(text, hit.start, hit.end);
+            let start = graphemes.peek().map_or(hit.start, |(offset, _)| *offset);
+            while graphemes
+                .peek()
+                .is_some_and(|(offset, g)| offset + g.len() < hit.end)
+            {
+                graphemes.next();
+            }
+            let end = graphemes
+                .peek()
+                .map_or(hit.end, |(offset, g)| offset + g.len());
             matches.push(Match {
                 chapter,
                 item_index,
@@ -96,12 +129,27 @@ pub struct PdfMatch {
 }
 
 /// Appends the matches in each page's text (one glyph per character), in page order.
+#[cfg(test)]
 pub fn search_pages(pages: &[String], needle: &[char], matches: &mut Vec<PdfMatch>) {
+    search_pages_cancellable(pages, needle, matches, &AtomicBool::new(false));
+}
+
+pub fn search_pages_cancellable(
+    pages: &[String],
+    needle: &[char],
+    matches: &mut Vec<PdfMatch>,
+    cancel: &AtomicBool,
+) {
     for (page, text) in pages.iter().enumerate() {
-        for hit in scan(text, needle) {
-            if matches.len() >= MAX_MATCHES {
-                return;
-            }
+        if matches.len() >= MAX_MATCHES || cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        for hit in scan(
+            text,
+            needle,
+            MAX_MATCHES.saturating_sub(matches.len()),
+            cancel,
+        ) {
             matches.push(PdfMatch {
                 page: page as u32,
                 first: hit.first,
@@ -112,6 +160,7 @@ pub fn search_pages(pages: &[String], needle: &[char], matches: &mut Vec<PdfMatc
 }
 
 /// One folded (lower-cased, whitespace-collapsed) character and where it came from.
+#[derive(Clone, Copy)]
 struct Folded {
     first: usize,
     last: usize,
@@ -128,78 +177,84 @@ struct Hit {
     last: usize,
 }
 
-fn scan(text: &str, needle: &[char]) -> Vec<Hit> {
-    let Some(first) = needle.first() else {
+fn scan(text: &str, needle: &[char], limit: usize, cancel: &AtomicBool) -> Vec<Hit> {
+    if needle.is_empty() || limit == 0 {
         return Vec::new();
-    };
-    let mut folded: Vec<Folded> = Vec::with_capacity(text.len());
-    for (index, (start, source)) in text.char_indices().enumerate() {
-        let end = start + source.len_utf8();
-        if source.is_whitespace() {
-            // A run of blanks and line breaks reads as one space.
-            match folded.last_mut() {
-                Some(previous) if previous.c == ' ' && previous.end == start => {
-                    previous.end = end;
-                    previous.last = index;
-                }
-                _ => folded.push(Folded {
-                    first: index,
-                    last: index,
-                    start,
-                    end,
-                    c: ' ',
-                }),
-            }
-        } else {
-            for c in source.to_lowercase() {
-                folded.push(Folded {
-                    first: index,
-                    last: index,
-                    start,
-                    end,
-                    c,
-                });
-            }
-        }
     }
-    let mut found = Vec::new();
-    let mut index = 0;
-    while index + needle.len() <= folded.len() {
-        if folded[index].c == *first
-            && folded[index..index + needle.len()]
-                .iter()
-                .map(|folded| &folded.c)
-                .eq(needle)
+    // KMP avoids quadratic comparisons for long repeated query prefixes.
+    let mut prefix = vec![0; needle.len()];
+    let mut matched = 0;
+    for index in 1..needle.len() {
+        while matched > 0 && needle[index] != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if needle[index] == needle[matched] {
+            matched += 1;
+        }
+        prefix[index] = matched;
+    }
+    let mut source = text.char_indices().enumerate().peekable();
+    let mut expansion: Option<(Folded, std::char::ToLowercase)> = None;
+    let folded = std::iter::from_fn(move || {
+        if let Some((origin, chars)) = &mut expansion
+            && let Some(c) = chars.next()
         {
-            let last = &folded[index + needle.len() - 1];
-            found.push(Hit {
-                start: folded[index].start,
-                end: last.end,
-                first: folded[index].first,
-                last: last.last,
-            });
-            index += needle.len();
+            return Some(Folded { c, ..*origin });
+        }
+        let (index, (start, c)) = source.next()?;
+        let mut origin = Folded {
+            first: index,
+            last: index,
+            start,
+            end: start + c.len_utf8(),
+            c,
+        };
+        if c.is_whitespace() {
+            while source.peek().is_some_and(|(_, (_, c))| c.is_whitespace()) {
+                let (last, (start, c)) = source.next().unwrap();
+                origin.last = last;
+                origin.end = start + c.len_utf8();
+            }
+            origin.c = ' ';
         } else {
-            index += 1;
+            let mut chars = c.to_lowercase();
+            origin.c = chars.next().unwrap();
+            expansion = Some((origin, chars));
+        }
+        Some(origin)
+    });
+    let mut history = VecDeque::with_capacity(needle.len());
+    let mut found = Vec::new();
+    matched = 0;
+    for (index, current) in folded.enumerate() {
+        if index % 1024 == 0 && cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if history.len() == needle.len() {
+            history.pop_front();
+        }
+        history.push_back(current);
+        while matched > 0 && current.c != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if current.c == needle[matched] {
+            matched += 1;
+        }
+        if matched == needle.len() {
+            let first = history.front().unwrap();
+            found.push(Hit {
+                start: first.start,
+                end: current.end,
+                first: first.first,
+                last: current.last,
+            });
+            if found.len() == limit {
+                break;
+            }
+            matched = 0; // Keep the existing non-overlapping-match behavior.
         }
     }
     found
-}
-
-/// Selection endpoints must sit on grapheme boundaries to be drawn.
-fn snap_to_graphemes(text: &str, start: usize, end: usize) -> (usize, usize) {
-    let (mut snapped_start, mut snapped_end) = (start, end);
-    for (offset, grapheme) in text.grapheme_indices(true) {
-        let grapheme_end = offset + grapheme.len();
-        if offset <= start && start < grapheme_end {
-            snapped_start = offset;
-        }
-        if offset < end && end <= grapheme_end {
-            snapped_end = grapheme_end;
-            break;
-        }
-    }
-    (snapped_start, snapped_end)
 }
 
 #[cfg(test)]
@@ -321,6 +376,63 @@ mod tests {
             .map(|i| paragraph(&i.to_string(), "a"))
             .collect();
         assert_eq!(find(&items, "a").len(), MAX_MATCHES);
+    }
+
+    #[test]
+    fn one_large_paragraph_stops_at_the_result_limit() {
+        let text = "a ".repeat(MAX_MATCHES * 100);
+        let matches = find(&[paragraph("large", &text)], "a");
+        assert_eq!(matches.len(), MAX_MATCHES);
+        assert_eq!(matches.last().unwrap().end, MAX_MATCHES * 2 - 1);
+    }
+
+    #[test]
+    fn repeated_prefixes_and_unicode_expansions_keep_source_ranges() {
+        let text = format!("{}b aaab İİ", "a".repeat(10_000));
+        let matches = find(&[paragraph("prefix", &text)], "aaab");
+        assert_eq!(matches.len(), 2);
+        for hit in matches {
+            assert_eq!(&text[hit.start..hit.end], "aaab");
+        }
+        let matches = find(&[paragraph("unicode", "İİ")], "i");
+        assert_eq!(
+            matches.iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(),
+            [(0, 2), (2, 4)]
+        );
+    }
+
+    #[test]
+    fn cancelled_search_does_not_scan_or_append_results() {
+        let mut matches = Vec::new();
+        search_items_cancellable(
+            &[paragraph("large", &"a".repeat(100_000))],
+            None,
+            &needle("a").unwrap(),
+            &mut matches,
+            &AtomicBool::new(true),
+        );
+        assert!(matches.is_empty());
+        assert!(
+            scan(
+                "aaa",
+                &needle("a").unwrap(),
+                MAX_MATCHES,
+                &AtomicBool::new(true)
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    #[ignore = "Focused search timing: one MiB of repeated matches"]
+    fn measure_large_paragraph_search() {
+        let items = [paragraph("large", &"a ".repeat(524_288))];
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let matches = find(&items, "a");
+            assert_eq!(matches.len(), MAX_MATCHES);
+            println!("search_us={}", start.elapsed().as_micros());
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 # Real install/upgrade/uninstall checks with a separate AppId and disposable profile.
-param([string]$CompilerPath = '', [string]$PayloadDirectory = '')
+param([string]$CompilerPath = '', [string]$PayloadDirectory = '', [switch]$SkipReaderLaunch)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -118,26 +118,29 @@ Install-QA $setup 'startmenuicon' 'install-default.log'
 Assert-That (-not (Test-Path -LiteralPath $desktop)) 'Desktop shortcut should be optional.'
 Assert-That (Test-Path -LiteralPath (Join-Path $startMenu 'simPl Reader Installer QA.lnk')) 'Start menu shortcut missing.'
 
-# The installed executable advertises its lifetime; uninstall must not remove live data.
-$previousLocal = $env:LOCALAPPDATA
-$reader = $null
-try {
-    $env:LOCALAPPDATA = Split-Path -Parent $testProfile
-    $reader = Start-Process -FilePath (Join-Path $app 'simPl.exe') -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 3
-    $reader.Refresh()
-    Assert-That (-not $reader.HasExited) 'Installed reader did not start.'
-    $marker = [Threading.Mutex]::OpenExisting('Local\simPl.Reader.Running')
-    $marker.Dispose()
-    $blocked = Invoke-Setup (Get-QAUninstaller) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/PURGEUSERDATA', ('/LOG="' + (Join-Path $sandbox 'blocked-running.log') + '"')) $false
-    Assert-That ($blocked -ne 0) 'Uninstall should refuse while the reader is running.'
-    Assert-That (Test-Path -LiteralPath (Join-Path $testProfile 'documents\test-book.html')) 'Running reader profile was touched.'
-} finally {
-    $env:LOCALAPPDATA = $previousLocal
-    if ($reader -and -not $reader.HasExited) {
-        $null = $reader.CloseMainWindow()
-        if (-not $reader.WaitForExit(10000)) { throw 'QA reader did not close normally; no forced termination performed.' }
+if (-not $SkipReaderLaunch) {
+    # The installed executable advertises its lifetime; uninstall must not remove live data.
+    $previousLocal = $env:LOCALAPPDATA
+    $reader = $null
+    try {
+        $env:LOCALAPPDATA = Split-Path -Parent $testProfile
+        $reader = Start-Process -FilePath (Join-Path $app 'simPl.exe') -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 3
+        $reader.Refresh()
+        Assert-That (-not $reader.HasExited) 'Installed reader did not start.'
+        $marker = [Threading.Mutex]::OpenExisting('Local\simPl.Reader.Running')
+        $marker.Dispose()
+        $blocked = Invoke-Setup (Get-QAUninstaller) @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/PURGEUSERDATA', ('/LOG="' + (Join-Path $sandbox 'blocked-running.log') + '"')) $false
+        Assert-That ($blocked -ne 0) 'Uninstall should refuse while the reader is running.'
+        Assert-That (Test-Path -LiteralPath (Join-Path $testProfile 'documents\test-book.html')) 'Running reader profile was touched.'
+    } finally {
+        $env:LOCALAPPDATA = $previousLocal
+        if ($reader -and -not $reader.HasExited) {
+            $null = $reader.CloseMainWindow()
+            if (-not $reader.WaitForExit(10000)) { throw 'QA reader did not close normally; no forced termination performed.' }
+        }
     }
+
 }
 
 $setup = Build-QA '0.1.1'
@@ -165,4 +168,5 @@ Assert-That (-not (Test-Path -LiteralPath $testProfile)) 'Opt-in deletion did no
 Assert-That ((Get-FileHash (Join-Path $original 'original-book.html')).Hash -eq $originalHash) 'Original document was changed or removed.'
 Assert-That (-not (Test-Path $registry)) 'Final uninstall entry remained.'
 Assert-AssociationsRemoved
-Write-Host "PASS: English setup, Open with/default-app registration and cleanup, unchanged user defaults, shortcuts, startup, running-app guard, upgrade, retain, reinstall, delete and original/junction protection. Evidence: $sandbox"
+if ($SkipReaderLaunch) { Write-Host 'SKIPPED: installed-reader launch and running-app guard (SkipReaderLaunch).' }
+Write-Host "PASS: English setup, Open with/default-app registration and cleanup, unchanged user defaults, shortcuts, upgrade, retain, reinstall, delete and original/junction protection. Evidence: $sandbox"

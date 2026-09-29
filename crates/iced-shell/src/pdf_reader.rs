@@ -177,6 +177,7 @@ pub struct Reader {
     cache_bytes: usize,
     clock: u64,
     failed: HashSet<u32>,
+    text_failed: HashSet<u32>,
     range: std::ops::Range<usize>,
     error: Option<String>,
     page_input: String,
@@ -240,6 +241,7 @@ impl Reader {
             cache_bytes: 0,
             clock: 0,
             failed: HashSet::new(),
+            text_failed: HashSet::new(),
             range: 0..0,
             error: None,
             page_input: "1".into(),
@@ -384,6 +386,7 @@ impl Reader {
         self.cached.clear();
         self.cache_bytes = 0;
         self.failed.clear();
+        self.text_failed.clear();
         self.error = None;
         self.generation = self.generation.wrapping_add(1);
     }
@@ -429,6 +432,7 @@ impl Reader {
         self.zoom = zoom;
         self.generation = self.generation.wrapping_add(1);
         self.failed.clear();
+        self.text_failed.clear();
         self.error = None;
         self.rebuild();
         if let Some((point, page, fx, fy)) = focus {
@@ -525,6 +529,7 @@ impl Reader {
             .clone()
             .filter(|&page| {
                 !self.failed.contains(&(page as u32))
+                    && !self.text_failed.contains(&(page as u32))
                     && self
                         .cached
                         .get(&(page as u32))
@@ -660,6 +665,7 @@ impl Reader {
             .min((self.geometry.total() - self.viewport.height).max(0.0));
         self.offset.x = anchor.horizontal * (self.content_width - self.viewport.width).max(0.0);
         self.failed.clear();
+        self.text_failed.clear();
         self.error = None;
         self.range = self.visible_range();
         self.page_input = (page + 1).to_string();
@@ -779,6 +785,7 @@ impl Reader {
         }
         self.range = self.visible_range();
         self.failed.clear();
+        self.text_failed.clear();
         self.error = None;
         if !self.editing_page {
             self.page_input = (self.anchor().page + 1).to_string();
@@ -862,6 +869,7 @@ impl Reader {
                 let range = self.visible_range();
                 if range != self.range {
                     self.failed.clear();
+                    self.text_failed.clear();
                     self.error = None;
                 }
                 self.range = range.clone();
@@ -928,8 +936,9 @@ impl Reader {
                     match result {
                         Ok(text) => self.cache(page, width, None, Some(text)),
                         Err(error) => {
-                            self.failed.insert(page);
-                            self.error = Some(format!("Page {}: {error}", page + 1));
+                            self.text_failed.insert(page);
+                            self.error =
+                                Some(format!("Page {} text is unavailable: {error}", page + 1));
                         }
                     }
                 }
@@ -1118,6 +1127,7 @@ impl Reader {
             .clamp(0.0, (self.geometry.total() - self.viewport.height).max(0.0));
         self.range = self.visible_range();
         self.failed.clear();
+        self.text_failed.clear();
         self.error = None;
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
@@ -1406,6 +1416,55 @@ pub(crate) mod tests {
             .bytes(),
         );
         pdf
+    }
+
+    #[test]
+    fn text_failure_still_renders_the_page_and_does_not_retry_forever() {
+        let dll = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pdfium.dll");
+        if !dll.exists() {
+            return;
+        }
+        let path =
+            std::env::temp_dir().join(format!("simpl-text-failure-{}.pdf", std::process::id()));
+        std::fs::write(&path, tall_pdf()).unwrap();
+        let document = complete(reader_pdf::open(path.clone())).unwrap();
+        let (mut reader, _) = Reader::new(document.clone(), None, Size::new(1280.0, 800.0), 1.0);
+        let (generation, page, width, text_request) = reader.in_flight.unwrap();
+        assert!(text_request);
+        let _ = reader.update(Message::TextReady {
+            generation,
+            page,
+            width,
+            result: Err("unreadable text layer".into()),
+        });
+        assert!(reader.text_failed.contains(&page));
+        assert!(!reader.failed.contains(&page));
+        assert_eq!(reader.in_flight, Some((generation, page, width, false)));
+        let raster = complete(document.session.render(page, width)).unwrap();
+        let reply = Arc::new(RenderReply {
+            width: raster.width,
+            bytes: raster.rgba.capacity(),
+            handle: iced::widget::image::Handle::from_rgba(
+                raster.width,
+                raster.height,
+                raster.rgba,
+            ),
+        });
+        let _ = reader.update(Message::Rendered {
+            generation,
+            page,
+            width,
+            result: Ok(reply),
+        });
+        assert!(reader.cached.get(&page).unwrap().handle.is_some());
+        assert!(reader.in_flight.is_none());
+        let _ = reader.request_next();
+        assert!(reader.in_flight.is_none());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

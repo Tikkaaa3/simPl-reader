@@ -684,6 +684,21 @@ impl Reader {
                 .and_then(|data| data.highlight(id))
                 .map(|highlight| highlight.quote.clone())
                 .map_or_else(Task::none, iced::clipboard::write),
+            (Target::Selection, PopupItem::ReadAloud) => {
+                self.read_aloud(read_aloud::Action::Selection)
+            }
+            (Target::Highlight(id), PopupItem::ReadAloud) => {
+                match self
+                    .notes
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.highlight(id))
+                    .map(|highlight| highlight.quote.clone())
+                {
+                    Some(quote) => self.read_passage_aloud(quote),
+                    None => Task::none(),
+                }
+            }
             (Target::Highlight(id), PopupItem::RemoveHighlight) => {
                 self.remove_entry(Entry::Highlight(id))
             }
@@ -1161,6 +1176,13 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
                 entry,
                 "Copy",
                 "Ctrl+C",
+                ui::ButtonTone::Subtle,
+            )),
+            PopupItem::ReadAloud => Some(menu_button(
+                reader,
+                entry,
+                "Read aloud",
+                "Ctrl+Shift+U",
                 ui::ButtonTone::Subtle,
             )),
             PopupItem::RemoveHighlight => Some(menu_button(

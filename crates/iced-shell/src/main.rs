@@ -13,6 +13,7 @@ mod notes;
 mod pdf_reader;
 mod platform;
 mod shelf;
+mod speech;
 mod themes;
 mod ui;
 

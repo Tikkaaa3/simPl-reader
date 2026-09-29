@@ -7,8 +7,9 @@
 > text-only conversion plans. See the [README](README.md) for current usage.
 
 Status: milestones 1–3 implemented (2026-09-27), with automated checks and
-CPU-rendered visual previews verified. Live desktop interaction qualification
-remains pending; milestone 4 is planned.
+CPU-rendered visual previews verified. A local HTML interaction pass has exercised find/highlighting; full desktop, DPI
+and accessibility qualification remains pending. Milestone 4 is planned. Current
+0.1.1 consolidation findings are in [stabilization-report.md](stabilization-report.md).
 This extends the existing [project roadmap](roadmap.md).
 
 ## Goal

@@ -8,7 +8,11 @@
 Book view now uses one visible page and a stable global page map. Zoom does not
 repaginate; PDF Document/Book switches retain the source page. PDF prose and
 illustrations are reconstructed separately and cached across reopenings. Managed
-imports, favourites, light/dark themes and a fully collapsible toolbar are implemented.
+imports, TXT/Markdown, favourites, custom shelves, four reading themes, in-book
+search, bookmarks/highlights/notes and offline Windows read-aloud are implemented.
+Listen toggles speech off; pause/resume remains available. The toolbar collapses.
+The 0.1.1 consolidation and current validation limits are recorded in
+[stabilization-report.md](stabilization-report.md).
 Independent clean-Windows and accessibility qualification remain open.
 
 ## Product goal and present reality
@@ -60,7 +64,7 @@ File associations and an installer can follow a portable release.
 
 Unicode correctness fixtures may contain intentional Arabic, Hebrew, CJK, and
 combining-character data. Product UI and repository prose are English; Turkish
-fixture samples are not retained.
+language-detection fixtures are retained only as explicitly authored QA inputs.
 
 ## Implementation direction
 

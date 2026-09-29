@@ -12,6 +12,15 @@ $ErrorActionPreference = 'Stop'
 if (($Large -or $Fixture) -and $Command -ne 'run') { throw '-Large and -Fixture are only valid with run.' }
 $root = Split-Path -Parent $PSScriptRoot
 
+# A PowerShell 7 parent can leave Windows PowerShell without its built-in
+# module directory. Child checks use Get-FileHash and must load that module.
+if ($PSVersionTable.PSVersion.Major -eq 5) {
+    $builtinModules = Join-Path $PSHOME 'Modules'
+    if (($env:PSModulePath -split ';') -notcontains $builtinModules) {
+        $env:PSModulePath = $builtinModules + ';' + $env:PSModulePath
+    }
+}
+
 # Git also ships a link.exe; finding any command named link is not sufficient.
 if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
     $candidates = @()

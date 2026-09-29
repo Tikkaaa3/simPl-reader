@@ -46,6 +46,10 @@ thread, cancellable).
 
 ## 3. Reading appearance settings
 
+**Status: partial.** Default, Soft, Clear and Compact themes are bundled, with
+global persisted selection, fonts, spacing and light/dark colors. Per-book
+preferences, independent spacing/margin controls and two-column pages remain open.
+
 **Goal.** More themes (sepia), line spacing, margins, font choice (Literata is
 already bundled), optional two-column pages. Remembered per book.
 
@@ -60,7 +64,7 @@ guarantee or the page-number stability.
 
 ## 4. TXT and Markdown support
 
-**Status: done.** `.txt`, `.text`, `.md` and `.markdown` are converted to one generated HTML page when imported (`crates/reader-document/src/text.rs`, `managed.rs`), so the HTML reader, find, page map and positions work unchanged. Markdown uses `pulldown-cmark` 0.13.4 (MIT; with `pulldown-cmark-escape` and `unicase`, all permissive, notices collected by `scripts/collect-licenses.ps1`). Encodings: UTF-8 (BOM or not), UTF-16 with a BOM, otherwise the Windows ANSI code page. Local Markdown images are copied beside the page. Known limits: the shelf shows these books as HTML; an edited source is not re-imported (same as HTML today); the `.txt`/`.md` installer registrations and their checks in `scripts/test-installer.ps1` were added but not run (needs Inno Setup).
+**Status: done.** `.txt`, `.text`, `.md` and `.markdown` are converted to one generated HTML page when imported (`crates/reader-document/src/text.rs`, `managed.rs`), so the HTML reader, find, page map and positions work unchanged. Markdown uses `pulldown-cmark` 0.13.4 (MIT; with `pulldown-cmark-escape` and `unicase`, all permissive, notices collected by `scripts/collect-licenses.ps1`). Encodings: UTF-8 (BOM or not), UTF-16 with a BOM, otherwise the Windows ANSI code page. Local Markdown images are copied beside the page. Known limits: the shelf shows these books as HTML; an edited source is not re-imported (same as HTML today); the installer registers `.txt`/`.md` alongside PDF, HTML and EPUB; isolated installation checks cover all five extensions.
 
 **Goal.** Open `.txt` and `.md` files in the same reader as HTML.
 
@@ -101,6 +105,10 @@ follows the book's fingerprint so it survives moves and re-imports.
 
 ## 6. Collections and tags
 
+**Status: shelves done; free-form tags remain open.** Create, rename and remove
+custom shelves, assign books from their menu and filter the library. Shelf storage
+is versioned and retains the existing favourites behavior.
+
 **Goal.** Shelves such as "To read", "Finished", "Study"; assign from a small
 menu, filter and sort by them.
 
@@ -126,8 +134,15 @@ menu, filter and sort by them.
 
 ## 8. Text to speech
 
+**Status: done for Windows.** Offline SAPI uses installed classic and OneCore
+voices. Listen (Ctrl+Shift+U) reads a selection or continues from the current page;
+Listen toggles it off. Pause/resume and rate controls remain in the player. Voice
+and rate are persisted. Reading follows pages and asynchronous EPUB chapter loads;
+PDF selection/page replies are tied to the active session. Image-only pages are
+skipped. Automatic language selection is a heuristic, with a Windows default fallback.
+
 **Goal.** Read the selection, page or chapter aloud with the built-in Windows
-speech engine, with play, pause and stop.
+speech engine, with a Listen toggle and pause/resume.
 
 **Research.**
 - Windows speech API access from Rust (SAPI or WinRT `SpeechSynthesizer`) and
@@ -137,3 +152,13 @@ speech engine, with play, pause and stop.
 
 **Risk.** Windows-only, so the platform boundary in `platform.rs` must stay
 clean; voice availability varies per machine.
+
+## Release consolidation — 2026-09-29
+
+The 0.1.1 work includes bounded, cancellable background search for large books,
+shared page/contents data on frequent UI paths, and PDF raster rendering after a
+text-layer error. See [stabilization-report.md](stabilization-report.md) for checks,
+measurements and remaining release qualification. Next priorities are independent
+Windows/accessibility QA, profile backup and annotation export, then offline
+dictionary support. Per-book appearance can follow once its storage and page-map
+rules are specified.

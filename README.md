@@ -41,7 +41,7 @@ Example libraries shown above. Books are not included with the application.
 ## Get started
 
 The current target is **Windows x64**. The setup package is
-`simPl-0.1.0-windows-x64-setup.exe`. It installs for your Windows account, offers
+`simPl-0.1.1-windows-x64-setup.exe`. It installs for your Windows account, offers
 desktop and Start menu shortcuts, and registers an uninstaller in Windows Settings.
 When uninstalling, you can keep your library or delete simPl's imported copies and
 reading data. Original files outside the library are left untouched.
@@ -87,6 +87,16 @@ long notes scroll within the list.
 Bookmarks and highlights are stored per book under
 `%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
 
+Select **Listen** or press **Ctrl+Shift+U** to read selected text aloud, or continue
+from the current page when nothing is selected. The player provides pause, resume,
+and speed controls, and follows the reading across pages and EPUB chapters.
+Select **Listen** again or press **Ctrl+Shift+U** to stop.
+The selection menu and saved highlights also offer **Read aloud**. Choose a voice
+and speed in Settings; both are saved. Speech uses Windows' installed voices
+offline. Automatic voice selection estimates the text's language and falls back
+to the Windows default. PDF reading needs a permitted text layer; image-only pages
+are skipped.
+
 ## Library and local data
 
 **Add Document** and file drops copy documents into
@@ -118,6 +128,7 @@ access to obtain dependencies and the pinned PDF runtime.
 | **Ctrl+T** in EPUB | Open contents |
 | **Alt+Left** | Return from an internal link |
 | **Ctrl+C** | Copy selected text |
+| **Ctrl+Shift+U** | Start / stop reading aloud |
 | **Ctrl+H** | Highlight selected text with the last used color |
 | **Ctrl+D** | Add or remove a bookmark on the current page |
 | **Ctrl+B** | Show or hide bookmarks, highlights and notes |
@@ -147,7 +158,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 check
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
 
 # Build a website installer (also requires Inno Setup 6.7.3).
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.1
 ```
 
 The portable output is `target\portable\simPl\simPl.exe`. The scripts initialize

@@ -180,15 +180,35 @@ pub fn locate(items: &[Item], quote: &str, hint: Option<usize>) -> Option<Select
         .enumerate()
         .filter_map(|(row, item)| Some((row, item.text()?)))
         .collect();
-    let mut found = Vec::new();
+    // Recover one location without retaining every repetition of a short quote.
+    // An unhinted second candidate already proves the passage is ambiguous.
+    let mut count = 0usize;
+    let mut first_match = None;
+    let mut hinted_match = None;
+    let mut consider = |bounds: SelectionBounds| {
+        count = (count + 1).min(2);
+        first_match.get_or_insert(bounds);
+        if hint.is_some_and(|hint| bounds.start_item >= hint) {
+            hinted_match.get_or_insert(bounds);
+        }
+        if hinted_match.is_some() {
+            Some(hinted_match)
+        } else if hint.is_none() && count > 1 {
+            Some(None)
+        } else {
+            None
+        }
+    };
     for (row, text) in &texts {
         for (start, _) in text.match_indices(quote) {
-            found.push(SelectionBounds {
+            if let Some(result) = consider(SelectionBounds {
                 start_item: *row,
                 start_byte: start,
                 end_item: *row,
                 end_byte: start + quote.len(),
-            });
+            }) {
+                return result;
+            }
         }
     }
     if lines.len() > 1 {
@@ -205,23 +225,23 @@ pub fn locate(items: &[Item], quote: &str, hint: Option<usize>) -> Option<Select
                 .zip(middle)
                 .all(|((_, text), line)| text == line);
             let (end_row, end_text) = following[following.len() - 1];
-            if inner_matches && end_text.starts_with(last) {
-                found.push(SelectionBounds {
+            if inner_matches
+                && end_text.starts_with(last)
+                && let Some(result) = consider(SelectionBounds {
                     start_item: *row,
                     start_byte: text.len() - first.len(),
                     end_item: end_row,
                     end_byte: last.len(),
-                });
+                })
+            {
+                return result;
             }
         }
     }
-    match found.len() {
-        0 => None,
-        1 => found.pop(),
-        _ => {
-            let hint = hint?;
-            found.into_iter().find(|bounds| bounds.start_item >= hint)
-        }
+    if count == 1 {
+        first_match
+    } else {
+        hinted_match
     }
 }
 
@@ -255,40 +275,29 @@ pub fn merge_reflow(
     color: HighlightColor,
     selected: SelectionBounds,
 ) -> ReflowMerge {
-    let mut plan = ReflowMerge {
-        bounds: selected,
-        ids: Vec::new(),
-        noted: 0,
-    };
-    loop {
-        let mut grew = false;
-        for mark in marks.iter().filter(|mark| mark.color == color) {
-            if plan.ids.contains(&mark.id) {
-                continue;
-            }
-            let a = plan.bounds;
-            let b = mark.bounds;
-            if (a.start_item, a.start_byte) <= (b.end_item, b.end_byte)
-                && (b.start_item, b.start_byte) <= (a.end_item, a.end_byte)
-            {
-                plan.ids.push(mark.id);
-                plan.noted += usize::from(mark.note);
-                let start = (a.start_item, a.start_byte).min((b.start_item, b.start_byte));
-                let end = (a.end_item, a.end_byte).max((b.end_item, b.end_byte));
-                plan.bounds = SelectionBounds {
-                    start_item: start.0,
-                    start_byte: start.1,
-                    end_item: end.0,
-                    end_byte: end.1,
-                };
-                grew = true;
-            }
-        }
-        if !grew {
-            break;
-        }
+    let (from, to, ids, noted) = connected_ranges(
+        marks.iter().filter(|mark| mark.color == color).map(|mark| {
+            (
+                (mark.bounds.start_item, mark.bounds.start_byte),
+                (mark.bounds.end_item, mark.bounds.end_byte),
+                mark.id,
+                mark.note,
+            )
+        }),
+        (selected.start_item, selected.start_byte),
+        (selected.end_item, selected.end_byte),
+        |end, start| end >= start,
+    );
+    ReflowMerge {
+        bounds: SelectionBounds {
+            start_item: from.0,
+            start_byte: from.1,
+            end_item: to.0,
+            end_byte: to.1,
+        },
+        ids,
+        noted,
     }
-    plan
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -305,41 +314,106 @@ pub fn merge_pdf(
     from: PdfPoint,
     to: PdfPoint,
 ) -> PdfMerge {
-    let mut plan = PdfMerge {
-        from,
-        to,
-        ids: Vec::new(),
-        noted: 0,
-    };
-    loop {
-        let mut grew = false;
-        for highlight in data
-            .highlights
+    let (from, to, ids, noted) = connected_ranges(
+        data.highlights
             .iter()
             .filter(|highlight| highlight.color == color)
-        {
-            let Place::Pdf { from, to } = highlight.place else {
-                continue;
-            };
-            if plan.ids.contains(&highlight.id) {
-                continue;
+            .filter_map(|highlight| {
+                let Place::Pdf { from, to } = highlight.place else {
+                    return None;
+                };
+                Some((from, to, highlight.id, highlight.note.is_some()))
+            }),
+        from,
+        to,
+        |end, start| {
+            end >= start
+                || (end.page == start.page && end.index.checked_add(1) == Some(start.index))
+        },
+    );
+    PdfMerge {
+        from,
+        to,
+        ids,
+        noted,
+    }
+}
+
+struct MergeRange<P> {
+    from: P,
+    to: P,
+    id: Option<u64>,
+    note: bool,
+    order: usize,
+    direct: bool,
+}
+
+/// Include the selection in the sorted intervals, then find its connected component.
+/// The first directly touched ID stays first, preserving the retained annotation ID.
+fn connected_ranges<P: Ord + Copy>(
+    ranges: impl Iterator<Item = (P, P, u64, bool)>,
+    from: P,
+    to: P,
+    touches: impl Fn(P, P) -> bool,
+) -> (P, P, Vec<u64>, usize) {
+    let mut ranges: Vec<_> = ranges
+        .enumerate()
+        .map(|(order, (start, end, id, note))| MergeRange {
+            from: start,
+            to: end,
+            id: Some(id),
+            note,
+            order,
+            direct: touches(to, start) && touches(end, from),
+        })
+        .collect();
+    ranges.push(MergeRange {
+        from,
+        to,
+        id: None,
+        note: false,
+        order: usize::MAX,
+        direct: false,
+    });
+    ranges.sort_by_key(|range| (range.from, range.to));
+    let (mut start, mut end) = (ranges[0].from, ranges[0].to);
+    let mut selected = false;
+    let mut members = Vec::new();
+    for range in ranges {
+        if !touches(end, range.from) {
+            if selected {
+                break;
             }
-            let touches = from <= plan.to && plan.from <= to
-                || (plan.to.page == from.page && plan.to.index.checked_add(1) == Some(from.index))
-                || (to.page == plan.from.page && to.index.checked_add(1) == Some(plan.from.index));
-            if touches {
-                plan.ids.push(highlight.id);
-                plan.noted += usize::from(highlight.note.is_some());
-                plan.from = plan.from.min(from);
-                plan.to = plan.to.max(to);
-                grew = true;
-            }
+            members.clear();
+            start = range.from;
+            end = range.to;
         }
-        if !grew {
-            break;
+        end = end.max(range.to);
+        if range.id.is_none() {
+            selected = true;
+        } else {
+            members.push(range);
         }
     }
-    plan
+    members.sort_by_key(|range| (!range.direct, range.order));
+    let noted = members.iter().filter(|range| range.note).count();
+    (
+        start,
+        end,
+        members.into_iter().filter_map(|range| range.id).collect(),
+        noted,
+    )
+}
+
+struct PaintRange {
+    range: std::ops::Range<usize>,
+    note: bool,
+    order: usize,
+}
+
+struct ColorRanges<T> {
+    color: T,
+    ranges: Vec<PaintRange>,
 }
 
 /// Combines equal-color spans before painting, so their shared area is drawn
@@ -347,33 +421,53 @@ pub fn merge_pdf(
 pub fn coalesce_colored_ranges<T: Copy + PartialEq>(
     spans: Vec<(std::ops::Range<usize>, T, bool)>,
 ) -> Vec<(std::ops::Range<usize>, T, bool)> {
-    let mut result = Vec::new();
-    for (range, color, note) in spans {
+    let mut colors: Vec<ColorRanges<T>> = Vec::new();
+    for (order, (range, color, note)) in spans.into_iter().enumerate() {
         if range.start >= range.end {
             continue;
         }
-        result.push((range, color, note));
+        let index = colors
+            .iter()
+            .position(|group| group.color == color)
+            .unwrap_or_else(|| {
+                colors.push(ColorRanges {
+                    color,
+                    ranges: Vec::new(),
+                });
+                colors.len() - 1
+            });
+        colors[index].ranges.push(PaintRange { range, note, order });
     }
-    let mut index = 0;
-    while index < result.len() {
-        let mut other = index + 1;
-        while other < result.len() {
-            if result[index].1 == result[other].1
-                && result[index].0.start <= result[other].0.end
-                && result[other].0.start <= result[index].0.end
+    let mut result = Vec::new();
+    for mut group in colors {
+        group
+            .ranges
+            .sort_by_key(|span| (span.range.start, span.range.end));
+        let mut merged: Vec<PaintRange> = Vec::new();
+        for span in group.ranges {
+            if let Some(previous) = merged.last_mut()
+                && span.range.start <= previous.range.end
             {
-                let merged = result.remove(other);
-                result[index].0.start = result[index].0.start.min(merged.0.start);
-                result[index].0.end = result[index].0.end.max(merged.0.end);
-                result[index].2 |= merged.2;
-                other = index + 1;
+                previous.range.end = previous.range.end.max(span.range.end);
+                previous.note |= span.note;
+                previous.order = previous.order.min(span.order);
             } else {
-                other += 1;
+                merged.push(span);
             }
         }
-        index += 1;
+        result.extend(
+            merged
+                .into_iter()
+                .map(|span| (span.order, span.range, group.color, span.note)),
+        );
     }
+    // Different colors keep their original painting order, including disjoint
+    // components of one color that lie on either side of a newer color.
+    result.sort_by_key(|span| span.0);
     result
+        .into_iter()
+        .map(|(_, range, color, note)| (range, color, note))
+        .collect()
 }
 
 /// Highlighted byte ranges of one item, oldest first so newer colors paint on top.
@@ -454,6 +548,7 @@ pub enum PopupItem {
     Color(HighlightColor),
     Note,
     Copy,
+    ReadAloud,
     RemoveHighlight,
     ToggleBookmark,
 }
@@ -481,6 +576,7 @@ impl Popup {
             entries.extend(HighlightColor::ALL.map(PopupItem::Color));
             entries.push(PopupItem::Note);
             entries.push(PopupItem::Copy);
+            entries.push(PopupItem::ReadAloud);
         }
         if self.menu || matches!(self.target, Target::Page) {
             entries.push(PopupItem::ToggleBookmark);
@@ -940,6 +1036,57 @@ mod tests {
     }
 
     #[test]
+    fn repeated_short_quotes_remain_ambiguous_and_unique_quotes_ignore_a_late_hint() {
+        let repeated = vec![
+            paragraph("large", &"a ".repeat(100_000)),
+            paragraph("later", "a"),
+        ];
+        assert!(locate(&repeated, "a", None).is_none());
+        assert_eq!(locate(&repeated, "a", Some(1)).unwrap().start_item, 1);
+        assert!(locate(&repeated, "a", Some(2)).is_none());
+        let unique = vec![paragraph("only", "a unique passage")];
+        assert_eq!(locate(&unique, "unique", Some(3)).unwrap().start_byte, 2);
+    }
+
+    #[test]
+    #[ignore = "Focused timing for connected highlights and dense painting ranges"]
+    fn measure_dense_highlights() {
+        let marks: Vec<_> = (0..500)
+            .map(|index| Mark {
+                id: index as u64 + 1,
+                color: HighlightColor::Yellow,
+                note: false,
+                bounds: SelectionBounds {
+                    start_item: 0,
+                    start_byte: index,
+                    end_item: 0,
+                    end_byte: index + 1,
+                },
+            })
+            .collect();
+        let selected = SelectionBounds {
+            start_item: 0,
+            start_byte: 500,
+            end_item: 0,
+            end_byte: 501,
+        };
+        let start = std::time::Instant::now();
+        assert_eq!(
+            merge_reflow(&marks, HighlightColor::Yellow, selected)
+                .ids
+                .len(),
+            500
+        );
+        println!("merge_us={}", start.elapsed().as_micros());
+        let spans = (0..5000)
+            .map(|index| (index * 2..index * 2 + 1, HighlightColor::Yellow, false))
+            .collect();
+        let start = std::time::Instant::now();
+        assert_eq!(coalesce_colored_ranges(spans).len(), 5000);
+        println!("paint_ranges_us={}", start.elapsed().as_micros());
+    }
+
+    #[test]
     fn same_color_spans_merge_and_other_colors_remain_independent() {
         let saved = SelectionBounds {
             start_item: 0,
@@ -1009,6 +1156,183 @@ mod tests {
     }
 
     #[test]
+    fn connected_highlights_expand_backwards_and_keep_the_first_touched_id() {
+        let marks: Vec<_> = (0..500)
+            .map(|index| Mark {
+                id: index as u64 + 1,
+                color: HighlightColor::Yellow,
+                note: index % 50 == 0,
+                bounds: SelectionBounds {
+                    start_item: 0,
+                    start_byte: index,
+                    end_item: 0,
+                    end_byte: index + 1,
+                },
+            })
+            .collect();
+        let plan = merge_reflow(
+            &marks,
+            HighlightColor::Yellow,
+            SelectionBounds {
+                start_item: 0,
+                start_byte: 500,
+                end_item: 0,
+                end_byte: 501,
+            },
+        );
+        assert_eq!((plan.bounds.start_byte, plan.bounds.end_byte), (0, 501));
+        assert_eq!(plan.ids.len(), 500);
+        assert_eq!(plan.ids[0], 500);
+        assert_eq!(plan.noted, 10);
+        let (from, to, ids, _) = connected_ranges(
+            (0..500).map(|index| {
+                (
+                    PdfPoint { page: 0, index },
+                    PdfPoint { page: 0, index },
+                    index as u64,
+                    false,
+                )
+            }),
+            PdfPoint {
+                page: 0,
+                index: 500,
+            },
+            PdfPoint {
+                page: 0,
+                index: 500,
+            },
+            |end, start| {
+                end >= start
+                    || (end.page == start.page && end.index.checked_add(1) == Some(start.index))
+            },
+        );
+        assert_eq!((from.index, to.index), (0, 500));
+        assert_eq!(ids.len(), 500);
+        assert_eq!(ids[0], 499);
+    }
+
+    #[test]
+    fn coalescing_keeps_color_layer_order_and_transitive_note_underlines() {
+        use HighlightColor::{Blue, Yellow};
+        assert_eq!(
+            coalesce_colored_ranges(vec![
+                (0..3, Yellow, false),
+                (0..10, Blue, false),
+                (5..8, Yellow, true),
+                (8..9, Yellow, false),
+            ]),
+            [
+                (0..3, Yellow, false),
+                (0..10, Blue, false),
+                (5..9, Yellow, true)
+            ]
+        );
+        assert_eq!(
+            coalesce_colored_ranges(vec![
+                (8..12, Yellow, false),
+                (1..11, Blue, false),
+                (0..4, Yellow, true),
+                (4..8, Yellow, false),
+            ]),
+            [(0..12, Yellow, true), (1..11, Blue, false)]
+        );
+    }
+
+    #[test]
+    fn sorted_highlight_algorithms_match_the_previous_overlap_rules() {
+        let mut seed = 17u64;
+        let mut random = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 32) as usize
+        };
+        for _ in 0..300 {
+            let spans: Vec<_> = (0..20)
+                .map(|_| {
+                    let start = random() % 40;
+                    (
+                        start..start + 1 + random() % 8,
+                        HighlightColor::ALL[random() % 4],
+                        random() % 3 == 0,
+                    )
+                })
+                .collect();
+            let mut expected = spans.clone();
+            let mut index = 0;
+            while index < expected.len() {
+                let mut other = index + 1;
+                while other < expected.len() {
+                    if expected[index].1 == expected[other].1
+                        && expected[index].0.start <= expected[other].0.end
+                        && expected[other].0.start <= expected[index].0.end
+                    {
+                        let merged = expected.remove(other);
+                        expected[index].0.start = expected[index].0.start.min(merged.0.start);
+                        expected[index].0.end = expected[index].0.end.max(merged.0.end);
+                        expected[index].2 |= merged.2;
+                        other = index + 1;
+                    } else {
+                        other += 1;
+                    }
+                }
+                index += 1;
+            }
+            assert_eq!(coalesce_colored_ranges(spans.clone()), expected);
+            let marks: Vec<_> = spans
+                .into_iter()
+                .enumerate()
+                .map(|(index, (range, color, note))| Mark {
+                    id: index as u64 + 1,
+                    color,
+                    note,
+                    bounds: SelectionBounds {
+                        start_item: 0,
+                        start_byte: range.start,
+                        end_item: 0,
+                        end_byte: range.end,
+                    },
+                })
+                .collect();
+            let start = random() % 40;
+            let selected = SelectionBounds {
+                start_item: 0,
+                start_byte: start,
+                end_item: 0,
+                end_byte: start + 1 + random() % 8,
+            };
+            let color = HighlightColor::ALL[random() % 4];
+            let mut expected = ReflowMerge {
+                bounds: selected,
+                ids: Vec::new(),
+                noted: 0,
+            };
+            loop {
+                let before = expected.ids.len();
+                for mark in marks.iter().filter(|mark| mark.color == color) {
+                    if !expected.ids.contains(&mark.id)
+                        && mark.bounds.start_byte <= expected.bounds.end_byte
+                        && expected.bounds.start_byte <= mark.bounds.end_byte
+                    {
+                        expected.ids.push(mark.id);
+                        expected.noted += usize::from(mark.note);
+                        expected.bounds.start_byte =
+                            expected.bounds.start_byte.min(mark.bounds.start_byte);
+                        expected.bounds.end_byte =
+                            expected.bounds.end_byte.max(mark.bounds.end_byte);
+                    }
+                }
+                if before == expected.ids.len() {
+                    break;
+                }
+            }
+            let mut actual = merge_reflow(&marks, color, selected);
+            assert_eq!(actual.ids.first(), expected.ids.first());
+            actual.ids.sort_unstable();
+            expected.ids.sort_unstable();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn clicking_finds_the_topmost_highlight() {
         let items = book();
         let mut notes = Annotations::new(&fingerprint()).unwrap();
@@ -1074,6 +1398,7 @@ mod tests {
                 PopupItem::Color(HighlightColor::Pink),
                 PopupItem::Note,
                 PopupItem::Copy,
+                PopupItem::ReadAloud,
             ]
         );
         let menu = Popup {

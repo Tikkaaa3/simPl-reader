@@ -273,11 +273,17 @@ impl Annotations {
         if ids.is_empty() {
             return self.add_highlight(place, color, page, quote);
         }
+        let index: std::collections::HashMap<_, _> = self
+            .highlights
+            .iter()
+            .map(|highlight| (highlight.id, highlight))
+            .collect();
         let members: Vec<_> = ids
             .iter()
             .map(|id| {
-                self.highlight(*id)
-                    .cloned()
+                index
+                    .get(id)
+                    .copied()
                     .ok_or_else(|| "This highlight no longer exists.".to_owned())
             })
             .collect::<Result<_, _>>()?;
@@ -291,8 +297,9 @@ impl Annotations {
         }
         let mut retained = members
             .iter()
+            .copied()
             .find(|highlight| highlight.note.is_some())
-            .unwrap_or(&members[0])
+            .unwrap_or(members[0])
             .clone();
         retained.place = place;
         retained.color = color;
@@ -300,8 +307,9 @@ impl Annotations {
         retained.quote = quote;
         validate_highlight(&retained)?;
         let keep = retained.id;
+        let merged: std::collections::HashSet<_> = ids.iter().copied().collect();
         self.highlights
-            .retain(|highlight| highlight.id == keep || !ids.contains(&highlight.id));
+            .retain(|highlight| highlight.id == keep || !merged.contains(&highlight.id));
         *self
             .highlights
             .iter_mut()

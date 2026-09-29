@@ -115,11 +115,8 @@ pub fn reflow(
 }
 
 pub fn current(pages: &[Page], offset: f32) -> Option<&Page> {
-    pages
-        .iter()
-        .rev()
-        .find(|page| page.top <= offset + 1.0)
-        .or_else(|| pages.first())
+    let end = pages.partition_point(|page| page.top <= offset + 1.0);
+    pages.get(end.saturating_sub(1))
 }
 
 /// The sheet occupying the most visible space; ties prefer the leading sheet.
@@ -166,6 +163,32 @@ pub fn content_offset(pages: &[Page], _index: &HeightIndex, offset: f32) -> f32 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_page_matches_linear_lookup_at_page_edges_and_gaps() {
+        let index = HeightIndex::new(vec![20.0; 1000]);
+        let pages = layout(0..1000, &index, 400.0);
+        assert!(current(&[], 0.0).is_none());
+        for page in &pages {
+            for offset in [
+                page.top - 2.0,
+                page.top - 1.0,
+                page.top,
+                page.top + page.height,
+                page.top + page.height + GAP,
+            ] {
+                let expected = pages
+                    .iter()
+                    .rev()
+                    .find(|page| page.top <= offset + 1.0)
+                    .or_else(|| pages.first());
+                assert_eq!(
+                    current(&pages, offset).map(|p| p.number),
+                    expected.map(|p| p.number)
+                );
+            }
+        }
+    }
+
     #[test]
     fn short_last_sheet_is_current_at_the_old_scroll_limit_and_can_align_at_top() {
         let index = HeightIndex::new(vec![100.0, 100.0]);

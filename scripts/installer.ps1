@@ -1,6 +1,6 @@
 # Windows PowerShell 5.1+. Produce a self-contained Windows x64 web download.
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.1.0',
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.1.1',
     [switch]$Offline,
     [string]$CompilerPath = '',
     [string]$SignToolCommand = ''

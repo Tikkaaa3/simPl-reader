@@ -295,7 +295,7 @@ fn global_pages_zoom_and_cross_chapter_jump() {
     );
     assert_eq!(reader.pages()[target.1].number, 399);
     assert_eq!(
-        book_pages::visible(&reader.pages(), reader.offset, reader.viewport)
+        book_pages::visible(reader.pages(), reader.offset, reader.viewport)
             .unwrap()
             .label,
         "400"
@@ -356,7 +356,7 @@ fn global_pages_zoom_and_cross_chapter_jump() {
     let _ = update_inner(&mut reader, Message::PageSubmit);
     render(&mut reader, &output.join("global-html-400.png"));
     assert_eq!(
-        book_pages::visible(&reader.pages(), reader.offset, reader.viewport)
+        book_pages::visible(reader.pages(), reader.offset, reader.viewport)
             .unwrap()
             .number,
         399
@@ -367,7 +367,7 @@ fn global_pages_zoom_and_cross_chapter_jump() {
     println!("HTML: {total} fixed global pages");
 }
 
-fn render(reader: &mut Reader, output: &Path) {
+pub(super) fn render(reader: &mut Reader, output: &Path) {
     settle_pagination(reader);
     let _ = reader.request_pdf_book_raster();
     if let Some((document, page)) = reader.pdf_book_pending {
@@ -744,7 +744,7 @@ fn render_book_previews() {
                 );
                 assert!(!reader.pages().is_empty());
                 let pages = reader.pages();
-                if book_pages::visible(&pages, reader.offset, reader.viewport)
+                if book_pages::visible(pages, reader.offset, reader.viewport)
                     .is_some_and(|p| p.number < pages.last().unwrap().number)
                 {
                     let before = reader.offset;
@@ -757,10 +757,7 @@ fn render_book_previews() {
                         &output.join(format!("{kind}-{label}-next-page.png")),
                     );
                     if kind == "html" {
-                        let chapter = reader
-                            .contents()
-                            .into_iter()
-                            .find(|c| c.label == "CHAPTER I");
+                        let chapter = reader.contents().iter().find(|c| c.label == "CHAPTER I");
                         if let Some(chapter) = chapter {
                             let _ = reader.open_chapter(chapter.chapter, None);
                             assert!(reader.reading_title().unwrap().ends_with("~ CHAPTER I"));
@@ -1526,7 +1523,7 @@ fn render_long_paragraph_pages() {
                 "scrolling through the chapter must preserve every page boundary and total"
             );
         }
-        let pages = reader.pages();
+        let pages = reader.pages().to_vec();
         let paper = (reader.width + book_map::MARGIN * 2.0) * 1.414;
         assert!(pages.iter().all(|p| p.height <= paper + 0.1));
         for pair in pages.windows(2) {
