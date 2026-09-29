@@ -507,8 +507,8 @@ impl Shelf {
             .align_y(Alignment::Center)
             .height(14),
             text("simPl Reader")
-                .font(ui::SANS)
-                .size(28)
+                .font(ui::HEADING)
+                .size(30)
                 .line_height(iced::Pixels(38.0))
                 .shaping(text::Shaping::Advanced),
             text("Quick, lightweight offline reader for curated thinking\nand serene study.")
@@ -526,7 +526,7 @@ impl Shelf {
                     .center(28)
                     .style(|theme| fill(ui::palette(theme).raised, 4.0)),
                 column![
-                    label("+ Add Document", 13).style(ui::primary_text),
+                    label("Add document", 13).style(ui::primary_text),
                     label("Drop .epub, .pdf, or .html", 11).style(ui::secondary_text)
                 ]
             ]
@@ -550,14 +550,14 @@ impl Shelf {
         });
         let hero: Element<'_, Message> = if wide {
             row![intro, Space::new().width(Length::Fill), add]
-                .align_y(Alignment::End)
+                .align_y(Alignment::Center)
                 .into()
         } else {
             column![intro, add].spacing(32).into()
         };
         let continue_heading = row![
             text("Continue Reading")
-                .font(ui::MEDIUM)
+                .font(ui::HEADING)
                 .size(22)
                 .line_height(iced::Pixels(32.0))
                 .shaping(text::Shaping::Advanced),
@@ -597,19 +597,18 @@ impl Shelf {
             .into()
         } else if wide {
             let mut cards = row![].spacing(24);
+            let text_width = (m.width - 48.0) / 3.0 - CONTINUE_CHROME;
             for index in &self.continuing {
-                cards = cards.push(self.continue_card(*index, focused, active));
+                cards = cards.push(self.continue_card(*index, focused, active, text_width));
             }
             for _ in self.continuing.len()..3 {
                 cards = cards.push(Space::new().width(Length::FillPortion(1)));
             }
             cards.into()
         } else {
-            column(
-                self.continuing
-                    .iter()
-                    .map(|index| self.continue_card(*index, focused, active)),
-            )
+            column(self.continuing.iter().map(|index| {
+                self.continue_card(*index, focused, active, m.width - CONTINUE_CHROME)
+            }))
             .spacing(24)
             .into()
         };
@@ -631,8 +630,12 @@ impl Shelf {
                 .padding([4, 10])
                 .on_press_maybe(active.then_some(Message::Activate(control)))
                 .style(move |theme, status| {
-                    let mut style =
-                        ui::button_style(theme, status, ui::ButtonTone::Subtle, focused, selected);
+                    let tone = if selected {
+                        ui::ButtonTone::Quiet
+                    } else {
+                        ui::ButtonTone::Subtle
+                    };
+                    let mut style = ui::button_style(theme, status, tone, focused, false);
                     style.border.radius = 2.0.into();
                     style
                 });
@@ -645,11 +648,11 @@ impl Shelf {
         );
         let heading = row![
             text("Library")
-                .font(ui::MEDIUM)
+                .font(ui::HEADING)
                 .size(22)
                 .line_height(iced::Pixels(32.0))
                 .shaping(text::Shaping::Advanced),
-            pill(format!("{} items", self.order.len()))
+            pill(count(self.order.len(), "item"))
         ]
         .spacing(12)
         .align_y(Alignment::Center);
@@ -685,10 +688,10 @@ impl Shelf {
             let heading = column![
                 row![
                     text("Favourites")
-                        .font(ui::MEDIUM)
+                        .font(ui::HEADING)
                         .size(22)
                         .line_height(iced::Pixels(32.0)),
-                    pill(format!("{} items", self.favourites.len()))
+                    pill(count(self.favourites.len(), "item"))
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center),
@@ -814,6 +817,7 @@ impl Shelf {
         index: usize,
         focused: Option<Control>,
         active: bool,
+        text_width: f32,
     ) -> Element<'_, Message> {
         let entry = &self.entries[index];
         let control = Control::Resume(index);
@@ -826,7 +830,7 @@ impl Shelf {
         ]
         .align_y(Alignment::Center);
         let title = clipped(
-            text(&entry.document.title)
+            text(ellipsize(&entry.document.title, text_width, 16.0))
                 .font(ui::SEMIBOLD)
                 .size(16)
                 .line_height(iced::Pixels(22.0))
@@ -841,7 +845,7 @@ impl Shelf {
                 .wrapping(text::Wrapping::None),
         );
         let author = clipped(
-            text(entry.author.as_deref().unwrap_or("Local document"))
+            text(ellipsize(&author_of(entry), text_width, 14.0))
                 .size(14)
                 .line_height(iced::Pixels(22.0))
                 .style(ui::secondary_text)
@@ -927,7 +931,7 @@ impl Shelf {
         .width(Length::Fill)
         .clip(true);
         let author = clipped(
-            label(entry.author.as_deref().unwrap_or("Local document"), 12)
+            label(ellipsize(&author_of(entry), m.card_width - 26.0, 12.0), 12)
                 .style(ui::secondary_text)
                 .wrapping(text::Wrapping::None),
         );
@@ -965,7 +969,7 @@ impl Shelf {
                     .style(move |theme, status| ui::button_style(
                         theme,
                         status,
-                        ui::ButtonTone::Quiet,
+                        ui::ButtonTone::Surface,
                         focused == Some(Control::Favourite(index, favourites)),
                         entry.favourite
                     )),
@@ -980,7 +984,7 @@ impl Shelf {
                         .style(move |theme, status| ui::button_style(
                             theme,
                             status,
-                            ui::ButtonTone::Quiet,
+                            ui::ButtonTone::Surface,
                             focused == Some(Control::Remove(index, favourites)),
                             false
                         )),
@@ -1021,31 +1025,52 @@ impl Shelf {
                     .into()
             } else {
                 // A typographic jacket for a document without artwork, not an invented book cover.
+                // A tint derived from the title tells jackets apart without inventing art.
+                let tint = jacket_tint(&entry.document.title);
                 let title = text(&entry.document.title)
-                    .font(ui::SANS)
-                    .size(if small { 11 } else { 18 })
+                    .font(ui::HEADING)
+                    .size(if small { 12 } else { 19 })
                     .line_height(iced::Pixels(if small { 16.0 } else { 26.0 }))
-                    .style(ui::secondary_text)
+                    .style(ui::primary_text)
                     .shaping(text::Shaping::Advanced);
-                container(
-                    column![
-                        container(Space::new().height(2))
-                            .width(24)
-                            .style(|theme| fill(ui::palette(theme).accent.scale_alpha(0.5), 0.0)),
-                        container(title).max_height(height * 0.55).clip(true),
-                        Space::new().height(Length::Fill),
-                        text("simPl")
-                            .font(ui::SANS)
-                            .size(if small { 9 } else { 12 })
-                            .style(ui::muted_text)
-                    ]
-                    .spacing(if small { 8 } else { 16 }),
-                )
-                .padding(if small { 10 } else { 18 })
-                .width(width)
-                .height(height)
-                .style(|theme| boxed(theme, ui::palette(theme).lowest, 0.25, 4.0))
-                .into()
+                let mut jacket = column![
+                    container(Space::new().height(2))
+                        .width(24)
+                        .style(move |_| fill(tint, 0.0)),
+                    container(title).max_height(height * 0.55).clip(true),
+                    Space::new().height(Length::Fill),
+                ]
+                .spacing(if small { 8 } else { 16 });
+                if !small {
+                    jacket = jacket.push(
+                        container(
+                            text(author_of(entry))
+                                .font(ui::SANS)
+                                .size(12)
+                                .style(ui::secondary_text)
+                                .shaping(text::Shaping::Advanced),
+                        )
+                        .max_height(34)
+                        .clip(true),
+                    );
+                }
+                container(jacket)
+                    .padding(if small { 10 } else { 18 })
+                    .width(width)
+                    .height(height)
+                    .style(move |theme| {
+                        let paper = ui::palette(theme).surface;
+                        container::Style {
+                            background: Some(ui::mix(paper, tint, 0.14).into()),
+                            border: Border {
+                                color: ui::mix(paper, tint, 0.3),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            ..container::Style::default()
+                        }
+                    })
+                    .into()
             };
         let badge = container(
             label(format_name(entry.format()), 10)
@@ -1159,6 +1184,58 @@ fn file_size(bytes: u64) -> String {
     }
 }
 
+/// Card padding, cover and gap beside the text of a Continue Reading card.
+const CONTINUE_CHROME: f32 = 32.0 + 80.0 + 16.0;
+
+fn author_of(entry: &Entry) -> String {
+    entry
+        .author
+        .as_deref()
+        .map_or_else(|| "Local document".to_owned(), display_author)
+}
+
+/// Catalog names such as "Austen, Jane, 1775-1817" read as "Jane Austen".
+fn display_author(author: &str) -> String {
+    let parts: Vec<&str> = author.split(',').map(str::trim).collect();
+    let dates = |part: &str| {
+        part.chars().any(|c| c.is_ascii_digit())
+            && part
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '-' | '–' | '?' | ' '))
+    };
+    match parts.as_slice() {
+        [last, first, years] if dates(years) && !first.is_empty() && !last.is_empty() => {
+            format!("{first} {last}")
+        }
+        [name, years] if dates(years) && !name.is_empty() => (*name).to_owned(),
+        _ => author.to_owned(),
+    }
+}
+
+/// Shortens `value` with an ellipsis when it would overflow `width` at `size`.
+/// iced 0.14 cannot ellipsize text, so this estimates an average glyph width.
+fn ellipsize(value: &str, width: f32, size: f32) -> String {
+    let fits = ((width / (size * 0.56)).floor() as usize).max(2);
+    if value.chars().count() <= fits {
+        return value.to_owned();
+    }
+    let kept: String = value.chars().take(fits - 1).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// A stable, quiet hue per title for jackets without artwork.
+fn jacket_tint(title: &str) -> Color {
+    const HUES: [u32; 7] = [
+        0x58a6ff, 0xd29922, 0x3fb950, 0xdb61a2, 0xa371f7, 0xf0883e, 0x39c5cf,
+    ];
+    // FNV-1a keeps the choice identical across runs and platforms.
+    let hash = title.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let hue = HUES[hash as usize % HUES.len()];
+    Color::from_rgb8((hue >> 16) as u8, (hue >> 8) as u8, hue as u8)
+}
+
 pub fn icon<'a>(glyph: &'a str, size: u32) -> iced::widget::Text<'a> {
     text(glyph)
         .font(ui::ICONS)
@@ -1184,10 +1261,18 @@ fn label<'a>(value: impl Into<std::borrow::Cow<'a, str>>, size: u32) -> iced::wi
 fn clipped<'a>(value: iced::widget::Text<'a>) -> Element<'a, Message> {
     container(value).width(Length::Fill).clip(true).into()
 }
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 fn pill(value: String) -> Element<'static, Message> {
     container(label(value, 11).style(ui::secondary_text))
         .padding([2, 8])
-        .style(|theme| fill(ui::palette(theme).raised, 12.0))
+        .style(|theme| boxed(theme, ui::palette(theme).surface, 0.8, 12.0))
         .into()
 }
 fn scroll_id() -> iced::advanced::widget::Id {
@@ -1269,6 +1354,27 @@ fn mark<'a>(content: impl Into<Element<'a, Message>>, focused: bool) -> Element<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_author_names_read_naturally() {
+        assert_eq!(display_author("Austen, Jane, 1775-1817"), "Jane Austen");
+        assert_eq!(
+            display_author("Shelley, Mary Wollstonecraft, 1797-1851"),
+            "Mary Wollstonecraft Shelley"
+        );
+        assert_eq!(display_author("Homer, 750"), "Homer");
+        assert_eq!(display_author("Arthur Conan Doyle"), "Arthur Conan Doyle");
+        assert_eq!(display_author("Dunne, Anthony"), "Dunne, Anthony");
+    }
+
+    #[test]
+    fn long_titles_end_in_an_ellipsis_and_short_ones_are_kept() {
+        assert_eq!(ellipsize("Let's Go", 300.0, 16.0), "Let's Go");
+        let short = ellipsize("The Adventures of Sherlock Holmes", 160.0, 16.0);
+        assert!(short.ends_with('…'), "{short}");
+        assert!(short.chars().count() <= 17, "{short}");
+        assert_eq!(jacket_tint("Frankenstein"), jacket_tint("Frankenstein"));
+    }
 
     #[test]
     fn continuing_documents_remain_in_every_library_sort() {

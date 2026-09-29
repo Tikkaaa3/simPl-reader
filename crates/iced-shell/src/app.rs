@@ -4851,23 +4851,15 @@ fn control_button<'a>(
     label: impl Into<Element<'a, Message>>,
     message: Option<Message>,
 ) -> Element<'a, Message> {
-    let tone = if reader.show_search
-        || matches!(
-            control,
-            Control::Close
-                | Control::BookMode
-                | Control::DocumentMode
-                | Control::Back
-                | Control::FontDown
-                | Control::FontUp
-                | Control::PreviousBookPage
-                | Control::NextBookPage
-        )
-        || (control == Control::ToggleAppearance && (reader.book.is_some() || reader.pdf.is_some()))
-    {
-        ui::ButtonTone::Surface
-    } else {
-        ui::ButtonTone::Quiet
+    // Chrome stays quiet; only a few actions carry the tinted accent or danger.
+    let tone = match control {
+        Control::ConfirmRemove | Control::Notes(notes::Focus::Remove(_)) => {
+            ui::ButtonTone::Destructive
+        }
+        Control::LocateMissing | Control::OpenRecent(_) if !reader.show_search => {
+            ui::ButtonTone::Quiet
+        }
+        _ => ui::ButtonTone::Surface,
     };
     toned_button(reader, control, label, message, tone, false)
 }
@@ -5051,18 +5043,20 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
         } else {
             "Reading Settings"
         })
-        .font(ui::MEDIUM)
+        .font(ui::HEADING)
         .size(22)
         .shaping(text::Shaping::Advanced),
         Space::new().width(Length::Fill),
         if reader.confirm_remove.is_some() {
             Space::new().into()
         } else {
-            control_button(
+            toned_button(
                 reader,
                 Control::DismissOverlay,
                 shelf::icon("\u{e5cd}", 18),
                 Some(Message::DismissOverlay),
+                ui::ButtonTone::Subtle,
+                false,
             )
         },
     ]
@@ -5199,31 +5193,52 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                     .style(ui::muted_text),
             );
     } else {
+        let section = |title: &'static str| {
+            text(title.to_uppercase())
+                .font(ui::MEDIUM)
+                .size(11)
+                .style(ui::muted_text)
+        };
+        let note = |value: &'static str| text(value).size(12).style(ui::muted_text);
+        let rule = || {
+            container(Space::new().height(1))
+                .width(Length::Fill)
+                .style(ui::rule)
+        };
         contents = contents
-            .push(text("Theme").font(ui::MEDIUM).size(13))
+            .push(section("Theme"))
             .push(theme_picker(reader))
-            .push(text("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme.")
-                .size(12).style(ui::muted_text))
+            .push(note("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme."))
+            .push(rule())
+            .push(column![
+                row![
+                    text("Book zoom").font(ui::MEDIUM).size(13), Space::new().width(Length::Fill),
+                    control_button(reader, Control::SettingsFontDown, text("−").size(14),
+                        (reader.zoom > 0.4).then_some(Message::Zoom(reader.zoom - 0.1))),
+                    text(format!("{:.0}%", reader.zoom * 100.0)).size(12).style(ui::muted_text),
+                    control_button(reader, Control::SettingsFontUp, text("+").size(14),
+                        (reader.zoom < 3.0).then_some(Message::Zoom(reader.zoom + 0.1))),
+                ].spacing(12).align_y(iced::Alignment::Center),
+                note("Scales Book pages without changing their boundaries or total count. Applies during this session."),
+            ].spacing(6))
+            .push(rule())
+            .push(column![
+                row![
+                    text("Window controls").font(ui::MEDIUM).size(13), Space::new().width(Length::Fill),
+                    window_controls_button(reader, WindowControls::Windows, "Windows"),
+                    window_controls_button(reader, WindowControls::Mac, "macOS"),
+                ].spacing(8).align_y(iced::Alignment::Center),
+                note("Windows places minimize, maximize and close at the right of the title bar; macOS uses round buttons at the left."),
+            ].spacing(6))
+            .push(rule())
             .push(row![
-                text("Book zoom").size(13), Space::new().width(Length::Fill),
-                control_button(reader, Control::SettingsFontDown, text("−").size(14),
-                    (reader.zoom > 0.4).then_some(Message::Zoom(reader.zoom - 0.1))),
-                text(format!("{:.0}%", reader.zoom * 100.0)).size(12).style(ui::muted_text),
-                control_button(reader, Control::SettingsFontUp, text("+").size(14),
-                    (reader.zoom < 3.0).then_some(Message::Zoom(reader.zoom + 0.1))),
-            ].spacing(12).align_y(iced::Alignment::Center))
-            .push(text("Scales Book pages without changing their boundaries or total count. Applies during this session.")
-                .size(12).style(ui::muted_text))
-            .push(row![
-                text("Window controls").size(13), Space::new().width(Length::Fill),
-                window_controls_button(reader, WindowControls::Windows, "Windows"),
-                window_controls_button(reader, WindowControls::Mac, "macOS"),
-            ].spacing(8).align_y(iced::Alignment::Center))
-            .push(text("Windows places minimize, maximize and close at the right of the title bar; macOS uses round buttons at the left.")
-                .size(12).style(ui::muted_text))
-            .push(row![
-                control_button(reader, Control::SettingsHelp, text("Shortcuts").size(12), Some(Message::ToggleHelp)),
-            ].spacing(8));
+                column![
+                    text("Keyboard shortcuts").font(ui::MEDIUM).size(13),
+                    note("Every action has a key; press F1 at any time."),
+                ].spacing(4),
+                Space::new().width(Length::Fill),
+                control_button(reader, Control::SettingsHelp, text("Show").font(ui::MEDIUM).size(12), Some(Message::ToggleHelp)),
+            ].spacing(8).align_y(iced::Alignment::Center));
     }
     let panel = container(
         scrollable(contents)
@@ -5364,8 +5379,24 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
             },
             ..container::Style::default()
         });
-        let label = column![
+        let chosen = reader.theme.id == theme.id;
+        let name = row![
             text(theme.name).font(ui::MEDIUM).size(14),
+            iced::widget::Space::new().width(Length::Fill),
+        ]
+        .align_y(iced::Alignment::Center);
+        let name = if chosen {
+            name.push(
+                text("✓")
+                    .font(iced::Font::with_name("Segoe UI Symbol"))
+                    .size(14)
+                    .style(ui::accent_text),
+            )
+        } else {
+            name
+        };
+        let label = column![
+            name,
             text(theme.summary).size(11).style(ui::muted_text),
             sample,
         ]
@@ -5377,7 +5408,7 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
             label,
             Some(Message::SetTheme(index)),
             ui::ButtonTone::Surface,
-            reader.theme.id == theme.id,
+            chosen,
         ))
         .width(Length::Fill)
         .into()
@@ -5447,7 +5478,7 @@ fn find_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     hinted_control(
         reader,
         Control::Find,
-        shelf::icon("\u{e8b6}", 16),
+        text("Find").font(ui::MEDIUM).size(13),
         "Find in document (Ctrl+F)",
         active.then_some(Message::FindOpen),
     )
@@ -6011,7 +6042,10 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     };
     page = page.push(if has_document {
         row![
-            container(content).width(Length::Fill).height(Length::Fill),
+            column![
+                container(content).width(Length::Fill).height(Length::Fill),
+                reading_progress(reader),
+            ],
             notes_ui::sidebar(reader, active),
         ]
         .height(Length::Fill)
@@ -6026,6 +6060,28 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     chrome::frame(overlays(reader, base), |direction| {
         Message::Chrome(chrome::Action::Resize(direction))
     })
+}
+
+/// A 2px progress hairline along the bottom of the reading area.
+fn reading_progress(reader: &Reader) -> Element<'_, Message> {
+    let progress = if let Some(pdf) = &reader.pdf {
+        let total = pdf.document().pages.len();
+        (total > 0).then(|| (pdf.page_index() + 1) as f32 / total as f32)
+    } else {
+        let total = reader.page_total();
+        let pages = reader.pages();
+        book_pages::current(&pages, reader.offset)
+            .filter(|_| total > 0)
+            .map(|page| page.number as f32 / total as f32)
+    };
+    iced::widget::progress_bar(0.0..=1.0, progress.unwrap_or(0.0).clamp(0.0, 1.0))
+        .girth(2)
+        .style(|theme| iced::widget::progress_bar::Style {
+            background: ui::palette(theme).border.scale_alpha(0.5).into(),
+            bar: ui::palette(theme).accent.into(),
+            border: iced::Border::default(),
+        })
+        .into()
 }
 
 fn title(reader: &Reader) -> String {

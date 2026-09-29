@@ -501,9 +501,21 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
                     },
                     ui::palette(theme).background,
                 );
+                // At rest the thumb is a slim, faint line; it widens under the pointer.
+                // The hit area stays the full rail either way.
+                let engaged = state.grabbed_at.is_some() || state.hovered;
+                let drawn = if engaged {
+                    thumb
+                } else {
+                    Rectangle {
+                        x: thumb.x + thumb.width / 2.0 - 2.0,
+                        width: 4.0,
+                        ..thumb
+                    }
+                };
                 renderer.fill_quad(
                     renderer::Quad {
-                        bounds: thumb,
+                        bounds: drawn,
                         border: Border::default().rounded(4),
                         ..renderer::Quad::default()
                     },
@@ -512,7 +524,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
                     } else if state.hovered {
                         ui::palette(theme).secondary
                     } else {
-                        ui::palette(theme).muted
+                        ui::palette(theme).muted.scale_alpha(0.45)
                     },
                 );
             });

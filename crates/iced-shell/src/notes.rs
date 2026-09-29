@@ -43,6 +43,56 @@ pub fn solid(color: HighlightColor) -> Color {
     }
 }
 
+/// Whether `c` belongs to a word that spaces delimit. Scripts written without
+/// spaces (CJK, Thai and neighbors) are left as selected.
+fn word_char(c: char) -> bool {
+    let unspaced = matches!(c,
+        '\u{0e00}'..='\u{0eff}'
+        | '\u{1000}'..='\u{109f}'
+        | '\u{1780}'..='\u{17ff}'
+        | '\u{3000}'..='\u{9fff}'
+        | '\u{ac00}'..='\u{d7af}'
+        | '\u{f900}'..='\u{faff}'
+        | '\u{ff00}'..='\u{ffef}'
+        | '\u{20000}'..='\u{3134f}');
+    !unspaced && (c.is_alphanumeric() || matches!(c, '\'' | '’'))
+}
+
+/// Widens a selection that starts or ends inside a word to the whole word, so a
+/// highlight never cuts a word in half. Endpoints between words are kept.
+pub fn snap_to_words(items: &[Item], bounds: SelectionBounds) -> SelectionBounds {
+    let mut snapped = bounds;
+    if let Some(text) = items.get(bounds.start_item).and_then(Item::text)
+        && text.is_char_boundary(bounds.start_byte)
+        && text[bounds.start_byte..]
+            .chars()
+            .next()
+            .is_some_and(word_char)
+    {
+        snapped.start_byte = text[..bounds.start_byte]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| word_char(*c))
+            .last()
+            .map_or(bounds.start_byte, |(index, _)| index);
+    }
+    if let Some(text) = items.get(bounds.end_item).and_then(Item::text)
+        && text.is_char_boundary(bounds.end_byte)
+        && text[..bounds.end_byte]
+            .chars()
+            .next_back()
+            .is_some_and(word_char)
+    {
+        snapped.end_byte = bounds.end_byte
+            + text[bounds.end_byte..]
+                .char_indices()
+                .take_while(|(_, c)| word_char(*c))
+                .last()
+                .map_or(0, |(index, c)| index + c.len_utf8());
+    }
+    snapped
+}
+
 /// The selected text in reading order: what copying the selection would give.
 pub fn text_of(items: &[Item], bounds: SelectionBounds) -> String {
     let mut parts = Vec::new();
@@ -421,6 +471,8 @@ pub const POPUP_WIDTH: f32 = 232.0;
 pub const POPUP_PADDING: f32 = 6.0;
 pub const POPUP_SPACING: f32 = 2.0;
 pub const POPUP_ROW: f32 = 32.0;
+/// A hairline with breathing room between groups of the menu.
+pub const POPUP_SEPARATOR: f32 = 9.0;
 
 impl Popup {
     pub fn entries(&self) -> Vec<PopupItem> {
@@ -439,6 +491,17 @@ impl Popup {
         entries
     }
 
+    /// Separators in drawing order: after the colors, and before removing a highlight.
+    pub fn separated(entries: &[PopupItem]) -> (bool, bool) {
+        let actions = entries
+            .iter()
+            .filter(|entry| !matches!(entry, PopupItem::Color(_)))
+            .count();
+        let colors = entries.len() > actions;
+        let removal = entries.contains(&PopupItem::RemoveHighlight);
+        (colors && actions > 0, removal && actions > 1)
+    }
+
     pub fn size(&self) -> Size {
         let entries = self.entries();
         let colors = entries
@@ -449,11 +512,15 @@ impl Popup {
             .filter(|entry| !matches!(entry, PopupItem::Color(_)))
             .count()
             + usize::from(colors);
+        let (after_colors, before_removal) = Self::separated(&entries);
+        let separators = usize::from(after_colors) + usize::from(before_removal);
+        let children = rows + separators;
         Size::new(
             POPUP_WIDTH,
             POPUP_PADDING * 2.0
                 + rows as f32 * POPUP_ROW
-                + rows.saturating_sub(1) as f32 * POPUP_SPACING,
+                + separators as f32 * POPUP_SEPARATOR
+                + children.saturating_sub(1) as f32 * POPUP_SPACING,
         )
     }
 
@@ -683,6 +750,32 @@ mod tests {
     use super::*;
     use reader_document::BaseDirection;
     use reader_document::annotations::ReflowPoint;
+
+    #[test]
+    fn highlights_snap_to_whole_words() {
+        let items = [
+            paragraph("a", "A quieter page"),
+            paragraph("b", "Don’t split it"),
+            paragraph("c", "静かな頁です"),
+        ];
+        let bounds = |item, start, end| SelectionBounds {
+            start_item: item,
+            start_byte: start,
+            end_item: item,
+            end_byte: end,
+        };
+        let snapped = snap_to_words(&items, bounds(0, 0, 12));
+        assert_eq!(text_of(&items, snapped), "A quieter page");
+        let snapped = snap_to_words(&items, bounds(0, 4, 7));
+        assert_eq!(text_of(&items, snapped), "quieter");
+        // Endpoints already between words are kept.
+        let snapped = snap_to_words(&items, bounds(0, 1, 10));
+        assert_eq!(snapped, bounds(0, 1, 10));
+        let snapped = snap_to_words(&items, bounds(1, 1, 3));
+        assert_eq!(text_of(&items, snapped), "Don’t");
+        let unspaced = bounds(2, 3, 9);
+        assert_eq!(snap_to_words(&items, unspaced), unspaced);
+    }
 
     fn paragraph(id: &str, text: &str) -> Item {
         Item::Paragraph {

@@ -99,12 +99,21 @@ pub fn surface(theme: &Theme) -> container::Style {
     }
 }
 
+/// A sheet lifted off the desk by tone and a soft shadow rather than a hard outline.
 pub fn paper(theme: &Theme) -> container::Style {
     let mut style = surface(theme);
+    let dark = theme.extended_palette().is_dark;
     style.border = iced::Border {
-        color: crate::ui::palette(theme).border,
+        color: crate::ui::palette(theme)
+            .border
+            .scale_alpha(if dark { 0.45 } else { 0.7 }),
         width: 1.0,
-        radius: 2.0.into(),
+        radius: 4.0.into(),
+    };
+    style.shadow = iced::Shadow {
+        color: iced::Color::BLACK.scale_alpha(if dark { 0.35 } else { 0.06 }),
+        offset: iced::Vector::new(0.0, 4.0),
+        blur_radius: 18.0,
     };
     style
 }

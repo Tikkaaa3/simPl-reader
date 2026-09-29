@@ -45,10 +45,8 @@ const fn palette(
     text: u32,
     secondary: u32,
     muted: u32,
+    accent: u32,
     danger: u32,
-    button_bg: u32,
-    button_text: u32,
-    button_hover: u32,
     control_border: u32,
 ) -> Palette {
     Palette {
@@ -60,18 +58,15 @@ const fn palette(
         text: rgb(text),
         secondary: rgb(secondary),
         muted: rgb(muted),
-        accent: rgb(text),
+        accent: rgb(accent),
         danger: rgb(danger),
-        button_bg: rgb(button_bg),
-        button_text: rgb(button_text),
-        button_hover: rgb(button_hover),
         control_border: rgb(control_border),
     }
 }
 
 /// The order here is the order shown in the settings panel; the first is the default.
 pub static THEMES: [ReadingTheme; 4] = [
-    // The look simPl always had.
+    // simPl's own look: slate with an ice-blue accent.
     ReadingTheme {
         id: DEFAULT_ID,
         name: "Default",
@@ -95,12 +90,12 @@ pub static THEMES: [ReadingTheme; 4] = [
             heading_scales: [1.55, 1.28, 1.1],
         },
         light: palette(
-            0xe9e5dc, 0xf4f0e6, 0xf8f5ee, 0xd8d2c4, 0x2b2924, 0x57534b, 0x757064, 0xa3372b,
-            0x3a3730, 0xf4f0e6, 0x25231e, 0xd4cebf,
+            0xe9e5dc, 0xf4f0e6, 0xf8f5ee, 0xd8d2c4, 0x2b2924, 0x57534b, 0x757064, 0x9a4a24,
+            0xa3372b, 0xd4cebf,
         ),
         dark: palette(
-            0x1a1917, 0x22211e, 0x2a2926, 0x36342f, 0xd8d4ca, 0xa8a499, 0x7f7b71, 0xe8a49b,
-            0xd8d4ca, 0x22211e, 0xece8de, 0x3b3934,
+            0x1a1917, 0x22211e, 0x2a2926, 0x36342f, 0xd8d4ca, 0xa8a499, 0x7f7b71, 0xe0a47a,
+            0xe8a49b, 0x3b3934,
         ),
     },
     // A clear humanist sans with generous spacing and cool, quiet colors.
@@ -117,12 +112,12 @@ pub static THEMES: [ReadingTheme; 4] = [
             heading_scales: [1.5, 1.25, 1.1],
         },
         light: palette(
-            0xeceff3, 0xf7f8fa, 0xffffff, 0xd6dae1, 0x151a21, 0x434a57, 0x667080, 0xb3261e,
-            0x1f2530, 0xf4f6f9, 0x0d1117, 0xcfd4dc,
+            0xeceff3, 0xf7f8fa, 0xffffff, 0xd6dae1, 0x151a21, 0x434a57, 0x667080, 0x1a64d6,
+            0xb3261e, 0xcfd4dc,
         ),
         dark: palette(
-            0x111317, 0x171a1f, 0x1e2229, 0x2b3038, 0xe4e7ec, 0xaeb4bf, 0x8390a0, 0xffb4ab,
-            0xe4e7ec, 0x171a1f, 0xffffff, 0x30353d,
+            0x111317, 0x171a1f, 0x1e2229, 0x2b3038, 0xe4e7ec, 0xaeb4bf, 0x8390a0, 0x6cb6ff,
+            0xffb4ab, 0x30353d,
         ),
     },
     // Denser text with neutral colors for long reading sessions.
@@ -139,12 +134,12 @@ pub static THEMES: [ReadingTheme; 4] = [
             heading_scales: [1.5, 1.25, 1.08],
         },
         light: palette(
-            0xe6e6e3, 0xf3f3f0, 0xfafaf8, 0xd3d3ce, 0x1f1f1d, 0x50504c, 0x6f6f69, 0xa32e2e,
-            0x2a2a28, 0xf3f3f0, 0x181816, 0xcdcdc8,
+            0xe6e6e3, 0xf3f3f0, 0xfafaf8, 0xd3d3ce, 0x1f1f1d, 0x50504c, 0x6f6f69, 0x2c6b5a,
+            0xa32e2e, 0xcdcdc8,
         ),
         dark: palette(
-            0x151516, 0x1c1c1e, 0x242426, 0x323235, 0xdcdcda, 0xa9a9a5, 0x80807c, 0xf0a8a0,
-            0xdcdcda, 0x1c1c1e, 0xeeeeec, 0x37373a,
+            0x151516, 0x1c1c1e, 0x242426, 0x323235, 0xdcdcda, 0xa9a9a5, 0x80807c, 0x7cc4ae,
+            0xf0a8a0, 0x37373a,
         ),
     },
 ];
@@ -242,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_theme_is_the_look_simpl_always_had() {
+    fn the_first_theme_is_simpls_own_look() {
         let default = default_theme();
         assert_eq!(default.id, DEFAULT_ID);
         assert_eq!(default.family, None);
@@ -276,12 +271,14 @@ mod tests {
                     assert!(secondary >= 4.5, "{label}: secondary {secondary:.2}");
                     assert!(muted >= 3.0, "{label}: muted {muted:.2}");
                 }
-                let button = contrast(colors.button_text, colors.button_bg);
-                assert!(
-                    button >= 7.0,
-                    "{} {appearance:?}: button {button:.2}",
-                    theme.name
-                );
+                for (surface, name) in [(colors.surface, "paper"), (colors.background, "desk")] {
+                    let accent = contrast(colors.accent, surface);
+                    assert!(
+                        accent >= 3.0,
+                        "{} {appearance:?}: accent on {name} {accent:.2}",
+                        theme.name
+                    );
+                }
                 let danger = contrast(colors.danger, colors.surface);
                 assert!(
                     danger >= 3.0,

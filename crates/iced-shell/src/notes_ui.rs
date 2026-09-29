@@ -346,10 +346,10 @@ impl Reader {
 
     fn highlight_selection(&mut self, color: HighlightColor, then_note: bool) -> Option<u64> {
         self.notes.color = color;
-        let bounds = self
-            .book
-            .as_ref()
-            .and_then(|book| self.selection.bounds(&book.items))?;
+        let bounds = self.book.as_ref().and_then(|book| {
+            let bounds = self.selection.bounds(&book.items)?;
+            Some(notes::snap_to_words(&book.items, bounds))
+        })?;
         let plan = notes::merge_reflow(&self.notes.marks, color, bounds);
         if plan.noted > 1 && !then_note && plan.bounds == bounds {
             self.selection.clear();
@@ -1098,6 +1098,17 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
     let entries = popup.entries();
     let origin = popup.origin(reader.window_size);
     let mut menu = column![].spacing(notes::POPUP_SPACING);
+    let (after_colors, before_removal) = notes::Popup::separated(&entries);
+    let separator = || {
+        container(
+            container(Space::new().height(1))
+                .width(Length::Fill)
+                .style(ui::rule),
+        )
+        .height(notes::POPUP_SEPARATOR)
+        .padding([0, 6])
+        .center_y(notes::POPUP_SEPARATOR)
+    };
     let swatches: Vec<_> = entries
         .iter()
         .filter_map(|entry| match entry {
@@ -1112,6 +1123,9 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
                 .center_y(notes::POPUP_ROW)
                 .padding([0, 8]),
         );
+        if after_colors {
+            menu = menu.push(separator());
+        }
     }
     let has_note = match popup.target {
         Target::Highlight(id) => reader
@@ -1169,6 +1183,9 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
             )),
         };
         if let Some(button) = button {
+            if before_removal && entry == PopupItem::RemoveHighlight {
+                menu = menu.push(separator());
+            }
             menu = menu.push(button);
         }
     }
@@ -1258,18 +1275,18 @@ pub(super) fn editor_overlay<'a>(
             Message::Notes(Action::SaveNote),
             ui::ButtonTone::Quiet,
         ));
-    let contents = column![
-        text("Note").font(ui::MEDIUM).size(22),
-        container(
-            text(quote)
-                .size(13)
-                .style(ui::secondary_text)
-                .shaping(text::Shaping::Advanced)
-                .wrapping(text::Wrapping::WordOrGlyph)
+    let length = editor.content.text().trim().len();
+    let footer = if length * 5 >= annotations::MAX_NOTE_BYTES * 4 {
+        format!(
+            "{length} / {} bytes · Ctrl+Enter Save · Esc Cancel",
+            annotations::MAX_NOTE_BYTES
         )
-        .padding([6, 10])
-        .width(Length::Fill)
-        .style(ui::inset),
+    } else {
+        "Ctrl+Enter Save · Esc Cancel".to_owned()
+    };
+    let contents = column![
+        text("Note").font(ui::HEADING).size(22),
+        quotation(quote, None),
         text_editor(&editor.content)
             .id(note_editor_id())
             .placeholder("Write a note…")
@@ -1281,19 +1298,13 @@ pub(super) fn editor_overlay<'a>(
             .height(150)
             .style(note_editor_style),
         buttons,
-        text(format!(
-            "{} / {} bytes · Ctrl+Enter Save · Esc Cancel",
-            editor.content.text().trim().len(),
-            annotations::MAX_NOTE_BYTES
-        ))
-        .size(11)
-        .style(
-            if editor.content.text().trim().len() > annotations::MAX_NOTE_BYTES {
+        text(footer)
+            .size(11)
+            .style(if length > annotations::MAX_NOTE_BYTES {
                 ui::danger_text
             } else {
                 ui::muted_text
-            }
-        ),
+            }),
     ]
     .spacing(14);
     let panel = container(contents)
@@ -1317,6 +1328,56 @@ pub(super) fn editor_overlay<'a>(
             .center_y(Length::Fill)
     ]
     .into()
+}
+
+/// A quoted passage: italic serif on a faint wash of the highlight (or accent) color.
+fn quotation<'a>(quote: String, tint: Option<iced::Color>) -> Element<'a, Message> {
+    container(
+        text(quote)
+            .font(ui::SERIF_ITALIC)
+            .size(14)
+            .line_height(1.45)
+            .style(ui::primary_text)
+            .shaping(text::Shaping::Advanced)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Length::Fill),
+    )
+    .padding([6, 10])
+    .width(Length::Fill)
+    .style(move |theme| {
+        let palette = ui::palette(theme);
+        let color = tint.unwrap_or(palette.accent);
+        container::Style {
+            background: Some(ui::mix(palette.background, color, 0.14).into()),
+            border: iced::Border {
+                color: ui::mix(palette.background, color, 0.45),
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        }
+    })
+    .into()
+}
+
+/// One bookmark or highlight in the drawer, set apart as its own quiet card.
+fn entry_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding(8)
+        .width(Length::Fill)
+        .style(|theme| {
+            let palette = ui::palette(theme);
+            container::Style {
+                background: Some(palette.background.into()),
+                border: iced::Border {
+                    color: palette.border.scale_alpha(0.6),
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 /// A red ribbon at the top corner of a bookmarked page; clicking it removes the bookmark.
@@ -1449,7 +1510,7 @@ fn list_panel(reader: &Reader, active: bool, tab: ListTab) -> Element<'_, Messag
         )
     };
     let header = column![
-        text("Bookmarks and notes").size(16).font(ui::SEMIBOLD),
+        text("Bookmarks and notes").size(18).font(ui::HEADING),
         row![
             tab_button(ListTab::Bookmarks, format!("Bookmarks ({})", counts(true))),
             tab_button(
@@ -1533,8 +1594,9 @@ fn list_row(reader: &Reader, entry: Entry, active: bool) -> Option<Element<'_, M
             let bookmark = data.bookmark(id)?;
             let label = column![
                 text(format!("Page {}", bookmark.page))
-                    .size(13)
-                    .font(ui::MEDIUM),
+                    .size(11)
+                    .font(ui::MEDIUM)
+                    .style(ui::muted_text),
                 text(bookmark.excerpt.clone())
                     .size(13)
                     .style(ui::secondary_text)
@@ -1542,44 +1604,27 @@ fn list_row(reader: &Reader, entry: Entry, active: bool) -> Option<Element<'_, M
                     .wrapping(text::Wrapping::WordOrGlyph),
             ]
             .spacing(3);
-            Some(
+            Some(entry_card(
                 column![
                     go(reader, entry, active, label.into()),
                     row![Space::new().width(Length::Fill), remove]
                 ]
-                .spacing(6)
-                .padding(8)
-                .into(),
-            )
+                .spacing(6),
+            ))
         }
         Entry::Highlight(id) => {
             let highlight = data.highlight(id)?;
-            let body = column![
-                text(notes::preview(&highlight.quote, 160))
-                    .size(13)
-                    .shaping(text::Shaping::Advanced)
-                    .wrapping(text::Wrapping::WordOrGlyph),
-            ]
-            .spacing(2)
-            .width(Length::Fill);
-            let color = highlight.color;
             let label = column![
-                row![
-                    container(Space::new().width(9).height(9)).style(move |_| {
-                        container::Style {
-                            background: Some(notes::solid(color).into()),
-                            ..container::Style::default()
-                        }
-                    }),
-                    text(format!("Page {}", highlight.page))
-                        .size(12)
-                        .font(ui::MEDIUM),
-                ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-                body,
+                text(format!("Page {}", highlight.page))
+                    .size(11)
+                    .font(ui::MEDIUM)
+                    .style(ui::muted_text),
+                quotation(
+                    notes::preview(&highlight.quote, 160),
+                    Some(notes::solid(highlight.color))
+                ),
             ]
-            .spacing(5);
+            .spacing(6);
             let edit = control_button(
                 reader,
                 Control::Notes(Focus::Edit(id)),
@@ -1647,15 +1692,13 @@ fn list_row(reader: &Reader, entry: Entry, active: bool) -> Option<Element<'_, M
                     details = details.push(full);
                 }
             }
-            Some(
+            Some(entry_card(
                 column![
                     details,
                     row![Space::new().width(Length::Fill), edit, remove].spacing(6),
                 ]
-                .spacing(6)
-                .padding(8)
-                .into(),
-            )
+                .spacing(6),
+            ))
         }
     }
 }
