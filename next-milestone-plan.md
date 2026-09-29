@@ -1,4 +1,28 @@
-# Next milestone: reading appearance settings
+# Milestone: reading themes
+
+> **Status: implemented on `feat/reading-themes`.** The design changed from free
+> settings to four bundled themes (below); this file keeps the reasoning. Later
+> ideas, such as themes loaded from a plugin, only need to describe a theme in the
+> same data form (see `crates/iced-shell/src/themes.rs`).
+
+## What was built
+
+- **Four bundled themes**, each with a light and a dark palette, a reading font and
+  spacing: Default (today's look, Literata), Soft (Spectral, warm), Clear (Fira Sans,
+  cool, roomy) and Compact (Literata, tighter). One global choice, saved in
+  `preferences.json`; unknown ids fall back to Default.
+- **Text size stays separate** (Book zoom) and is not part of a theme.
+- **Page numbers never change with the theme.** The page map on disk is still
+  built once with the default measurements. For another theme each section is
+  measured again and cut at the same places (the same row, or, inside a long
+  paragraph, the matching line); a page the theme fills less stays sheet-sized and
+  is left partly blank, a page it fills more grows (`book_map::adapt_section`).
+- **PDF Book keeps the default typography**; its colors follow the theme.
+- **Fonts:** Spectral and Fira Sans, unmodified static files under the SIL OFL 1.1.
+  Atkinson Hyperlegible was rejected because it has no capital dotted I (Turkish).
+  A test fails if a bundled font file has no shipped license notice.
+
+## Original plan
 
 > Milestone 3 of the [feature roadmap](feature-roadmap.md) and nothing else
 > (toolbar and find are done). Later items (TXT/Markdown, notes, collections,
