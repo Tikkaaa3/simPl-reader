@@ -4952,7 +4952,7 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),
                 path.clone()
-                    .map_or_else(Task::none, |path| reader.open(path, None)),
+                    .map_or_else(Task::none, |path| reader.open_with_import(path, None, true)),
             ];
             (reader, Task::batch(tasks))
         },

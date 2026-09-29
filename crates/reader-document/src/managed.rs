@@ -105,6 +105,7 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
         .ok_or("Invalid document filename")?;
     let mut hash = Sha256::new();
     hash.update(source.to_string_lossy().as_bytes());
+    let mut content = Sha256::new();
     let mut file = fs::File::open(&source).map_err(|e| e.to_string())?;
     let mut buffer = [0; 64 * 1024];
     let mut read = 0;
@@ -118,6 +119,7 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
             return Err("Document grew beyond the import limit".into());
         }
         hash.update(&buffer[..n]);
+        content.update(&buffer[..n]);
     }
     let folder = root.join(format!("{:x}", hash.finalize()));
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
@@ -128,6 +130,11 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
             return Ok(target);
         }
         return Err("An incomplete import already occupies this document folder".into());
+    }
+    if matches!(ext.as_str(), "pdf" | "epub")
+        && let Some(existing) = find_copy(root, &ext, meta.len(), &content.finalize())?
+    {
+        return Ok(existing);
     }
     let assets = if matches!(ext.as_str(), "html" | "htm" | "xhtml") {
         crate::load_html(&source)?
@@ -177,6 +184,44 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
         }
     }
     copied
+}
+
+/// The same single-file book imported from another location reuses its existing managed copy.
+fn find_copy(root: &Path, ext: &str, len: u64, digest: &[u8]) -> Result<Option<PathBuf>, String> {
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        let folder = entry.map_err(|e| e.to_string())?.path();
+        let Ok(marker) = fs::read_to_string(folder.join(MARKER)) else {
+            continue;
+        };
+        let candidate = folder.join(&marker);
+        let same_format = candidate
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case(ext));
+        if !same_format || owned_folder(root, &candidate)?.is_none() {
+            continue;
+        }
+        let Ok(meta) = regular(&candidate) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() != len {
+            continue;
+        }
+        let mut file = fs::File::open(&candidate).map_err(|e| e.to_string())?;
+        let mut hash = Sha256::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buffer[..n]);
+        }
+        if hash.finalize().as_slice() == digest {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
 }
 
 fn copy(source: &Path, target: &Path) -> Result<(), String> {
@@ -326,6 +371,36 @@ mod tests {
         let empty = dir.join("empty-folder");
         fs::create_dir(&empty).unwrap();
         assert!(import_at(&root, &empty).unwrap_err().contains("no HTML"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn same_single_file_book_from_another_path_reuses_the_managed_copy() {
+        let dir = std::env::temp_dir().join(format!(
+            "simpl-import-dedupe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        let root = dir.join("managed");
+        for (name, other) in [
+            ("book.pdf", b"%PDF changed"),
+            ("book.epub", b"epub changed"),
+        ] {
+            let bytes = format!("same bytes for {name}");
+            fs::write(dir.join("a").join(name), &bytes).unwrap();
+            fs::write(dir.join("b").join(name), &bytes).unwrap();
+            fs::write(dir.join("b").join(format!("other-{name}")), other).unwrap();
+            let first = import_at(&root, &dir.join("a").join(name)).unwrap();
+            assert_eq!(import_at(&root, &dir.join("b").join(name)).unwrap(), first);
+            let different = import_at(&root, &dir.join("b").join(format!("other-{name}"))).unwrap();
+            assert_ne!(different, first);
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 4);
         fs::remove_dir_all(dir).unwrap();
     }
 }
