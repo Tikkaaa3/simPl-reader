@@ -1016,6 +1016,14 @@ fn render_shelves() {
         .update(shelf::Message::NameInput("Okunacaklar".into()));
     let _ = reader.shelf.update(shelf::Message::NameSubmit);
     render(&mut reader, &output.join("shelves-name-error.png"));
+    reader.window_controls = WindowControls::Windows;
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        reader.appearance = appearance;
+        render(
+            &mut reader,
+            &output.join(format!("windows-controls-{name}.png")),
+        );
+    }
 }
 
 #[test]

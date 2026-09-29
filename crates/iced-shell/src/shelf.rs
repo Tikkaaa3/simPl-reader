@@ -1735,10 +1735,15 @@ impl Shelf {
                 // A typographic jacket for a document without artwork, not an invented book cover.
                 // A tint derived from the title tells jackets apart without inventing art.
                 let tint = jacket_tint(&entry.document.title);
+                let size = jacket_title_size(
+                    &entry.document.title,
+                    width - if small { 20.0 } else { 36.0 },
+                    if small { 12.0 } else { 19.0 },
+                );
                 let title = text(&entry.document.title)
                     .font(ui::HEADING)
-                    .size(if small { 12 } else { 19 })
-                    .line_height(iced::Pixels(if small { 16.0 } else { 26.0 }))
+                    .size(size)
+                    .line_height(iced::Pixels(size * if small { 1.33 } else { 1.37 }))
                     .style(ui::primary_text)
                     .shaping(text::Shaping::Advanced)
                     .wrapping(text::Wrapping::WordOrGlyph);
@@ -1940,6 +1945,20 @@ fn ellipsize(value: &str, width: f32, size: f32) -> String {
     }
     let kept: String = value.chars().take(fits - 1).collect();
     format!("{}…", kept.trim_end())
+}
+
+/// The jacket title size: the preferred size, smaller when the longest word
+/// would otherwise break mid-word. Uses the same glyph estimate as [`ellipsize`].
+fn jacket_title_size(title: &str, width: f32, preferred: f32) -> f32 {
+    let longest = title
+        .split_whitespace()
+        .map(|word| word.chars().count())
+        .max()
+        .unwrap_or(0);
+    if longest == 0 {
+        return preferred;
+    }
+    (width / (longest as f32 * 0.58)).clamp(preferred * 0.6, preferred)
 }
 
 /// A stable, quiet hue per title for jackets without artwork.
@@ -2226,6 +2245,9 @@ mod tests {
         assert!(short.ends_with('…'), "{short}");
         assert!(short.chars().count() <= 17, "{short}");
         assert_eq!(jacket_tint("Frankenstein"), jacket_tint("Frankenstein"));
+        assert_eq!(jacket_title_size("Let's Go", 150.0, 19.0), 19.0);
+        let long = jacket_title_size("Frankenstein", 112.0, 19.0);
+        assert!(long < 19.0 && long * 0.58 * 12.0 <= 112.0, "{long}");
     }
 
     #[test]

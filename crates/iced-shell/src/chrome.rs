@@ -39,8 +39,12 @@ impl PartialEq for Action {
 impl Eq for Action {}
 
 const HEIGHT: f32 = 48.0;
-/// Width of a Windows caption button.
-const CAPTION: f32 = 46.0;
+/// Size of a Windows caption button: compact and rounded like the other header tools.
+const CAPTION: f32 = 36.0;
+const CAPTION_HEIGHT: f32 = 32.0;
+const CAPTION_GAP: f32 = 4.0;
+/// Space between the close button and the window's right edge.
+const CAPTION_EDGE: f32 = 8.0;
 const EDGE: f32 = 4.0;
 const CORNER: f32 = 8.0;
 
@@ -185,12 +189,12 @@ fn caption(
     )
     .on_press(action)
     .width(CAPTION)
-    .height(HEIGHT)
+    .height(CAPTION_HEIGHT)
     .padding(0)
     .style(move |theme, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let mut style = button_style(theme, status, selected);
-        style.border.radius = 0.0.into();
+        style.border.radius = 6.0.into();
         if close && hovered {
             style.background = Some(Color::from_rgb8(0xC4, 0x2B, 0x1C).into());
             style.text_color = Color::WHITE;
@@ -246,7 +250,9 @@ pub fn view<'a>(
             caption(Action::Maximize, "\u{e922}", focused, "Maximize")
         },
         caption(Action::Close, "\u{e8bb}", focused, "Close"),
-    ];
+    ]
+    .spacing(CAPTION_GAP)
+    .align_y(iced::Alignment::Center);
     // Mirror the complete tool order when window controls move to the right:
     // Settings becomes the outside button on the Windows left edge.
     let mut tools = row![];
@@ -343,8 +349,8 @@ pub fn view<'a>(
             WindowControls::Windows => (
                 tools.into(),
                 captions.into(),
-                (tools_width + 48.0).max(3.0 * CAPTION),
-                0.0,
+                (tools_width + 48.0).max(3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE),
+                CAPTION_EDGE,
             ),
         };
     let content = row![
