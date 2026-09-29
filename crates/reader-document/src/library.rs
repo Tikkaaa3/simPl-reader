@@ -238,8 +238,22 @@ pub fn remember(
     Ok(())
 }
 
-pub fn remove(entries: &mut Vec<Entry>, path: &Path) {
-    entries.retain(|entry| !recent::same_path(&entry.document.path, path));
+/// Removes the entry at `path`; returns the fingerprints no longer in the library.
+pub fn remove(entries: &mut Vec<Entry>, path: &Path) -> Vec<String> {
+    let mut removed = Vec::new();
+    entries.retain(|entry| {
+        let keep = !recent::same_path(&entry.document.path, path);
+        if !keep {
+            removed.push(entry.document.fingerprint.clone());
+        }
+        keep
+    });
+    removed.retain(|fingerprint| {
+        !entries
+            .iter()
+            .any(|entry| entry.document.fingerprint == *fingerprint)
+    });
+    removed
 }
 
 /// Decode only small, validated PNG thumbnails, never full-size covers in library state.

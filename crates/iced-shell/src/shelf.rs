@@ -4,13 +4,15 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{
-    Space, button, column, container, image, progress_bar, row, scrollable, stack, text,
+    Space, button, column, container, image, opaque, progress_bar, row, scrollable, stack, text,
+    text_input,
 };
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Size, Task,
 };
 use reader_document::library::{self, Entry};
 use reader_document::recent::DocumentKind;
+use reader_document::shelves::{self, Shelves};
 
 use crate::ui;
 
@@ -20,6 +22,7 @@ pub enum Sort {
     Recent,
     Title,
     Format,
+    Shelf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +34,15 @@ pub enum Control {
     Favourite(usize, bool),
     Remove(usize, bool),
     Sort(Sort),
+    /// Show every book (`None`) or only one shelf.
+    Filter(Option<u64>),
+    NewShelf,
+    RenameShelf,
+    DeleteShelf,
+    /// The shelf menu of a card; the flag marks the Favourites section.
+    ShelfMenu(usize, bool),
+    ToggleShelf(usize, bool, u64),
+    MenuNewShelf(usize, bool),
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +53,28 @@ pub enum Message {
     Saved(Result<(), String>),
     Covers(Vec<(String, Option<image::Handle>)>),
     Scrolled { offset: f32, viewport: f32 },
+    ShelvesLoaded(Result<Shelves, String>),
+    ShelvesSaved(Result<(), String>),
+    NameInput(String),
+    NameSubmit,
+    NameCancel,
+}
+
+/// What the shelf-name field is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NameTarget {
+    /// A new shelf, optionally put straight onto a card's book.
+    New {
+        assign: Option<(usize, bool)>,
+    },
+    Rename(u64),
+}
+
+#[derive(Clone, Debug)]
+struct Naming {
+    target: NameTarget,
+    value: String,
+    error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -63,6 +97,14 @@ pub struct Shelf {
     size: Size,
     offset: f32,
     viewport: f32,
+    shelves: Shelves,
+    shelves_loaded: bool,
+    shelves_saving: bool,
+    shelves_dirty: bool,
+    shelves_blocked: bool,
+    filter: Option<u64>,
+    menu: Option<(usize, bool)>,
+    naming: Option<Naming>,
 }
 
 impl Default for Shelf {
@@ -86,20 +128,225 @@ impl Default for Shelf {
             hovered: None,
             offset: 0.0,
             viewport: 752.0,
+            shelves: Shelves::default(),
+            shelves_loaded: false,
+            shelves_saving: false,
+            shelves_dirty: false,
+            shelves_blocked: false,
+            filter: None,
+            menu: None,
+            naming: None,
         }
     }
 }
 
 impl Shelf {
     pub fn load() -> Task<Message> {
-        Task::perform(async { library::load() }, Message::Loaded)
+        Task::batch([
+            Task::perform(async { library::load() }, Message::Loaded),
+            Task::perform(async { shelves::load() }, Message::ShelvesLoaded),
+        ])
+    }
+
+    /// Whether shelf changes are saved, so the app may exit.
+    pub fn shelves_settled(&self) -> bool {
+        !self.shelves_saving && !(self.shelves_dirty && !self.shelves_blocked)
+    }
+
+    /// Escape closes the shelf-name field, then the shelf menu.
+    pub fn dismiss(&mut self) -> bool {
+        if self.naming.take().is_some() {
+            return true;
+        }
+        self.menu.take().is_some()
+    }
+
+    fn persist_shelves(&mut self) -> Task<Message> {
+        if !self.shelves_loaded
+            || self.shelves_saving
+            || self.shelves_blocked
+            || !self.shelves_dirty
+        {
+            return Task::none();
+        }
+        self.shelves_saving = true;
+        self.shelves_dirty = false;
+        let snapshot = self.shelves.clone();
+        Task::perform(
+            async move { shelves::save(&snapshot) },
+            Message::ShelvesSaved,
+        )
+    }
+
+    fn shelves_editable(&self) -> bool {
+        self.shelves_loaded && !self.shelves_blocked
+    }
+
+    fn start_naming(&mut self, target: NameTarget) -> Task<Message> {
+        if !self.shelves_editable() {
+            return Task::none();
+        }
+        let value = match target {
+            NameTarget::Rename(id) => self
+                .shelves
+                .get(id)
+                .map_or_else(String::new, |shelf| shelf.name.clone()),
+            NameTarget::New { .. } => String::new(),
+        };
+        self.naming = Some(Naming {
+            target,
+            value,
+            error: None,
+        });
+        iced::widget::operation::focus(name_id())
+    }
+
+    fn submit_name(&mut self) -> Task<Message> {
+        let Some(naming) = self.naming.as_mut() else {
+            return Task::none();
+        };
+        let result = match naming.target {
+            NameTarget::New { assign } => self.shelves.create(&naming.value).and_then(|id| {
+                match assign.and_then(|(index, _)| self.entries.get(index)) {
+                    Some(entry) => self
+                        .shelves
+                        .toggle(id, &entry.document.fingerprint)
+                        .map(|_| ()),
+                    None => Ok(()),
+                }
+            }),
+            NameTarget::Rename(id) => self.shelves.rename(id, &naming.value),
+        };
+        match result {
+            Ok(()) => {
+                self.naming = None;
+                self.shelves_dirty = true;
+                self.reorder_keeping_menu();
+                Task::batch([self.persist_shelves(), self.ensure_covers()])
+            }
+            Err(error) => {
+                naming.error = Some(error);
+                Task::none()
+            }
+        }
+    }
+
+    fn card_control(menu: (usize, bool)) -> Control {
+        if menu.1 {
+            Control::FavouriteDocument(menu.0)
+        } else {
+            Control::Document(menu.0)
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Hover(control) => {
+                // The shelf menu belongs to its card: leaving the card closes it,
+                // unless a new shelf is being named there.
+                let naming_here = matches!(
+                    self.naming,
+                    Some(Naming {
+                        target: NameTarget::New { assign: Some(_) },
+                        ..
+                    })
+                );
+                if let Some(menu) = self.menu
+                    && control != Some(Self::card_control(menu))
+                    && !naming_here
+                {
+                    self.menu = None;
+                }
                 self.hovered = control;
                 Task::none()
+            }
+            Message::ShelvesLoaded(result) => {
+                self.shelves_loaded = true;
+                match result {
+                    Ok(loaded) => self.shelves = loaded,
+                    Err(error) => {
+                        self.shelves_blocked = true;
+                        self.notice = Some(format!(
+                            "Cannot read your shelves: {error}. The file has not been changed."
+                        ));
+                    }
+                }
+                self.reorder();
+                self.ensure_covers()
+            }
+            Message::ShelvesSaved(result) => {
+                self.shelves_saving = false;
+                if let Err(error) = result {
+                    self.notice = Some(format!("Could not save your shelves: {error}"));
+                }
+                self.persist_shelves()
+            }
+            Message::NameInput(value) => {
+                if let Some(naming) = &mut self.naming {
+                    naming.value = value.chars().take(shelves::MAX_NAME_CHARS).collect();
+                    naming.error = None;
+                }
+                Task::none()
+            }
+            Message::NameSubmit => self.submit_name(),
+            Message::NameCancel => {
+                self.naming = None;
+                Task::none()
+            }
+            Message::Activate(Control::Filter(filter)) => {
+                self.filter = filter;
+                self.naming = None;
+                self.reorder();
+                self.ensure_covers()
+            }
+            Message::Activate(Control::NewShelf) => {
+                self.menu = None;
+                self.start_naming(NameTarget::New { assign: None })
+            }
+            Message::Activate(Control::RenameShelf) => match self.filter {
+                Some(id) => self.start_naming(NameTarget::Rename(id)),
+                None => Task::none(),
+            },
+            Message::Activate(Control::DeleteShelf) => {
+                let Some(id) = self.filter.filter(|_| self.shelves_editable()) else {
+                    return Task::none();
+                };
+                self.shelves.delete(id);
+                self.filter = None;
+                self.naming = None;
+                self.shelves_dirty = true;
+                self.reorder();
+                Task::batch([self.persist_shelves(), self.ensure_covers()])
+            }
+            Message::Activate(Control::ShelfMenu(index, favourites)) => {
+                self.menu = if self.menu == Some((index, favourites)) {
+                    None
+                } else {
+                    Some((index, favourites))
+                };
+                self.naming = None;
+                Task::none()
+            }
+            Message::Activate(Control::MenuNewShelf(index, favourites)) => {
+                self.menu = Some((index, favourites));
+                self.start_naming(NameTarget::New {
+                    assign: Some((index, favourites)),
+                })
+            }
+            Message::Activate(Control::ToggleShelf(index, _, id)) => {
+                let Some(entry) = self.entries.get(index).filter(|_| self.shelves_editable())
+                else {
+                    return Task::none();
+                };
+                if let Err(error) = self.shelves.toggle(id, &entry.document.fingerprint) {
+                    self.notice = Some(error);
+                    return Task::none();
+                }
+                self.shelves_dirty = true;
+                if self.filter == Some(id) {
+                    self.reorder_keeping_menu();
+                }
+                Task::batch([self.persist_shelves(), self.ensure_covers()])
             }
             Message::Loaded(result) => {
                 self.loading = false;
@@ -118,7 +365,7 @@ impl Shelf {
                 for (entry, old) in std::mem::take(&mut self.pending) {
                     self.remember_entry(entry, old.as_deref());
                 }
-                self.reorder();
+                self.reorder_closing_menu();
                 Task::batch([self.persist(), self.ensure_covers()])
             }
             Message::Saved(result) => {
@@ -149,7 +396,7 @@ impl Shelf {
                 if let Some(entry) = self.entries.get_mut(index) {
                     entry.favourite = !entry.favourite;
                     self.dirty = true;
-                    self.reorder();
+                    self.reorder_closing_menu();
                 }
                 Task::batch([self.persist(), self.ensure_covers()])
             }
@@ -178,7 +425,7 @@ impl Shelf {
             return Task::none();
         }
         self.remember_entry(entry, old);
-        self.reorder();
+        self.reorder_closing_menu();
         Task::batch([self.persist(), self.ensure_covers()])
     }
 
@@ -191,10 +438,16 @@ impl Shelf {
     }
 
     pub fn remove(&mut self, path: &Path) -> Task<Message> {
-        library::remove(&mut self.entries, path);
+        let gone = library::remove(&mut self.entries, path);
         self.dirty = true;
+        self.menu = None;
+        if self.shelves_editable() {
+            for fingerprint in gone {
+                self.shelves_dirty |= self.shelves.forget(&fingerprint);
+            }
+        }
         self.reorder();
-        Task::batch([self.persist(), self.ensure_covers()])
+        Task::batch([self.persist(), self.persist_shelves(), self.ensure_covers()])
     }
 
     pub fn progress(&mut self, path: &Path, fraction: f32, current: u32, total: u32) {
@@ -236,25 +489,58 @@ impl Shelf {
     pub fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
         std::iter::once(Control::Add)
             .chain(self.continuing.iter().copied().map(Control::Resume))
+            .chain(SORTS.into_iter().map(Control::Sort))
+            .chain(std::iter::once(Control::Filter(None)))
             .chain(
-                [Sort::Recent, Sort::Title, Sort::Format]
-                    .into_iter()
-                    .map(Control::Sort),
+                self.shelves
+                    .shelves
+                    .iter()
+                    .map(|shelf| Control::Filter(Some(shelf.id))),
             )
-            .chain(self.order.iter().copied().flat_map(|i| {
-                [
-                    Control::Document(i),
-                    Control::Favourite(i, false),
-                    Control::Remove(i, false),
-                ]
-            }))
-            .chain(self.favourites.iter().copied().flat_map(|i| {
-                [
-                    Control::FavouriteDocument(i),
-                    Control::Favourite(i, true),
-                    Control::Remove(i, true),
-                ]
-            }))
+            .chain(self.shelves_editable().then_some(Control::NewShelf))
+            .chain(
+                self.filter
+                    .filter(|_| self.shelves_editable())
+                    .into_iter()
+                    .flat_map(|_| [Control::RenameShelf, Control::DeleteShelf]),
+            )
+            .chain(
+                self.order
+                    .iter()
+                    .copied()
+                    .flat_map(|i| self.card_controls(i, false)),
+            )
+            .chain(
+                self.favourites
+                    .iter()
+                    .copied()
+                    .flat_map(|i| self.card_controls(i, true)),
+            )
+    }
+
+    fn card_controls(&self, index: usize, favourites: bool) -> Vec<Control> {
+        let mut controls = vec![
+            if favourites {
+                Control::FavouriteDocument(index)
+            } else {
+                Control::Document(index)
+            },
+            Control::ShelfMenu(index, favourites),
+        ];
+        if self.menu == Some((index, favourites)) {
+            controls.extend(
+                self.shelves
+                    .shelves
+                    .iter()
+                    .map(|shelf| Control::ToggleShelf(index, favourites, shelf.id)),
+            );
+            if self.shelves_editable() {
+                controls.push(Control::MenuNewShelf(index, favourites));
+            }
+        }
+        controls.push(Control::Favourite(index, favourites));
+        controls.push(Control::Remove(index, favourites));
+        controls
     }
 
     pub fn reveal(&mut self, control: Control) -> Task<Message> {
@@ -262,7 +548,10 @@ impl Shelf {
         let y = match control {
             Control::Document(index)
             | Control::Favourite(index, false)
-            | Control::Remove(index, false) => self
+            | Control::Remove(index, false)
+            | Control::ShelfMenu(index, false)
+            | Control::ToggleShelf(index, false, _)
+            | Control::MenuNewShelf(index, false) => self
                 .order
                 .iter()
                 .position(|value| *value == index)
@@ -271,12 +560,20 @@ impl Shelf {
                 }),
             Control::FavouriteDocument(index)
             | Control::Favourite(index, true)
-            | Control::Remove(index, true) => {
+            | Control::Remove(index, true)
+            | Control::ShelfMenu(index, true)
+            | Control::ToggleShelf(index, true, _)
+            | Control::MenuNewShelf(index, true) => {
                 self.favourites.iter().position(|i| *i == index).map(|i| {
                     self.favourites_top(&metrics)
                         + (i / metrics.columns) as f32 * metrics.row_height
                 })
             }
+            Control::Filter(_)
+            | Control::NewShelf
+            | Control::RenameShelf
+            | Control::DeleteShelf
+            | Control::Sort(_) => Some((metrics.grid_top - LIBRARY_HEADING_WIDE - 40.0).max(0.0)),
             _ => Some(0.0),
         };
         let Some(y) = y else {
@@ -288,6 +585,9 @@ impl Shelf {
                 | Control::FavouriteDocument(_)
                 | Control::Favourite(..)
                 | Control::Remove(..)
+                | Control::ShelfMenu(..)
+                | Control::ToggleShelf(..)
+                | Control::MenuNewShelf(..)
         ) {
             metrics.card_height
         } else {
@@ -347,6 +647,9 @@ impl Shelf {
             .take(3)
             .collect();
         self.order = (0..self.entries.len()).collect();
+        if self.filter.is_some_and(|id| self.shelves.get(id).is_none()) {
+            self.filter = None;
+        }
         match self.sort {
             Sort::Recent => {}
             Sort::Title => self
@@ -358,14 +661,59 @@ impl Shelf {
                     self.entries[*index].document.title.to_lowercase(),
                 )
             }),
+            // Grouped by shelf in shelf order; books on no shelf come last.
+            Sort::Shelf => self.order.sort_by_cached_key(|index| {
+                let entry = &self.entries[*index];
+                (
+                    self.shelves
+                        .shelves
+                        .iter()
+                        .position(|shelf| shelf.books.contains(&entry.document.fingerprint))
+                        .unwrap_or(usize::MAX),
+                    entry.document.title.to_lowercase(),
+                )
+            }),
         }
+        // Favourites stay whole; only the library section follows the shelf filter.
         self.favourites = self
             .order
             .iter()
             .copied()
             .filter(|i| self.entries[*i].favourite)
             .collect();
+        if let Some(shelf) = self.filter.and_then(|id| self.shelves.get(id)) {
+            self.order
+                .retain(|i| shelf.books.contains(&self.entries[*i].document.fingerprint));
+        }
         self.hovered = None;
+    }
+
+    /// Reorder after entries or shelves change; card indexes may move, so the menu closes.
+    fn reorder_closing_menu(&mut self) {
+        self.menu = None;
+        if matches!(
+            self.naming,
+            Some(Naming {
+                target: NameTarget::New { assign: Some(_) },
+                ..
+            })
+        ) {
+            self.naming = None;
+        }
+        self.reorder();
+    }
+
+    /// Reorder after a shelf edit made from an open card menu.
+    fn reorder_keeping_menu(&mut self) {
+        let menu = self.menu;
+        self.reorder();
+        self.menu = menu.filter(|(index, favourites)| {
+            if *favourites {
+                self.favourites.contains(index)
+            } else {
+                self.order.contains(index)
+            }
+        });
     }
 
     fn metrics(&self) -> Metrics {
@@ -397,7 +745,11 @@ impl Shelf {
             + 20.0
             + continuation
             + 56.0
-            + if wide { 49.0 } else { 89.0 }
+            + if wide {
+                LIBRARY_HEADING_WIDE
+            } else {
+                LIBRARY_HEADING_WIDE + 40.0
+            }
             + 24.0;
         Metrics {
             gutter,
@@ -616,13 +968,14 @@ impl Shelf {
         let mut sorting = row![label("SORT:", 11).style(ui::muted_text)]
             .spacing(12)
             .align_y(Alignment::Center);
-        let choices = [
-            (Sort::Recent, "Recently Opened"),
-            (Sort::Title, "Title"),
-            (Sort::Format, "Format"),
-        ];
         let mut segments = row![].spacing(2);
-        for (sort, caption) in choices {
+        for sort in SORTS {
+            let caption = match sort {
+                Sort::Recent => "Recently Opened",
+                Sort::Title => "Title",
+                Sort::Format => "Format",
+                Sort::Shelf => "Shelf",
+            };
             let control = Control::Sort(sort);
             let focused = focused == Some(control);
             let selected = self.sort == sort;
@@ -652,7 +1005,14 @@ impl Shelf {
                 .size(22)
                 .line_height(iced::Pixels(32.0))
                 .shaping(text::Shaping::Advanced),
-            pill(count(self.order.len(), "item"))
+            pill(match self.filter {
+                Some(_) => format!(
+                    "{} of {}",
+                    self.order.len(),
+                    count(self.entries.len(), "item")
+                ),
+                None => count(self.order.len(), "item"),
+            })
         ]
         .spacing(12)
         .align_y(Alignment::Center);
@@ -665,6 +1025,7 @@ impl Shelf {
         };
         let library_heading = column![
             library_heading,
+            self.shelf_bar(focused, active),
             container(Space::new().height(1))
                 .width(Length::Fill)
                 .style(|theme| fill(ui::palette(theme).border.scale_alpha(0.2), 0.0))
@@ -799,6 +1160,8 @@ impl Shelf {
                     label(
                         if self.entries.is_empty() {
                             "Your library is empty. Add local EPUB, PDF, or HTML files above."
+                        } else if self.filter.is_some() {
+                            "No books on this shelf yet. Open a book's ⋯ menu to add it."
                         } else {
                             "Your documents are on the reading desk above."
                         },
@@ -904,14 +1267,17 @@ impl Shelf {
         } else {
             Control::Document(index)
         };
+        let menu_open = self.menu == Some((index, favourites));
         let hovered = self.hovered == Some(control)
-            || [
-                control,
-                Control::Favourite(index, favourites),
-                Control::Remove(index, favourites),
-            ]
-            .into_iter()
-            .any(|c| focused == Some(c));
+            || menu_open
+            || focused.is_some_and(|focused| match focused {
+                Control::ShelfMenu(i, f)
+                | Control::ToggleShelf(i, f, _)
+                | Control::MenuNewShelf(i, f)
+                | Control::Favourite(i, f)
+                | Control::Remove(i, f) => i == index && f == favourites,
+                other => other == control,
+            });
         let cover_width = m.card_width - 26.0;
         let title = container(
             text(&entry.document.title)
@@ -935,8 +1301,27 @@ impl Shelf {
                 .style(ui::secondary_text)
                 .wrapping(text::Wrapping::None),
         );
+        let on_shelves: Vec<&str> = self
+            .shelves
+            .of(&entry.document.fingerprint)
+            .map(|shelf| shelf.name.as_str())
+            .collect();
+        let placed: Element<'_, Message> = if on_shelves.is_empty() {
+            label(short_date(entry.opened_at), 11)
+                .style(ui::muted_text)
+                .into()
+        } else {
+            clipped(
+                label(
+                    ellipsize(&on_shelves.join(" · "), m.card_width - 26.0 - 56.0, 11.0),
+                    11,
+                )
+                .style(ui::accent_text)
+                .wrapping(text::Wrapping::None),
+            )
+        };
         let footer = row![
-            label(short_date(entry.opened_at), 11).style(ui::muted_text),
+            placed,
             Space::new().width(Length::Fill),
             label(file_size(entry.byte_len), 11).style(ui::muted_text)
         ]
@@ -955,7 +1340,32 @@ impl Shelf {
             .height(m.card_height);
         let mut card = stack![button];
         if hovered {
+            let menu_control = Control::ShelfMenu(index, favourites);
             let actions = row![
+                mark(
+                    iced::widget::tooltip(
+                        iced::widget::button(
+                            text("⋯")
+                                .font(iced::Font::with_name("Segoe UI Symbol"))
+                                .size(20)
+                        )
+                        .padding([3, 7])
+                        .on_press_maybe(active.then_some(Message::Activate(menu_control)))
+                        .style(move |theme, status| ui::button_style(
+                            theme,
+                            status,
+                            ui::ButtonTone::Surface,
+                            focused == Some(menu_control),
+                            menu_open
+                        )),
+                        label("Shelves", 12),
+                        iced::widget::tooltip::Position::Bottom,
+                    )
+                    .gap(4)
+                    .padding(6)
+                    .style(ui::panel),
+                    focused == Some(menu_control)
+                ),
                 mark(
                     iced::widget::button(
                         text(if entry.favourite { "★" } else { "☆" })
@@ -999,10 +1409,308 @@ impl Shelf {
                     .padding(8),
             );
         }
+        if menu_open {
+            card = card.push(
+                container(self.shelf_menu(index, favourites, m, focused, active))
+                    .width(m.card_width)
+                    .padding(Padding {
+                        top: 46.0,
+                        left: 8.0,
+                        right: 8.0,
+                        bottom: 8.0,
+                    }),
+            );
+        }
         iced::widget::mouse_area(card)
             .on_enter(Message::Hover(Some(control)))
             .on_exit(Message::Hover(None))
             .into()
+    }
+
+    /// The shelf filter strip under the Library heading.
+    fn shelf_bar(&self, focused: Option<Control>, active: bool) -> Element<'_, Message> {
+        let chip = |control: Control, caption: String, amount: usize, selected: bool| {
+            let focus = focused == Some(control);
+            mark(
+                button(
+                    row![
+                        label(caption, 12),
+                        label(amount.to_string(), 11).style(if selected {
+                            ui::accent_text
+                        } else {
+                            ui::muted_text
+                        })
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .padding([5, 12])
+                .on_press_maybe(active.then_some(Message::Activate(control)))
+                .style(move |theme, status| {
+                    let tone = if selected {
+                        ui::ButtonTone::Quiet
+                    } else {
+                        ui::ButtonTone::Surface
+                    };
+                    let mut style = ui::button_style(theme, status, tone, focus, false);
+                    style.border.radius = 14.0.into();
+                    style
+                }),
+                focus,
+            )
+        };
+        let mut chips = row![].spacing(6).align_y(Alignment::Center).push(chip(
+            Control::Filter(None),
+            "All".into(),
+            self.entries.len(),
+            self.filter.is_none(),
+        ));
+        for shelf in &self.shelves.shelves {
+            let amount = self
+                .entries
+                .iter()
+                .filter(|entry| shelf.books.contains(&entry.document.fingerprint))
+                .count();
+            chips = chips.push(chip(
+                Control::Filter(Some(shelf.id)),
+                shelf.name.clone(),
+                amount,
+                self.filter == Some(shelf.id),
+            ));
+        }
+        let quiet = |control: Control, caption: &'static str, tone: ui::ButtonTone| {
+            let focus = focused == Some(control);
+            mark(
+                button(label(caption, 12))
+                    .padding([5, 10])
+                    .on_press_maybe(active.then_some(Message::Activate(control)))
+                    .style(move |theme, status| {
+                        ui::button_style(theme, status, tone, focus, false)
+                    }),
+                focus,
+            )
+        };
+        match &self.naming {
+            Some(naming) if !matches!(naming.target, NameTarget::New { assign: Some(_) }) => {
+                chips = chips.push(self.name_field(naming, 180.0));
+            }
+            _ if self.shelves_editable() => {
+                chips = chips.push(quiet(
+                    Control::NewShelf,
+                    "+ New shelf",
+                    ui::ButtonTone::Subtle,
+                ));
+                if self.filter.is_some() {
+                    chips = chips
+                        .push(
+                            container(Space::new().width(1).height(16))
+                                .style(|theme| fill(ui::palette(theme).border, 0.0)),
+                        )
+                        .push(quiet(
+                            Control::RenameShelf,
+                            "Rename",
+                            ui::ButtonTone::Subtle,
+                        ))
+                        .push(quiet(
+                            Control::DeleteShelf,
+                            "Delete shelf",
+                            ui::ButtonTone::Destructive,
+                        ));
+                }
+            }
+            _ => {}
+        }
+        container(
+            scrollable(chips)
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(2).scroller_width(2),
+                ))
+                .style(ui::scroll_style)
+                .width(Length::Fill),
+        )
+        .height(SHELF_BAR)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// The shelf-name field with its confirm and cancel actions and any error.
+    fn name_field<'a>(&'a self, naming: &'a Naming, width: f32) -> Element<'a, Message> {
+        let confirm = match naming.target {
+            NameTarget::Rename(_) => "Rename",
+            NameTarget::New { .. } => "Create",
+        };
+        let small = |caption: &'static str, message: Message, tone: ui::ButtonTone| {
+            button(label(caption, 12))
+                .padding([5, 10])
+                .on_press(message)
+                .style(move |theme, status| ui::button_style(theme, status, tone, false, false))
+        };
+        let mut field = row![
+            text_input("Shelf name", &naming.value)
+                .id(name_id())
+                .on_input(Message::NameInput)
+                .on_submit(Message::NameSubmit)
+                .font(ui::SANS)
+                .size(12)
+                .padding([5, 10])
+                .width(width)
+                .style(ui::input_style),
+            small(confirm, Message::NameSubmit, ui::ButtonTone::Quiet),
+            small("Cancel", Message::NameCancel, ui::ButtonTone::Subtle),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        if let Some(error) = &naming.error {
+            field = field.push(label(error.as_str(), 11).style(ui::danger_text));
+        }
+        field.into()
+    }
+
+    /// A card's shelf menu: tick shelves on and off, or make a new one for this book.
+    fn shelf_menu(
+        &self,
+        index: usize,
+        favourites: bool,
+        m: &Metrics,
+        focused: Option<Control>,
+        active: bool,
+    ) -> Element<'_, Message> {
+        let Some(entry) = self.entries.get(index) else {
+            return Space::new().into();
+        };
+        let width = m.card_width - 16.0;
+        let mut items =
+            column![container(label("Shelves", 11).style(ui::muted_text)).padding([4, 8])]
+                .spacing(2);
+        if self.shelves.shelves.is_empty() {
+            items = items.push(
+                container(
+                    label("No shelves yet. Make one below.", 12)
+                        .style(ui::secondary_text)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                )
+                .padding([4, 8]),
+            );
+        }
+        for shelf in &self.shelves.shelves {
+            let control = Control::ToggleShelf(index, favourites, shelf.id);
+            let on = shelf.books.contains(&entry.document.fingerprint);
+            let focus = focused == Some(control);
+            items = items.push(mark(
+                button(
+                    row![
+                        text(if on { "✓" } else { "" })
+                            .font(iced::Font::with_name("Segoe UI Symbol"))
+                            .size(13)
+                            .style(ui::accent_text)
+                            .width(16),
+                        label(ellipsize(&shelf.name, width - 52.0, 12.0), 12)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([6, 8])
+                .on_press_maybe(active.then_some(Message::Activate(control)))
+                .style(move |theme, status| {
+                    ui::button_style(theme, status, ui::ButtonTone::Subtle, focus, false)
+                }),
+                focus,
+            ));
+        }
+        items = items.push(
+            container(Space::new().height(1))
+                .width(Length::Fill)
+                .style(ui::rule),
+        );
+        match &self.naming {
+            Some(naming)
+                if naming.target
+                    == (NameTarget::New {
+                        assign: Some((index, favourites)),
+                    }) =>
+            {
+                items = items.push(self.menu_name_field(naming));
+            }
+            _ if self.shelves_editable() => {
+                let control = Control::MenuNewShelf(index, favourites);
+                let focus = focused == Some(control);
+                items = items.push(mark(
+                    button(label("+ New shelf…", 12).style(ui::accent_text))
+                        .width(Length::Fill)
+                        .padding([6, 8])
+                        .on_press_maybe(active.then_some(Message::Activate(control)))
+                        .style(move |theme, status| {
+                            ui::button_style(theme, status, ui::ButtonTone::Subtle, focus, false)
+                        }),
+                    focus,
+                ));
+            }
+            _ => {}
+        }
+        opaque(
+            container(
+                scrollable(items)
+                    .direction(ui::vertical_scrollbar())
+                    .style(ui::scroll_style),
+            )
+            .padding(6)
+            .width(width)
+            .max_height(m.card_height - 54.0)
+            .style(|theme| container::Style {
+                shadow: iced::Shadow::default(),
+                ..ui::panel(theme)
+            }),
+        )
+    }
+
+    /// The narrow in-menu variant of the shelf-name field.
+    fn menu_name_field<'a>(&'a self, naming: &'a Naming) -> Element<'a, Message> {
+        let mut field = column![
+            text_input("Shelf name", &naming.value)
+                .id(name_id())
+                .on_input(Message::NameInput)
+                .on_submit(Message::NameSubmit)
+                .font(ui::SANS)
+                .size(12)
+                .padding([5, 8])
+                .width(Length::Fill)
+                .style(ui::input_style),
+            row![
+                button(label("Create", 12))
+                    .padding([4, 10])
+                    .on_press(Message::NameSubmit)
+                    .style(|theme, status| ui::button_style(
+                        theme,
+                        status,
+                        ui::ButtonTone::Quiet,
+                        false,
+                        false
+                    )),
+                button(label("Cancel", 12))
+                    .padding([4, 10])
+                    .on_press(Message::NameCancel)
+                    .style(|theme, status| ui::button_style(
+                        theme,
+                        status,
+                        ui::ButtonTone::Subtle,
+                        false,
+                        false
+                    )),
+            ]
+            .spacing(6),
+        ]
+        .spacing(6)
+        .padding([4, 4]);
+        if let Some(error) = &naming.error {
+            field = field.push(
+                label(error.as_str(), 11)
+                    .style(ui::danger_text)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
+        }
+        field.into()
     }
 
     fn cover<'a>(
@@ -1032,7 +1740,8 @@ impl Shelf {
                     .size(if small { 12 } else { 19 })
                     .line_height(iced::Pixels(if small { 16.0 } else { 26.0 }))
                     .style(ui::primary_text)
-                    .shaping(text::Shaping::Advanced);
+                    .shaping(text::Shaping::Advanced)
+                    .wrapping(text::Wrapping::WordOrGlyph);
                 let mut jacket = column![
                     container(Space::new().height(2))
                         .width(24)
@@ -1182,6 +1891,16 @@ fn file_size(bytes: u64) -> String {
     } else {
         format!("{} KB", bytes.div_ceil(1024))
     }
+}
+
+const SORTS: [Sort; 4] = [Sort::Recent, Sort::Title, Sort::Format, Sort::Shelf];
+/// Height of the shelf filter strip.
+const SHELF_BAR: f32 = 30.0;
+/// Library heading, shelf strip and rule, with their spacing, on a wide window.
+const LIBRARY_HEADING_WIDE: f32 = 32.0 + 16.0 + SHELF_BAR + 16.0 + 1.0;
+
+fn name_id() -> iced::advanced::widget::Id {
+    iced::advanced::widget::Id::new("shelf-name")
 }
 
 /// Card padding, cover and gap beside the text of a Continue Reading card.
@@ -1352,8 +2071,141 @@ fn mark<'a>(content: impl Into<Element<'a, Message>>, focused: bool) -> Element<
 }
 
 #[cfg(test)]
+pub(crate) fn sample_entries(titles: &[(&str, DocumentKind)]) -> Vec<Entry> {
+    titles
+        .iter()
+        .enumerate()
+        .map(|(index, (title, kind))| Entry {
+            document: reader_document::recent::Entry {
+                path: std::env::temp_dir().join(format!("{title}.book")),
+                title: (*title).into(),
+                fingerprint: format!("{:064x}", index + 1),
+                kind: *kind,
+            },
+            author: Some("Sample Author".into()),
+            byte_len: 2048,
+            opened_at: 0,
+            progress: 0.0,
+            current: 0,
+            total: 0,
+            cover: false,
+            favourite: false,
+            source_kind: None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shelf_with(titles: &[&str]) -> Shelf {
+        let mut shelf = Shelf::default();
+        let entries = sample_entries(
+            &titles
+                .iter()
+                .map(|title| (*title, DocumentKind::Epub))
+                .collect::<Vec<_>>(),
+        );
+        let _ = shelf.update(Message::ShelvesLoaded(Ok(Shelves::default())));
+        let _ = shelf.update(Message::Loaded(Ok(entries)));
+        shelf
+    }
+
+    fn name(shelf: &mut Shelf, start: Control, value: &str) {
+        let _ = shelf.update(Message::Activate(start));
+        let _ = shelf.update(Message::NameInput(value.into()));
+        let _ = shelf.update(Message::NameSubmit);
+    }
+
+    fn id_of(shelf: &Shelf, name: &str) -> u64 {
+        shelf
+            .shelves
+            .shelves
+            .iter()
+            .find(|shelf| shelf.name == name)
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn shelves_are_made_assigned_filtered_and_sorted() {
+        let mut shelf = shelf_with(&["Alpha", "Beta", "Gamma"]);
+        name(&mut shelf, Control::NewShelf, "Ders");
+        let ders = id_of(&shelf, "Ders");
+        assert!(shelf.naming.is_none());
+
+        // A new shelf made from a card's menu takes that book at once.
+        let _ = shelf.update(Message::Activate(Control::ShelfMenu(1, false)));
+        assert!(
+            shelf
+                .controls()
+                .any(|c| c == Control::MenuNewShelf(1, false))
+        );
+        name(&mut shelf, Control::MenuNewShelf(1, false), "Okunacaklar");
+        let later = id_of(&shelf, "Okunacaklar");
+        assert!(
+            shelf
+                .shelves
+                .contains(later, &shelf.entries[1].document.fingerprint)
+        );
+        assert_eq!(shelf.menu, Some((1, false)));
+        assert!(
+            shelf
+                .controls()
+                .any(|c| c == Control::ToggleShelf(1, false, ders))
+        );
+
+        let _ = shelf.update(Message::Activate(Control::ToggleShelf(0, false, ders)));
+        let _ = shelf.update(Message::Activate(Control::Filter(Some(ders))));
+        assert_eq!(shelf.order, [0]);
+        assert!(shelf.controls().any(|c| c == Control::DeleteShelf));
+
+        let _ = shelf.update(Message::Activate(Control::Filter(None)));
+        let _ = shelf.update(Message::Activate(Control::Sort(Sort::Shelf)));
+        assert_eq!(shelf.order, [0, 1, 2]);
+        let _ = shelf.update(Message::Activate(Control::ToggleShelf(2, false, ders)));
+        let _ = shelf.update(Message::Activate(Control::ToggleShelf(0, false, ders)));
+        let _ = shelf.update(Message::Activate(Control::Sort(Sort::Title)));
+        let _ = shelf.update(Message::Activate(Control::Sort(Sort::Shelf)));
+        assert_eq!(shelf.order, [2, 1, 0]);
+    }
+
+    #[test]
+    fn names_are_checked_and_shelves_renamed_deleted_and_emptied() {
+        let mut shelf = shelf_with(&["Alpha", "Beta"]);
+        name(&mut shelf, Control::NewShelf, "Bitenler");
+        name(&mut shelf, Control::NewShelf, "bitenler");
+        assert!(shelf.naming.as_ref().unwrap().error.is_some());
+        assert!(shelf.dismiss());
+        assert!(shelf.naming.is_none());
+        let done = id_of(&shelf, "Bitenler");
+        let _ = shelf.update(Message::Activate(Control::Filter(Some(done))));
+        name(&mut shelf, Control::RenameShelf, "Finished");
+        assert_eq!(shelf.shelves.get(done).unwrap().name, "Finished");
+
+        let _ = shelf.update(Message::Activate(Control::ToggleShelf(1, false, done)));
+        let fingerprint = shelf.entries[1].document.fingerprint.clone();
+        let path = shelf.entries[1].document.path.clone();
+        let _ = shelf.remove(&path);
+        assert!(!shelf.shelves.contains(done, &fingerprint));
+
+        let _ = shelf.update(Message::Activate(Control::DeleteShelf));
+        assert!(shelf.shelves.shelves.is_empty());
+        assert_eq!(shelf.filter, None);
+        assert_eq!(shelf.order, [0]);
+        assert!(shelf.shelves_dirty || shelf.shelves_saving);
+    }
+
+    #[test]
+    fn leaving_a_card_closes_its_shelf_menu() {
+        let mut shelf = shelf_with(&["Alpha", "Beta"]);
+        let _ = shelf.update(Message::Activate(Control::ShelfMenu(0, false)));
+        let _ = shelf.update(Message::Hover(Some(Control::Document(0))));
+        assert_eq!(shelf.menu, Some((0, false)));
+        let _ = shelf.update(Message::Hover(None));
+        assert_eq!(shelf.menu, None);
+    }
 
     #[test]
     fn catalog_author_names_read_naturally() {

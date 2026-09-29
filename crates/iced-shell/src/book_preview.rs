@@ -942,6 +942,83 @@ fn render_library_workflow() {
 }
 
 #[test]
+#[ignore = "Shelves visual QA: set SIMPL_PREVIEW_OUTPUT"]
+fn render_shelves() {
+    use reader_document::recent::DocumentKind;
+    let output = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    for bytes in ui::font_data() {
+        iced::advanced::graphics::text::font_system()
+            .write()
+            .unwrap()
+            .load_font(std::borrow::Cow::Borrowed(bytes));
+    }
+    let mut reader = Reader {
+        window_size: Size::new(1280.0, 1300.0),
+        ..Reader::default()
+    };
+    let entries = shelf::sample_entries(&[
+        ("Pride and Prejudice", DocumentKind::Epub),
+        ("Frankenstein", DocumentKind::Epub),
+        ("Dream Analysis", DocumentKind::Pdf),
+        ("Let's Go", DocumentKind::Html),
+        ("The Picture of Dorian Gray", DocumentKind::Epub),
+    ]);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(reader.window_size);
+    for name in ["Okunacaklar", "Bitenler", "Ders"] {
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::NewShelf));
+        let _ = reader.shelf.update(shelf::Message::NameInput(name.into()));
+        let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    }
+    for (book, shelf_id) in [(0, 2), (1, 1), (2, 3), (4, 1), (4, 3)] {
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::ToggleShelf(
+                book, false, shelf_id,
+            )));
+    }
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        reader.appearance = appearance;
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::Filter(None)));
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Hover(Some(shelf::Control::Document(1))));
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::ShelfMenu(
+                1, false,
+            )));
+        render(
+            &mut reader,
+            &output.join(format!("shelves-menu-{name}.png")),
+        );
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::Filter(Some(1))));
+        render(
+            &mut reader,
+            &output.join(format!("shelves-filtered-{name}.png")),
+        );
+    }
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::NewShelf));
+    let _ = reader
+        .shelf
+        .update(shelf::Message::NameInput("Okunacaklar".into()));
+    let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    render(&mut reader, &output.join("shelves-name-error.png"));
+}
+
+#[test]
 #[ignore = "Native PDF QA: SIMPL_PREVIEW_PDF + SIMPL_PREVIEW_OUTPUT; PDFium beside the test executable"]
 fn render_pdf_book_previews() {
     for bytes in ui::font_data() {

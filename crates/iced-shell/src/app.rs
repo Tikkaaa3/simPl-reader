@@ -1893,6 +1893,7 @@ impl Reader {
             && !self.shelf.loading
             && !self.shelf.saving
             && !(self.shelf.dirty && !self.shelf.blocked)
+            && self.shelf.shelves_settled()
     }
 
     fn locate(&mut self, entry: Entry) -> Task<Message> {
@@ -3088,11 +3089,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Shelf(shelf::Message::Activate(shelf::Control::Remove(index, _))) => {
             update_inner(reader, Message::RemoveLibrary(index))
         }
-        Message::Shelf(shelf::Message::Activate(shelf::Control::Favourite(..)))
-            if !reader.interactive() =>
-        {
-            Task::none()
-        }
+        Message::Shelf(shelf::Message::Activate(
+            shelf::Control::Favourite(..)
+            | shelf::Control::ToggleShelf(..)
+            | shelf::Control::DeleteShelf,
+        )) if !reader.interactive() => Task::none(),
         Message::Shelf(message) => {
             let task = reader.shelf.update(message).map(Message::Shelf);
             if reader.pending_exit && reader.exit_ready() {
@@ -4106,10 +4107,15 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         if reader.show_conversion {
                             return update_inner(reader, Message::CancelConversion);
                         }
-                        reader.focused = None;
                         if reader.show_search || reader.show_settings {
+                            reader.focused = None;
                             return update_inner(reader, Message::DismissOverlay);
                         }
+                        // In the library, Escape first closes a shelf menu or name field.
+                        if reader.book.is_none() && reader.pdf.is_none() && reader.shelf.dismiss() {
+                            return Task::none();
+                        }
+                        reader.focused = None;
                         if reader.show_help {
                             return update_inner(reader, Message::ToggleHelp);
                         }
