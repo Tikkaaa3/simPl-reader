@@ -8,6 +8,7 @@ mod book_pages;
 mod book_style;
 mod chrome;
 mod document_scroll;
+mod find;
 mod pdf_reader;
 mod platform;
 mod shelf;

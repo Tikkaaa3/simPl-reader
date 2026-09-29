@@ -173,6 +173,10 @@ pub struct Reader {
     select_all: bool,
     dragging: bool,
     pointer: Option<Point>,
+    /// A search match whose page text is still loading: (page, first glyph, last glyph).
+    pending_reveal: Option<(u32, usize, usize)>,
+    /// The zoom to return to when Ctrl+Shift+F is pressed again.
+    zoom_before_fit: Option<PdfZoom>,
 }
 
 impl Reader {
@@ -229,6 +233,8 @@ impl Reader {
             select_all: false,
             dragging: false,
             pointer: None,
+            pending_reveal: None,
+            zoom_before_fit: None,
         };
         reader.rebuild();
         let anchor = restored.map_or(
@@ -643,6 +649,97 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
+    /// Highlights glyphs `first..=last` of `page` and brings them into view.
+    pub fn show_match(&mut self, page: u32, first: usize, last: usize) -> Task<Message> {
+        if page as usize >= self.document.pages.len() {
+            return Task::none();
+        }
+        self.selection = Some(Selection {
+            anchor: TextPoint { page, index: first },
+            focus: TextPoint { page, index: last },
+        });
+        self.selection_ready = true;
+        self.select_all = false;
+        self.dragging = false;
+        self.pending_reveal = None;
+        if self.glyph_position(page, first, last).is_some() {
+            return self.scroll_to_glyph(page, first, last);
+        }
+        // Positions come from the page text layer: go to the page, then refine.
+        self.pending_reveal = Some((page, first, last));
+        self.jump(page as usize)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selection(&self) -> Option<Selection> {
+        self.selection.filter(|_| self.selection_ready)
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selection_ready = false;
+        self.select_all = false;
+        self.dragging = false;
+        self.pending_reveal = None;
+    }
+
+    /// Document-space top of a match, its height, and its left edge, once the page text is loaded.
+    fn glyph_position(&self, page: u32, first: usize, last: usize) -> Option<(f32, f32, f32)> {
+        let layer = self.cached.get(&page)?.text.as_ref()?;
+        let last = last.min(layer.glyphs.len().checked_sub(1)?);
+        let rect = layer
+            .glyphs
+            .get(first..=last)?
+            .iter()
+            .find_map(|g| g.bounds)?;
+        let size = self.page_size(page as usize);
+        let left = (self.content_width - size.width) / 2.0;
+        Some((
+            self.geometry.start(page as usize) + rect.top * size.height,
+            (rect.bottom - rect.top) * size.height,
+            left + rect.left * size.width,
+        ))
+    }
+
+    /// Scrolls so the match sits about a third of the way down; a match already
+    /// comfortably in view is left where it is.
+    fn scroll_to_glyph(&mut self, page: u32, first: usize, last: usize) -> Task<Message> {
+        let Some((y, height, x)) = self.glyph_position(page, first, last) else {
+            return Task::none();
+        };
+        let visible_height = self.viewport.height;
+        let comfortably_visible = y >= self.offset.y + visible_height * 0.08
+            && y + height <= self.offset.y + visible_height * 0.85;
+        if !comfortably_visible {
+            self.offset.y = (y - visible_height * 0.3)
+                .clamp(0.0, (self.geometry.total() - visible_height).max(0.0));
+        }
+        let horizontal_extent = (self.content_width - self.viewport.width).max(0.0);
+        if horizontal_extent > 0.0
+            && (x < self.offset.x + 24.0 || x > self.offset.x + self.viewport.width - 96.0)
+        {
+            self.offset.x = (x - self.viewport.width / 2.0).clamp(0.0, horizontal_extent);
+        }
+        self.range = self.visible_range();
+        self.failed.clear();
+        self.error = None;
+        if !self.editing_page {
+            self.page_input = (self.anchor().page + 1).to_string();
+        }
+        Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
+    }
+
+    /// Ctrl+Shift+F: fit the width, or go back to the zoom used before (100% if none).
+    fn toggle_fit_width(&mut self) -> Task<Message> {
+        if self.zoom == PdfZoom::FitWidth {
+            let back = self.zoom_before_fit.take().unwrap_or(PdfZoom::Scale(1.0));
+            self.set_zoom(back)
+        } else {
+            self.zoom_before_fit = Some(self.zoom);
+            self.set_zoom(PdfZoom::FitWidth)
+        }
+    }
+
     fn copy(&mut self) -> Task<Message> {
         if self.copy_task.is_some() {
             return Task::none();
@@ -780,6 +877,13 @@ impl Reader {
                     }
                 }
                 self.continue_drag();
+                if let Some((wanted, first, last)) = self.pending_reveal
+                    && wanted == page
+                    && self.glyph_position(page, first, last).is_some()
+                {
+                    self.pending_reveal = None;
+                    return self.scroll_to_glyph(page, first, last);
+                }
                 self.request_next()
             }
             Message::PageInput(value) => {
@@ -829,10 +933,7 @@ impl Reader {
                 Task::none()
             }
             Message::ClearSelection => {
-                self.selection = None;
-                self.selection_ready = false;
-                self.select_all = false;
-                self.dragging = false;
+                self.clear_selection();
                 Task::none()
             }
             Message::Copy => self.copy(),
@@ -914,7 +1015,8 @@ impl Reader {
                             "+" | "=" => self.update(Message::ZoomIn),
                             "-" => self.update(Message::ZoomOut),
                             "0" => self.update(Message::ActualSize),
-                            "f" => self.update(Message::FitWidth),
+                            // Plain Ctrl+F belongs to Find in the app.
+                            "f" if modifiers.shift() => self.toggle_fit_width(),
                             "c" => self.update(Message::Copy),
                             "a" => {
                                 self.select_all = true;
@@ -963,11 +1065,10 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    pub fn toolbar(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    /// Previous / page number / next, sized for the centre of the app toolbar.
+    pub fn navigation(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
-        // Show the size in use; Fit width stays marked on its own button.
-        let zoom_label = format!("{:.0}%", self.effective_scale() * 100.0);
-        let navigation = row![
+        row![
             focus_button(
                 "Prev",
                 (page > 0).then_some(Message::Previous),
@@ -1000,8 +1101,15 @@ impl Reader {
             ),
         ]
         .spacing(7)
-        .align_y(iced::Alignment::Center);
-        let zoom = row![
+        .align_y(iced::Alignment::Center)
+        .into()
+    }
+
+    /// Zoom and fit controls, sized for the right side of the app toolbar.
+    pub fn zoom_controls(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+        // Show the size in use; Fit width stays marked on its own button.
+        let zoom_label = format!("{:.0}%", self.effective_scale() * 100.0);
+        row![
             focus_button(
                 "−",
                 Some(Message::ZoomOut),
@@ -1031,11 +1139,16 @@ impl Reader {
                 focused == Some(FocusControl::FitWidth),
                 self.zoom == PdfZoom::FitWidth,
             ),
-            iced::widget::Space::new().width(Length::Fill),
         ]
         .spacing(7)
         .align_y(iced::Alignment::Center)
-        .width(Length::Fill);
+        .into()
+    }
+
+    /// Both control groups in one strip, for windows too narrow for the three-column layout.
+    pub fn toolbar(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+        let navigation = self.navigation(focused);
+        let zoom = container(self.zoom_controls(focused)).width(Length::Fill);
         // The app supplies the one collapsible toolbar slot around these controls.
         let toolbar: Element<'_, Message> = if self.size.width < COMPACT_TOOLBAR_WIDTH {
             column![navigation, zoom].spacing(5).into()
@@ -1178,5 +1291,152 @@ fn valid_dpi(value: f64) -> f64 {
         value
     } else {
         1.0
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    pub(crate) fn complete<T>(future: impl Future<Output = T>) -> T {
+        let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = std::pin::pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::park(),
+            }
+        }
+    }
+
+    /// One tall page with a line of text near its bottom.
+    pub(crate) fn tall_pdf() -> Vec<u8> {
+        let content = "BT /F1 18 Tf 20 300 Td (The old Lighthouse keeper) Tj ET";
+        let objects = [
+            "<</Type/Catalog/Pages 2 0 R>>".to_owned(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_owned(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 3000]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>".to_owned(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_owned(),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{body}\nendobj\n", index + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(
+            format!(
+                "trailer\n<</Root 1 0 R/Size {}>>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn showing_a_match_highlights_it_and_scrolls_to_its_line() {
+        let dll = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pdfium.dll");
+        if !dll.exists() {
+            eprintln!("skipped: pdfium.dll is not beside the test executable");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("simpl-pdf-find-{}.pdf", std::process::id()));
+        std::fs::write(&path, tall_pdf()).unwrap();
+        let document = complete(reader_pdf::open(path.clone())).unwrap();
+        let (mut reader, _) = Reader::new(document.clone(), None, Size::new(1280.0, 800.0), 1.0);
+        let text = complete(document.session.page_text(0)).unwrap();
+        let first = text.chars().position(|c| c == 'L').unwrap();
+        let last = first + "Lighthouse".len() - 1;
+
+        // Before the page text is loaded the reader stays on the page and waits for it.
+        let _ = reader.show_match(0, first, last);
+        assert_eq!(reader.pending_reveal, Some((0, first, last)));
+        assert_eq!(reader.offset.y, 0.0);
+
+        let width = reader.target_width(0);
+        let layer = complete(document.session.text(0, width)).unwrap();
+        reader.cache(0, width, None, Some(Arc::new(layer)));
+        let _ = reader.show_match(0, first, last);
+        let _ = std::fs::remove_file(path);
+
+        let selection = reader.selection.expect("the match is highlighted");
+        assert_eq!(
+            selection.anchor,
+            TextPoint {
+                page: 0,
+                index: first
+            }
+        );
+        assert_eq!(
+            selection.focus,
+            TextPoint {
+                page: 0,
+                index: last
+            }
+        );
+        assert!(reader.selection_ready);
+        let (y, height, _) = reader.glyph_position(0, first, last).unwrap();
+        assert!(reader.offset.y > 0.0, "the page must scroll to the line");
+        assert!(
+            y >= reader.offset.y && y + height <= reader.offset.y + reader.viewport.height,
+            "line at {y} must be inside the viewport starting at {}",
+            reader.offset.y
+        );
+        // A match that is already in view is left where it is.
+        let before = reader.offset.y;
+        let _ = reader.show_match(0, first, last);
+        assert_eq!(reader.offset.y, before);
+        reader.clear_selection();
+        assert!(reader.selection.is_none());
+    }
+
+    #[test]
+    fn fit_width_shortcut_toggles_back_to_the_previous_zoom() {
+        let dll = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pdfium.dll");
+        if !dll.exists() {
+            eprintln!("skipped: pdfium.dll is not beside the test executable");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("simpl-pdf-fit-{}.pdf", std::process::id()));
+        std::fs::write(&path, tall_pdf()).unwrap();
+        let document = complete(reader_pdf::open(path.clone())).unwrap();
+        let _ = std::fs::remove_file(path);
+        let (mut reader, _) = Reader::new(document, None, Size::new(1280.0, 800.0), 1.0);
+        let _ = reader.update(Message::ZoomIn);
+        let zoomed = reader.zoom;
+        assert!(matches!(zoomed, PdfZoom::Scale(_)));
+        let _ = reader.toggle_fit_width();
+        assert_eq!(reader.zoom, PdfZoom::FitWidth);
+        let _ = reader.toggle_fit_width();
+        assert_eq!(reader.zoom, zoomed);
+        // Already fitting when opened: the second press goes to 100%.
+        let _ = reader.set_zoom(PdfZoom::FitWidth);
+        reader.zoom_before_fit = None;
+        let _ = reader.toggle_fit_width();
+        assert_eq!(reader.zoom, PdfZoom::Scale(1.0));
     }
 }
