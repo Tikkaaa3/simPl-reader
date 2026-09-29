@@ -5,6 +5,7 @@
 *.png binary
 *.ico binary
 *.ttf binary
+*.zip binary
 
 # Shown verbatim by the Windows installer's license page.
 LICENSE-BINARY.txt text eol=crlf

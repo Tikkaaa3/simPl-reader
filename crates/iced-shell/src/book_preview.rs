@@ -447,6 +447,22 @@ pub(super) fn render(reader: &mut Reader, output: &Path) {
             },
         ),
     );
+    if reader.show_settings && matches!(reader.focused, Some(Control::Dictionary(_))) {
+        use iced::advanced::widget::{Operation, operation::Outcome};
+        let mut operation: Box<dyn Operation<()>> = Box::new(ui::reveal_focus_operation());
+        loop {
+            element.as_widget_mut().operate(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                operation.as_mut(),
+            );
+            match operation.finish() {
+                Outcome::Chain(next) => operation = next,
+                _ => break,
+            }
+        }
+    }
     // A redraw event resolves enabled/hover/focus styles just as the runtime does.
     let mut messages = Vec::new();
     element.as_widget_mut().update(

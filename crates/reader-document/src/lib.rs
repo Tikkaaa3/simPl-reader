@@ -5,6 +5,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 pub mod annotations;
+pub mod dictionary;
 pub mod epub;
 mod html;
 pub mod library;

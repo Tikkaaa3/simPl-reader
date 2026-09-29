@@ -30,6 +30,8 @@ mod book_zoom;
 mod notes_ui;
 #[path = "read_aloud.rs"]
 mod read_aloud;
+#[path = "word_translation.rs"]
+pub(crate) mod word_translation;
 
 const DEFAULT_FONT_SIZE: f32 = MINIMAL.default_size;
 const OVERSCAN: f32 = 600.0;
@@ -1037,6 +1039,7 @@ struct Reader {
     selection: selection::SelectionState,
     notes: notes::Notes,
     read_aloud: read_aloud::ReadAloud,
+    word_translation: word_translation::WordTranslation,
     /// Installed voices, read when the settings panel opens.
     voice_choices: Vec<read_aloud::VoiceChoice>,
     /// Last known pointer position in window coordinates.
@@ -1130,6 +1133,7 @@ impl Default for Reader {
             selection: Default::default(),
             notes: Default::default(),
             read_aloud: Default::default(),
+            word_translation: Default::default(),
             voice_choices: Vec::new(),
             pointer: iced::Point::ORIGIN,
             saving: false,
@@ -1147,6 +1151,7 @@ enum CloseAction {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
+    Dictionary(word_translation::Focus),
     Chrome(chrome::Action),
     Shelf(shelf::Control),
     SearchInput,
@@ -1304,6 +1309,16 @@ enum Message {
     },
     NotesSaved(Result<(), String>),
     ReadAloud(read_aloud::Action),
+    Dictionary(word_translation::Action),
+    DictionaryReady {
+        generation: u64,
+        result: Result<Option<reader_document::dictionary::Translation>, String>,
+    },
+    DictionaryText {
+        document: u64,
+        generation: u64,
+        result: Result<String, String>,
+    },
     ReadAloudTick,
     /// The text of a PDF selection to read aloud.
     ReadAloudText {
@@ -1539,6 +1554,7 @@ impl Reader {
     }
 
     fn go_to_local_page(&mut self, page: usize) -> Task<Message> {
+        self.word_translation.reset();
         let pages = self.pages();
         let Some(page) = pages.get(page).cloned() else {
             return Task::none();
@@ -1921,6 +1937,7 @@ impl Reader {
             return Task::none();
         }
         self.show_conversion = false;
+        self.word_translation.reset();
         self.capture_progress();
         let library_task = self.shelf.persist().map(Message::Shelf);
         self.show_search = false;
@@ -2023,6 +2040,7 @@ impl Reader {
             theme: self.theme.id.to_owned(),
             voice: self.read_aloud.voice.clone(),
             speech_rate: self.read_aloud.rate,
+            dictionary: self.word_translation.settings,
         };
         Task::perform(
             async move { preferences::save(preferences) },
@@ -2191,6 +2209,7 @@ impl Reader {
                 self.show_settings.then_some(Control::SettingsHelp),
             ])
             .flatten()
+            .chain(self.dictionary_controls())
             .chain(
                 (0..themes::THEMES.len())
                     .filter(move |_| self.show_settings)
@@ -2270,6 +2289,9 @@ impl Reader {
             return Task::none();
         }
         let message = match control {
+            Control::Dictionary(focus) => {
+                Message::Dictionary(word_translation::focus_action(focus))
+            }
             Control::Chrome(action) => Message::Chrome(action),
             Control::Shelf(control) => Message::Shelf(shelf::Message::Activate(control)),
             Control::SearchInput => return iced::widget::operation::focus(search_id()),
@@ -2556,6 +2578,7 @@ impl Reader {
         self.navigate(location.chapter, None, Some(location), Navigation::Pop)
     }
     fn open_chapter(&mut self, index: usize, fragment: Option<String>) -> Task<Message> {
+        self.word_translation.reset();
         if self
             .book
             .as_ref()
@@ -2732,6 +2755,7 @@ impl Reader {
     }
 
     fn close(&mut self, action: CloseAction) -> Task<Message> {
+        self.word_translation.reset();
         if self.saving || self.dialog_open {
             return Task::none();
         }
@@ -3191,6 +3215,7 @@ impl Reader {
     }
 
     fn jump(&mut self, offset: f32) -> Task<Message> {
+        self.word_translation.reset();
         if !self.interactive() || self.book.is_none() || self.pagination.is_some() {
             return Task::none();
         }
@@ -3204,6 +3229,11 @@ impl Reader {
 }
 
 fn update(reader: &mut Reader, message: Message) -> Task<Message> {
+    let previous_generation = reader.generation;
+    let previous_pdf_page = reader
+        .pdf
+        .as_ref()
+        .map(|pdf| (pdf.document().id, pdf.page_index()));
     let previous_focus = reader.focused;
     let previous_panels = (reader.show_recent, reader.show_help, reader.show_contents);
     let previous_toolbar = reader.toolbar_expanded;
@@ -3212,6 +3242,20 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
+    if reader.word_translation.popup.is_some()
+        && (reader.generation != previous_generation
+            || previous_pdf_page
+                != reader
+                    .pdf
+                    .as_ref()
+                    .map(|pdf| (pdf.document().id, pdf.page_index()))
+            || reader.show_search
+            || reader.show_settings
+            || reader.notes.editor.is_some()
+            || reader.confirm_remove.is_some())
+    {
+        reader.word_translation.dismiss();
+    }
     reader.sync_read_aloud();
     let task = Task::batch([task, reader.request_pdf_book_raster()]);
     let panels_changed =
@@ -3234,7 +3278,32 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
 }
 
 fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
+    if matches!(
+        &message,
+        Message::EpubChapter { .. }
+            | Message::BookPage(_)
+            | Message::Back
+            | Message::FollowLink(_)
+            | Message::DocumentMode { .. }
+            | Message::BookMode
+            | Message::OpenDialog
+            | Message::Chrome(_)
+            | Message::ContextBlank
+            | Message::FindOpen
+    ) {
+        reader.word_translation.reset();
+    }
     match message {
+        Message::Dictionary(action) => reader.dictionary_action(action),
+        Message::DictionaryReady { generation, result } => {
+            reader.dictionary_ready(generation, result);
+            Task::none()
+        }
+        Message::DictionaryText {
+            document,
+            generation,
+            result,
+        } => reader.dictionary_text(document, generation, result),
         Message::LoadingFrame(frame) => {
             if reader.opening.is_some() || reader.pagination.is_some() {
                 reader.loading_frame = frame;
@@ -3568,6 +3637,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.window_controls = loaded.window_controls;
                     reader.read_aloud.voice = loaded.voice;
                     reader.read_aloud.rate = loaded.speech_rate;
+                    if reader.word_translation.settings != loaded.dictionary.validated() {
+                        reader.word_translation.reset();
+                    }
+                    reader.word_translation.settings = loaded.dictionary.validated();
                     // A book opened from the command line may already be on screen.
                     theme_task = reader.switch_theme(themes::find(&loaded.theme));
                 }
@@ -3752,6 +3825,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             }
         }
         Message::Loaded { request, result } if request == reader.request && !reader.saving => {
+            reader.word_translation.reset();
             reader.opening = None;
             reader.opening_task = None;
             let navigation = reader.pending_navigation.take();
@@ -3917,18 +3991,38 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             if reader.pdf.as_ref().map(|pdf| pdf.document().id) != Some(document) {
                 return Task::none();
             }
+            let mut double_word = None;
             match &message {
                 pdf_reader::Message::Context(point) => {
                     reader.context_pdf(*point);
                     return Task::none();
                 }
                 pdf_reader::Message::SelectStart(point) => {
+                    if reader.word_click() {
+                        double_word = Some(*point);
+                    }
                     reader.notes.pressed = reader.pdf.as_ref().and_then(|pdf| pdf.mark_at(*point));
                 }
+                pdf_reader::Message::Scroll { .. }
+                | pdf_reader::Message::ClearSelection
+                | pdf_reader::Message::Previous
+                | pdf_reader::Message::Next
+                | pdf_reader::Message::PageSubmit
+                | pdf_reader::Message::ZoomIn
+                | pdf_reader::Message::ZoomOut
+                | pdf_reader::Message::ActualSize
+                | pdf_reader::Message::FitWidth
+                | pdf_reader::Message::ZoomBy(_) => reader.word_translation.dismiss(),
                 _ => {}
             }
             match &mut reader.pdf {
-                Some(pdf) => forward_pdf(document, pdf.update(message)),
+                Some(pdf) => {
+                    let task = forward_pdf(document, pdf.update(message));
+                    if let Some(point) = double_word {
+                        pdf.select_word(point);
+                    }
+                    task
+                }
                 None => Task::none(),
             }
         }
@@ -4067,11 +4161,15 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.restore_book_scroll()
         }
         Message::SelectStart(endpoint) if reader.interactive() => {
+            let double = reader.word_click();
             reader.notes.pressed = reader
                 .book
                 .as_ref()
                 .and_then(|book| notes::mark_at(&reader.notes.marks, &book.items, &endpoint));
-            reader.selection.begin(endpoint);
+            reader.selection.begin(endpoint.clone());
+            if double {
+                reader.select_word(&endpoint);
+            }
             Task::none()
         }
         Message::Context(endpoint) => {
@@ -4110,6 +4208,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             result,
         } => reader.pdf_highlight_text(document, (from, to), merge_ids, color, then_note, result),
         Message::SelectMove(endpoint) if reader.interactive() => {
+            if let Some((from, to)) = &reader.word_translation.word
+                && from.item_id == endpoint.item_id
+                && from.byte_offset <= endpoint.byte_offset
+                && endpoint.byte_offset <= to.byte_offset
+            {
+                return Task::none();
+            }
+            reader.word_translation.word = None;
             reader.selection.extend(endpoint);
             Task::none()
         }
@@ -4161,6 +4267,73 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 reader.pointer = *position;
             }
             // The note editor is modal: it keeps the keyboard until it is saved or cancelled.
+            if reader.word_translation.popup.is_some() {
+                if matches!(&event, iced::Event::Window(window::Event::Unfocused))
+                    || matches!(
+                        &event,
+                        iced::Event::Mouse(
+                            mouse::Event::ButtonPressed(mouse::Button::Left)
+                                | mouse::Event::WheelScrolled { .. }
+                        )
+                    ) && !reader
+                        .word_translation
+                        .contains(reader.pointer, reader.window_size)
+                {
+                    reader.word_translation.dismiss();
+                }
+                if let iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    repeat: false,
+                    ..
+                }) = &event
+                {
+                    match key.as_ref() {
+                        Key::Named(key::Named::Escape) => {
+                            reader.word_translation.dismiss();
+                            reader.focused = None;
+                            return Task::none();
+                        }
+                        Key::Named(key::Named::Tab) => {
+                            let controls = reader.dictionary_controls();
+                            if !controls.is_empty() {
+                                let current = controls
+                                    .iter()
+                                    .position(|control| Some(*control) == reader.focused);
+                                let next = match current {
+                                    Some(index) if modifiers.shift() => {
+                                        (index + controls.len() - 1) % controls.len()
+                                    }
+                                    Some(index) => (index + 1) % controls.len(),
+                                    None if modifiers.shift() => controls.len() - 1,
+                                    None => 0,
+                                };
+                                reader.focused = Some(controls[next]);
+                            }
+                            return Task::none();
+                        }
+                        Key::Named(key::Named::Enter | key::Named::Space) => {
+                            if let Some(control @ Control::Dictionary(_)) = reader.focused {
+                                return reader.activate(control);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if reader.show_settings
+                && reader.word_translation.picker.is_some()
+                && matches!(
+                    &event,
+                    iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                        key: Key::Named(key::Named::Escape),
+                        ..
+                    })
+                )
+            {
+                reader.word_translation.picker = None;
+                return Task::none();
+            }
             if reader.notes.editor.is_some()
                 && let iced::Event::Keyboard(keyboard_event) = &event
             {
@@ -4497,7 +4670,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         &event,
                         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                     ) {
-                        reader.selection_released(was_dragging);
+                        return Task::batch([task, reader.selection_released(was_dragging)]);
                     }
                     return task;
                 }
@@ -4572,7 +4745,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     let was_dragging = reader.selection.is_dragging();
                     reader.selection.end_drag();
                     if matches!(event, iced::Event::Mouse(_)) {
-                        reader.selection_released(was_dragging);
+                        return reader.selection_released(was_dragging);
                     }
                     Task::none()
                 }
@@ -5336,10 +5509,14 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
     }
     if !reader.show_search && !reader.show_settings && reader.confirm_remove.is_none() {
         // Keep the reader and shelf in the same widget-tree slot when a modal opens.
-        return match notes_ui::popup_layer(reader) {
-            Some(popup) => stack![base, popup].into(),
-            None => stack![base].into(),
-        };
+        let mut layers = stack![base];
+        if let Some(popup) = word_translation::popup_layer(reader) {
+            layers = layers.push(popup);
+        }
+        if let Some(popup) = notes_ui::popup_layer(reader) {
+            layers = layers.push(popup);
+        }
+        return layers.into();
     }
     let heading = row![
         text(if reader.confirm_remove.is_some() {
@@ -5544,6 +5721,9 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             .push(rule())
             .push(section("Read aloud"))
             .push(read_aloud::settings(reader, reader.voice_choices.clone()))
+            .push(rule())
+            .push(section("Word translation"))
+            .push(word_translation::settings(reader))
             .push(rule())
             .push(row![
                 column![
@@ -7138,7 +7318,7 @@ mod tests {
         )));
     }
 
-    fn book(title: &str) -> Arc<Book> {
+    pub(super) fn book(title: &str) -> Arc<Book> {
         Arc::new(Book {
             path: PathBuf::from(format!("{title}.html")),
             title: title.into(),

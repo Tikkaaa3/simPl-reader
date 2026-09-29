@@ -100,6 +100,21 @@ offline. Automatic voice selection estimates the text's language and falls back
 to the Windows default. PDF reading needs a permitted text layer; image-only pages
 are skipped.
 
+Double-click a word, or finish selecting a short phrase, to open its **offline
+translation card**. In Settings → Word translation, choose the input/output
+languages and turn automatic lookup on or off. With automatic off, use
+selection → right-click → **Translate**. The defaults are automatic lookup and
+English → Turkish. Escape, an outside click or page navigation closes the card.
+Long passages keep the highlight/note menu. PDFs need selectable text and copy
+permission; scanned pages need OCR.
+
+The built-in pairs are English ↔ Turkish, Spanish, German, French, Japanese and
+Chinese, plus Korean → English. Chinese → English includes simplified and
+traditional forms. The compressed data is about 19 MB and only the current pair
+is decompressed. Results are dictionary meanings; coverage varies and basic
+English base-form fallbacks are labeled. Full sentence translation and Argos
+plugins remain future work. [Data sources and license](assets/dictionaries/README.md).
+
 ## Library and local data
 
 **Add Document** and file drops copy documents into

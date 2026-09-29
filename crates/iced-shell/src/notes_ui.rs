@@ -545,19 +545,24 @@ impl Reader {
 
     /// The left button went up. A finished selection, or a plain click on a
     /// highlight, opens the pop-up next to the pointer.
-    pub(super) fn selection_released(&mut self, was_dragging: bool) {
+    pub(super) fn selection_released(&mut self, was_dragging: bool) -> Task<Message> {
         if !was_dragging || self.notes.popup.is_some() || self.notes.editor.is_some() {
-            return;
+            return Task::none();
+        }
+        if let Some(task) = self.auto_translate_selection() {
+            return task;
         }
         if self.has_passage() {
             self.open_popup(Target::Selection, false);
         } else if let Some(id) = self.notes.pressed.take() {
             self.open_popup(Target::Highlight(id), false);
         }
+        Task::none()
     }
 
     /// A right click on text of a reflowed book.
     pub(super) fn context_at(&mut self, endpoint: Endpoint) {
+        self.word_translation.dismiss();
         let Some(book) = &self.book else { return };
         let Some(row) = book
             .items
@@ -572,10 +577,10 @@ impl Reader {
                 && (bounds.start_item, bounds.start_byte) <= point
                 && point <= (bounds.end_item, bounds.end_byte)
         });
-        let target = if let Some(id) = notes::mark_at(&self.notes.marks, &book.items, &endpoint) {
-            Target::Highlight(id)
-        } else if inside {
+        let target = if inside {
             Target::Selection
+        } else if let Some(id) = notes::mark_at(&self.notes.marks, &book.items, &endpoint) {
+            Target::Highlight(id)
         } else {
             Target::Page
         };
@@ -584,6 +589,7 @@ impl Reader {
 
     /// A right click on a PDF page: on a highlight or the selection, or anywhere else.
     pub(super) fn context_pdf(&mut self, point: Option<reader_pdf::TextPoint>) {
+        self.word_translation.dismiss();
         let Some(pdf) = &self.pdf else { return };
         let selected = pdf.selection().is_some_and(|selection| {
             let (from, to) = if selection.anchor <= selection.focus {
@@ -593,10 +599,10 @@ impl Reader {
             };
             point.is_some_and(|point| from <= point && point <= to)
         });
-        let target = if let Some(id) = point.and_then(|point| pdf.mark_at(point)) {
-            Target::Highlight(id)
-        } else if selected {
+        let target = if selected {
             Target::Selection
+        } else if let Some(id) = point.and_then(|point| pdf.mark_at(point)) {
+            Target::Highlight(id)
         } else {
             Target::Page
         };
@@ -651,6 +657,16 @@ impl Reader {
 
     fn popup_item(&mut self, target: Target, item: PopupItem) -> Task<Message> {
         match (target, item) {
+            (Target::Selection, PopupItem::Translate) => self.translate_selection(),
+            (Target::Highlight(id), PopupItem::Translate) => {
+                let quote = self
+                    .notes
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.highlight(id))
+                    .map(|highlight| highlight.quote.clone());
+                quote.map_or_else(Task::none, |quote| self.translate_text(quote))
+            }
             (Target::Selection, PopupItem::Color(color)) => self.make_highlight(color, false),
             (Target::Highlight(id), PopupItem::Color(color)) => {
                 self.notes.color = color;
@@ -1183,6 +1199,13 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
                 entry,
                 "Read aloud",
                 "Ctrl+Shift+U",
+                ui::ButtonTone::Subtle,
+            )),
+            PopupItem::Translate => Some(menu_button(
+                reader,
+                entry,
+                "Translate",
+                "",
                 ui::ButtonTone::Subtle,
             )),
             PopupItem::RemoveHighlight => Some(menu_button(

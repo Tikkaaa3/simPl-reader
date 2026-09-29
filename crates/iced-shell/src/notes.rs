@@ -545,6 +545,7 @@ pub enum Target {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupItem {
+    Translate,
     Color(HighlightColor),
     Note,
     Copy,
@@ -577,6 +578,7 @@ impl Popup {
             entries.push(PopupItem::Note);
             entries.push(PopupItem::Copy);
             entries.push(PopupItem::ReadAloud);
+            entries.push(PopupItem::Translate);
         }
         if self.menu || matches!(self.target, Target::Page) {
             entries.push(PopupItem::ToggleBookmark);
@@ -1399,6 +1401,7 @@ mod tests {
                 PopupItem::Note,
                 PopupItem::Copy,
                 PopupItem::ReadAloud,
+                PopupItem::Translate,
             ]
         );
         let menu = Popup {

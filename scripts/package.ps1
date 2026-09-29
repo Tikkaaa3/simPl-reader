@@ -46,6 +46,12 @@ try {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Bundled font notice missing: $source" }
         Copy-Item -LiteralPath $source -Destination (Join-Path $fontNotices $notice)
     }
+    # Dictionary data is embedded; its CC BY-SA rights and provenance are separate.
+    $dictionaryNotices = Join-Path $staging 'third-party\dictionaries'
+    New-Item -ItemType Directory -Path $dictionaryNotices | Out-Null
+    foreach ($notice in @('README.md', 'CC-BY-SA-4.0.txt', 'manifest.json')) {
+        Copy-Item -LiteralPath (Join-Path $root "assets\dictionaries\$notice") -Destination (Join-Path $dictionaryNotices $notice)
+    }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     Move-Item -LiteralPath $staging -Destination $output
 } finally {

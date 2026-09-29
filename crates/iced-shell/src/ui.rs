@@ -372,7 +372,12 @@ pub const FOCUSED_CONTROL: &str = "focused-reader-control";
 /// Reveal the focused chrome control through every enclosing vertical panel.
 /// Runs on focus/panel changes and window resizing, never on idle frames.
 pub fn reveal_focus<Message: Send + 'static>() -> iced::Task<Message> {
-    iced::advanced::widget::operate(RevealFocus::default())
+    iced::advanced::widget::operate(reveal_focus_operation())
+}
+
+/// The same operation can be driven by the renderer preview without a window.
+pub fn reveal_focus_operation<T>() -> impl Operation<T> {
+    RevealFocus::default()
 }
 
 struct FocusViewport {

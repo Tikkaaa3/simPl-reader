@@ -18,3 +18,4 @@ zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate
 roxmltree = "=0.21.1"
 pulldown-cmark = { version = "=0.13.4", default-features = false, features = ["html"] }
 parking_lot = "=0.12.5"
+unicode-normalization = "=0.1.25"

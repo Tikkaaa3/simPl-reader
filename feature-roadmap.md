@@ -64,7 +64,7 @@ guarantee or the page-number stability.
 
 ## 4. TXT and Markdown support
 
-**Status: done.** `.txt`, `.text`, `.md` and `.markdown` are converted to one generated HTML page when imported (`crates/reader-document/src/text.rs`, `managed.rs`), so the HTML reader, find, page map and positions work unchanged. Markdown uses `pulldown-cmark` 0.13.4 (MIT; with `pulldown-cmark-escape` and `unicase`, all permissive, notices collected by `scripts/collect-licenses.ps1`). Encodings: UTF-8 (BOM or not), UTF-16 with a BOM, otherwise the Windows ANSI code page. Local Markdown images are copied beside the page. Known limits: the shelf shows these books as HTML; an edited source is not re-imported (same as HTML today); the installer registers `.txt`/`.md` alongside PDF, HTML and EPUB; isolated installation checks cover all five extensions.
+**Status: done.** `.txt`, `.text`, `.md` and `.markdown` are converted to one generated HTML page when imported (`crates/reader-document/src/text.rs`, `managed.rs`), so the HTML reader, find, page map and positions work unchanged. Markdown uses `pulldown-cmark` 0.13.4 (MIT; with `pulldown-cmark-escape` and `unicase`, all permissive, notices collected by `scripts/collect-licenses.ps1`). Encodings: UTF-8 (BOM or not), UTF-16 with a BOM, otherwise the Windows ANSI code page. Local Markdown images are copied beside the page. The shelf retains distinct TXT and Markdown labels, including repaired legacy imports. Known limit: an edited source is not re-imported (same as HTML today). The installer registers `.txt`/`.md` alongside PDF, HTML and EPUB; isolated installation checks cover all five extensions.
 
 **Goal.** Open `.txt` and `.md` files in the same reader as HTML.
 
@@ -121,6 +121,16 @@ menu, filter and sort by them.
 **Risk.** Library file migration and the current bounded-size validation.
 
 ## 7. Dictionary and translation lookup
+
+**Status: done for bundled word lookup.** Double-click or select a short phrase
+to open an offline card in Book and PDF Document views. Persisted settings select
+automatic/manual mode and valid input/output pairs; right-click → Translate works
+in manual mode. Thirteen directions cover English ↔ Turkish, Spanish, German,
+French, Japanese, Chinese and Korean → English. Chinese → English adds CC-CEDICT
+for both scripts. Lookups run on workers with cancellation and generation guards.
+Data attribution, checksums and CC BY-SA 4.0 notices ship with the application.
+Sentence translation, Argos plugins, user-installed packs and full morphology
+remain open. See [bundled data](assets/dictionaries/README.md).
 
 **Goal.** Double-click a word to see a definition in a small popup, offline.
 

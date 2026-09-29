@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "license": "CC-BY-SA-4.0",
+  "generated": "2026-09-30",
+  "pairs": [
+    {
+      "source": "en",
+      "target": "tr",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-tr.sqlite3",
+      "source_sha256": "76fd98a73fdc02bcca81ee338441187cb93b77bfc11a70ae2708eebace3e53c0",
+      "sha256": "005cef4f547b7de2bac2e963ebf0c8c2b72d116b9c7c23834e80c1e3ca32a767",
+      "entries": 47307
+    },
+    {
+      "source": "tr",
+      "target": "en",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/tr-en.sqlite3",
+      "source_sha256": "5a49ba197dbfd19f02c13d971521627baa4f30edce8b00afb898b89078867838",
+      "sha256": "0fe65a0998c1c433df8bbb8ec2b05900a1a2aed91782c82a12e6b14821d5c99a",
+      "entries": 41426
+    },
+    {
+      "source": "en",
+      "target": "es",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-es.sqlite3",
+      "source_sha256": "d66fd6f8b7f3872f5fa17391846468ac18cda11a63b64961ebd36c7ba1069a79",
+      "sha256": "627da2a61d6ebbf1259532d1ac6d0a017a6644582794269c234ca8904a26ca38",
+      "entries": 81628
+    },
+    {
+      "source": "es",
+      "target": "en",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/es-en.sqlite3",
+      "source_sha256": "e09d4da3699841ef6210058de837931a36a32ebfccfd2ab1b7baacf58313135c",
+      "sha256": "ab3feb5123d219dc6536f66cde091c606b1bfe79050ff7204c4df4cde07205ad",
+      "entries": 95970
+    },
+    {
+      "source": "en",
+      "target": "de",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-de.sqlite3",
+      "source_sha256": "f2154e82c4a34851922e0c0d275decea7b34ad0ec8fd087090c592b59112d0c2",
+      "sha256": "5028d38c9e06e0c740da8b7e603eb1e616cbc838a1a5bd4bd60d5c90f6e5e69d",
+      "entries": 123501
+    },
+    {
+      "source": "de",
+      "target": "en",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/de-en.sqlite3",
+      "source_sha256": "7100de12c97e700f42414e7bf9c2b1801f812970c0bc62873927011acf29e6e8",
+      "sha256": "cd1bff978eefb0cc36120b48793b7066b44c66e595988e13946ddc190081e802",
+      "entries": 141014
+    },
+    {
+      "source": "en",
+      "target": "fr",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-fr.sqlite3",
+      "source_sha256": "3908275d1c0fea866e681d5e065c25e4fd2c39a6d3d3dd23b48f351eb0e286a2",
+      "sha256": "617601bfbd14c88164ed801250fb396fd8514be1dfdfa7f4d278b437b9cdecc2",
+      "entries": 165793
+    },
+    {
+      "source": "fr",
+      "target": "en",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/fr-en.sqlite3",
+      "source_sha256": "888cc187b8e079de64e9ac2777157f3e86d3802c3b215c6813550db35a6ad196",
+      "sha256": "3e0c6b88f629ccde607bcbeeda9cf79ab4f2808c7c5a55aee5a86aa913033866",
+      "entries": 159420
+    },
+    {
+      "source": "en",
+      "target": "ja",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-ja.sqlite3",
+      "source_sha256": "fb0148ba9f3f4c03497bc5ae41b55157918ee2d185df10d53a5409ed38c4e91f",
+      "sha256": "2a4efbc99511b4c9cf224fa4340144cbe566a132a4d293921706a2f3cd08c449",
+      "entries": 52834
+    },
+    {
+      "source": "ja",
+      "target": "en",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/ja-en.sqlite3",
+      "source_sha256": "51195be409d94d2990cbcd47ffe3c97c51595bd70e65596983c927fba03821d0",
+      "sha256": "be670040cfaf10a4684359a7a24190ed8e3f01fe462bd00667c15cd39e0c18c9",
+      "entries": 56971
+    },
+    {
+      "source": "en",
+      "target": "zh",
+      "provider": "WikDict",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-zh.sqlite3",
+      "source_sha256": "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26452f1d80ca5ecd",
+      "sha256": "c23aecd80fc9b43d343736b950c6b95acfed4d70d7e6e6248b8109cb0ba52dc0",
+      "entries": 30518
+    },
+    {
+      "source": "zh",
+      "target": "en",
+      "provider": "WikDict / CC-CEDICT",
+      "url": "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/zh-en.sqlite3",
+      "source_sha256": "1b739df174e7657544439288a76cd78f0606c0541d4cd07cb941ae8f44344785",
+      "sha256": "ec4f91471fd68dbb694cb289891347a5fba9b52c92a267be0726c21017b5b9a0",
+      "entries": 301885,
+      "additional_sources": [
+        {
+          "provider": "CC-CEDICT / MDBG",
+          "url": "https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz",
+          "source_sha256": "ac561f16bf85ec5115231e32b7f93266bf7a68ee3d63c645d5a2d427123fe03e"
+        }
+      ]
+    },
+    {
+      "source": "ko",
+      "target": "en",
+      "provider": "Kaikki / Wiktionary",
+      "url": "https://kaikki.org/dictionary/Korean/kaikki.org-dictionary-Korean.jsonl",
+      "source_sha256": "5e6223e62733ac7ca2ea4d38e4b5be2924f886528edc6f69bb3a33e8fcd78525",
+      "sha256": "5f80d1286b79c8ee2b0db33c5f03f0f178dac5e9d1f4b839ad239705961cfc9e",
+      "entries": 51161
+    }
+  ]
+}

@@ -1,7 +1,9 @@
 # Yerel sözlük ve çeviri seçenekleri — 30 Eylül 2026
 
-Bu belge araştırma ve tasarım önerisidir. simPl'e sözlük, model, eklenti altyapısı
-veya çeviri servisi eklenmedi. Veriler/modeller bir kez dosyadan kurulunca kullanım
+Bu belge ilk araştırma ve tasarım önerisidir. Sonraki uygulamada yerel kelime
+sözlükleri eklendi; kapsam ve kaynaklar [veri bildiriminde](assets/dictionaries/README.md)
+ve [README'de](README.md) yer alıyor. Argos/model/eklenti altyapısı eklenmedi.
+Veriler/modeller bir kez dosyadan kurulunca kullanım
 çevrimdışı olabilir; internetten paket edinmek ayrı bir işlemdir. Aşağıdaki
 karşılaştırma bir çeviri kalitesi veya Windows performans benchmark'ı değildir.
 

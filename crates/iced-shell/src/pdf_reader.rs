@@ -183,6 +183,7 @@ pub struct Reader {
     page_input: String,
     editing_page: bool,
     selection: Option<Selection>,
+    word_selection: Option<Selection>,
     selection_ready: bool,
     select_all: bool,
     dragging: bool,
@@ -247,6 +248,7 @@ impl Reader {
             page_input: "1".into(),
             editing_page: false,
             selection: None,
+            word_selection: None,
             selection_ready: false,
             select_all: false,
             dragging: false,
@@ -675,6 +677,7 @@ impl Reader {
 
     /// Highlights glyphs `first..=last` of `page` and brings them into view.
     pub fn show_match(&mut self, page: u32, first: usize, last: usize) -> Task<Message> {
+        self.word_selection = None;
         if page as usize >= self.document.pages.len() {
             return Task::none();
         }
@@ -739,11 +742,67 @@ impl Reader {
     }
 
     pub fn clear_selection(&mut self) {
+        self.word_selection = None;
         self.selection = None;
         self.selection_ready = false;
         self.select_all = false;
         self.dragging = false;
         self.pending_reveal = None;
+    }
+
+    /// Expand the hit glyph to its Unicode word without crossing a page boundary.
+    pub(crate) fn select_word(&mut self, point: TextPoint) {
+        let Some(layer) = self
+            .cached
+            .get(&point.page)
+            .and_then(|entry| entry.text.as_ref())
+        else {
+            return;
+        };
+        let Some(glyph) = layer.glyphs.get(point.index) else {
+            return;
+        };
+        let Some(range) = crate::app::word_translation::word_range(&layer.text, glyph.start) else {
+            return;
+        };
+        let Some(first) = layer
+            .glyphs
+            .iter()
+            .position(|glyph| glyph.end > range.start && glyph.start < range.end)
+        else {
+            return;
+        };
+        let Some(last) = layer
+            .glyphs
+            .iter()
+            .rposition(|glyph| glyph.end > range.start && glyph.start < range.end)
+        else {
+            return;
+        };
+        let selection = Selection {
+            anchor: TextPoint {
+                page: point.page,
+                index: first,
+            },
+            focus: TextPoint {
+                page: point.page,
+                index: last,
+            },
+        };
+        self.selection = Some(selection);
+        self.word_selection = Some(selection);
+        self.selection_ready = true;
+    }
+
+    fn keep_word(&mut self, point: TextPoint) -> bool {
+        if self
+            .word_selection
+            .is_some_and(|word| word.anchor <= point && point <= word.focus)
+        {
+            return true;
+        }
+        self.word_selection = None;
+        false
     }
 
     /// Document-space top of a match, its height, and its left edge, once the page text is loaded.
@@ -979,6 +1038,7 @@ impl Reader {
             Message::ActualSize => self.set_zoom(PdfZoom::Scale(1.0)),
             Message::FitWidth => self.set_zoom(PdfZoom::FitWidth),
             Message::SelectStart(point) => {
+                self.word_selection = None;
                 self.selection = Some(Selection {
                     anchor: point,
                     focus: point,
@@ -990,6 +1050,9 @@ impl Reader {
                 Task::none()
             }
             Message::SelectMove(point) => {
+                if self.keep_word(point) {
+                    return Task::none();
+                }
                 if self.dragging
                     && let Some(selection) = &mut self.selection
                 {
@@ -1054,6 +1117,7 @@ impl Reader {
             page_size,
         );
         if let Some(point) = pdf_page::hit(text, page as u32, bounds, pointer, false)
+            && !self.keep_word(point)
             && let Some(selection) = &mut self.selection
             && selection.focus != point
         {
@@ -1416,6 +1480,81 @@ pub(crate) mod tests {
             .bytes(),
         );
         pdf
+    }
+
+    #[test]
+    fn double_click_uses_source_word_boundaries_and_keeps_the_word_during_small_movements() {
+        if !std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pdfium.dll")
+            .exists()
+        {
+            eprintln!("skipped: pdfium.dll is not beside the test executable");
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("simpl-pdf-word-{}.pdf", std::process::id()));
+        std::fs::write(&path, tall_pdf()).unwrap();
+        let document = complete(reader_pdf::open(path.clone())).unwrap();
+        let (mut reader, _) = Reader::new(document.clone(), None, Size::new(1280.0, 800.0), 1.0);
+        let width = reader.target_width(0);
+        let layer = complete(document.session.text(0, width)).unwrap();
+        let first = layer
+            .glyphs
+            .iter()
+            .position(|glyph| layer.text[glyph.start..glyph.end] == *"L")
+            .unwrap();
+        reader.cache(0, width, None, Some(Arc::new(layer)));
+        let _ = reader.update(Message::SelectStart(TextPoint {
+            page: 0,
+            index: first + 3,
+        }));
+        reader.select_word(TextPoint {
+            page: 0,
+            index: first + 3,
+        });
+        let _ = reader.update(Message::SelectMove(TextPoint {
+            page: 0,
+            index: first + 1,
+        }));
+        let selection = reader.selection().unwrap();
+        assert_eq!(selection.anchor.index, first);
+        assert_eq!(selection.focus.index, first + "Lighthouse".len() - 1);
+        assert_eq!(
+            complete(document.session.copy(selection)).unwrap(),
+            "Lighthouse"
+        );
+
+        let text = "café 日本語 책";
+        let glyphs = text
+            .char_indices()
+            .map(|(start, character)| reader_pdf::Glyph {
+                start,
+                end: start + character.len_utf8(),
+                bounds: None,
+                style: None,
+            })
+            .collect();
+        reader.cache(
+            0,
+            width,
+            None,
+            Some(Arc::new(TextLayer::new(text.into(), glyphs))),
+        );
+        reader.select_word(TextPoint { page: 0, index: 3 });
+        assert_eq!(reader.selection().unwrap().anchor.index, 0);
+        assert_eq!(reader.selection().unwrap().focus.index, 3);
+        let _ = reader.update(Message::SelectMove(TextPoint { page: 0, index: 2 }));
+        assert_eq!(reader.selection().unwrap().focus.index, 3);
+        let _ = reader.update(Message::SelectMove(TextPoint { page: 0, index: 9 }));
+        assert_eq!(reader.selection().unwrap().focus.index, 9);
+        assert!(reader.word_selection.is_none());
+        reader.clear_selection();
+        assert!(reader.selection().is_none());
+        drop(reader);
+        drop(document);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

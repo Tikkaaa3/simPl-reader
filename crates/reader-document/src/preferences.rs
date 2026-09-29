@@ -54,6 +54,7 @@ pub struct Preferences {
     pub voice: String,
     /// Read-aloud speed step, -10 (slowest) to 10 (fastest); 0 is normal.
     pub speech_rate: i8,
+    pub dictionary: crate::dictionary::Settings,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,6 +70,8 @@ struct Record {
     voice: String,
     #[serde(default, skip_serializing_if = "is_zero")]
     speech_rate: i8,
+    #[serde(default)]
+    dictionary: crate::dictionary::Settings,
 }
 
 fn is_zero(value: &i8) -> bool {
@@ -124,6 +127,7 @@ fn load_from(path: &Path) -> Result<Preferences, String> {
             record.voice
         },
         speech_rate: record.speech_rate.clamp(-10, 10),
+        dictionary: record.dictionary.validated(),
     })
 }
 
@@ -135,6 +139,7 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         theme: preferences.theme,
         voice: preferences.voice,
         speech_rate: preferences.speech_rate,
+        dictionary: preferences.dictionary.validated(),
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -170,6 +175,11 @@ mod tests {
                     theme: "soft".into(),
                     voice: r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\X".into(),
                     speech_rate: -3,
+                    dictionary: crate::dictionary::Settings {
+                        automatic: false,
+                        source: crate::dictionary::Language::Spanish,
+                        target: crate::dictionary::Language::English,
+                    },
                 };
                 save_to(&path, preferences.clone()).unwrap();
                 assert_eq!(load_from(&path).unwrap(), preferences);
@@ -203,6 +213,11 @@ mod tests {
         assert_eq!(load_from(&path).unwrap().theme, "clear");
         fs::write(&path, br#"{"version":1,"speech_rate":40}"#).unwrap();
         assert_eq!(load_from(&path).unwrap().speech_rate, 10);
+        fs::write(&path, br#"{"version":1,"dictionary":{"automatic":false,"source":"korean","target":"turkish"}}"#).unwrap();
+        let dictionary = load_from(&path).unwrap().dictionary;
+        assert!(!dictionary.automatic);
+        assert_eq!(dictionary.source, crate::dictionary::Language::Korean);
+        assert_eq!(dictionary.target, crate::dictionary::Language::English);
         for bytes in [
             b"broken".to_vec(),
             br#"{"version":2,"appearance":"dark"}"#.to_vec(),
