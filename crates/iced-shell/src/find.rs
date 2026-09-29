@@ -257,11 +257,11 @@ mod tests {
 
     #[test]
     fn multibyte_text_uses_source_offsets_on_grapheme_boundaries() {
-        // "İ" lower-cases to two characters, and "e\u{301}" is one grapheme.
-        let text = "İstanbul e\u{301}cole";
+        // U+0130 lower-cases to two characters, and "e\u{301}" is one grapheme.
+        let text = "\u{130}ndx e\u{301}cole";
         let items = [paragraph("a", text)];
-        let matches = find(&items, "stanbul");
-        assert_eq!(&text[matches[0].start..matches[0].end], "stanbul");
+        let matches = find(&items, "ndx");
+        assert_eq!(&text[matches[0].start..matches[0].end], "ndx");
         let matches = find(&items, "e");
         let widened = &text[matches[0].start..matches[0].end];
         assert_eq!(widened, "e\u{301}");

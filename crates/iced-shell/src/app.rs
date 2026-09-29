@@ -5116,7 +5116,7 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
                     .size(26)
                     .color(colors.text)
                     .shaping(text::Shaping::Advanced),
-                text("İyi okumalar, ğüşöç.")
+                text("The quiet hours of reading.")
                     .font(font)
                     .size(13)
                     .color(colors.secondary)
@@ -6812,7 +6812,7 @@ mod tests {
         let font = family.map_or(role.iced_font(), |family| {
             selection::with_reading_family(role.iced_font(), family)
         });
-        selection::text_width("Hamburgefonstiv Quickly, İstanbul ğüşöç", font, 20.0)
+        selection::text_width("Hamburgefonstiv Quickly, naïve café", font, 20.0)
     }
 
     #[test]
