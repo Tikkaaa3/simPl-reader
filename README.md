@@ -65,6 +65,12 @@ zoom are independent, so you can make the page comfortable while keeping its pla
 | --- | --- |
 | ![A saved highlight and its note in the sidebar](docs/screenshots/web/notes-highlights.webp) | ![English to Turkish dictionary lookup for book](docs/screenshots/web/word-translation.webp) |
 
+Dictionary content in the translation image: [WikDict](https://www.wikdict.com/page/about)
+by Karl Bartel, from [Wiktionary contributors](https://www.wiktionary.org/) via
+[DBnary](https://kaiko.getalp.org/about-dbnary/), under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+simPl normalizes and excerpts the data. [Full attribution and website reuse](docs/screenshots/ATTRIBUTION.md).
+
 | Listen with word tracking | Download the dictionaries you need |
 | --- | --- |
 | ![Listen paused with the current spoken word outlined](docs/screenshots/web/listen-word-highlight.webp) | ![Optional dictionary packages with sizes and download controls](docs/screenshots/web/dictionary-downloads.webp) |
@@ -78,7 +84,9 @@ zoom are independent, so you can make the page comfortable while keeping its pla
 | ![Per-book font, size, spacing and margin settings](docs/screenshots/web/reading-settings.webp) | ![Library backup and restore options](docs/screenshots/web/library-data.webp) |
 
 [Full-resolution PNGs, lossless WebP copies and media details](docs/screenshots/README.md)
-are available for websites and promotion. These are full-window renders of the
+are available for websites and promotion; [download the media kit with updated
+attribution](https://github.com/Tikkaaa3/simPl-reader/releases/download/v0.1.5/simPl-0.1.5-promotional-media-attributed.zip).
+These are full-window renders of the
 production interface at 2560 × 1600, using an isolated demo library; they are
 not OS desktop captures. No controls or features were composited into the images.
 

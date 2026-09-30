@@ -271,5 +271,16 @@
       "png_sha256": "4ca1579afee0e00fa923333951b54deab2a879257e6bfae5648a607f4172b5e5",
       "webp_sha256": "39ac741f9e5864732896cd49feb0f216e770b0226ed40a08dc6847b8a5a2e308"
     }
-  ]
+  ],
+  "dictionary_content": {
+    "images": [
+      "word-translation.png",
+      "web/word-translation.webp",
+      "overview.webp"
+    ],
+    "license": "CC-BY-SA-4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "attribution": "ATTRIBUTION.md",
+    "website_caption": "attribution.html"
+  }
 }

@@ -5,8 +5,13 @@ this repository. It does not cover the following third-party material, which
 remains under its own license:
 
 - fonts and icons in `assets/fonts/` (licenses in `assets/licenses/`);
-- the patched Cosmic Text crate in `patches/cosmic-text-0.15.0/`, including the
-  project's changes to it (MIT OR Apache-2.0, as in that directory);
+- patched crates in `patches/`, including the project's changes to them
+  (MIT or MIT OR Apache-2.0, as stated in each directory);
+- dictionary data and adapted indexes in `assets/dictionaries/packs/`, and
+  dictionary content reproduced in documentation and promotional images
+  (CC BY-SA 4.0; attribution in `assets/dictionaries/README.md` and
+  `docs/screenshots/ATTRIBUTION.md`). These data rights are not restricted by
+  the project's noncommercial license or official binary terms;
 - third-party fonts and Unicode test data in `fixtures/reader-workload/`
   (licenses in `fixtures/reader-workload/licenses/`);
 - dependencies and PDFium downloaded at build time (their notices ship in

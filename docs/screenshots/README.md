@@ -21,11 +21,16 @@ English → Turkish dictionary package.
 The books, author names, prose, geometric covers and PDF artwork were created
 for these demonstrations. They are not bundled with the reader and do not come
 from a user's profile. Prepared for simPl's website, documentation and promotion.
-The word-translation image includes WikDict data
-under **CC BY-SA 4.0**; keep its visible attribution when reusing it and see the
-[dictionary attribution](dictionary-credits.md). The existing
-[project license](project-license.md) and third-party terms continue to apply;
-this kit does not grant additional rights to the simPl name or logo.
+The word-translation image and its preview in `overview.webp` include dictionary
+data from **WikDict** (Karl Bartel), **Wiktionary contributors** via **DBnary**,
+under [**CC BY-SA 4.0**](https://creativecommons.org/licenses/by-sa/4.0/).
+simPl normalizes and excerpts this data. Keep the visible provider credit and
+publish a linked attribution with these images; use [the ready-to-use HTML](attribution.html)
+and [full image attribution](ATTRIBUTION.md). [Dictionary credits](dictionary-credits.md)
+cover all downloadable directions. The existing [project license](project-license.md)
+and third-party terms continue to apply to their respective material and do not
+restrict CC-licensed dictionary content. This kit does not grant additional
+rights to the simPl name or logo.
 
 Required Notice: Copyright 2026 Tikkaaa3 (https://github.com/Tikkaaa3/simPl-reader)
 

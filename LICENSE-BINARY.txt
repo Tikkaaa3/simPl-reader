@@ -45,6 +45,12 @@ by that source license and not by these terms.
    included in the "third-party" folder, and nothing in these terms limits the
    rights they give you.
 
+   Optional dictionaries and their adapted indexes are separately licensed
+   under CC BY-SA 4.0. See third-party/dictionaries/README.md and the notices
+   inside each downloaded dictionary ZIP. The sharing and modification
+   restrictions above do not apply to this dictionary data; it may be copied,
+   adapted and redistributed, including commercially, under its own license.
+
 6. No warranty
 
    Official Releases are provided "as is", without warranty of any kind. To

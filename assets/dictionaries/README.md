@@ -23,8 +23,13 @@ simPl's source and binary terms do not restrict the rights granted for this data
   https://www.mdbg.net/chinese/dictionary?page=cedict
   CC-CEDICT supplements Chinese → English with explicit simplified and traditional
   headwords. Snapshot downloaded on 2026-09-30.
+  Retained notice from the downloaded CC-CEDICT source header:
+  **CEDICT - Copyright (C) 1997, 1998 Paul Andrew Denisowski**.
+  Source download: https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz
 
 No endorsement of simPl by these projects or contributors is implied.
+The data is provided as-is, without warranties; see the complete CC BY-SA 4.0
+legal text for the disclaimer and limitation of liability.
 Original source URLs, SHA-256 checksums, resulting index checksums and entry
 counts are recorded in `manifest.json`. Each package includes its own manifest,
 this attribution and the complete license. `catalog.json` records download sizes
@@ -59,3 +64,16 @@ The script then packages each direction independently. Python's standard library
 is sufficient. Source downloads are cached in
 `target/dictionary-research/`; keep the matching source files for exact reproduction.
 Refreshing a moving upstream endpoint can change its checksum and results.
+Before packaging changed data or notices, choose a new `VERSION` in
+`scripts/package-dictionaries.py` and publish that version's assets and catalog.
+The packager refuses to replace existing ZIPs with different bytes.
+
+## Notice clarification for existing downloads
+
+This updated attribution also applies to the unchanged dictionary packages in
+the `dictionaries-v1-2026-09-30` release. In particular, it retains the original
+CEDICT copyright notice for the Chinese → English supplement. Published ZIPs
+and their catalog hashes remain unchanged; this notice supplements the README
+already included in them. When redistributing those packages, include this
+updated notice alongside them. Changed package bytes require a new data release
+and matching application catalog, rather than replacing the existing ZIPs.

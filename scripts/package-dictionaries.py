@@ -45,7 +45,14 @@ def main():
                 "README.md": (DATA / "README.md").read_bytes(),
             })
             filename = f"{name}-{VERSION}.zip"
-            (packs / filename).write_bytes(payload)
+            destination = packs / filename
+            if destination.exists() and destination.read_bytes() != payload:
+                raise RuntimeError(
+                    f"Refusing to replace immutable dictionary package {filename}. "
+                    "Choose a new VERSION and data release, then ship its matching catalog. "
+                    "Notice changes also change the package checksum."
+                )
+            destination.write_bytes(payload)
             catalog["packages"].append(dict(
                 source=LANGUAGES[pair["source"]], target=LANGUAGES[pair["target"]],
                 file=filename, bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest(),
