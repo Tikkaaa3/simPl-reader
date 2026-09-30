@@ -169,7 +169,7 @@ both maximized and normal windows; keyboard traversal with Narrator/NVDA;
 and a longer mixed-document Listen/read/export/restore session. These are
 explicit remaining checks, not completed test claims.
 
-The final offline release build succeeded (`reader-comfort-final-build.log`).
+The original comfort build succeeded (`reader-comfort-final-build.log`).
 `target/release/iced-shell.exe` is **18,878,976 bytes (18.00 MiB)**, an increase
 of **357,888 bytes (0.34 MiB)** over the `e114930` executable. SHA-256:
 `794e8971869866ce75688ca508f4e9e3d10eff25a9cff81c84423e90e1d1588f`.
@@ -177,4 +177,47 @@ The existing pinned PDFium DLL is staged alongside it. No dependency, bundled
 dictionary or translation-model payload was added.
 
 Run the updated local executable with `.\target\release\iced-shell.exe`.
-Portable ZIP/setup installers from earlier releases have not been regenerated.
+That pass did not regenerate earlier portable ZIP/setup artifacts. The later
+main synchronization checks and current executable identity are recorded below.
+
+## Final main synchronization checks
+
+The final review reproduced a restore race: resetting the dictionary model also
+reset its request counters, so an old inventory reply could match the first
+refresh of the new profile. Reload now replaces the store and cache while
+advancing those counters. Notes and typography read replies also carry a profile
+epoch, so a pre-restore response cannot change a reopened book with the same
+fingerprint. Two regression tests cover late replies before and after the current
+profile response; the inventory test failed on the previous code and passed
+after the fix. The compositor patch provenance now documents its rendering
+shortcuts and pixel-equivalence constraints.
+
+After that fix, formatting and Clippy with warnings denied passed. Debug and
+release each passed **406 tests / zero failures / 36 opt-in tests ignored across
+19 suites**. The real import/save/export/reviewed restore/reload/reopen workflow
+passed again against the final code. Logs: `main-sync-final-check.log`,
+`main-sync-final-release-tests.log`, `main-sync-final-portability.log`.
+
+The same synchronization review also passed six native SAPI application tests,
+the installed-voice engine test, all three live dictionary download tests
+(13 verified packages, offline lookups, progress/retry, HTTP error/cancellation),
+the five-format production workflows and three renderer equivalence tests.
+Evidence: `main-sync-native-speech.log`, `main-sync-installed-voices.log`,
+`main-sync-published-dictionaries.log`, `main-sync-formats.log`,
+`main-sync-renderer.log`.
+
+The final executable, payload and unsigned 0.1.1 setup were rebuilt. Disposable
+installer tests passed install/upgrade/uninstall, shortcuts, registration and
+cleanup, preservation of reading data/dictionaries and original/junction
+protection. Existing user default associations were unchanged. Installed-reader
+launch and the running-app uninstall guard were explicitly skipped in this
+installer run; the independent Windows/monitor/accessibility limits above remain.
+Logs: `main-sync-final-package.log`, `main-sync-final-installer.log`.
+
+Current `target/release/iced-shell.exe`: **18,881,024 bytes (18.01 MiB)**;
+SHA-256 `4c3c38a10941939b4847f7e94889aaa9b97db0e99dc31d3c0ae2303400b54bac`.
+The packaged `simPl.exe` has the same hash. The setup artifact is
+`target/installer/simPl-0.1.1-windows-x64-setup.exe`, SHA-256
+`3a8c760be5639163ef65bd7841f4b4abb4f5bbd44ae6ce590adf862c18f037d3`.
+These artifacts were built locally for validation; this task does not publish
+a GitHub Release or create a version tag.

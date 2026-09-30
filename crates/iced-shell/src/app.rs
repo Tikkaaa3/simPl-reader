@@ -1229,6 +1229,7 @@ enum Control {
 enum Message {
     Reading(reading_ui::Action),
     ReadingLoaded {
+        profile: u64,
         book: String,
         result: Result<Option<reader_document::reading::Options>, String>,
     },
@@ -1342,6 +1343,7 @@ enum Message {
     ContextBlank,
     Notes(notes::Action),
     NotesLoaded {
+        profile: u64,
         fingerprint: String,
         result: Result<reader_document::annotations::Annotations, String>,
     },
@@ -3391,7 +3393,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
     }
     match message {
         Message::Reading(action) => reader.reading_action(action),
-        Message::ReadingLoaded { book, result } => reader.reading_loaded(book, result),
+        Message::ReadingLoaded {
+            profile,
+            book,
+            result,
+        } => {
+            if profile == reader.profile.epoch {
+                reader.reading_loaded(book, result)
+            } else {
+                Task::none()
+            }
+        }
         Message::ReadingSaved(result) => reader.reading_saved(result),
         Message::FitBookWidth => reader.fit_book_width(),
         Message::ToggleFullscreen => reader.toggle_fullscreen(),
@@ -4336,10 +4348,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::Notes(action) => reader.notes_action(action),
         Message::NotesLoaded {
+            profile,
             fingerprint,
             result,
         } => {
-            reader.notes_loaded(fingerprint, result);
+            if profile == reader.profile.epoch {
+                reader.notes_loaded(fingerprint, result);
+            }
             Task::none()
         }
         Message::NotesSaved(result) => {

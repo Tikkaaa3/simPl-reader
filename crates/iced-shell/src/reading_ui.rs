@@ -70,8 +70,10 @@ impl Reader {
             return self.rebuild_geometry(self.anchor());
         }
         let reply = book.clone();
+        let profile = self.profile.epoch;
         Task::perform(async move { reading::load(&book) }, move |result| {
             Message::ReadingLoaded {
+                profile,
                 book: reply.clone(),
                 result,
             }

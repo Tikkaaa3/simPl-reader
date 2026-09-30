@@ -1,4 +1,4 @@
-# Control and rounded-edge clipping
+# Control clipping and CPU painting cost
 
 This is the crates.io `iced_tiny_skia` 0.14.1 package with its upstream metadata
 and MIT license. Original package SHA-256:
@@ -23,10 +23,20 @@ each draw resets the remembered bounds because callers may replace or mutate
 their mask between draws. Changed bounds still rebuild the mask. This preserves
 the clipping fix while reducing repeated work for adjacent control glyphs.
 
+The compositor also skips an earlier layer when a later opaque color quad fully
+covers the damaged area inside its clip. Its coverage test insets rounded corners
+and borders, including one physical pixel for antialiasing; transparent or partial
+coverage retains the original drawing path. Square solid-color quads without a
+border or shadow use `fill_rect` only when every physical edge is integer-aligned.
+Fractional edges keep the upstream path to preserve pixel rounding.
+
 Paragraph, editor, raw text, geometry and image rendering semantics remain upstream.
 No font or image data, GPU backend or runtime dependency is added. The mask
 regression checks fractional bounds, repeated clips, shrinking/expanding clips
-and a fresh differently sized mask after a draw boundary:
+and a fresh differently sized mask after a draw boundary. Two additional tests
+compare optimized painting against the original path pixel-for-pixel at
+100/125/150/200% scale, including alpha, fractional coordinates, clip masks,
+rounded corners and fully/partly covered layers:
 
 ```powershell
 cargo test -p iced_tiny_skia --lib --offline --locked
@@ -36,3 +46,5 @@ The retained application probe checks incremental CPU painting against a full
 redraw at 100%, 150%, 200% DPI and in a small window with the language picker.
 See [the damage patch](../iced_graphics-0.14.0/SIMPL-PATCH.md) for the command and
 measurement boundaries. Replace this override only after those cases pass.
+The [reader comfort follow-up](../../reader-comfort-review-2026-09-30.md) records
+the latest measured improvement and the remaining 200% frame-time limitation.

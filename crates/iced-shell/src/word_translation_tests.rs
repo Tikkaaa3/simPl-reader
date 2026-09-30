@@ -50,6 +50,32 @@ fn select(reader: &mut Reader, from: usize, to: usize) {
 }
 
 #[test]
+fn restored_profile_rejects_inventory_replies_from_before_restore() {
+    let mut reader = Reader::default();
+    let _ = reader.refresh_dictionaries();
+    let previous_request = reader.word_translation.inventory_generation;
+    let previous_store = reader.word_translation.store.clone();
+    let _ = reader.profile_reply(Ok(
+        super::super::profile_ui::Reply::Restored(PathBuf::new()),
+    ));
+    let current_request = reader.word_translation.inventory_generation;
+    assert!(!Arc::ptr_eq(
+        &previous_store,
+        &reader.word_translation.store
+    ));
+    reader.dictionary_inventory(previous_request, vec![PackageState::Installed]);
+    assert!(
+        reader.word_translation.inventory.is_empty(),
+        "a late pre-restore reply must not replace the new profile inventory"
+    );
+    reader.dictionary_inventory(current_request, vec![PackageState::Missing]);
+    assert_eq!(
+        reader.word_translation.inventory,
+        vec![PackageState::Missing]
+    );
+}
+
+#[test]
 fn double_click_selects_a_word_and_movement_inside_it_keeps_the_selection() {
     let mut reader = reader();
     reader.pointer = iced::Point::new(200.0, 250.0);

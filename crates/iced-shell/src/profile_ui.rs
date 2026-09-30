@@ -30,6 +30,8 @@ pub(super) enum Focus {
 
 #[derive(Debug)]
 pub(super) struct State {
+    /// Identifies profile-backed read tasks across a restore.
+    pub epoch: u64,
     pub busy: bool,
     pub notice: Option<String>,
     pub options: Options,
@@ -41,6 +43,7 @@ pub(super) struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            epoch: 0,
             busy: false,
             notice: None,
             options: Options {
@@ -189,6 +192,7 @@ impl Reader {
                 self.profile.pending = Some((path, summary));
             }
             Ok(Reply::Restored(previous)) => {
+                self.profile.epoch = self.profile.epoch.wrapping_add(1);
                 self.profile.notice = Some(if previous.as_os_str().is_empty() {
                     "Backup restored.".into()
                 } else {
@@ -206,7 +210,7 @@ impl Reader {
                 self.recent.clear();
                 self.shelf = shelf::Shelf::default();
                 self.notes = notes::Notes::default();
-                self.word_translation = word_translation::WordTranslation::default();
+                self.word_translation.reload_profile();
                 tasks.push(Task::perform(
                     async { preferences::load() },
                     Message::PreferencesLoaded,
@@ -479,6 +483,95 @@ mod tests {
             let _ = reader.activate(control);
             assert_eq!(reader.profile.format, format);
         }
+    }
+
+    #[test]
+    fn reopening_same_book_after_restore_rejects_old_notes_and_reading_options() {
+        use reader_document::annotations::{Annotations, BookmarkPlace};
+        let mut reader = ready();
+        let old_profile = reader.profile.epoch;
+        let _ = reader.profile_reply(Ok(Reply::Restored(PathBuf::new())));
+        let mut book = super::super::tests::book("restored");
+        Arc::get_mut(&mut book).unwrap().fingerprint = "a".repeat(64);
+        reader.book = Some(book);
+        let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+        let _ = reader.sync_notes();
+        let _ = reader.sync_reading_settings();
+        let mut old_notes = Annotations::new(&fingerprint).unwrap();
+        old_notes
+            .add_bookmark(
+                BookmarkPlace::Pdf {
+                    page: 0,
+                    within: 0.0,
+                },
+                "1".into(),
+                "Old profile".into(),
+            )
+            .unwrap();
+        let _ = update_inner(
+            &mut reader,
+            Message::NotesLoaded {
+                profile: old_profile,
+                fingerprint: fingerprint.clone(),
+                result: Ok(old_notes.clone()),
+            },
+        );
+        assert!(reader.notes.data.is_none());
+        let old_options = reader_document::reading::Options {
+            size: 36,
+            ..Default::default()
+        };
+        let _ = update_inner(
+            &mut reader,
+            Message::ReadingLoaded {
+                profile: old_profile,
+                book: fingerprint.clone(),
+                result: Ok(Some(old_options)),
+            },
+        );
+        assert!(reader.reading.loading);
+        assert_ne!(reader.reading_options().size, 36);
+        let current_profile = reader.profile.epoch;
+        let current_notes = Annotations::new(&fingerprint).unwrap();
+        let _ = update_inner(
+            &mut reader,
+            Message::NotesLoaded {
+                profile: current_profile,
+                fingerprint: fingerprint.clone(),
+                result: Ok(current_notes.clone()),
+            },
+        );
+        let _ = update_inner(
+            &mut reader,
+            Message::ReadingLoaded {
+                profile: current_profile,
+                book: fingerprint.clone(),
+                result: Ok(Some(reader_document::reading::Options {
+                    size: 26,
+                    ..Default::default()
+                })),
+            },
+        );
+        assert!(!reader.reading.loading);
+        assert_eq!(reader.reading_options().size, 26);
+        let _ = update_inner(
+            &mut reader,
+            Message::NotesLoaded {
+                profile: old_profile,
+                fingerprint: fingerprint.clone(),
+                result: Ok(old_notes),
+            },
+        );
+        let _ = update_inner(
+            &mut reader,
+            Message::ReadingLoaded {
+                profile: old_profile,
+                book: fingerprint,
+                result: Ok(Some(old_options)),
+            },
+        );
+        assert_eq!(reader.notes.data.as_ref(), Some(&current_notes));
+        assert_eq!(reader.reading_options().size, 26);
     }
 
     #[test]

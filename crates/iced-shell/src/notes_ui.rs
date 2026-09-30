@@ -140,9 +140,11 @@ impl Reader {
             return Task::none();
         }
         let reply = fingerprint.clone();
+        let profile = self.profile.epoch;
         Task::perform(
             async move { annotations::load(&fingerprint) },
             move |result| Message::NotesLoaded {
+                profile,
                 fingerprint: reply.clone(),
                 result,
             },

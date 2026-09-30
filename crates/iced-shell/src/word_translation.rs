@@ -99,6 +99,16 @@ pub(super) struct Popup {
 }
 
 impl WordTranslation {
+    pub fn reload_profile(&mut self) {
+        // Replies already queued by the old store must never share an ID with
+        // a request from the replacement profile.
+        *self = Self {
+            generation: self.generation.wrapping_add(1),
+            package_generation: self.package_generation.wrapping_add(1),
+            inventory_generation: self.inventory_generation.wrapping_add(1),
+            ..Self::default()
+        };
+    }
     pub fn packages_busy(&self) -> bool {
         self.package_job.is_some()
     }
