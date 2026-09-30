@@ -3,7 +3,7 @@
   #error Build this installer with the pinned Inno Setup 6.7.3 compiler
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.5"
 #endif
 #ifndef PayloadDir
   #error PayloadDir must name the complete packaged reader directory

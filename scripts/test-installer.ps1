@@ -1,5 +1,10 @@
 # Real install/upgrade/uninstall checks with a separate AppId and disposable profile.
-param([string]$CompilerPath = '', [string]$PayloadDirectory = '', [switch]$SkipReaderLaunch)
+param(
+    [string]$CompilerPath = '',
+    [string]$PayloadDirectory = '',
+    [switch]$SkipReaderLaunch,
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.1.5'
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -148,9 +153,9 @@ if (-not $SkipReaderLaunch) {
 
 }
 
-$setup = Build-QA '0.1.1'
+$setup = Build-QA $Version
 Install-QA $setup 'desktopicon,startmenuicon' 'upgrade.log'
-Assert-That ((Get-ItemProperty $registry).DisplayVersion -eq '0.1.1') 'Upgrade did not update version.'
+Assert-That ((Get-ItemProperty $registry).DisplayVersion -eq $Version) 'Upgrade did not update version.'
 Assert-That (Test-Path -LiteralPath $desktop) 'Selected desktop shortcut missing.'
 $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($desktop)
 Assert-That ($shortcut.TargetPath -eq (Join-Path $app 'simPl.exe')) 'Shortcut points to the wrong application.'

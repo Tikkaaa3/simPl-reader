@@ -84,6 +84,10 @@ not OS desktop captures. No controls or features were composited into the images
 
 ## Get started
 
+**[Download simPl 0.1.5 for Windows x64](https://github.com/Tikkaaa3/simPl-reader/releases/tag/v0.1.5)**
+— installer and portable ZIP. See the [release notes](docs/releases/0.1.5.md)
+for changes since 0.1.4.
+
 The current target is **Windows x64**. The setup package is named
 `simPl-<version>-windows-x64-setup.exe`. It installs for your Windows account, offers
 desktop and Start menu shortcuts, and registers an uninstaller in Windows Settings.
@@ -253,7 +257,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 check
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
 
 # Build a website installer (also requires Inno Setup 6.7.3).
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.5
 ```
 
 The portable output is `target\portable\simPl\simPl.exe`. The scripts initialize

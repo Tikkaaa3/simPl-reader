@@ -73,10 +73,25 @@ jobs:
         # License collection runs cargo metadata offline, which needs every platform's crates.
         run: cargo fetch --locked
 
+      - name: Check formatting, lints and workspace tests
+        shell: pwsh
+        run: |
+          # Make the real PDF text/selection-index test run on a fresh runner.
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\pdfium.ps1 -Destination target\debug\deps
+          if ($LASTEXITCODE -ne 0) { throw 'Test PDF runtime staging failed.' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 check -Offline
+          if ($LASTEXITCODE -ne 0) { throw 'Release checks failed.' }
+
       - name: Build the installer and portable package
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Verify isolated installer lifecycle
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-installer.ps1 -Version ${{ steps.version.outputs.version }} -SkipReaderLaunch
+          if ($LASTEXITCODE -ne 0) { throw 'Installer lifecycle checks failed.' }
 
       - name: Zip the portable folder
         shell: pwsh
