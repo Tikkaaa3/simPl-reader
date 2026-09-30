@@ -9,6 +9,7 @@ use crate::text;
 #[derive(Debug)]
 pub struct Engine {
     text_pipeline: text::Pipeline,
+    clip_bounds: Option<Rectangle>,
 
     #[cfg(feature = "image")]
     pub(crate) raster_pipeline: crate::raster::Pipeline,
@@ -20,10 +21,28 @@ impl Engine {
     pub fn new() -> Self {
         Self {
             text_pipeline: text::Pipeline::new(),
+            clip_bounds: None,
             #[cfg(feature = "image")]
             raster_pipeline: crate::raster::Pipeline::new(),
             #[cfg(feature = "svg")]
             vector_pipeline: crate::vector::Pipeline::new(),
+        }
+    }
+
+    // The caller may change or replace its mask between draws. Reuse is only
+    // valid within one draw, where every mask adjustment goes through us.
+    pub(crate) fn reset_clip_mask(&mut self) {
+        self.clip_bounds = None;
+    }
+
+    pub(crate) fn adjust_clip_mask(
+        &mut self,
+        mask: &mut tiny_skia::Mask,
+        bounds: Rectangle,
+    ) {
+        if self.clip_bounds != Some(bounds) {
+            adjust_clip_mask(mask, bounds);
+            self.clip_bounds = Some(bounds);
         }
     }
 
@@ -353,7 +372,7 @@ impl Engine {
                 let clip_mask = match physical_bounds.is_within(&clip_bounds) {
                     true => None,
                     false => {
-                        adjust_clip_mask(clip_mask, clip_bounds);
+                        self.adjust_clip_mask(clip_mask, clip_bounds);
                         Some(clip_mask as &_)
                     }
                 };
@@ -391,7 +410,7 @@ impl Engine {
                 let clip_mask = match physical_bounds.is_within(&clip_bounds) {
                     true => None,
                     false => {
-                        adjust_clip_mask(clip_mask, clip_bounds);
+                        self.adjust_clip_mask(clip_mask, clip_bounds);
                         Some(clip_mask as &_)
                     }
                 };
@@ -426,7 +445,7 @@ impl Engine {
                 // The local clip is not a glyph bound. A pick-list icon may lie
                 // partly outside it while scrolling, even when both clips match.
                 // Always enforce their intersection for cached text.
-                adjust_clip_mask(clip_mask, clip_bounds);
+                self.adjust_clip_mask(clip_mask, clip_bounds);
 
                 self.text_pipeline.draw_cached(
                     content,
@@ -856,4 +875,36 @@ pub fn adjust_clip_mask(clip_mask: &mut tiny_skia::Mask, bounds: Rectangle) {
         false,
         tiny_skia::Transform::default(),
     );
+}
+
+#[cfg(test)]
+mod clip_mask_tests {
+    use super::*;
+    use crate::core::Point;
+
+    #[test]
+    fn changing_bounds_and_new_draws_match_uncached_masks() {
+        let mut engine = Engine::new();
+        let mut actual = tiny_skia::Mask::new(32, 24).unwrap();
+        let mut expected = tiny_skia::Mask::new(32, 24).unwrap();
+        for bounds in [
+            Rectangle::new(Point::new(1.25, 2.5), Size::new(19.5, 12.5)),
+            Rectangle::new(Point::new(1.25, 2.5), Size::new(19.5, 12.5)),
+            Rectangle::new(Point::new(4.0, 5.0), Size::new(4.0, 3.0)),
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(32.0, 24.0)),
+        ] {
+            engine.adjust_clip_mask(&mut actual, bounds);
+            adjust_clip_mask(&mut expected, bounds);
+            assert_eq!(actual.data(), expected.data());
+        }
+        // A renderer caller can provide a fresh mask of different dimensions.
+        // Equal bounds must be rebuilt after the draw boundary in that case.
+        engine.reset_clip_mask();
+        actual = tiny_skia::Mask::new(40, 30).unwrap();
+        expected = tiny_skia::Mask::new(40, 30).unwrap();
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(32.0, 24.0));
+        engine.adjust_clip_mask(&mut actual, bounds);
+        adjust_clip_mask(&mut expected, bounds);
+        assert_eq!(actual.data(), expected.data());
+    }
 }

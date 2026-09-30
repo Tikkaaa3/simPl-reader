@@ -11,7 +11,10 @@ illustrations are reconstructed separately and cached across reopenings. Managed
 imports, TXT/Markdown, favourites, custom shelves, four reading themes, in-book
 search, bookmarks/highlights/notes and offline Windows read-aloud are implemented.
 Listen toggles speech off; pause/resume remains available. The toolbar collapses.
-The 0.1.1 consolidation and current validation limits are recorded in
+Offline word translation now has verified optional downloads for thirteen
+language directions. The [local reader review](reader-release-review-2026-09-30.md)
+records current release qualification, high-DPI limits and comparisons with other
+readers. The earlier 0.1.1 consolidation remains in
 [stabilization-report.md](stabilization-report.md).
 The [2026-09-30 release audit](release-audit-2026-09-30.md) supersedes its test
 counts and package measurements for the current candidate. Word dictionaries

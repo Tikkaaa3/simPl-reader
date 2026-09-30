@@ -1,5 +1,9 @@
 # Windows release candidate audit — 2026-09-30
 
+The later [local reader review](reader-release-review-2026-09-30.md) records a
+subsequent renderer improvement, rebuilt artifact hashes and fresh repetition
+checks. This audit retains the baseline build and its evidence.
+
 The current candidate passes the local automated, native-desktop and installer
 checks below. The Add Document caption is aligned, library write failures retain
 pending changes with an explicit retry, and dictionary indexing does less work.

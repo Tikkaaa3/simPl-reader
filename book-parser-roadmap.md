@@ -7,9 +7,14 @@
 > text-only conversion plans. See the [README](README.md) for current usage.
 
 Status: milestones 1–3 implemented (2026-09-27), with automated checks and
-CPU-rendered visual previews verified. A local HTML interaction pass has exercised find/highlighting; full desktop, DPI
-and accessibility qualification remains pending. Milestone 4 is planned. Current
-0.1.1 consolidation findings are in [stabilization-report.md](stabilization-report.md).
+CPU-rendered visual previews verified. The later
+[release audit](release-audit-2026-09-30.md) exercises all five formats in the normal
+reader on this desktop at 125% DPI, including optional dictionary installation.
+Independent clean Windows, native cross-DPI and accessibility qualification remain
+pending. Milestone 4 is planned. The
+[final local reader review](reader-release-review-2026-09-30.md) records current
+scope and priorities; [stabilization-report.md](stabilization-report.md) retains the
+earlier consolidation findings.
 This extends the existing [project roadmap](roadmap.md).
 
 ## Goal

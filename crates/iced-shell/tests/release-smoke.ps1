@@ -1,7 +1,8 @@
 # Interactive QA of the normal reader, with an isolated profile and owned window.
 param(
     [string]$ExePath = (Join-Path $PSScriptRoot '..\..\..\target\release\iced-shell.exe'),
-    [string]$EvidenceDirectory = (Join-Path $PSScriptRoot '..\..\..\target\release-audit\native-smoke')
+    [string]$EvidenceDirectory = (Join-Path $PSScriptRoot '..\..\..\target\release-audit\native-smoke'),
+    [ValidateRange(0,50)][int]$RepeatCycles = 0
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -141,6 +142,25 @@ function Open([string]$Path,[string]$Title) {
     Assert-Target
     if ([ReleaseSmokeNative]::GetForegroundWindow() -ne $window) { throw 'File picker did not return to the reader.' }
 }
+$resources = New-Object 'System.Collections.Generic.List[object]'
+function Sample-Resources([int]$Cycle) {
+    Assert-Target
+    $process.Refresh()
+    $cpu = $process.TotalProcessorTime.TotalMilliseconds
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    Start-Sleep -Milliseconds 2000
+    Assert-Target
+    $process.Refresh()
+    $resources.Add([ordered]@{
+        cycle=$Cycle
+        private_mib=[Math]::Round($process.PrivateMemorySize64/1MB,2)
+        working_set_mib=[Math]::Round($process.WorkingSet64/1MB,2)
+        handles=$process.HandleCount
+        threads=$process.Threads.Count
+        idle_cpu_ms=[Math]::Round($process.TotalProcessorTime.TotalMilliseconds-$cpu,2)
+        idle_wall_ms=[Math]::Round($elapsed.Elapsed.TotalMilliseconds,2)
+    })
+}
 try {
     $source = Join-Path $EvidenceDirectory 'sources'
     New-Item -ItemType Directory -Path $source -Force | Out-Null
@@ -195,13 +215,33 @@ try {
     for ($i=0;$i -lt 16;$i++) { Assert-Target; [ReleaseSmokeNative]::Wheel(-120); Start-Sleep -Milliseconds 80 }
     Capture '15-settings-dictionaries'; Key 0x1b
     Key 0x57 -Ctrl; Capture '16-populated-library'
+    if ($RepeatCycles -gt 0) {
+        Size 900 640
+        Sample-Resources 0
+        for ($cycle=1; $cycle -le $RepeatCycles; $cycle++) {
+            foreach ($document in @(
+                @($txt,'Native reading notes'), @($md,'A reading checklist'),
+                @((Join-Path $root 'fixtures/book-structure/structured.html'),'A quieter page'),
+                @((Join-Path $root 'target/book-milestone2/structured.epub'),'A quieter page'),
+                @((Join-Path $root 'target/book-milestone3/fixtures/prose.pdf'),'A quiet reading journey')
+            )) {
+                Open $document[0] $document[1]
+                Key 0x27
+                Key 0x57 -Ctrl
+                Wait-Title 'simPl'
+            }
+            Sample-Resources $cycle
+            Write-Host "Repeated five-format cycle $cycle"
+        }
+        Capture '17-library-after-repeat'
+    }
     Key 0x73 -Alt
     if (-not $process.WaitForExit(8000) -or $process.ExitCode -ne 0) { throw 'Normal close did not exit cleanly.' }
     $library = Get-Content -Raw -LiteralPath (Join-Path $profile 'simPl/library.json') | ConvertFrom-Json
     if ($library.entries.Count -ne 5) { throw "Expected five imported formats, got $($library.entries.Count)." }
     $formats = @($library.entries | ForEach-Object { if ($_.PSObject.Properties['source_kind']) { $_.source_kind } else { $_.document.kind } })
     if (-not ($formats -contains 'Text') -or -not ($formats -contains 'Markdown')) { throw 'TXT/Markdown source labels were not retained.' }
-    $evidence = [ordered]@{ exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant(); dpi_scale=$scale; profile=$profile; formats=$formats; result='passed'; assertions='native picker, keyboard navigation, persisted five imports/source labels, clean exit; screenshots require visual review' }
+    $evidence = [ordered]@{ exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant(); dpi_scale=$scale; profile=$profile; formats=$formats; result='passed'; repeat_cycles=$RepeatCycles; resources=@($resources.ToArray()); assertions='native picker, keyboard navigation, persisted five imports/source labels, repeated opens without duplicate imports, clean exit; screenshots require visual review' }
     $evidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $EvidenceDirectory 'result.json')
     Write-Host 'Normal-reader native smoke passed; inspect all screenshots.'
 } finally {

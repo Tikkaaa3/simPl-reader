@@ -73,6 +73,7 @@ impl Renderer {
         background_color: Color,
     ) {
         let scale_factor = viewport.scale_factor();
+        self.engine.reset_clip_mask();
 
         self.layers.flush();
 
@@ -111,7 +112,7 @@ impl Renderer {
                     continue;
                 };
 
-                engine::adjust_clip_mask(clip_mask, layer_bounds);
+                self.engine.adjust_clip_mask(clip_mask, layer_bounds);
 
                 if !layer.quads.is_empty() {
                     let render_span = debug::render(debug::Primitive::Quad);
@@ -139,7 +140,7 @@ impl Renderer {
                             continue;
                         };
 
-                        engine::adjust_clip_mask(clip_mask, group_bounds);
+                        self.engine.adjust_clip_mask(clip_mask, group_bounds);
 
                         for primitive in group.as_slice() {
                             self.engine.draw_primitive(
@@ -152,7 +153,7 @@ impl Renderer {
                             );
                         }
 
-                        engine::adjust_clip_mask(clip_mask, layer_bounds);
+                        self.engine.adjust_clip_mask(clip_mask, layer_bounds);
                     }
 
                     render_span.finish();

@@ -173,6 +173,9 @@ The 0.1.1 work includes bounded, cancellable background search for large books,
 shared page/contents data on frequent UI paths, and PDF raster rendering after a
 text-layer error. See [stabilization-report.md](stabilization-report.md) for checks,
 measurements and remaining release qualification. Next priorities are independent
-Windows/accessibility QA, profile backup and annotation export, then offline
-dictionary support. Per-book appearance can follow once its storage and page-map
-rules are specified.
+Windows/accessibility QA, profile backup and annotation export. Offline word
+translation and verified optional dictionary downloads are now implemented.
+Per-book appearance can follow once its storage and page-map rules are specified.
+The [final local reader review](reader-release-review-2026-09-30.md) compares the
+current product with other readers and separates release qualification from
+future features.

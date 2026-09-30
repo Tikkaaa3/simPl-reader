@@ -176,6 +176,10 @@ visual review, uses its own `LOCALAPPDATA` profile, checks that its reader owns
 foreground focus before sending input, and leaves the clipboard untouched.
 Generate the authored EPUB and PDF fixtures first (see their fixture guides).
 Its screenshots are evidence for the desktop's actual DPI, not other monitors.
+Use `-RepeatCycles 6` to add thirty document open/page-turn/close sequences after
+the initial smoke pass. Its result JSON records private memory, working set,
+handle/thread counts and two-second idle CPU samples after each five-format cycle.
+This is a short repetition check, not a multi-hour endurance or leak proof.
 
 The opt-in `production_format_workflows` test drives real application updates
 and asynchronous storage tasks, then renders production widgets at 540, 900
@@ -186,6 +190,8 @@ production_format_workflows -- --ignored --nocapture --test-threads=1`.
 Window/clipboard actions are excluded from this state-and-storage probe.
 The [2026-09-30 release audit](../../release-audit-2026-09-30.md) records the
 tested build, corrections, measurements and remaining qualification work.
+The [final local reader review](../../reader-release-review-2026-09-30.md) adds the
+latest renderer check, repeated native workflows and sourced reader comparisons.
 
 `--reader-poc` and `--reader-poc-large` load authored 1,000/10,000-paragraph workloads
 from `fixtures/reader-workload`. They are diagnostic modes, not the normal reader.

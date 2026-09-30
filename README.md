@@ -40,8 +40,8 @@ Example libraries shown above. Books are not included with the application.
 
 ## Get started
 
-The current target is **Windows x64**. The setup package is
-`simPl-0.1.1-windows-x64-setup.exe`. It installs for your Windows account, offers
+The current target is **Windows x64**. The setup package is named
+`simPl-<version>-windows-x64-setup.exe`. It installs for your Windows account, offers
 desktop and Start menu shortcuts, and registers an uninstaller in Windows Settings.
 When uninstalling, you can keep your library or delete simPl's imported copies and
 reading data. Original files outside the library are left untouched.
@@ -205,6 +205,8 @@ it does not embed a browser or WebView.
 
 See the [developer guide](crates/iced-shell/README.md), [project roadmap](roadmap.md),
 [Book parser roadmap](book-parser-roadmap.md), and [design reference](design/DESIGN.md).
+The [local reader review](reader-release-review-2026-09-30.md) records current
+release checks, performance limits and comparisons with other readers.
 For changes, run the workspace check and the focused verification relevant to the
 affected reader path. For bug reports, include the format, view mode, page number,
 steps to reproduce, and a shareable sample if possible.
