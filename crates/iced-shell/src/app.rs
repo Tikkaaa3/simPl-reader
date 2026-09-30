@@ -7045,6 +7045,9 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
 #[path = "book_preview.rs"]
 mod book_preview;
 #[cfg(test)]
+#[path = "promotion_preview.rs"]
+mod promotion_preview;
+#[cfg(test)]
 #[path = "settings_profile.rs"]
 mod settings_profile;
 

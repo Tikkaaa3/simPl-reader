@@ -4,9 +4,10 @@
 
 A native, offline reader for **PDF, EPUB, HTML, text and Markdown**, built with Rust for Windows x64.
 Keep a local library, pick up where you stopped, and read in a minimal interface
-with light and dark themes.
+with light and dark themes. Listen with Windows voices, look up words offline,
+and keep your highlights and notes with your books.
 
-![Reading Crime and Punishment in simPl's dark Book view](docs/screenshots/reading-dark.png)
+![The Quiet Hours in simPl's dark Book view](docs/screenshots/web/reading-dark.webp)
 
 [Get started](#get-started) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
 
@@ -25,6 +26,9 @@ with light and dark themes.
   numbers and page boundaries stay the same in every theme, and text size stays your
   own. All fonts are bundled, so nothing is downloaded.
 - **Reading comfort.** Fit Book pages to the available width or press F11 for fullscreen. Pick font, text size, line spacing and side margins independently; settings for an open reflowable book are remembered for that book, and library changes set defaults.
+- **Listen and follow along.** Windows' installed voices read continuously across pages and EPUB chapters. The viewport follows the spoken line, and a temporary word highlight shows your place. Pause, resume and adjust the speed; select Listen again to stop.
+- **Offline word lookup.** Double-click a word or select → right-click → Translate. Choose your language pair and automatic lookup preference. Download only the dictionaries you need; the 13 optional directions cover English, Turkish, Spanish, German, French, Japanese, Korean and Chinese. Lookup works locally after installation.
+- **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
 - **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
 - **Less chrome.** Collapse the toolbar to reclaim reading space. Choose Windows- or
   macOS-style window buttons in Settings. Geist for the interface, Literata (or the
@@ -36,9 +40,47 @@ with light and dark themes.
 
 | Light | Dark |
 | --- | --- |
-| ![simPl library in the light theme](docs/screenshots/library-light.png) | ![simPl library in the dark theme](docs/screenshots/library-dark.png) |
+| ![simPl library in the light theme](docs/screenshots/web/library-light.webp) | ![simPl library in the dark theme](docs/screenshots/web/library-dark.webp) |
 
-Example libraries shown above. Books are not included with the application.
+Import EPUB, PDF, HTML, TXT and Markdown, search your library, organize shelves,
+and return to Continue Reading. The original demonstration books shown here are
+not included with the application.
+
+## Find your reading style
+
+Four reading themes, each with light and dark colors. Typography preferences and
+zoom are independent, so you can make the page comfortable while keeping its place.
+
+| Soft · light | Clear · light |
+| --- | --- |
+| ![Warm paper and serif type in the Soft theme](docs/screenshots/web/reading-soft-light.webp) | ![Clear theme with generous spacing](docs/screenshots/web/reading-clear-light.webp) |
+
+| Compact · dark | Fullscreen |
+| --- | --- |
+| ![Compact dark reading theme](docs/screenshots/web/reading-compact-dark.webp) | ![Fullscreen reading with the window chrome hidden](docs/screenshots/web/reading-fullscreen.webp) |
+
+## Read, listen, remember
+
+| Highlights and notes | Offline word translation |
+| --- | --- |
+| ![A saved highlight and its note in the sidebar](docs/screenshots/web/notes-highlights.webp) | ![English to Turkish dictionary lookup for book](docs/screenshots/web/word-translation.webp) |
+
+| Listen with word tracking | Download the dictionaries you need |
+| --- | --- |
+| ![Listen paused with the current spoken word outlined](docs/screenshots/web/listen-word-highlight.webp) | ![Optional dictionary packages with sizes and download controls](docs/screenshots/web/dictionary-downloads.webp) |
+
+| PDF · Document | PDF · Book |
+| --- | --- |
+| ![Original PDF page with its layout and vector illustration](docs/screenshots/web/pdf-document.webp) | ![The same PDF reconstructed in Book view](docs/screenshots/web/pdf-book.webp) |
+
+| Reading settings | Back up your library |
+| --- | --- |
+| ![Per-book font, size, spacing and margin settings](docs/screenshots/web/reading-settings.webp) | ![Library backup and restore options](docs/screenshots/web/library-data.webp) |
+
+[Full-resolution PNGs, lossless WebP copies and media details](docs/screenshots/README.md)
+are available for websites and promotion. These are full-window renders of the
+production interface at 2560 × 1600, using an isolated demo library; they are
+not OS desktop captures. No controls or features were composited into the images.
 
 ## Get started
 

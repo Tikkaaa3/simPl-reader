@@ -3,7 +3,7 @@ use super::*;
 use iced_futures::futures::{StreamExt, executor::block_on};
 use iced_runtime::{Action as RuntimeAction, task::into_stream};
 
-fn pump(reader: &mut Reader, task: Task<Message>) {
+pub(super) fn pump(reader: &mut Reader, task: Task<Message>) {
     block_on(async {
         let mut queue = std::collections::VecDeque::new();
         queue.extend(into_stream(task));
@@ -21,11 +21,11 @@ fn pump(reader: &mut Reader, task: Task<Message>) {
         }
     });
 }
-fn send(reader: &mut Reader, message: Message) {
+pub(super) fn send(reader: &mut Reader, message: Message) {
     let task = update(reader, message);
     pump(reader, task);
 }
-fn boot() -> Reader {
+pub(super) fn boot() -> Reader {
     let mut reader = Reader::default();
     pump(
         &mut reader,
@@ -37,7 +37,7 @@ fn boot() -> Reader {
     );
     reader
 }
-fn opened(reader: &mut Reader, source: PathBuf) {
+pub(super) fn opened(reader: &mut Reader, source: PathBuf) {
     let started = std::time::Instant::now();
     let task = reader.open_with_import(source.clone(), None, true);
     pump(reader, task);

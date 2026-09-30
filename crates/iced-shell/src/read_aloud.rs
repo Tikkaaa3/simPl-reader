@@ -201,6 +201,13 @@ impl ReadAloud {
 }
 
 impl Reader {
+    #[cfg(test)]
+    pub(super) fn mute_preview_speech(&mut self) {
+        let speaker = Speaker::new().expect("installed Windows speech engine");
+        speaker.mute();
+        self.read_aloud.speaker = Some(speaker);
+    }
+
     /// Identifies the open document so a session ends when it changes.
     fn reading_document(&self) -> Option<String> {
         if let Some(pdf) = &self.pdf {

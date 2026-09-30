@@ -368,6 +368,11 @@ fn global_pages_zoom_and_cross_chapter_jump() {
 }
 
 pub(super) fn render(reader: &mut Reader, output: &Path) {
+    render_at_scale(reader, output, 1.0);
+}
+
+pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
+    assert!(scale.is_finite() && (1.0..=3.0).contains(&scale));
     settle_pagination(reader);
     let _ = reader.request_pdf_book_raster();
     if let Some((document, page)) = reader.pdf_book_pending {
@@ -513,15 +518,16 @@ pub(super) fn render(reader: &mut Reader, output: &Path) {
         mouse::Cursor::Unavailable,
         &bounds,
     );
-    let mut pixels = tiny_skia::Pixmap::new(size.width as u32, size.height as u32).unwrap();
-    let mut mask = tiny_skia::Mask::new(size.width as u32, size.height as u32).unwrap();
+    let physical = Size::new(
+        (size.width * scale).round() as u32,
+        (size.height * scale).round() as u32,
+    );
+    let mut pixels = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
+    let mut mask = tiny_skia::Mask::new(physical.width, physical.height).unwrap();
     renderer.draw(
         &mut pixels.as_mut(),
         &mut mask,
-        &iced::advanced::graphics::Viewport::with_physical_size(
-            Size::new(size.width as u32, size.height as u32),
-            1.0,
-        ),
+        &iced::advanced::graphics::Viewport::with_physical_size(physical, scale),
         &[Rectangle::new(Point::ORIGIN, size)],
         theme.palette().background,
     );
@@ -532,8 +538,8 @@ pub(super) fn render(reader: &mut Reader, output: &Path) {
     ::image::save_buffer(
         output,
         pixels.data(),
-        size.width as u32,
-        size.height as u32,
+        physical.width,
+        physical.height,
         ::image::ColorType::Rgba8,
     )
     .unwrap();
