@@ -1339,6 +1339,12 @@ enum Message {
         result: Result<String, String>,
     },
     ReadAloudTick,
+    ReadAloudLine {
+        generation: u64,
+        cursor: read_aloud::BookCursor,
+        page_top: f32,
+        line: Option<iced::Rectangle>,
+    },
     /// The text of a PDF selection to read aloud.
     ReadAloudText {
         document: u64,
@@ -3455,6 +3461,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         },
         Message::ReadAloud(action) => reader.read_aloud(action),
         Message::ReadAloudTick => reader.read_aloud_tick(),
+        Message::ReadAloudLine {
+            generation,
+            cursor,
+            page_top,
+            line,
+        } => reader.read_aloud_line(generation, cursor, page_top, line),
         Message::ReadAloudText {
             document,
             generation,
@@ -7866,12 +7878,7 @@ mod tests {
 
     /// Width of one line of text in a bundled reading face, shaped by the real renderer.
     fn line_width(family: Option<&'static str>, role: reader::FontRole) -> f32 {
-        for bytes in ui::font_data() {
-            iced::advanced::graphics::text::font_system()
-                .write()
-                .unwrap()
-                .load_font(std::borrow::Cow::Borrowed(bytes));
-        }
+        ui::load_test_fonts();
         let font = family.map_or(role.iced_font(), |family| {
             selection::with_reading_family(role.iced_font(), family)
         });

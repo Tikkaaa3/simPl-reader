@@ -149,9 +149,11 @@ full morphology remain open. See [downloadable data](assets/dictionaries/README.
 ## 8. Text to speech
 
 **Status: done for Windows.** Offline SAPI uses installed classic and OneCore
-voices. Listen (Ctrl+Shift+U) reads a selection or continues from the current page;
+voices. Listen (Ctrl+Shift+U) continues from the current page through the book,
+even with an existing selection; context-menu Read aloud reads only the passage.
 Listen toggles it off. Pause/resume and rate controls remain in the player. Voice
-and rate are persisted. Reading follows pages and asynchronous EPUB chapter loads;
+and rate are persisted. Scroll follows native spoken-line/glyph geometry within
+and across pages and asynchronous EPUB chapter loads;
 PDF selection/page replies are tied to the active session. Image-only pages are
 skipped. Automatic language selection is a heuristic, with a Windows default fallback.
 

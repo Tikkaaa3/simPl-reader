@@ -145,6 +145,21 @@ pub fn font_data() -> [&'static [u8]; 18] {
     ]
 }
 
+/// Initialize the shared renderer once before parallel widget tests. Reloading
+/// fonts mid-frame invalidates text caches and changes otherwise stable damage.
+#[cfg(test)]
+pub(crate) fn load_test_fonts() {
+    static LOADED: std::sync::Once = std::sync::Once::new();
+    LOADED.call_once(|| {
+        let mut system = iced::advanced::graphics::text::font_system()
+            .write()
+            .unwrap();
+        for bytes in font_data() {
+            system.load_font(std::borrow::Cow::Borrowed(bytes));
+        }
+    });
+}
+
 pub(crate) fn make_theme(colors: Palette, name: &str) -> Theme {
     Theme::custom(
         name.to_owned(),

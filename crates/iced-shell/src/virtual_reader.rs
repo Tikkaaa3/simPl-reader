@@ -218,6 +218,27 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
             .unwrap_or_default()
     }
 
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        operation.container(None, layout.bounds());
+        operation.traverse(&mut |operation| {
+            for ((row, state), row_layout) in self
+                .rows
+                .iter_mut()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+            {
+                row.as_widget_mut()
+                    .operate(state, row_layout, renderer, operation);
+            }
+        });
+    }
+
     fn draw(
         &self,
         tree: &Tree,

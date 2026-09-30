@@ -15,6 +15,11 @@ installer retention/deletion checks. This review adds a renderer optimization,
 fresh checks on the resulting executable, repeated desktop workflows and current
 official-source comparisons. Code signing remains deferred.
 
+The executable/package hashes and performance measurements below describe the
+release-review baseline before the subsequent continuous Listen/scroll-follow
+change. The feature table incorporates that follow-up; its checks are described
+in the shell's [speech QA instructions](crates/iced-shell/README.md).
+
 ## What is ready
 
 | Local reader need | Current behavior and important boundary |
@@ -24,7 +29,7 @@ official-source comparisons. Code signing remains deferred.
 | Read comfortably | Four bundled themes, light/dark, zoom, original PDF Document view and reconstructed PDF Book view, stable global/source page numbering, a collapsible toolbar and keyboard navigation. Book scrolling stays within the current page. EPUB/HTML use our extracted structure, not faithful publisher CSS; tables/MathML have text/source fallbacks. |
 | Navigate and find | Contents, chapter/page navigation, internal links/footnotes and return to passage; asynchronous EPUB/PDF search with cancellation, a 64 MiB text-index budget and a 1,000-match cap. |
 | Annotate | Bookmarks, coloured highlights, notes, sidebar navigation and per-book sidecars with location recovery. There is no annotation export UI or embedding of our annotations in PDF/EPUB files. |
-| Listen offline | Installed Windows SAPI voices, selection/current-page onward reading, Listen toggle, pause/resume, saved voice/rate and asynchronous chapter transitions. No word-by-word speech highlighting or bundled neural voices. |
+| Listen offline | Installed Windows SAPI voices; toolbar Listen continues from the current page to the book's end regardless of selection, with spoken-line scroll following and asynchronous chapter transitions. Context-menu Read aloud reads the selection/highlight only. Listen toggle, pause/resume and saved voice/rate. No word-by-word speech highlighting or bundled neural voices. |
 | Look up words offline | Automatic double-click/short-selection card or manual right-click Translate; saved source/target and automatic setting; explicit download, progress, cancellation, retry, removal and verified ZIP import. Selected book text is not uploaded. |
 | Keep optional data optional | Thirteen dictionary directions: EN ↔ TR/ES/DE/FR/JA/ZH, and KO → EN. All ZIPs total 19.77 MB; only the 5,175-byte catalog is embedded. Packs work offline after installation. This is dictionary lookup, not general sentence translation. |
 | Install locally | Per-user setup, portable folder, native PDFium beside the executable, required notices, upgrade retention and uninstall keep/delete choice. The current artifacts are unsigned and have not been published as an app release. |
@@ -172,7 +177,7 @@ of offline lookup elsewhere.
 | First product follow-up | Profile backup/restore and annotation export, then a clear source-file refresh/reimport action. | Users need to carry their reading work elsewhere and understand why an edited original differs from the managed copy. |
 | Reading UX | Book Fit-width and fullscreen, independent font/spacing/margin controls, per-book preferences; carefully specified continuous/two-page modes and touchpad/touch support. | The larger gap against mature readers is control over reading comfort. These changes must define stable-page and annotation semantics first. |
 | Language learning | Save looked-up words, reusable/exportable vocabulary; expand dictionary coverage and inflection handling; consider external dictionary adapters later. | Existing lookup is useful but not yet a vocabulary-learning workflow. Packs can miss words and inflected forms. |
-| Optional later work | Neural TTS and spoken-text following; PDF printing/rotation; richer library metadata and tabs if users need them. | Useful extras, with separate UI/storage/testing costs; they are not required to finish this local-reading MVP. |
+| Optional later work | Neural TTS and spoken-word highlighting; PDF printing/rotation; richer library metadata and tabs if users need them. | Useful extras, with separate UI/storage/testing costs; they are not required to finish this local-reading MVP. |
 | Separate roadmap | Argos sentence translation/plugin runtime, OCR, OPDS/cloud sync, DRM/fixed-layout expansion. | These substantially widen scope. They should remain deliberate later decisions; no Argos or plugin system was implemented in this review. |
 
 My recommendation is to keep the current product scope for a beta, disclose the

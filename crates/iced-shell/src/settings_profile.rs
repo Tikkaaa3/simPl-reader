@@ -4,18 +4,6 @@ use iced::advanced::{Layout, Renderer as _, layout, renderer, widget::Tree};
 use iced::{Point, Rectangle};
 use std::time::Instant;
 
-fn load_fonts() {
-    static LOADED: std::sync::Once = std::sync::Once::new();
-    LOADED.call_once(|| {
-        for bytes in ui::font_data() {
-            iced::advanced::graphics::text::font_system()
-                .write()
-                .unwrap()
-                .load_font(std::borrow::Cow::Borrowed(bytes));
-        }
-    });
-}
-
 fn scenario(with_book: bool, narrow: bool) -> Reader {
     let mut reader = Reader {
         show_settings: true,
@@ -44,7 +32,7 @@ fn scenario(with_book: bool, narrow: bool) -> Reader {
 
 #[test]
 fn settings_scroll_damage_stays_contiguous() {
-    load_fonts();
+    ui::load_test_fonts();
     run_case("book", scenario(true, false), 1.0, false);
     run_case("shelf", scenario(false, false), 1.0, false);
     run_case("narrow-picker", scenario(true, true), 1.5, false);
@@ -56,7 +44,7 @@ fn settings_scroll_damage_stays_contiguous() {
 #[test]
 fn cached_control_glyph_respects_its_scroll_clip() {
     use iced::advanced::text::Renderer as _;
-    load_fonts();
+    ui::load_test_fonts();
     let bounds = Rectangle::new(Point::ORIGIN, Size::new(120.0, 100.0));
     let clip = Rectangle {
         height: 50.0,
@@ -108,7 +96,7 @@ fn cached_control_glyph_respects_its_scroll_clip() {
 #[test]
 #[ignore = "Settings scroll CPU profile: use --release --ignored --nocapture"]
 fn profile_settings_scroll() {
-    load_fonts();
+    ui::load_test_fonts();
     for (name, with_book, scale, narrow) in [
         ("book-1x", true, 1.0, false),
         ("shelf-1x", false, 1.0, false),

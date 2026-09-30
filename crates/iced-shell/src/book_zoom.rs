@@ -58,6 +58,10 @@ impl<M> Widget<M, iced::Theme, iced::Renderer> for Zoom<'_, M> {
         renderer: &iced::Renderer,
         operation: &mut dyn widget::Operation,
     ) {
+        operation.container(
+            Some(&iced_shell::selection::reading_paper_id()),
+            layout.bounds(),
+        );
         self.content.as_widget_mut().operate(
             &mut tree.children[0],
             layout.children().next().unwrap(),

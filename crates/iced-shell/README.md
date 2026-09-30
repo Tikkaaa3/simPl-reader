@@ -71,15 +71,24 @@ Do not commit personal books or user library data.
 For native speech checks, initialize MSVC as above and run:
 
 ```powershell
+$env:LOCALAPPDATA = Join-Path $PWD 'target\speech-qa-profile'
 cargo test -p iced-shell --bin iced-shell --locked --offline installed_voices_speak -- --ignored --nocapture
+Copy-Item target\release\pdfium.dll target\debug\deps\pdfium.dll
 python fixtures/read-aloud/build_epub.py
 $env:SIMPL_TTS_EPUB = Join-Path $PWD 'target\tts-qa.epub'
-cargo test -p iced-shell --bin iced-shell --locked --offline native_read_aloud -- --ignored --nocapture
+cargo test -p iced-shell --bin iced-shell --locked --offline native_read_aloud -- --ignored --nocapture --test-threads=1
 ```
 
 These checks use the installed Windows voices with their volume set to zero.
 The PDF regression checks require `pdfium.dll` beside the test executable.
 The authored EPUB alternates empty and short Turkish/English chapters.
+Continuous-reading checks execute real async chapter/PDF requests and widget
+operations. They cover an existing selection, multiple papers, within-page
+scroll, blank PDF pages and avoiding speech restarts caused by our own scroll.
+`spoken_native_lines` checks native shaped-line following at 100% and 150% Book
+zoom in all four themes, preserving selection and ignoring geometry replies after
+pause/navigation. `spoken_paragraph_outside` covers rows outside the retained
+window, such as a small viewport at high zoom.
 `render_read_aloud_previews` renders player/settings views at 1280 and 540 pixels
 to `target/tts-previews` without desktop input.
 

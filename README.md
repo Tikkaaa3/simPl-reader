@@ -90,12 +90,14 @@ long notes scroll within the list.
 Bookmarks and highlights are stored per book under
 `%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
 
-Select **Listen** or press **Ctrl+Shift+U** to read selected text aloud, or continue
-from the current page when nothing is selected. The player provides pause, resume,
-and speed controls, and follows the reading across pages and EPUB chapters.
+Select **Listen** or press **Ctrl+Shift+U** to continue from the current page to the
+end of the book, even when text is selected. The player provides pause, resume,
+and speed controls. The viewport follows the spoken line, turning pages and
+loading the next EPUB chapter automatically.
 Select **Listen** again or press **Ctrl+Shift+U** to stop.
-The selection menu and saved highlights also offer **Read aloud**. Choose a voice
-and speed in Settings; both are saved. Speech uses Windows' installed voices
+Use **Read aloud** in the selection menu or on a saved highlight to read only
+that passage. Choose a voice and speed in Settings; both are saved. Speech uses
+Windows' installed voices
 offline. Automatic voice selection estimates the text's language and falls back
 to the Windows default. PDF reading needs a permitted text layer; image-only pages
 are skipped.

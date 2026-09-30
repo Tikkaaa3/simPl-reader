@@ -728,6 +728,37 @@ impl Reader {
         self.jump(page.min(self.document.pages.len().saturating_sub(1)))
     }
 
+    /// Keep the spoken word in view using the PDF's actual glyph boxes.
+    /// The ordinary bounded renderer loads missing page text; no second text
+    /// cache or extraction request is needed for speech following.
+    pub(crate) fn follow_speech(&mut self, page: usize, word: u32, length: u32) -> Task<Message> {
+        let Some(layer) = self
+            .cached
+            .get(&(page as u32))
+            .and_then(|entry| entry.text.as_ref())
+        else {
+            return if self.page_index() == page {
+                self.request_next()
+            } else {
+                self.go_to_page(page)
+            };
+        };
+        let bytes = crate::speech::word_bytes(&layer.text, word, length);
+        let first = layer
+            .glyphs
+            .iter()
+            .position(|glyph| glyph.end > bytes.start && glyph.start < bytes.end);
+        let last = layer
+            .glyphs
+            .iter()
+            .rposition(|glyph| glyph.end > bytes.start && glyph.start < bytes.end);
+        match (first, last) {
+            (Some(first), Some(last)) => self.scroll_to_glyph(page as u32, first, last),
+            _ if self.page_index() != page => self.go_to_page(page),
+            _ => Task::none(),
+        }
+    }
+
     /// Brings glyphs `first..=last` of `page` into view without selecting them.
     pub fn reveal(&mut self, page: u32, first: usize, last: usize) -> Task<Message> {
         if page as usize >= self.document.pages.len() {
@@ -830,6 +861,7 @@ impl Reader {
             return Task::none();
         };
         let visible_height = self.viewport.height;
+        let previous = self.offset;
         let comfortably_visible = y >= self.offset.y + visible_height * 0.08
             && y + height <= self.offset.y + visible_height * 0.85;
         if !comfortably_visible {
@@ -841,6 +873,9 @@ impl Reader {
             && (x < self.offset.x + 24.0 || x > self.offset.x + self.viewport.width - 96.0)
         {
             self.offset.x = (x - self.viewport.width / 2.0).clamp(0.0, horizontal_extent);
+        }
+        if self.offset == previous {
+            return Task::none();
         }
         self.range = self.visible_range();
         self.failed.clear();

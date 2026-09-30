@@ -529,6 +529,75 @@ fn selected_glyph_bounds(
 
 type NativeParagraph = <iced::Renderer as TextRenderer>::Paragraph;
 
+/// Identifies the unscaled paper when querying retained text geometry.
+pub fn reading_paper_id() -> iced::advanced::widget::Id {
+    iced::advanced::widget::Id::new("reading-paper")
+}
+
+/// Locates a source character using the paragraph already shaped by the UI.
+/// Bounds are relative to the unscaled paper, including block padding/insets.
+pub fn reading_line(
+    endpoint: Endpoint,
+) -> impl iced::advanced::widget::Operation<Option<iced::Rectangle>> {
+    struct Query {
+        endpoint: Endpoint,
+        paper: Option<iced::Point>,
+        result: Option<iced::Rectangle>,
+    }
+    impl iced::advanced::widget::Operation<Option<iced::Rectangle>> for Query {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(
+                &mut dyn iced::advanced::widget::Operation<Option<iced::Rectangle>>,
+            ),
+        ) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: iced::Rectangle) {
+            if id == Some(&reading_paper_id()) {
+                self.paper = Some(bounds.position());
+            }
+        }
+
+        fn custom(
+            &mut self,
+            _: Option<&iced::advanced::widget::Id>,
+            bounds: iced::Rectangle,
+            state: &mut dyn std::any::Any,
+        ) {
+            let Some(state) = state.downcast_ref::<ParagraphState>() else {
+                return;
+            };
+            if state.item_id != self.endpoint.item_id
+                || !(state.item_offset..state.item_offset + state.logical_len)
+                    .contains(&self.endpoint.byte_offset)
+            {
+                return;
+            }
+            let Some(paper) = self.paper else {
+                return;
+            };
+            let byte = self.endpoint.byte_offset - state.item_offset
+                + usize::from(state.leading_rlm) * LEADING_RLM.len();
+            if let Some(line) =
+                selected_glyph_bounds(&state.paragraph, Some(&(byte..byte + 1))).first()
+            {
+                self.result = Some(*line + (bounds.position() - paper));
+            }
+        }
+
+        fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<iced::Rectangle>> {
+            iced::advanced::widget::operation::Outcome::Some(self.result)
+        }
+    }
+    Query {
+        endpoint,
+        paper: None,
+        result: None,
+    }
+}
+
 /// Natural width of one unwrapped line, as the real text renderer shapes it.
 pub fn text_width(text: &str, font: iced::Font, size: f32) -> f32 {
     let spans: Vec<Span<'static, (), iced::Font>> =
@@ -570,6 +639,9 @@ struct ParagraphState {
     paragraph: NativeParagraph,
     spans: Vec<SpanKey>,
     item_id: String,
+    item_offset: usize,
+    logical_len: usize,
+    leading_rlm: bool,
     link_press: Option<(usize, iced::Point)>,
     link_dragged: bool,
     /// Last endpoint reported during a drag; unchanged hits are not re-sent.
@@ -644,6 +716,9 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
             paragraph: NativeParagraph::default(),
             spans: Vec::new(),
             item_id: String::new(),
+            item_offset: 0,
+            logical_len: 0,
+            leading_rlm: false,
             link_press: None,
             link_dragged: false,
             last_move: None,
@@ -657,6 +732,9 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
         limits: &layout::Limits,
     ) -> layout::Node {
         let state = tree.state.downcast_mut::<ParagraphState>();
+        state.item_offset = self.item_offset;
+        state.logical_len = self.logical_text.len();
+        state.leading_rlm = self.leading_rlm;
         if state.item_id != self.item_id {
             state.item_id.clone_from(&self.item_id);
             state.link_press = None;
@@ -705,6 +783,20 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
             }
             state.paragraph.min_bounds()
         })
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &iced::Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        operation.custom(
+            None,
+            layout.bounds(),
+            tree.state.downcast_mut::<ParagraphState>(),
+        );
     }
 
     fn draw(

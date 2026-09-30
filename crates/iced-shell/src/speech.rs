@@ -63,6 +63,8 @@ pub struct Status {
     pub done: bool,
     /// UTF-16 offset of the word being spoken, in its stream's text.
     pub word: u32,
+    /// UTF-16 length of the word being processed.
+    pub word_len: u32,
 }
 
 pub struct Speaker {
@@ -228,6 +230,7 @@ impl Speaker {
             done: status.dwRunningState == SPRS_DONE.0 as u32
                 && status.ulCurrentStream >= status.ulLastStreamQueued,
             word: status.ulInputWordPos,
+            word_len: status.ulInputWordLen,
         })
     }
 
@@ -236,6 +239,24 @@ impl Speaker {
         // SAFETY: suppresses output during native integration checks.
         unsafe { self.voice.SetVolume(0) }.unwrap();
     }
+}
+
+/// Converts SAPI's UTF-16 character offsets to safe UTF-8 source coordinates.
+pub(crate) fn word_bytes(text: &str, start: u32, length: u32) -> std::ops::Range<usize> {
+    let end = start.saturating_add(length.max(1));
+    let mut units = 0_u32;
+    let mut first = None;
+    for (byte, character) in text.char_indices() {
+        let next = units.saturating_add(character.len_utf16() as u32);
+        if first.is_none() && start < next {
+            first = Some(byte);
+        }
+        if units >= end {
+            return first.unwrap_or(byte)..byte;
+        }
+        units = next;
+    }
+    first.unwrap_or(text.len())..text.len()
 }
 
 impl Drop for Speaker {
@@ -362,6 +383,19 @@ pub fn speed(rate: i8) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sapi_word_ranges_preserve_unicode_and_surrogate_pairs() {
+        let text = "A 😀 Çin 日本語 café";
+        for word in ["A", "😀", "Çin", "日本語", "café"] {
+            let byte = text.find(word).unwrap();
+            let start = text[..byte].encode_utf16().count() as u32;
+            let length = word.encode_utf16().count() as u32;
+            assert_eq!(&text[word_bytes(text, start, length)], word);
+        }
+        assert_eq!(&text[word_bytes(text, 3, 1)], "😀");
+        assert!(word_bytes(text, u32::MAX, u32::MAX).is_empty());
+    }
 
     #[test]
     fn languages_are_guessed_from_their_letters() {

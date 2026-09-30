@@ -17,7 +17,7 @@ const TICK_MS: u64 = 200;
 
 #[derive(Clone, Debug)]
 pub(super) enum Action {
-    /// Read the selection if there is one, otherwise from this page on; or stop reading.
+    /// Read from this page through the book, regardless of any selection; or stop.
     Toggle,
     /// Read only the selection (from the context menu).
     Selection,
@@ -69,6 +69,8 @@ pub(super) struct Session {
     /// The page shown for the text being read; if the reader shows another, the
     /// reader moved there.
     expected: Option<Place>,
+    /// Last retained-layout query, so an unchanged word does not repeat work.
+    follow_cursor: Option<BookCursor>,
     pub(super) notice: Option<String>,
 }
 
@@ -78,13 +80,20 @@ enum Place {
     Pdf(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct BookCursor {
+    stream: u32,
+    word: u32,
+    layout: u64,
+    offset: f32,
+}
+
 #[derive(Debug)]
 struct Queued {
     stream: u32,
     unit: Unit,
     /// UTF-16 offset of the spoken text within its paragraph, and the paragraph length.
     start: u32,
-    total: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -224,7 +233,7 @@ impl Reader {
                 self.read_aloud.stop();
                 Task::none()
             }
-            Action::Toggle => self.start_reading(true),
+            Action::Toggle => self.start_reading(false),
             Action::Selection => self.start_reading(true),
             Action::Pause => {
                 if let Some(speaker) = self.read_aloud.speaker.as_mut() {
@@ -232,6 +241,7 @@ impl Reader {
                 }
                 if let Some(session) = &mut self.read_aloud.session {
                     session.paused = true;
+                    session.follow_cursor = None;
                 }
                 Task::none()
             }
@@ -322,10 +332,10 @@ impl Reader {
         let Some(book) = &self.book else {
             return Task::none();
         };
-        let selected = self
-            .selection
-            .copy_text(&book.items)
-            .filter(|text| prefer_selection && !text.trim().is_empty());
+        let selected = prefer_selection
+            .then(|| self.selection.copy_text(&book.items))
+            .flatten()
+            .filter(|text| !text.trim().is_empty());
         if let Some(text) = selected {
             self.begin(document, true, Next::Nothing, None);
             self.speak_text(&text);
@@ -373,6 +383,7 @@ impl Reader {
             queued: VecDeque::new(),
             next,
             expected,
+            follow_cursor: None,
             notice: None,
         });
     }
@@ -419,7 +430,6 @@ impl Reader {
                         stream,
                         unit: Unit::Text,
                         start: 0,
-                        total: text.encode_utf16().count() as u32,
                     });
                 }
             }
@@ -604,7 +614,7 @@ impl Reader {
             return false;
         }
         let first = session.queued.is_empty();
-        let (text, unit, start, total, next) = match session.next.clone() {
+        let (text, unit, start, next) = match session.next.clone() {
             Next::Rows { chapter, row, skip } => {
                 let Some(book) = &self.book else {
                     return false;
@@ -647,7 +657,6 @@ impl Reader {
                     whole[from..].to_owned(),
                     Unit::Row(index),
                     whole[..from].encode_utf16().count() as u32,
-                    whole.encode_utf16().count() as u32,
                     Next::Rows {
                         chapter,
                         row: index + 1,
@@ -705,8 +714,7 @@ impl Reader {
                     }
                     return true;
                 }
-                let total = text.encode_utf16().count() as u32;
-                (text, Unit::PdfPage(page), 0, total, next)
+                (text, Unit::PdfPage(page), 0, next)
             }
             Next::Chapter(_) | Next::Opening(_) | Next::Nothing => return false,
         };
@@ -744,7 +752,6 @@ impl Reader {
                         stream,
                         unit,
                         start,
-                        total,
                     });
                     session.next = next;
                 }
@@ -769,48 +776,162 @@ impl Reader {
                 .queued
                 .iter()
                 .find(|queued| queued.stream == status.stream)
-                .map(|queued| (queued.unit, queued.start, queued.total))
+                .map(|queued| (queued.unit, queued.start))
         }) else {
             return Task::none();
         };
         match current {
             (Unit::PdfPage(page), ..) => {
-                if let Some(session) = &mut self.read_aloud.session {
-                    session.expected = Some(Place::Pdf(page));
-                }
                 let Some(pdf) = self.pdf.as_mut() else {
                     return Task::none();
                 };
-                if pdf.page_index() == page {
-                    return Task::none();
-                }
                 let document = pdf.document().id;
-                pdf.go_to_page(page)
-                    .map(move |message| Message::Pdf { document, message })
+                let task = pdf
+                    .follow_speech(page, status.word, status.word_len)
+                    .map(move |message| Message::Pdf { document, message });
+                // Following a word near the page's top may leave the viewport
+                // starting on the previous sheet. Record the actual viewport,
+                // otherwise the next tick mistakes our own scroll for navigation.
+                let place = self.place();
+                if let Some(session) = &mut self.read_aloud.session {
+                    session.expected = place;
+                }
+                task
             }
-            (Unit::Row(row), start, total) => {
-                let fraction = ((start + status.word) as f32 / total.max(1) as f32).clamp(0.0, 1.0);
-                let y = self.heights.start(row) + self.heights.height(row) * fraction;
+            (Unit::Row(row), start) => {
                 let pages = self.pages();
-                let Some(target) = pages
-                    .iter()
-                    .position(|page| page.content.start <= y && y < page.content.end)
-                    .or_else(|| pages.iter().rposition(|page| page.rows.contains(&row)))
+                // A paragraph may span several papers. Keep the current paper
+                // until retained native line geometry tells us where the word
+                // is; a character/height ratio would repeatedly turn us back.
+                let Some(target) = self
+                    .active_page()
+                    .filter(|page| page.rows.contains(&row))
+                    .and_then(|current| pages.iter().position(|page| page.top == current.top))
+                    .or_else(|| pages.iter().position(|page| page.rows.contains(&row)))
                 else {
                     return Task::none();
                 };
                 let chapter = self.book_chapter();
-                let top = pages[target].top;
+                let page = pages[target].clone();
+                let top = page.top;
                 if let Some(session) = &mut self.read_aloud.session {
                     session.expected = Some(Place::Book { chapter, top });
                 }
-                if self.active_page().is_some_and(|page| page.top == top) {
+                if !self.active_page().is_some_and(|page| page.top == top) {
+                    return self.go_to_local_page(target);
+                }
+                let content_offset =
+                    (self.offset - top - book_pages::TOP).max(0.0) + page.content.start;
+                if !self
+                    .heights
+                    .window(content_offset, self.viewport, OVERSCAN)
+                    .contains(&row)
+                {
+                    // The UI only retains visible rows. Bring an off-screen
+                    // paragraph into that window before asking for its glyphs.
+                    let y = top + book_pages::TOP + self.heights.start(row).max(page.content.start)
+                        - page.content.start;
+                    self.pending_anchor = None;
+                    self.offset = (y - self.viewport * 0.3)
+                        .clamp(top, top + (page.height - self.viewport).max(0.0));
+                    return self.restore_book_scroll();
+                }
+                let cursor = BookCursor {
+                    stream: status.stream,
+                    word: status.word,
+                    layout: self.generation,
+                    offset: self.offset,
+                };
+                let Some(session) = &mut self.read_aloud.session else {
+                    return Task::none();
+                };
+                if session.follow_cursor == Some(cursor) {
                     return Task::none();
                 }
-                self.go_to_local_page(target)
+                session.follow_cursor = Some(cursor);
+                let generation = self.read_aloud.generation;
+                let Some(item) = self.book.as_ref().and_then(|book| book.items.get(row)) else {
+                    return Task::none();
+                };
+                let Some(text) = item.text() else {
+                    return Task::none();
+                };
+                let byte_offset =
+                    speech::word_bytes(text, start.saturating_add(status.word), status.word_len)
+                        .start;
+                iced::advanced::widget::operate(selection::reading_line(Endpoint {
+                    item_id: item.id().to_owned(),
+                    byte_offset,
+                }))
+                .map(move |line| Message::ReadAloudLine {
+                    generation,
+                    cursor,
+                    page_top: top,
+                    line,
+                })
             }
             (Unit::Text, ..) => Task::none(),
         }
+    }
+
+    /// Follow an actual shaped line, rather than estimating its height from
+    /// character counts. The query never selects text or creates annotations.
+    pub(super) fn read_aloud_line(
+        &mut self,
+        generation: u64,
+        cursor: BookCursor,
+        page_top: f32,
+        line: Option<iced::Rectangle>,
+    ) -> Task<Message> {
+        let Some(session) = &mut self.read_aloud.session else {
+            return Task::none();
+        };
+        if generation != self.read_aloud.generation
+            || session.follow_cursor != Some(cursor)
+            || session.paused
+            || cursor.layout != self.generation
+        {
+            return Task::none();
+        }
+        let Some(line) = line else {
+            session.follow_cursor = None; // Retry after the newly visible row is laid out.
+            return Task::none();
+        };
+        let Some(current) = self.active_page().filter(|page| page.top == page_top) else {
+            return Task::none();
+        };
+        let content = current.content.start + line.y - book_pages::TOP;
+        let Some(page) = self
+            .pages()
+            .iter()
+            .find(|page| page.content.start <= content && content < page.content.end)
+            .cloned()
+        else {
+            return Task::none();
+        };
+        let changed_page = current.top != page.top;
+        let y = page.top + book_pages::TOP + content - page.content.start;
+        let visible = !changed_page
+            && y >= self.offset + self.viewport * 0.08
+            && y + line.height <= self.offset + self.viewport * 0.85;
+        if visible {
+            return Task::none();
+        }
+        if changed_page {
+            self.word_translation.reset();
+            self.generation = self.generation.wrapping_add(1);
+        }
+        self.pending_anchor = None;
+        self.offset = (y - self.viewport * 0.3)
+            .clamp(page.top, page.top + (page.height - self.viewport).max(0.0));
+        let chapter = self.book_chapter();
+        if let Some(session) = &mut self.read_aloud.session {
+            session.expected = Some(Place::Book {
+                chapter,
+                top: page.top,
+            });
+        }
+        self.restore_book_scroll()
     }
 
     /// What the player bar says it is doing.
@@ -1007,7 +1128,8 @@ pub(super) fn settings(reader: &Reader, choices: Vec<VoiceChoice>) -> Element<'_
         .spacing(12)
         .align_y(iced::Alignment::Center),
         text(
-            "Reads the selection, or from the current page on, with the voices installed in \
+            "Listen reads from the current page to the end of the book and follows the spoken text. \
+             Use Read aloud in the selection menu to read only a selection. Voices are installed in \
              Windows; no network is used. Automatic picks a voice for the language of the text. \
              Add voices in Windows Settings › Time & language › Speech. Ctrl+Shift+U starts or stops."
         )
@@ -1021,6 +1143,329 @@ pub(super) fn settings(reader: &Reader, choices: Vec<VoiceChoice>) -> Element<'_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Executes the real async/update/widget-operation path without OS input.
+    fn pump(reader: &mut Reader, task: Task<Message>) {
+        use iced::advanced::{Layout, layout, widget::Tree};
+        use iced_futures::futures::{StreamExt, executor::block_on};
+        use iced_runtime::{Action as RuntimeAction, task::into_stream};
+        ui::load_test_fonts();
+        let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+        let mut tree = Tree::empty();
+        block_on(async {
+            let mut queue = VecDeque::from_iter(into_stream(task));
+            let mut count = 0;
+            while let Some(mut stream) = queue.pop_front() {
+                while let Some(action) = stream.next().await {
+                    count += 1;
+                    assert!(count < 2000, "speech tasks must settle");
+                    match action {
+                        RuntimeAction::Output(message) => {
+                            queue.extend(into_stream(update(reader, message)))
+                        }
+                        RuntimeAction::Widget(mut operation) => {
+                            let limits = layout::Limits::new(Size::ZERO, reader.window_size);
+                            let mut element = view(reader);
+                            tree.diff(element.as_widget());
+                            let node = element
+                                .as_widget_mut()
+                                .layout(&mut tree, &renderer, &limits);
+                            loop {
+                                element.as_widget_mut().operate(
+                                    &mut tree,
+                                    Layout::new(&node),
+                                    &renderer,
+                                    operation.as_mut(),
+                                );
+                                match operation.finish() {
+                                    iced::advanced::widget::operation::Outcome::Chain(next) => {
+                                        operation = next
+                                    }
+                                    _ => break,
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn spoken_native_lines_scroll_and_cross_papers_without_bouncing_or_selection_changes() {
+        ui::load_test_fonts();
+        for (zoom, theme) in [1.0, 1.5]
+            .into_iter()
+            .flat_map(|zoom| themes::THEMES.iter().map(move |theme| (zoom, theme)))
+        {
+            let mut reader = book_reader();
+            let text = format!("Beginning.{}Final 😀 words at the bottom.", "\n".repeat(85));
+            Arc::get_mut(reader.book.as_mut().unwrap()).unwrap().items = vec![Item::Paragraph {
+                id: "paragraph-0".into(),
+                text: text.clone(),
+                base_direction: BaseDirection::Ltr,
+                style_runs: Vec::new(),
+            }];
+            reader.zoom = zoom;
+            reader.theme = theme;
+            reader.viewport = 160.0;
+            reader.atlas = None;
+            let _ = reader.rebuild_geometry(Anchor {
+                row: 0,
+                fraction: 0.0,
+            });
+            settle_pagination(&mut reader);
+            assert!(reader.page_total() >= 3);
+            reader.selection.begin(Endpoint {
+                item_id: "paragraph-0".into(),
+                byte_offset: 0,
+            });
+            reader.selection.extend(Endpoint {
+                item_id: "paragraph-0".into(),
+                byte_offset: 9,
+            });
+            reader.selection.end_drag();
+            let selection = reader
+                .selection
+                .copy_text(&reader.book.as_ref().unwrap().items);
+            reader.begin(
+                reader.reading_document().unwrap(),
+                false,
+                Next::Nothing,
+                reader.place(),
+            );
+            reader
+                .read_aloud
+                .session
+                .as_mut()
+                .unwrap()
+                .queued
+                .push_back(Queued {
+                    stream: 7,
+                    unit: Unit::Row(0),
+                    start: 0,
+                });
+            let byte = text.find("Final").unwrap();
+            let status = speech::Status {
+                stream: 7,
+                word: text[..byte].encode_utf16().count() as u32,
+                word_len: 5,
+                done: false,
+            };
+            let task = reader.follow(status);
+            pump(&mut reader, task);
+            assert!(
+                reader.active_page().unwrap().number >= 2,
+                "native line should cross papers at zoom {zoom}, theme {}",
+                theme.id
+            );
+            let offset = reader.offset;
+            for _ in 0..4 {
+                let task = reader.follow(status);
+                pump(&mut reader, task);
+                assert!(
+                    (reader.offset - offset).abs() < 0.01,
+                    "must not bounce to an estimated page"
+                );
+            }
+            assert_eq!(
+                reader
+                    .selection
+                    .copy_text(&reader.book.as_ref().unwrap().items),
+                selection
+            );
+            assert_eq!(
+                reader.read_aloud.session.as_ref().unwrap().expected,
+                reader.place()
+            );
+
+            // A queued geometry reply cannot move the viewport after Pause or navigation.
+            let task = reader.follow(speech::Status {
+                word: status.word + 6,
+                ..status
+            });
+            let _ = reader.read_aloud(Action::Pause);
+            pump(&mut reader, task);
+            assert!((reader.offset - offset).abs() < 0.01);
+            assert!(reader.read_aloud.session.as_ref().unwrap().paused);
+            let _ = reader.read_aloud(Action::Resume);
+            let task = reader.follow(status);
+            let _ = reader.go_to_local_page(0);
+            let offset = reader.offset;
+            pump(&mut reader, task);
+            assert_eq!(reader.offset, offset);
+        }
+    }
+
+    #[test]
+    fn spoken_paragraph_outside_the_retained_window_is_brought_into_view() {
+        ui::load_test_fonts();
+        let mut reader = book_reader();
+        Arc::get_mut(reader.book.as_mut().unwrap()).unwrap().items = (0..30)
+            .map(|index| Item::Paragraph {
+                id: format!("paragraph-{index}"),
+                text: "One short paragraph.".into(),
+                base_direction: BaseDirection::Ltr,
+                style_runs: Vec::new(),
+            })
+            .collect();
+        reader.viewport = 40.0;
+        reader.atlas = None;
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        let page = reader.active_page().unwrap();
+        let row = page.rows.end - 1;
+        assert!(
+            !reader
+                .heights
+                .window(0.0, reader.viewport, OVERSCAN)
+                .contains(&row)
+        );
+        reader.begin(
+            reader.reading_document().unwrap(),
+            false,
+            Next::Nothing,
+            reader.place(),
+        );
+        reader
+            .read_aloud
+            .session
+            .as_mut()
+            .unwrap()
+            .queued
+            .push_back(Queued {
+                stream: 7,
+                unit: Unit::Row(row),
+                start: 0,
+            });
+        let status = speech::Status {
+            stream: 7,
+            word: 4,
+            word_len: 5,
+            done: false,
+        };
+        for _ in 0..3 {
+            let task = reader.follow(status);
+            pump(&mut reader, task);
+        }
+        assert!(reader.local_offset() > OVERSCAN);
+        assert_eq!(reader.active_page().unwrap().top, page.top);
+        let offset = reader.offset;
+        let task = reader.follow(status);
+        pump(&mut reader, task);
+        assert_eq!(reader.offset, offset);
+    }
+
+    #[test]
+    #[ignore = "Native speech QA: muted Windows voice, retained widget geometry, repeated paper transitions"]
+    fn native_read_aloud_toolbar_finishes_multiple_papers_with_a_selection() {
+        ui::load_test_fonts();
+        let mut reader = book_reader();
+        let book = Arc::get_mut(reader.book.as_mut().unwrap()).unwrap();
+        for (index, item) in book.items.iter_mut().enumerate() {
+            *item = Item::Paragraph {
+                id: format!("paragraph-{index}"),
+                text: format!(
+                    "Paragraph {} begins.{}This paragraph ends.",
+                    index + 1,
+                    "\n".repeat(38)
+                ),
+                base_direction: BaseDirection::Ltr,
+                style_runs: Vec::new(),
+            };
+        }
+        reader.viewport = 160.0;
+        reader.atlas = None;
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        assert!(reader.page_total() > 3);
+        reader.selection.begin(Endpoint {
+            item_id: "paragraph-0".into(),
+            byte_offset: 0,
+        });
+        reader.selection.extend(Endpoint {
+            item_id: "paragraph-0".into(),
+            byte_offset: 11,
+        });
+        reader.selection.end_drag();
+        let speaker = Speaker::new().unwrap();
+        speaker.mute();
+        reader.read_aloud.speaker = Some(speaker);
+        reader.read_aloud.rate = 4;
+        let task = reader.read_aloud(Action::Toggle);
+        pump(&mut reader, task);
+        assert!(!reader.read_aloud.session.as_ref().unwrap().selection);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        let mut last_page = 0;
+        let mut max_offset = 0.0_f32;
+        while reader.read_aloud.active() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "continuous reading did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let task = reader.read_aloud_tick();
+            pump(&mut reader, task);
+            last_page = last_page.max(reader.active_page().unwrap().number);
+            max_offset = max_offset.max(reader.local_offset());
+            assert!(reader.error.is_none(), "{:?}", reader.error);
+        }
+        assert!(
+            last_page >= 3 && max_offset > 0.0,
+            "must follow words within and across pages"
+        );
+        assert!(reader.selection.endpoints().is_some());
+        println!(
+            "Completed {} papers; greatest within-paper offset {max_offset:.1}",
+            last_page + 1
+        );
+    }
+
+    #[test]
+    #[ignore = "Native EPUB speech QA: muted voice, real async chapter loads and widget operations"]
+    fn native_read_aloud_toolbar_loads_chapters_until_the_book_ends() {
+        ui::load_test_fonts();
+        let path = PathBuf::from(std::env::var_os("SIMPL_TTS_EPUB").expect("authored TTS fixture"));
+        let epub = Arc::new(reader_document::epub::open(&path).unwrap());
+        let mut reader = Reader {
+            book: Some(Arc::new(load_epub_chapter(epub.clone(), 0, None).unwrap())),
+            ..Default::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        let speaker = Speaker::new().unwrap();
+        speaker.mute();
+        reader.read_aloud.speaker = Some(speaker);
+        reader.read_aloud.rate = 8;
+        let task = reader.read_aloud(Action::Toggle);
+        pump(&mut reader, task);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        while reader.read_aloud.active() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "async chapters did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let task = reader.read_aloud_tick();
+            pump(&mut reader, task);
+            assert!(reader.error.is_none(), "{:?}", reader.error);
+        }
+        assert_eq!(reader.book_chapter(), epub.chapters.len() - 1);
+        println!(
+            "Toolbar read through {} chapters, including empty chapters",
+            epub.chapters.len()
+        );
+    }
 
     fn book_reader() -> Reader {
         let mut reader = Reader {
@@ -1059,7 +1504,11 @@ mod tests {
     }
 
     fn pdf_reader(case: &str) -> Option<Reader> {
-        use crate::pdf_reader::tests::{complete, tall_pdf};
+        pdf_reader_from(case, crate::pdf_reader::tests::tall_pdf())
+    }
+
+    fn pdf_reader_from(case: &str, bytes: Vec<u8>) -> Option<Reader> {
+        use crate::pdf_reader::tests::complete;
         if !std::env::current_exe()
             .unwrap()
             .parent()
@@ -1072,14 +1521,122 @@ mod tests {
         }
         let path =
             std::env::temp_dir().join(format!("simpl-tts-{case}-{}.pdf", std::process::id()));
-        std::fs::write(&path, tall_pdf()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
         let document = complete(reader_pdf::open(path.clone())).unwrap();
         let _ = std::fs::remove_file(path);
-        let (pdf, _) = pdf_reader::Reader::new(document, None, Size::new(1280.0, 800.0), 1.0);
-        Some(Reader {
+        let id = document.id;
+        let (pdf, task) = pdf_reader::Reader::new(document, None, Size::new(1280.0, 800.0), 1.0);
+        let mut reader = Reader {
             pdf: Some(pdf),
             ..Default::default()
-        })
+        };
+        pump(
+            &mut reader,
+            task.map(move |message| Message::Pdf {
+                document: id,
+                message,
+            }),
+        );
+        Some(reader)
+    }
+
+    /// Tall prose, a blank page, then prose at the next page's top.
+    fn speech_pdf() -> Vec<u8> {
+        let contents = [
+            "BT /F1 18 Tf 20 2950 Td (First words at the top.) Tj 0 -2650 Td (Now these words are at the bottom.) Tj ET",
+            "",
+            "BT /F1 18 Tf 20 2950 Td (The final page begins here and the book ends.) Tj ET",
+        ];
+        let mut objects = vec![
+            "<</Type/Catalog/Pages 2 0 R>>".to_owned(),
+            "<</Type/Pages/Kids[4 0 R 6 0 R 8 0 R]/Count 3>>".to_owned(),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_owned(),
+        ];
+        for (index, content) in contents.iter().enumerate() {
+            objects.push(format!(
+                "<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 3000]/Contents {} 0 R/Resources<</Font<</F1 3 0 R>>>>>>",
+                5 + index * 2
+            ));
+            objects.push(format!(
+                "<</Length {}>>\nstream\n{content}\nendstream",
+                content.len()
+            ));
+        }
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{body}\nendobj\n", index + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(
+            format!(
+                "trailer\n<</Root 1 0 R/Size {}>>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    #[ignore = "Native PDF speech QA: muted voice, actual PDFium glyphs, blank-page skipping and continuous scroll"]
+    fn native_read_aloud_pdf_follows_words_and_skips_a_blank_page_without_restarting() {
+        let mut reader = pdf_reader_from("continuous", speech_pdf())
+            .expect("stage pdfium.dll beside the test executable");
+        let speaker = Speaker::new().unwrap();
+        speaker.mute();
+        reader.read_aloud.speaker = Some(speaker);
+        reader.read_aloud.rate = 0;
+        let task = reader.read_aloud(Action::Toggle);
+        pump(&mut reader, task);
+        let generation = reader.read_aloud.generation;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        let mut reached_bottom = false;
+        let mut reached_last = false;
+        while reader.read_aloud.active() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "PDF reading did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let task = reader.read_aloud_tick();
+            pump(&mut reader, task);
+            assert_eq!(
+                reader.read_aloud.generation, generation,
+                "own scroll must not restart speech"
+            );
+            assert!(reader.error.is_none(), "{:?}", reader.error);
+            let pdf = reader.pdf.as_ref().unwrap();
+            let page = pdf.page_index();
+            reached_bottom |= page == 0 && pdf.position().within > 0.5;
+            reached_last |= reader.read_aloud.session.as_ref().is_some_and(|session| {
+                let current = reader
+                    .read_aloud
+                    .speaker
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .stream;
+                session
+                    .queued
+                    .iter()
+                    .any(|queued| queued.unit == Unit::PdfPage(2) && queued.stream == current)
+            });
+        }
+        assert!(
+            reached_bottom && reached_last,
+            "must scroll to bottom words ({reached_bottom}) and read the final page ({reached_last})"
+        );
+        assert!(reader.pdf.as_ref().unwrap().selection().is_none());
+        println!(
+            "PDF read both text pages, skipped the blank page and followed glyphs without restarting"
+        );
     }
 
     #[test]
@@ -1177,9 +1734,13 @@ mod tests {
         let session = reader.read_aloud.session.as_ref().unwrap();
         assert!(session.selection);
         assert_eq!(session.queued.len(), 1);
+        assert_eq!(session.queued[0].unit, Unit::Text);
         assert_eq!(
-            session.queued[0].total,
-            "Selected words.".encode_utf16().count() as u32
+            reader
+                .selection
+                .copy_text(&reader.book.as_ref().unwrap().items)
+                .unwrap(),
+            "Selected words."
         );
         let _ = reader.read_aloud(Action::Pause);
         assert!(reader.read_aloud.session.as_ref().unwrap().paused);
@@ -1189,12 +1750,13 @@ mod tests {
         let _ = reader.read_aloud(Action::Toggle);
         assert!(!reader.read_aloud.active());
 
-        reader.selection.clear();
+        // Toolbar Listen must keep going even when a previous selection remains.
         let _ = reader.read_aloud(Action::Toggle);
         let session = reader.read_aloud.session.as_ref().unwrap();
         assert!(!session.selection);
         assert_eq!(session.queued.len(), LOOKAHEAD);
         assert_eq!(session.queued[0].unit, Unit::Row(0));
+        assert!(reader.selection.endpoints().is_some());
         reader.book = None;
         reader.sync_read_aloud();
         assert!(!reader.read_aloud.active());
@@ -1320,12 +1882,7 @@ mod tests {
     #[test]
     #[ignore = "Visual speech QA: renders the production widgets to target/tts-previews"]
     fn render_read_aloud_previews() {
-        for bytes in ui::font_data() {
-            iced::advanced::graphics::text::font_system()
-                .write()
-                .unwrap()
-                .load_font(std::borrow::Cow::Borrowed(bytes));
-        }
+        ui::load_test_fonts();
         let output = PathBuf::from("../../target/tts-previews");
         std::fs::create_dir_all(&output).unwrap();
         let mut reader = book_reader();
