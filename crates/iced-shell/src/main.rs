@@ -1191,6 +1191,7 @@ fn render_selectable_rich_text(view: SelectableParagraphView<'_>) -> Element<'st
             focused_link: None,
             font_family: None,
             marks: Vec::new(),
+            spoken: None,
             item_id: item_id.to_owned(),
             logical_text: logical_text.to_owned(),
             mapped,

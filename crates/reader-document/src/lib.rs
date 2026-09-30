@@ -5,6 +5,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 pub mod annotations;
+pub mod backup;
 pub mod dictionary;
 pub mod epub;
 mod html;
@@ -12,6 +13,7 @@ pub mod library;
 pub mod managed;
 pub mod position;
 pub mod preferences;
+pub mod reading;
 pub mod recent;
 pub mod shelves;
 mod text;

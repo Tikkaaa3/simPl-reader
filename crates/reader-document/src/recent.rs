@@ -102,7 +102,7 @@ fn history_path() -> PathBuf {
     position::storage_base().join("simPl").join("recent.json")
 }
 
-fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
+pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

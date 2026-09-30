@@ -28,8 +28,12 @@ mod book_map;
 mod book_zoom;
 #[path = "notes_ui.rs"]
 mod notes_ui;
+#[path = "profile_ui.rs"]
+mod profile_ui;
 #[path = "read_aloud.rs"]
 mod read_aloud;
+#[path = "reading_ui.rs"]
+mod reading_ui;
 #[path = "word_translation.rs"]
 pub(crate) mod word_translation;
 
@@ -993,6 +997,12 @@ struct Reader {
     search_query: String,
     search_results: Vec<usize>,
     search_selected: usize,
+    reading: reading_ui::State,
+    fit_width: bool,
+    fit_previous_zoom: f32,
+    fullscreen: bool,
+    before_fullscreen_maximized: bool,
+    profile: profile_ui::State,
     show_settings: bool,
     dropping: bool,
     recent_loading: bool,
@@ -1087,6 +1097,12 @@ impl Default for Reader {
             search_query: String::new(),
             search_results: Vec::new(),
             search_selected: 0,
+            reading: Default::default(),
+            fit_width: false,
+            fit_previous_zoom: 1.0,
+            fullscreen: false,
+            before_fullscreen_maximized: false,
+            profile: Default::default(),
             show_settings: false,
             dropping: false,
             recent_loading: true,
@@ -1155,6 +1171,10 @@ enum CloseAction {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
+    Reading(reading_ui::Focus),
+    FitBookWidth,
+    Fullscreen,
+    Profile(profile_ui::Focus),
     Dictionary(word_translation::Focus),
     Chrome(chrome::Action),
     Shelf(shelf::Control),
@@ -1207,6 +1227,20 @@ enum Control {
 
 #[derive(Clone, Debug)]
 enum Message {
+    Reading(reading_ui::Action),
+    ReadingLoaded {
+        book: String,
+        result: Result<Option<reader_document::reading::Options>, String>,
+    },
+    ReadingSaved(Result<(String, Option<reader_document::reading::Options>), String>),
+    FitBookWidth,
+    ToggleFullscreen,
+    Profile(profile_ui::Action),
+    BackupEstimate {
+        generation: u64,
+        result: Result<reader_document::backup::Summary, String>,
+    },
+    ProfileReply(Result<profile_ui::Reply, String>),
     PdfBookRaster {
         document: u64,
         page: u32,
@@ -1392,7 +1426,11 @@ fn image_size(image: &DisplayImage, width: f32) -> Size {
 
 impl Reader {
     fn interactive(&self) -> bool {
-        self.opening.is_none() && !self.saving && !self.dialog_open && self.removing.is_none()
+        self.opening.is_none()
+            && !self.saving
+            && !self.dialog_open
+            && self.removing.is_none()
+            && !self.profile.busy
     }
 
     fn request_pdf_book_raster(&mut self) -> Task<Message> {
@@ -1499,12 +1537,13 @@ impl Reader {
     /// measurements. PDF Book keeps the default typography (its colors still follow the theme).
     fn line_height(&self) -> f32 {
         self.book.as_ref().map_or(MINIMAL.line_height, |book| {
-            style_for(self.theme, book).line_height
+            self.reading_style(book).line_height
         })
     }
 
     fn needs_adaptation(&self) -> bool {
-        self.theme.id != themes::DEFAULT_ID
+        (self.theme.id != themes::DEFAULT_ID
+            || self.reading_options() != reader_document::reading::Options::default())
             && self
                 .book
                 .as_ref()
@@ -1558,7 +1597,7 @@ impl Reader {
     }
 
     fn reading_width(&self, _window: f32) -> f32 {
-        book_map::TEXT
+        book_map::PAPER - 2.0 * self.reading_options().margin as f32
     }
 
     fn page_total(&self) -> usize {
@@ -1806,8 +1845,8 @@ impl Reader {
     }
 
     fn rebuild_geometry(&mut self, anchor: Anchor) -> Task<Message> {
-        self.width = book_map::TEXT;
-        self.font_size = DEFAULT_FONT_SIZE;
+        self.width = self.reading_width(self.window_size.width);
+        self.font_size = self.reading_options().size as f32;
         self.generation = self.generation.wrapping_add(1);
         self.measurements.lock().clear();
         if let Some(cancel) = self.pagination.take() {
@@ -1834,9 +1873,12 @@ impl Reader {
                 self.pagination = Some(cancel.clone());
                 let book = book.clone();
                 let theme = self.theme;
+                let reading = self.reading_options();
                 let generation = self.generation;
                 return Task::perform(
-                    async move { book_map::adapt_section(book, &canonical, theme, &cancel) },
+                    async move {
+                        book_map::adapt_section_with(book, &canonical, theme, reading, &cancel)
+                    },
                     move |result| Message::ThemeLayoutReady {
                         generation,
                         section,
@@ -2066,6 +2108,7 @@ impl Reader {
             voice: self.read_aloud.voice.clone(),
             speech_rate: self.read_aloud.rate,
             dictionary: self.word_translation.settings,
+            reading: self.reading.defaults,
         };
         Task::perform(
             async move { preferences::save(preferences) },
@@ -2075,6 +2118,8 @@ impl Reader {
 
     fn exit_ready(&self) -> bool {
         self.removing.is_none()
+            && !self.profile.busy
+            && self.reading.settled()
             && !self.preferences_loading
             && !self.preferences_saving
             && !(self.preferences_dirty && self.preferences_writable)
@@ -2165,8 +2210,9 @@ impl Reader {
             (expanded && self.pdf.is_some())
                 .then_some(Control::Pdf(pdf_reader::FocusControl::FitWidth)),
             (expanded && !self.contents().is_empty()).then_some(Control::Contents),
-            (expanded && book.is_some() && self.zoom > 0.4).then_some(Control::FontDown),
+            (expanded && book.is_some() && self.zoom > 0.25).then_some(Control::FontDown),
             (expanded && book.is_some() && self.zoom < 3.0).then_some(Control::FontUp),
+            (expanded && book.is_some()).then_some(Control::FitBookWidth),
             expanded.then_some(Control::ToggleAppearance),
         ];
         let secondary = [
@@ -2216,7 +2262,7 @@ impl Reader {
             .into_iter()
             .chain(last)
             .flatten()
-            .filter(move |_| !overlay)
+            .filter(move |_| !overlay && !self.fullscreen)
             .map(Some)
             .chain([
                 self.show_search.then_some(Control::SearchInput),
@@ -2224,7 +2270,7 @@ impl Reader {
                 self.confirm_remove
                     .is_some()
                     .then_some(Control::ConfirmRemove),
-                (self.show_settings && self.zoom > 0.4).then_some(Control::SettingsFontDown),
+                (self.show_settings && self.zoom > 0.25).then_some(Control::SettingsFontDown),
                 (self.show_settings && self.zoom < 3.0).then_some(Control::SettingsFontUp),
                 self.show_settings
                     .then_some(Control::SettingsWindowControls(WindowControls::Windows)),
@@ -2235,9 +2281,12 @@ impl Reader {
                 (self.show_settings && self.read_aloud.rate < crate::speech::MAX_RATE)
                     .then_some(Control::ReadAloudFaster),
                 self.show_settings.then_some(Control::SettingsHelp),
+                self.show_settings.then_some(Control::Fullscreen),
             ])
             .flatten()
+            .chain(reading_ui::controls(self))
             .chain(self.dictionary_controls())
+            .chain(profile_ui::controls(self).filter(move |_| self.show_settings))
             .chain(
                 (0..themes::THEMES.len())
                     .filter(move |_| self.show_settings)
@@ -2317,6 +2366,10 @@ impl Reader {
             return Task::none();
         }
         let message = match control {
+            Control::Reading(focus) => Message::Reading(reading_ui::focus_action(self, focus)),
+            Control::FitBookWidth => Message::FitBookWidth,
+            Control::Fullscreen => Message::ToggleFullscreen,
+            Control::Profile(focus) => return self.profile_focus(focus),
             Control::Dictionary(focus) => {
                 Message::Dictionary(word_translation::focus_action(focus))
             }
@@ -3295,7 +3348,12 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.word_translation.dismiss();
     }
     reader.sync_read_aloud();
-    let task = Task::batch([task, reader.request_pdf_book_raster()]);
+    let task = Task::batch([
+        task,
+        reader.request_pdf_book_raster(),
+        reader.sync_reading_settings(),
+        reader.refit_book(),
+    ]);
     let panels_changed =
         previous_panels != (reader.show_recent, reader.show_help, reader.show_contents);
     if reader.focused != previous_focus
@@ -3332,6 +3390,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.word_translation.reset();
     }
     match message {
+        Message::Reading(action) => reader.reading_action(action),
+        Message::ReadingLoaded { book, result } => reader.reading_loaded(book, result),
+        Message::ReadingSaved(result) => reader.reading_saved(result),
+        Message::FitBookWidth => reader.fit_book_width(),
+        Message::ToggleFullscreen => reader.toggle_fullscreen(),
+        Message::Profile(action) => reader.profile_action(action),
+        Message::ProfileReply(result) => reader.profile_reply(result),
+        Message::BackupEstimate { generation, result } => {
+            reader.profile_estimated(generation, result);
+            Task::none()
+        }
         Message::Dictionary(action) => reader.dictionary_action(action),
         Message::DictionaryInventory { generation, states } => {
             reader.dictionary_inventory(generation, states);
@@ -3445,7 +3514,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Control::Chrome(chrome::Action::Settings)
                 });
                 if reader.show_settings {
-                    reader.refresh_dictionaries()
+                    Task::batch([reader.refresh_dictionaries(), reader.estimate_backup()])
                 } else {
                     Task::none()
                 }
@@ -3704,6 +3773,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let mut theme_task = Task::none();
             match result {
                 Ok(loaded) if !reader.preferences_dirty => {
+                    reader.reading.defaults = loaded.reading.validated();
                     reader.appearance = loaded.appearance;
                     reader.window_controls = loaded.window_controls;
                     reader.read_aloud.voice = loaded.voice;
@@ -3714,6 +3784,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.word_translation.settings = loaded.dictionary.validated();
                     // A book opened from the command line may already be on screen.
                     theme_task = reader.switch_theme(themes::find(&loaded.theme));
+                    if reader.book.is_some() {
+                        reader.adapted.clear();
+                        theme_task = reader.rebuild_geometry(
+                            reader.pending_anchor.unwrap_or_else(|| reader.anchor()),
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -4049,10 +4125,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             reader.capture_progress();
             let notes_task = reader.sync_notes();
+            let reading_task = reader.sync_reading_settings();
             let has_document = reader.book.is_some() || reader.pdf.is_some();
             Task::batch([
                 content_task,
                 notes_task,
+                reading_task,
                 history_task,
                 library_task,
                 reader.shelf.show(!has_document).map(Message::Shelf),
@@ -4223,9 +4301,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         ),
         Message::Zoom(zoom) if reader.interactive() && zoom.is_finite() => {
             let anchor = reader.anchor();
-            reader.generation = reader.generation.wrapping_add(1);
+            if reader.pagination.is_none() {
+                reader.generation = reader.generation.wrapping_add(1);
+            }
             let old = reader.zoom;
-            reader.zoom = zoom.clamp(0.4, 3.0);
+            reader.fit_width = false;
+            reader.zoom = zoom.clamp(0.25, 3.0);
             reader.viewport *= old / reader.zoom;
             reader.offset = reader.offset_for(anchor);
             reader.pending_anchor = Some(anchor);
@@ -4394,6 +4475,19 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
             }
             if reader.show_settings
+                && reader.reading.picker.is_some()
+                && matches!(
+                    &event,
+                    iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                        key: Key::Named(key::Named::Escape),
+                        ..
+                    })
+                )
+            {
+                reader.reading.picker = None;
+                return Task::none();
+            }
+            if reader.show_settings
                 && reader.word_translation.picker.is_some()
                 && matches!(
                     &event,
@@ -4529,7 +4623,19 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     {
                         return update_inner(reader, Message::Chrome(chrome::Action::Search));
                     }
-                    // Ctrl+F toggles the find bar; Ctrl+Shift+F is PDF fit width.
+                    // Both reading modes use Ctrl+Shift+F for fit width.
+                    Key::Character(value)
+                        if modifiers.control()
+                            && modifiers.shift()
+                            && value.eq_ignore_ascii_case("f")
+                            && !repeat
+                            && reader.book.is_some()
+                            && !reader.show_search
+                            && !reader.show_settings =>
+                    {
+                        return reader.fit_book_width();
+                    }
+                    // Ctrl+F toggles the find bar.
                     Key::Character(value)
                         if modifiers.control()
                             && !modifiers.shift()
@@ -4642,6 +4748,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     {
                         return reader.activate(reader.focused.unwrap());
                     }
+                    Key::Named(key::Named::F11) if !repeat => {
+                        return update_inner(reader, Message::ToggleFullscreen);
+                    }
                     Key::Named(key::Named::F8) if !repeat => {
                         return update_inner(reader, Message::ToggleToolbar);
                     }
@@ -4672,6 +4781,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         }
                         if reader.error.is_some() {
                             return update_inner(reader, Message::DismissError);
+                        }
+                        if reader.fullscreen {
+                            return reader.toggle_fullscreen();
                         }
                     }
                     Key::Character(value)
@@ -4973,14 +5085,32 @@ fn measure_book_for(
     cancel: &AtomicBool,
     theme: &'static themes::ReadingTheme,
 ) -> Option<Vec<f32>> {
+    measure_book_with(
+        book,
+        width,
+        font_size,
+        cancel,
+        theme,
+        reader_document::reading::Options::default(),
+    )
+}
+fn measure_book_with(
+    book: Arc<Book>,
+    width: f32,
+    font_size: f32,
+    cancel: &AtomicBool,
+    theme: &'static themes::ReadingTheme,
+    options: reader_document::reading::Options,
+) -> Option<Vec<f32>> {
     use iced::advanced::{layout, widget::Tree};
-    let style = style_for(theme, &book);
-    let reader = Reader {
+    let style = reading_ui::effective_style(theme, &book, options);
+    let mut reader = Reader {
         width,
         font_size,
         theme,
         ..Reader::default()
     };
+    reader.reading.defaults = options;
     let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
     let limits = layout::Limits::new(Size::ZERO, Size::new(width, f32::INFINITY));
     let mut heights = Vec::with_capacity(book.items.len());
@@ -5080,7 +5210,13 @@ fn settle_theme(reader: &mut Reader) {
             return;
         };
         let theme = reader.theme;
-        let result = book_map::adapt_section(book, &canonical, theme, &cancel);
+        let result = book_map::adapt_section_with(
+            book,
+            &canonical,
+            theme,
+            reader.reading_options(),
+            &cancel,
+        );
         let generation = reader.generation;
         let _ = update_inner(
             reader,
@@ -5101,8 +5237,8 @@ fn render_item(
     item: &Item,
     bounds: Option<selection::SelectionBounds>,
 ) -> Element<'static, Message> {
-    let style = style_for(reader.theme, book);
-    let family = family_for(reader.theme, book);
+    let style = reader.reading_style(book);
+    let family = reader.reading_family(book);
     if let Some(source) = &book.pdf_source
         && let Some(rect) = source.conversion.illustrations.get(item.id())
     {
@@ -5212,7 +5348,7 @@ fn render_item(
         let title_end = number_start.saturating_sub(1);
         let title_text = &logical[..title_end];
         let number_text = &logical[*number_start..];
-        let size = styled_item_size(style, book, index, item, reader.font_size);
+        let size = styled_item_size(&style, book, index, item, reader.font_size);
         let selection = bounds.and_then(|bounds| bounds.range_for_item(index, logical));
         let make_part = |source: &str, start: usize, end: usize, alignment| {
             let part_styles = segment_styles(styles, start, end);
@@ -5249,6 +5385,7 @@ fn render_item(
                         selection: selection.clone(),
                         dragging: reader.selection.is_dragging(),
                         track_hit_test: false,
+                        spoken: reader.spoken_word(item.id()),
                         links: part_links,
                         focused_link: None,
                         font_family: family,
@@ -5320,7 +5457,7 @@ fn render_item(
             };
         }
     }
-    let size = styled_item_size(style, book, index, item, reader.font_size);
+    let size = styled_item_size(&style, book, index, item, reader.font_size);
     let paragraph = selection::selectable_text(
         selection::SelectableParagraphConfig {
             item_id: item.id().to_owned(),
@@ -5341,6 +5478,7 @@ fn render_item(
             selection: bounds.and_then(|bounds| bounds.range_for_item(index, logical)),
             dragging: reader.selection.is_dragging(),
             track_hit_test: false,
+            spoken: reader.spoken_word(item.id()),
             links: book
                 .structure
                 .get(item.id())
@@ -5404,9 +5542,9 @@ fn control_button<'a>(
 ) -> Element<'a, Message> {
     // Chrome stays quiet; only a few actions carry the tinted accent or danger.
     let tone = match control {
-        Control::ConfirmRemove | Control::Notes(notes::Focus::Remove(_)) => {
-            ui::ButtonTone::Destructive
-        }
+        Control::ConfirmRemove
+        | Control::Profile(profile_ui::Focus::Confirm)
+        | Control::Notes(notes::Focus::Remove(_)) => ui::ButtonTone::Destructive,
         Control::LocateMissing | Control::OpenRecent(_) if !reader.show_search => {
             ui::ButtonTone::Quiet
         }
@@ -5608,7 +5746,7 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             toned_button(
                 reader,
                 Control::DismissOverlay,
-                shelf::icon("\u{e5cd}", 18),
+                text("×").font(ui::SANS).size(18),
                 Some(Message::DismissOverlay),
                 ui::ButtonTone::Subtle,
                 false,
@@ -5774,7 +5912,7 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 row![
                     text("Book zoom").font(ui::MEDIUM).size(13), Space::new().width(Length::Fill),
                     control_button(reader, Control::SettingsFontDown, text("−").size(14),
-                        (reader.zoom > 0.4).then_some(Message::Zoom(reader.zoom - 0.1))),
+                        (reader.zoom > 0.25).then_some(Message::Zoom(reader.zoom - 0.1))),
                     text(format!("{:.0}%", reader.zoom * 100.0)).size(12).style(ui::muted_text),
                     control_button(reader, Control::SettingsFontUp, text("+").size(14),
                         (reader.zoom < 3.0).then_some(Message::Zoom(reader.zoom + 0.1))),
@@ -5791,11 +5929,18 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 note("Windows places minimize, maximize and close at the right of the title bar; macOS uses round buttons at the left."),
             ].spacing(6))
             .push(rule())
+            .push(reading_ui::settings(reader))
+            .push(rule())
+            .push(control_button(reader, Control::Fullscreen, text(if reader.fullscreen { "Exit fullscreen (F11)" } else { "Fullscreen (F11)" }).size(12), Some(Message::ToggleFullscreen)))
+            .push(rule())
             .push(section("Read aloud"))
             .push(read_aloud::settings(reader, reader.voice_choices.clone()))
             .push(rule())
             .push(section("Word translation"))
             .push(word_translation::settings(reader))
+            .push(rule())
+            .push(section("Library & data"))
+            .push(profile_ui::settings(reader))
             .push(rule())
             .push(row![
                 column![
@@ -5905,7 +6050,7 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
         hinted_control(
             reader,
             Control::FindClose,
-            shelf::icon("\u{e5cd}", 16),
+            text("×").font(ui::SANS).size(16),
             "Close find (Esc)",
             Some(Message::FindClose),
         ),
@@ -6101,7 +6246,7 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
             reader,
             Control::Close,
             row![
-                shelf::icon("\u{e5c4}", 16),
+                text("←").font(ui::SANS).size(16),
                 text("Library").font(ui::MEDIUM).size(13)
             ]
             .spacing(6)
@@ -6190,11 +6335,20 @@ fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
                     Control::FontDown,
                     text("−").size(16),
                     "Zoom out",
-                    (active && reader.zoom > 0.4).then_some(Message::Zoom(reader.zoom - 0.1))
+                    (active && reader.zoom > 0.25).then_some(Message::Zoom(reader.zoom - 0.1))
                 ),
-                text(format!("{:.0}%", reader.zoom * 100.0))
-                    .size(12)
-                    .style(ui::muted_text),
+                hinted_control(
+                    reader,
+                    Control::FitBookWidth,
+                    text(if reader.fit_width {
+                        "Fit".to_owned()
+                    } else {
+                        format!("{:.0}%", reader.zoom * 100.0)
+                    })
+                    .size(12),
+                    "Fit width / restore zoom (Ctrl+Shift+F)",
+                    active.then_some(Message::FitBookWidth)
+                ),
                 hinted_control(
                     reader,
                     Control::FontUp,
@@ -6304,7 +6458,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
         return iced::widget::Space::new().into();
     };
     let mut sheets = column![];
-    let margin = book_map::MARGIN;
+    let margin = reader.reading_options().margin as f32;
     let paper_width = reader.width + margin * 2.0;
     let bounds = reader.selection.bounds(&book.items);
     {
@@ -6321,7 +6475,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
             range,
             &reader.heights,
             reader.width,
-            style_for(reader.theme, book).gap(reader.font_size),
+            reader.reading_style(book).gap(reader.font_size),
             rows,
             virtual_reader::LayoutReports {
                 measurements: reader.measurements.clone(),
@@ -6554,7 +6708,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             text("Page Up / Down  Read    Ctrl+Home / End  Ends    Ctrl+plus / minus / 0  Zoom")
                 .size(12).style(ui::muted_text),
             text("Book  Left / Right: previous / next page · Up / Down: scroll within page").size(12).style(ui::secondary_text),
-            text("Ctrl+L  Page    Ctrl+F  Find, again to close (Enter / Shift+Enter next / previous)    EPUB  Ctrl+T contents · Ctrl+Page Up / Down chapters    PDF  Ctrl+Shift+F fit width / back")
+            text("Ctrl+L  Page    Ctrl+F  Find, again to close (Enter / Shift+Enter next / previous)    EPUB  Ctrl+T contents · Ctrl+Page Up / Down chapters    Ctrl+Shift+F fit width / previous zoom · F11 fullscreen")
                 .size(12).style(ui::muted_text),
             text("Select text to highlight or add a note    Right-click a highlight to edit or remove it    Right-click a page to bookmark    Ctrl+H  Highlight    Ctrl+D  Bookmark page    Ctrl+B  Notes sidebar")
                 .size(12).style(ui::muted_text),
@@ -6631,7 +6785,9 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     } else {
         iced::widget::Space::new().height(0).into()
     };
-    let mut page = column![
+    let header: Element<'_, Message> = if reader.fullscreen {
+        iced::widget::Space::new().height(0).into()
+    } else {
         chrome::view(
             reader.focused.and_then(|control| match control {
                 Control::Chrome(action) => Some(action),
@@ -6651,7 +6807,10 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             (!has_document).then_some(reader.appearance),
             has_document.then_some(reader.toolbar_expanded),
         )
-        .map(Message::Chrome),
+        .map(Message::Chrome)
+    };
+    let mut page = column![
+        header,
         toolbar,
         loading,
         container(
@@ -6756,7 +6915,11 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                 && !matches!(
                     &key,
                     Key::Named(
-                        key::Named::Tab | key::Named::F1 | key::Named::F8 | key::Named::Escape
+                        key::Named::Tab
+                            | key::Named::F1
+                            | key::Named::F8
+                            | key::Named::F11
+                            | key::Named::Escape
                     )
                 )
                 && !(searching
@@ -7661,7 +7824,7 @@ mod tests {
         );
     }
 
-    fn themed_reader(paragraphs: usize) -> Reader {
+    pub(super) fn themed_reader(paragraphs: usize) -> Reader {
         let mut source = Arc::try_unwrap(book("themed")).unwrap();
         let sentence = "A readable paragraph with enough words to wrap over several lines. ";
         source.items = (0..paragraphs)

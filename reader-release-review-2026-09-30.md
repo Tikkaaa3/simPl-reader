@@ -1,5 +1,10 @@
 # simPl local reader release review and comparison
 
+> Historical release audit. The later [reader comfort follow-up](reader-comfort-review-2026-09-30.md)
+> supersedes the gaps below for word highlighting, DPI painting cost, backups,
+> note export, Book Fit width, fullscreen and per-book typography. Independent
+> clean Windows, multi-monitor and screen-reader qualification remains open.
+
 Reviewed on 30 September 2026, on branch `feature/word-translation`.
 
 simPl has the core features needed for its Windows local-reader MVP. The current
@@ -29,7 +34,7 @@ in the shell's [speech QA instructions](crates/iced-shell/README.md).
 | Read comfortably | Four bundled themes, light/dark, zoom, original PDF Document view and reconstructed PDF Book view, stable global/source page numbering, a collapsible toolbar and keyboard navigation. Book scrolling stays within the current page. EPUB/HTML use our extracted structure, not faithful publisher CSS; tables/MathML have text/source fallbacks. |
 | Navigate and find | Contents, chapter/page navigation, internal links/footnotes and return to passage; asynchronous EPUB/PDF search with cancellation, a 64 MiB text-index budget and a 1,000-match cap. |
 | Annotate | Bookmarks, coloured highlights, notes, sidebar navigation and per-book sidecars with location recovery. There is no annotation export UI or embedding of our annotations in PDF/EPUB files. |
-| Listen offline | Installed Windows SAPI voices; toolbar Listen continues from the current page to the book's end regardless of selection, with spoken-line scroll following and asynchronous chapter transitions. Context-menu Read aloud reads the selection/highlight only. Listen toggle, pause/resume and saved voice/rate. No word-by-word speech highlighting or bundled neural voices. |
+| Listen offline | Installed Windows SAPI voices; toolbar Listen continues from the current page to the book's end regardless of selection, with spoken-line scroll following and asynchronous chapter transitions. Context-menu Read aloud reads the selection/highlight only. Listen toggle, pause/resume and saved voice/rate. Transient word highlighting is now available; neural voices are not bundled. |
 | Look up words offline | Automatic double-click/short-selection card or manual right-click Translate; saved source/target and automatic setting; explicit download, progress, cancellation, retry, removal and verified ZIP import. Selected book text is not uploaded. |
 | Keep optional data optional | Thirteen dictionary directions: EN ↔ TR/ES/DE/FR/JA/ZH, and KO → EN. All ZIPs total 19.77 MB; only the 5,175-byte catalog is embedded. Packs work offline after installation. This is dictionary lookup, not general sentence translation. |
 | Install locally | Per-user setup, portable folder, native PDFium beside the executable, required notices, upgrade retention and uninstall keep/delete choice. The current artifacts are unsigned and have not been published as an app release. |

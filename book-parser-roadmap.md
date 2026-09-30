@@ -11,7 +11,9 @@ CPU-rendered visual previews verified. The later
 [release audit](release-audit-2026-09-30.md) exercises all five formats in the normal
 reader on this desktop at 125% DPI, including optional dictionary installation.
 Independent clean Windows, native cross-DPI and accessibility qualification remain
-pending. Milestone 4 is planned. The
+pending. Independent typography, per-book settings, Fit width, fullscreen, portable
+backups and note exports were added in the [comfort follow-up](reader-comfort-review-2026-09-30.md).
+Milestone 4 remains planned for its other scope. The
 [final local reader review](reader-release-review-2026-09-30.md) records current
 scope and priorities; [stabilization-report.md](stabilization-report.md) retains the
 earlier consolidation findings.

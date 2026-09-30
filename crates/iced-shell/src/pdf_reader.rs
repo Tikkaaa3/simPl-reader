@@ -193,6 +193,7 @@ pub struct Reader {
     /// The zoom to return to when Ctrl+Shift+F is pressed again.
     zoom_before_fit: Option<PdfZoom>,
     marks: Vec<Mark>,
+    spoken: Option<(u32, usize, usize)>,
     /// Pages that carry a bookmark ribbon.
     bookmarked: Vec<u32>,
 }
@@ -256,6 +257,7 @@ impl Reader {
             pending_reveal: None,
             zoom_before_fit: None,
             marks: Vec::new(),
+            spoken: None,
             bookmarked: Vec::new(),
         };
         reader.rebuild();
@@ -753,10 +755,22 @@ impl Reader {
             .iter()
             .rposition(|glyph| glyph.end > bytes.start && glyph.start < bytes.end);
         match (first, last) {
-            (Some(first), Some(last)) => self.scroll_to_glyph(page as u32, first, last),
+            (Some(first), Some(last)) => {
+                self.spoken = Some((page as u32, first, last));
+                self.scroll_to_glyph(page as u32, first, last)
+            }
             _ if self.page_index() != page => self.go_to_page(page),
             _ => Task::none(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_spoken_word(&self) -> bool {
+        self.spoken.is_some()
+    }
+
+    pub(crate) fn clear_spoken_word(&mut self) {
+        self.spoken = None;
     }
 
     /// Brings glyphs `first..=last` of `page` into view without selecting them.
@@ -1358,6 +1372,10 @@ impl Reader {
                     selection: selected,
                     dragging: self.dragging,
                     marks: &self.marks,
+                    spoken: self
+                        .spoken
+                        .filter(|(page, _, _)| *page == index as u32)
+                        .map(|(_, first, last)| first..last + 1),
                     bookmarked: self.bookmarked.contains(&(index as u32)),
                 }
                 .into();

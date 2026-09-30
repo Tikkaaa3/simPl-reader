@@ -238,3 +238,164 @@ fn production_format_workflows() {
         "All five formats: imports, retained labels, find, favourites, bookmarks, themes, reopen/resume, errors and PDF modes passed"
     );
 }
+
+#[test]
+#[ignore = "Isolated portability QA: fresh STORE=LOCALAPPDATA and OUTPUT outside profile"]
+fn production_backup_restore_and_export() {
+    use reader_document::annotations::{HighlightColor, Place, ReflowPoint};
+    use reader_document::backup::{self, ExportFormat};
+
+    let store = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_STORE").expect("isolated store"));
+    assert_eq!(
+        std::env::var_os("LOCALAPPDATA"),
+        Some(store.clone().into_os_string())
+    );
+    assert!(
+        !store.join("simPl/library.json").exists(),
+        "use a fresh profile"
+    );
+    let output = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_OUTPUT").expect("output"));
+    std::fs::create_dir_all(&output).unwrap();
+    ui::load_test_fonts();
+    let source = output.join("İstanbul reading.md");
+    let original = "A book is a place to think. Café, İstanbul, 日本語 and 한국어.\n\n".repeat(120);
+    std::fs::write(&source, &original).unwrap();
+    let mut reader = boot();
+    send(&mut reader, Message::Reading(reading_ui::Action::Size(22)));
+    opened(&mut reader, source.clone());
+    send(&mut reader, Message::Reading(reading_ui::Action::Size(26)));
+    settle_theme(&mut reader);
+    let book = reader.book.as_ref().unwrap();
+    let fingerprint = book.fingerprint.clone();
+    let managed = book.path.clone();
+    let title = book.title.clone();
+    let item = book
+        .items
+        .iter()
+        .find(|item| item.text().is_some())
+        .unwrap();
+    let quote = item.text().unwrap()[..6].to_string();
+    let place = Place::Reflow {
+        chapter: None,
+        from: ReflowPoint {
+            item_id: item.id().into(),
+            byte: 0,
+        },
+        to: ReflowPoint {
+            item_id: item.id().into(),
+            byte: 6,
+        },
+    };
+    send(&mut reader, Message::Notes(notes::Action::ToggleBookmark));
+    let annotations = reader.notes.data.as_mut().unwrap();
+    let id = annotations
+        .add_highlight(place, HighlightColor::Yellow, "1".into(), quote)
+        .unwrap();
+    annotations
+        .set_note(id, "Kendi notum — français 😀")
+        .unwrap();
+    let expected = annotations.clone();
+    reader.notes.changed();
+    let task = reader.persist_notes();
+    pump(&mut reader, task);
+    let index = reader
+        .shelf
+        .entries
+        .iter()
+        .position(|entry| entry.document.path == managed)
+        .unwrap();
+    for action in [
+        shelf::Message::Activate(shelf::Control::Favourite(index, false)),
+        shelf::Message::Activate(shelf::Control::MenuNewShelf(index, false)),
+        shelf::Message::NameInput("Okunacak — 日本語".into()),
+        shelf::Message::NameSubmit,
+    ] {
+        send(&mut reader, Message::Shelf(action));
+    }
+    assert!(
+        reader_document::shelves::load().unwrap().shelves[0]
+            .books
+            .contains(&fingerprint)
+    );
+    assert!(reader.page_total() > 1);
+    send(&mut reader, Message::BookPage(true));
+    assert_eq!(reader.active_page().unwrap().number, 1);
+    for (extension, format) in [
+        ("md", ExportFormat::Markdown),
+        ("txt", ExportFormat::Text),
+        ("json", ExportFormat::Json),
+    ] {
+        let path = output.join(format!("notes.{extension}"));
+        backup::export_annotations(&path, &title, &expected, format).unwrap();
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("Kendi notum")
+        );
+    }
+    let task = reader.close(CloseAction::Document);
+    pump(&mut reader, task);
+    assert!(reader.profile_ready());
+    let archive = output.join("profile.zip");
+    backup::create(
+        &archive,
+        backup::Options {
+            documents: true,
+            dictionaries: false,
+        },
+    )
+    .unwrap();
+    // Change the real profile, then exercise the same reviewed restore task and
+    // application reload used by the Settings confirmation button.
+    send(&mut reader, Message::Reading(reading_ui::Action::Size(30)));
+    let other = output.join("later.txt");
+    std::fs::write(&other, "A later book outside the saved snapshot.").unwrap();
+    opened(&mut reader, other);
+    let task = reader.close(CloseAction::Document);
+    pump(&mut reader, task);
+    assert_eq!(reader.shelf.entries.len(), 2);
+    send(
+        &mut reader,
+        Message::ProfileReply(Ok(profile_ui::Reply::Inspected(
+            archive.clone(),
+            backup::inspect(&archive).unwrap(),
+        ))),
+    );
+    assert!(reader.profile_ready());
+    send(&mut reader, Message::Profile(profile_ui::Action::Confirm));
+    assert!(!reader.profile.busy && reader.profile.pending.is_none());
+    assert_eq!(reader.shelf.entries.len(), 1);
+    assert!(reader.shelf.entries[0].favourite);
+    assert_eq!(reader.reading.defaults.size, 22);
+    assert!(
+        reader
+            .profile
+            .notice
+            .as_ref()
+            .unwrap()
+            .contains("Previous profile kept")
+    );
+    assert!(std::fs::read_dir(&store).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".simPl-before-restore-")
+    }));
+    opened(&mut reader, managed);
+    assert_eq!(reader.reading_options().size, 26);
+    assert_eq!(reader.active_page().unwrap().number, 1);
+    assert_eq!(reader.notes.data.as_ref().unwrap(), &expected);
+    assert!(
+        reader_document::shelves::load().unwrap().shelves[0]
+            .books
+            .contains(&fingerprint)
+    );
+    assert_eq!(std::fs::read_to_string(source).unwrap(), original);
+    let task = reader.close(CloseAction::Document);
+    pump(&mut reader, task);
+    assert!(reader.profile_ready());
+    println!(
+        "Real import/bookmark/save/export/backup/reviewed restore/reload/reopen preserved reading data and left original source untouched"
+    );
+}

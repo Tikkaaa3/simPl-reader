@@ -273,6 +273,8 @@ pub struct SelectableParagraphConfig {
     pub line_height: f32,
     /// Logical source byte range to highlight in this paragraph.
     pub selection: Option<Range<usize>>,
+    /// Transient spoken word, in whole-item source bytes; never saved or copied.
+    pub spoken: Option<Range<usize>>,
     /// Whether an active drag should keep receiving native pointer motion.
     pub dragging: bool,
     /// Whether the opt-in evidence run should observe native pointer hits.
@@ -312,6 +314,7 @@ pub fn selectable_text<Message: 'static>(
         font_size,
         line_height,
         selection,
+        spoken,
         dragging,
         track_hit_test,
         mut links,
@@ -337,6 +340,14 @@ pub fn selectable_text<Message: 'static>(
         range.start + prefix..range.end + prefix
     });
     let mark_prefix = usize::from(leading_rlm) * LEADING_RLM.len();
+    let mapped_spoken = spoken.and_then(|range| {
+        let start = range.start.max(item_offset).checked_sub(item_offset)?;
+        let end = range
+            .end
+            .min(item_offset + logical_text.len())
+            .checked_sub(item_offset)?;
+        (start < end).then_some(start + mark_prefix..end + mark_prefix)
+    });
     let marks: Vec<TextMark> = marks
         .into_iter()
         .filter_map(|mark| {
@@ -381,6 +392,7 @@ pub fn selectable_text<Message: 'static>(
         mapped_text: mapped.text,
         leading_rlm,
         mapped_selection,
+        mapped_spoken,
         spans,
         font_size,
         line_height,
@@ -656,6 +668,7 @@ struct SelectableParagraph<Message> {
     mapped_text: String,
     leading_rlm: bool,
     mapped_selection: Option<Range<usize>>,
+    mapped_spoken: Option<Range<usize>>,
     spans: Vec<SpanKey>,
     font_size: f32,
     line_height: f32,
@@ -852,6 +865,23 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                     ..Default::default()
                 },
                 iced::Background::Color(theme.palette().primary.scale_alpha(0.25)),
+            );
+        }
+        for bounds in merge_lines(selected_glyph_bounds(
+            &state.paragraph,
+            self.mapped_spoken.as_ref(),
+        )) {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: bounds + translation,
+                    border: iced::Border {
+                        color: theme.palette().primary,
+                        width: 1.5,
+                        radius: 3.0.into(),
+                    },
+                    ..Default::default()
+                },
+                theme.palette().primary.scale_alpha(0.18),
             );
         }
         renderer.fill_paragraph(
@@ -1075,6 +1105,7 @@ mod tests {
                     selection: None,
                     dragging: true,
                     track_hit_test: false,
+                    spoken: None,
                     links: vec![],
                     focused_link: None,
                     font_family: None,
@@ -1252,6 +1283,7 @@ mod tests {
                     selection: None,
                     dragging: true,
                     track_hit_test: false,
+                    spoken: None,
                     links: vec![reader_document::Link {
                         start_byte: 0,
                         end_byte: source.len(),

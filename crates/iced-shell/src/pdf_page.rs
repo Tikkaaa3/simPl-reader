@@ -42,6 +42,7 @@ pub(super) struct Page<'a> {
     pub dragging: bool,
     /// Saved highlights, oldest first.
     pub marks: &'a [Mark],
+    pub spoken: Option<std::ops::Range<usize>>,
     pub bookmarked: bool,
 }
 
@@ -86,7 +87,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -240,6 +241,45 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
                     }
                 });
             }
+        }
+        if let Some(text) = self.text
+            && let Some(range) = &self.spoken
+        {
+            let boxes = text
+                .glyphs
+                .get(range.clone())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|glyph| glyph.bounds)
+                .map(|rect| {
+                    Rectangle::new(
+                        Point::new(
+                            bounds.x + rect.left * bounds.width,
+                            bounds.y + rect.top * bounds.height,
+                        ),
+                        Size::new(
+                            (rect.right - rect.left).max(0.0) * bounds.width,
+                            (rect.bottom - rect.top).max(0.0) * bounds.height,
+                        ),
+                    )
+                })
+                .collect();
+            renderer.with_layer(clip, |renderer| {
+                for line in merge_lines(boxes) {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: line,
+                            border: iced::Border {
+                                color: theme.palette().primary,
+                                width: 1.5,
+                                radius: 3.0.into(),
+                            },
+                            ..Default::default()
+                        },
+                        theme.palette().primary.scale_alpha(0.18),
+                    );
+                }
+            });
         }
     }
 

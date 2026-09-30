@@ -24,6 +24,8 @@ with light and dark themes.
   reading font, line and paragraph spacing, and its own light and dark colors. Page
   numbers and page boundaries stay the same in every theme, and text size stays your
   own. All fonts are bundled, so nothing is downloaded.
+- **Reading comfort.** Fit Book pages to the available width or press F11 for fullscreen. Pick font, text size, line spacing and side margins independently; settings for an open reflowable book are remembered for that book, and library changes set defaults.
+- **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
 - **Less chrome.** Collapse the toolbar to reclaim reading space. Choose Windows- or
   macOS-style window buttons in Settings. Geist for the interface, Literata (or the
   theme's font) for the book, and bundled fonts for offline reading.
@@ -72,7 +74,7 @@ Older text imports may lack source-format metadata. Add the original TXT/Markdow
 file again to repair its library label while reusing the same managed document.
 
 When EPUB or HTML has no source page list, simPl creates a fixed page map on its
-first preparation. The **− / +** controls zoom that map; they do not repaginate it.
+first preparation. The **− / +** controls zoom that map; they do not repaginate it. Select the zoom percentage to toggle **Fit width**, or use **Ctrl+Shift+F**. Fit width follows window and notes-sidebar resizing, and returns to the previous zoom when toggled off.
 Arrow keys turn pages, while vertical scrolling stays within the selected Book page.
 
 PDF Book view uses the PDF's existing text layer; it does **not** perform OCR.
@@ -94,6 +96,7 @@ Select **Listen** or press **Ctrl+Shift+U** to continue from the current page to
 end of the book, even when text is selected. The player provides pause, resume,
 and speed controls. The viewport follows the spoken line, turning pages and
 loading the next EPUB chapter automatically.
+The spoken word has a temporary accent fill and outline in Book and PDF Document views. Pause keeps it visible; stopping clears it. It does not change selection or saved highlights.
 Select **Listen** again or press **Ctrl+Shift+U** to stop.
 Use **Read aloud** in the selection menu or on a saved highlight to read only
 that passage. Choose a voice and speed in Settings; both are saved. Speech uses
@@ -138,6 +141,28 @@ to preserve both the collection and reading state.
 Reading is local and offline. Building the application initially needs network
 access to obtain dependencies and the pinned PDF runtime.
 
+## Backup and export
+
+Close the book, then open **Settings → Library & data**. A backup includes settings,
+shelves, history, reading positions, per-book typography, covers and annotations.
+**Include book files** bundles imported library copies and their local resources;
+**Include downloaded dictionaries** optionally bundles installed packs. Temporary
+page maps and conversion caches are rebuilt. Linked originals outside the simPl
+profile are not bundled, and omitted book files may need **Locate** on another PC.
+The displayed size is uncompressed; the saved file is a compressed ZIP.
+
+Restore first verifies the archive, shows a review, and requires **Restore and
+replace**. It replaces library metadata and settings; directories omitted from
+that backup retain their local book files or dictionary packs. Included book paths
+and their reading-position keys are remapped to the destination profile. The
+previous profile is kept beside the new one in a `.simPl-before-restore-*` recovery
+folder. Keep the application closed when manually recovering those folders.
+Backup limits are 50,000 files, 512 MiB per file and 16 GiB total.
+
+With a book open, choose **Markdown**, **Text** or **JSON**, then **Export…**.
+Exports include bookmarks, highlighted quotes, notes and page/chapter labels;
+JSON also preserves their full anchors, IDs and timestamps.
+
 ## Shortcuts
 
 | Shortcut | Action |
@@ -158,6 +183,8 @@ access to obtain dependencies and the pinned PDF runtime.
 | **Ctrl+H** | Highlight selected text with the last used color |
 | **Ctrl+D** | Add or remove a bookmark on the current page |
 | **Ctrl+B** | Show or hide bookmarks, highlights and notes |
+| **Ctrl+Shift+F** | Toggle fit width / previous zoom in Book or PDF Document |
+| **F11** | Enter / exit fullscreen; Esc exits after dismissing open panels |
 | **F8** | Hide / show the reading toolbar |
 | **Tab / Shift+Tab** | Move between controls |
 | **F1** | Show shortcut help |

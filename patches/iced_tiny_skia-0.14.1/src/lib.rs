@@ -49,6 +49,116 @@ pub struct Renderer {
     engine: Engine, // TODO: Shared engine
 }
 
+#[cfg(test)]
+mod occlusion_tests {
+    use super::*;
+    use crate::core::Renderer as _;
+
+    #[test]
+    fn opaque_layer_skip_matches_all_layers_including_corners_and_clips() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for alpha in [0.5, 1.0] {
+                for radius in [0.0, 12.0] {
+                    let size = Size::new(200.0, 140.0);
+                    let viewport = Viewport::with_physical_size(
+                        Size::new(
+                            (size.width * scale) as u32,
+                            (size.height * scale) as u32,
+                        ),
+                        scale,
+                    );
+                    let mut renderer =
+                        Renderer::new(Font::DEFAULT, Pixels(13.0));
+                    renderer.reset(Rectangle::new(Point::ORIGIN, size));
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle::new(Point::ORIGIN, size),
+                            ..Default::default()
+                        },
+                        Color::from_rgb(0.7, 0.1, 0.2),
+                    );
+                    renderer.start_layer(Rectangle::new(
+                        Point::new(10.5, 10.25),
+                        Size::new(170.0, 110.0),
+                    ));
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle::new(
+                                Point::new(8.25, 8.5),
+                                Size::new(180.0, 120.0),
+                            ),
+                            border: core::Border {
+                                radius: radius.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        Color::from_rgba(0.1, 0.6, 0.8, alpha),
+                    );
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle::new(
+                                Point::new(40.0, 35.0),
+                                Size::new(60.0, 15.0),
+                            ),
+                            ..Default::default()
+                        },
+                        Color::BLACK,
+                    );
+                    renderer.end_layer();
+                    for damage in [
+                        Rectangle::new(
+                            Point::new(30.0, 30.0),
+                            Size::new(100.0, 65.0),
+                        ),
+                        Rectangle::new(
+                            Point::new(7.0, 7.0),
+                            Size::new(22.0, 22.0),
+                        ),
+                        Rectangle::new(Point::ORIGIN, size),
+                    ] {
+                        let physical = viewport.physical_size();
+                        let mut actual = tiny_skia::Pixmap::new(
+                            physical.width,
+                            physical.height,
+                        )
+                        .unwrap();
+                        actual.fill(tiny_skia::Color::from_rgba8(
+                            40, 50, 60, 255,
+                        ));
+                        let mut expected = actual.clone();
+                        let mut mask = tiny_skia::Mask::new(
+                            physical.width,
+                            physical.height,
+                        )
+                        .unwrap();
+                        renderer.draw_inner(
+                            &mut actual.as_mut(),
+                            &mut mask,
+                            &viewport,
+                            &[damage],
+                            Color::WHITE,
+                            true,
+                        );
+                        renderer.draw_inner(
+                            &mut expected.as_mut(),
+                            &mut mask,
+                            &viewport,
+                            &[damage],
+                            Color::WHITE,
+                            false,
+                        );
+                        assert!(
+                            actual.data() == expected.data(),
+                            "scale={scale}, alpha={alpha}, radius={radius}, damage={damage:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Renderer {
     pub fn new(default_font: Font, default_text_size: Pixels) -> Self {
         Self {
@@ -72,6 +182,25 @@ impl Renderer {
         damage: &[Rectangle],
         background_color: Color,
     ) {
+        self.draw_inner(
+            pixels,
+            clip_mask,
+            viewport,
+            damage,
+            background_color,
+            true,
+        );
+    }
+
+    fn draw_inner(
+        &mut self,
+        pixels: &mut tiny_skia::PixmapMut<'_>,
+        clip_mask: &mut tiny_skia::Mask,
+        viewport: &Viewport,
+        damage: &[Rectangle],
+        background_color: Color,
+        occlude: bool,
+    ) {
         let scale_factor = viewport.scale_factor();
         self.engine.reset_clip_mask();
 
@@ -79,6 +208,37 @@ impl Renderer {
 
         for &damage_bounds in damage {
             let damage_bounds = damage_bounds * scale_factor;
+            // An opaque later surface completely covering this damage makes
+            // every earlier layer invisible. The inset excludes rounded edges,
+            // strokes and clip-mask edge coverage. In particular, scrolling a
+            // modal must not repaint the book and dimming underneath its paper.
+            let first = if occlude {
+                self.layers
+                        .as_slice()
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(index, layer)| {
+                            if !damage_bounds
+                                .expand(1.0)
+                                .is_within(&(layer.bounds * scale_factor))
+                            {
+                                return None;
+                            }
+                            layer.quads.iter().any(|(quad, background)| {
+                        if !matches!(background, Background::Color(color) if color.a == 1.0) {
+                            return false;
+                        }
+                        let radius = <[f32; 4]>::from(quad.border.radius).into_iter()
+                            .fold(quad.border.width, f32::max) * scale_factor + 1.0;
+                        let inner = (quad.bounds * scale_factor).shrink(radius);
+                        inner.width > 0.0 && inner.height > 0.0 && damage_bounds.is_within(&inner)
+                    }).then_some(index)
+                        })
+                        .unwrap_or(0)
+            } else {
+                0
+            };
 
             let path = tiny_skia::PathBuilder::from_rect(
                 tiny_skia::Rect::from_xywh(
@@ -105,7 +265,7 @@ impl Renderer {
                 None,
             );
 
-            for layer in self.layers.iter() {
+            for layer in self.layers.iter().skip(first) {
                 let Some(layer_bounds) =
                     damage_bounds.intersection(&(layer.bounds * scale_factor))
                 else {

@@ -55,6 +55,28 @@ impl Engine {
         clip_mask: &mut tiny_skia::Mask,
         clip_bounds: Rectangle,
     ) {
+        self.draw_quad_inner(
+            quad,
+            background,
+            transformation,
+            pixels,
+            clip_mask,
+            clip_bounds,
+            true,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_quad_inner(
+        &mut self,
+        quad: &Quad,
+        background: &Background,
+        transformation: Transformation,
+        pixels: &mut tiny_skia::PixmapMut<'_>,
+        clip_mask: &mut tiny_skia::Mask,
+        clip_bounds: Rectangle,
+        fast_rect: bool,
+    ) {
         let physical_bounds = quad.bounds * transformation;
 
         if !clip_bounds.intersects(&physical_bounds) {
@@ -83,6 +105,40 @@ impl Engine {
                 .min(quad.bounds.height / 2.0);
         }
 
+        // Large square surfaces (desk, modal dimming and scrolling panel fill)
+        // need no path tessellation. Keep the same paint, clip and antialiasing.
+        if fast_rect
+            && [
+                physical_bounds.x,
+                physical_bounds.y,
+                physical_bounds.x + physical_bounds.width,
+                physical_bounds.y + physical_bounds.height,
+            ]
+            .iter()
+            .all(|v| v.fract() == 0.0)
+            && border_width == 0.0
+            && fill_border_radius == [0.0; 4]
+            && quad.shadow.color.a == 0.0
+            && let Background::Color(color) = background
+            && let Some(rect) = tiny_skia::Rect::from_xywh(
+                physical_bounds.x,
+                physical_bounds.y,
+                physical_bounds.width,
+                physical_bounds.height,
+            )
+        {
+            pixels.fill_rect(
+                rect,
+                &tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(into_color(*color)),
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                },
+                tiny_skia::Transform::identity(),
+                clip_mask,
+            );
+            return;
+        }
         let path = rounded_rectangle(quad.bounds, fill_border_radius);
 
         let shadow = quad.shadow;
@@ -881,6 +937,70 @@ pub fn adjust_clip_mask(clip_mask: &mut tiny_skia::Mask, bounds: Rectangle) {
 mod clip_mask_tests {
     use super::*;
     use crate::core::Point;
+
+    #[test]
+    fn square_fill_matches_general_path_at_fractional_dpi_and_clips() {
+        let mut engine = Engine::new();
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for alpha in [0.0, 0.35, 1.0] {
+                for clipped in [false, true] {
+                    for origin in [0.0, 0.25, 1.75] {
+                        let quad = Quad {
+                            bounds: Rectangle::new(
+                                Point::new(origin, origin),
+                                Size::new(32.0, 20.0),
+                            ),
+                            ..Quad::default()
+                        };
+                        let bounds = if clipped {
+                            Rectangle::new(
+                                Point::new(3.25, 4.5),
+                                Size::new(18.5, 11.25),
+                            )
+                        } else {
+                            Rectangle::new(
+                                Point::ORIGIN,
+                                Size::new(100.0, 80.0),
+                            )
+                        };
+                        let background = Background::Color(Color::from_rgba(
+                            0.2, 0.6, 0.4, alpha,
+                        ));
+                        let mut actual =
+                            tiny_skia::Pixmap::new(100, 80).unwrap();
+                        actual.fill(tiny_skia::Color::from_rgba8(
+                            12, 30, 80, 255,
+                        ));
+                        let mut expected = actual.clone();
+                        let mut mask = tiny_skia::Mask::new(100, 80).unwrap();
+                        adjust_clip_mask(&mut mask, bounds);
+                        engine.draw_quad_inner(
+                            &quad,
+                            &background,
+                            Transformation::scale(scale),
+                            &mut actual.as_mut(),
+                            &mut mask,
+                            bounds,
+                            true,
+                        );
+                        engine.draw_quad_inner(
+                            &quad,
+                            &background,
+                            Transformation::scale(scale),
+                            &mut expected.as_mut(),
+                            &mut mask,
+                            bounds,
+                            false,
+                        );
+                        assert!(
+                            actual.data() == expected.data(),
+                            "scale={scale}, alpha={alpha}, clipped={clipped}, origin={origin}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn changing_bounds_and_new_draws_match_uncached_masks() {

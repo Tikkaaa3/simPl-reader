@@ -155,6 +155,10 @@ impl Shelf {
     }
 
     /// Whether shelf changes are saved, so the app may exit.
+    pub fn profile_loaded(&self) -> bool {
+        !self.loading && self.shelves_loaded
+    }
+
     pub fn shelves_settled(&self) -> bool {
         !self.shelves_saving && !(self.shelves_dirty && !self.shelves_blocked)
     }

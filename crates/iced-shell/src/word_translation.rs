@@ -99,6 +99,9 @@ pub(super) struct Popup {
 }
 
 impl WordTranslation {
+    pub fn packages_busy(&self) -> bool {
+        self.package_job.is_some()
+    }
     pub fn dismiss(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.task = None;

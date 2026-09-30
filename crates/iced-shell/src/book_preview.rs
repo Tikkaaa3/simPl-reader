@@ -447,7 +447,33 @@ pub(super) fn render(reader: &mut Reader, output: &Path) {
             },
         ),
     );
-    if reader.show_settings && matches!(reader.focused, Some(Control::Dictionary(_))) {
+    if let Some(pdf) = &reader.pdf {
+        use iced_futures::futures::{StreamExt, executor::block_on};
+        use iced_runtime::{Action as RuntimeAction, task::into_stream};
+        block_on(async {
+            if let Some(mut stream) = into_stream(pdf.restore_scroll()) {
+                while let Some(action) = stream.next().await {
+                    if let RuntimeAction::Widget(mut operation) = action {
+                        loop {
+                            element.as_widget_mut().operate(
+                                &mut tree,
+                                Layout::new(&node),
+                                &renderer,
+                                operation.as_mut(),
+                            );
+                            match operation.finish() {
+                                iced::advanced::widget::operation::Outcome::Chain(next) => {
+                                    operation = next
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    if reader.show_settings && reader.focused.is_some() {
         use iced::advanced::widget::{Operation, operation::Outcome};
         let mut operation: Box<dyn Operation<()>> = Box::new(ui::reveal_focus_operation());
         loop {

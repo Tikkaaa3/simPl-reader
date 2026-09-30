@@ -71,6 +71,7 @@ pub(super) struct Session {
     expected: Option<Place>,
     /// Last retained-layout query, so an unchanged word does not repeat work.
     follow_cursor: Option<BookCursor>,
+    spoken: Option<(String, std::ops::Range<usize>)>,
     pub(super) notice: Option<String>,
 }
 
@@ -375,6 +376,9 @@ impl Reader {
 
     fn begin(&mut self, document: String, selection: bool, next: Next, expected: Option<Place>) {
         self.read_aloud.generation = self.read_aloud.generation.wrapping_add(1);
+        if let Some(pdf) = &mut self.pdf {
+            pdf.clear_spoken_word();
+        }
         self.read_aloud.session = Some(Session {
             document,
             selection,
@@ -384,6 +388,7 @@ impl Reader {
             next,
             expected,
             follow_cursor: None,
+            spoken: None,
             notice: None,
         });
     }
@@ -442,12 +447,26 @@ impl Reader {
 
     /// Ends a session whose document is no longer open.
     pub(super) fn sync_read_aloud(&mut self) {
-        let Some(session) = &self.read_aloud.session else {
-            return;
-        };
-        if self.reading_document().as_deref() != Some(session.document.as_str()) {
+        if self.read_aloud.session.as_ref().is_some_and(|session| {
+            self.reading_document().as_deref() != Some(session.document.as_str())
+        }) {
             self.read_aloud.stop();
         }
+        if !self.read_aloud.active()
+            && let Some(pdf) = &mut self.pdf
+        {
+            pdf.clear_spoken_word();
+        }
+    }
+
+    pub(super) fn spoken_word(&self, item: &str) -> Option<std::ops::Range<usize>> {
+        self.read_aloud
+            .session
+            .as_ref()?
+            .spoken
+            .as_ref()
+            .filter(|(id, _)| id == item)
+            .map(|(_, range)| range.clone())
     }
 
     pub(super) fn read_aloud_text(
@@ -594,6 +613,7 @@ impl Reader {
         if session.queued.is_empty() {
             match session.next {
                 Next::Chapter(chapter) if interactive => {
+                    session.spoken = None;
                     session.next = Next::Opening(chapter);
                     session.expected = None;
                     tasks.push(self.navigate(Some(chapter), None, None, Navigation::Preserve));
@@ -799,6 +819,18 @@ impl Reader {
                 task
             }
             (Unit::Row(row), start) => {
+                if let Some(item) = self.book.as_ref().and_then(|book| book.items.get(row))
+                    && let Some(text) = item.text()
+                {
+                    let bytes = speech::word_bytes(
+                        text,
+                        start.saturating_add(status.word),
+                        status.word_len,
+                    );
+                    if let Some(session) = &mut self.read_aloud.session {
+                        session.spoken = Some((item.id().to_owned(), bytes));
+                    }
+                }
                 let pages = self.pages();
                 // A paragraph may span several papers. Keep the current paper
                 // until retained native line geometry tells us where the word
@@ -1260,6 +1292,9 @@ mod tests {
                 "native line should cross papers at zoom {zoom}, theme {}",
                 theme.id
             );
+            let range = reader.spoken_word("paragraph-0").unwrap();
+            assert_eq!(&text[range.clone()], "Final");
+            assert!(reader.spoken_word("paragraph-1").is_none());
             let offset = reader.offset;
             for _ in 0..4 {
                 let task = reader.follow(status);
@@ -1275,6 +1310,10 @@ mod tests {
                     .copy_text(&reader.book.as_ref().unwrap().items),
                 selection
             );
+            reader.read_aloud.session.as_mut().unwrap().paused = true;
+            reader.sync_read_aloud();
+            assert_eq!(reader.spoken_word("paragraph-0"), Some(range));
+
             assert_eq!(
                 reader.read_aloud.session.as_ref().unwrap().expected,
                 reader.place()
@@ -1295,6 +1334,9 @@ mod tests {
             let offset = reader.offset;
             pump(&mut reader, task);
             assert_eq!(reader.offset, offset);
+            reader.read_aloud.stop();
+            reader.sync_read_aloud();
+            assert!(reader.spoken_word("paragraph-0").is_none());
         }
     }
 
@@ -1598,6 +1640,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
         let mut reached_bottom = false;
         let mut reached_last = false;
+        let mut saw_word = false;
         while reader.read_aloud.active() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1612,6 +1655,7 @@ mod tests {
             );
             assert!(reader.error.is_none(), "{:?}", reader.error);
             let pdf = reader.pdf.as_ref().unwrap();
+            saw_word |= pdf.has_spoken_word();
             let page = pdf.page_index();
             reached_bottom |= page == 0 && pdf.position().within > 0.5;
             reached_last |= reader.read_aloud.session.as_ref().is_some_and(|session| {
@@ -1633,6 +1677,12 @@ mod tests {
             reached_bottom && reached_last,
             "must scroll to bottom words ({reached_bottom}) and read the final page ({reached_last})"
         );
+        assert!(
+            saw_word,
+            "native SAPI words must reach PDF glyph highlights"
+        );
+        reader.sync_read_aloud();
+        assert!(!reader.pdf.as_ref().unwrap().has_spoken_word());
         assert!(reader.pdf.as_ref().unwrap().selection().is_none());
         println!(
             "PDF read both text pages, skipped the blank page and followed glyphs without restarting"
@@ -1892,9 +1942,16 @@ mod tests {
             id: String::new(),
             label: AUTOMATIC.into(),
         }];
-        for (name, width) in [("wide", 1280.0), ("narrow", 540.0)] {
+        for (name, width) in [("wide", 1280.0), ("narrow", 540.0), ("dark-wide", 1280.0)] {
             reader.window_size = Size::new(width, 800.0);
+            reader.appearance = if name.starts_with("dark") {
+                Appearance::Dark
+            } else {
+                Appearance::Light
+            };
             reader.show_settings = false;
+            reader.read_aloud.session.as_mut().unwrap().spoken =
+                Some(("paragraph-0".into(), 8..16));
             super::super::book_preview::render(
                 &mut reader,
                 &output.join(format!("player-{name}.png")),
@@ -1903,6 +1960,38 @@ mod tests {
             super::super::book_preview::render(
                 &mut reader,
                 &output.join(format!("settings-{name}.png")),
+            );
+        }
+        let mut pdf = pdf_reader("highlight-preview").expect("stage PDFium");
+        pdf.begin(
+            pdf.reading_document().unwrap(),
+            false,
+            Next::Nothing,
+            pdf.place(),
+        );
+        pdf.read_aloud
+            .session
+            .as_mut()
+            .unwrap()
+            .queued
+            .push_back(Queued {
+                stream: 7,
+                unit: Unit::PdfPage(0),
+                start: 0,
+            });
+        let task = pdf.follow(speech::Status {
+            stream: 7,
+            word: 0,
+            word_len: 3,
+            done: false,
+        });
+        pump(&mut pdf, task);
+        assert!(pdf.pdf.as_ref().unwrap().has_spoken_word());
+        for (name, appearance) in [("light", Appearance::Light), ("dark", Appearance::Dark)] {
+            pdf.appearance = appearance;
+            super::super::book_preview::render(
+                &mut pdf,
+                &output.join(format!("pdf-word-{name}.png")),
             );
         }
     }

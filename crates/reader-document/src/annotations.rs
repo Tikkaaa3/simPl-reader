@@ -473,7 +473,7 @@ pub fn save(annotations: &Annotations) -> Result<(), String> {
     save_to(&directory(), annotations)
 }
 
-fn load_from(directory: &Path, fingerprint: &str) -> Result<Annotations, String> {
+pub(crate) fn load_from(directory: &Path, fingerprint: &str) -> Result<Annotations, String> {
     let path = file_path(directory, fingerprint)?;
     let file = match File::open(&path) {
         Ok(file) => file,

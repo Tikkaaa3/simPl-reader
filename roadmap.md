@@ -10,7 +10,11 @@ repaginate; PDF Document/Book switches retain the source page. PDF prose and
 illustrations are reconstructed separately and cached across reopenings. Managed
 imports, TXT/Markdown, favourites, custom shelves, four reading themes, in-book
 search, bookmarks/highlights/notes and offline Windows read-aloud are implemented.
-Listen toggles speech off; pause/resume remains available. The toolbar collapses.
+Listen toggles speech off; pause/resume retains a temporary spoken-word highlight.
+The toolbar collapses, and F11/Esc fullscreen is available. Book Fit width and
+independent font/size/line-spacing/margin controls preserve the canonical page map;
+reflowable books remember overrides. Verified profile backup/restore and
+Markdown/text/JSON note exports are in Settings → Library & data.
 Offline word translation now has verified optional downloads for thirteen
 language directions. The [local reader review](reader-release-review-2026-09-30.md)
 records current release qualification, high-DPI limits and comparisons with other
@@ -21,8 +25,9 @@ counts and package measurements for the current candidate. Word dictionaries
 now use 13 optional verified downloads; automatic selection lookup and manual
 context-menu lookup share a local result card. The audit covers all five source
 formats on a real Windows desktop, save-error recovery, native speech and
-installer data retention. High-DPI CPU frame costs and independent machine
-qualification remain explicit follow-ups.
+installer data retention. The [comfort follow-up](reader-comfort-review-2026-09-30.md) records the later
+DPI renderer improvements and current measurements. Independent machine
+qualification remains an explicit follow-up.
 Independent clean-Windows and accessibility qualification remain open.
 
 ## Product goal and present reality

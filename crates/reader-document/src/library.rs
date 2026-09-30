@@ -169,8 +169,7 @@ pub fn load() -> Result<Vec<Entry>, String> {
     }
 }
 
-#[cfg(test)]
-fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
+pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

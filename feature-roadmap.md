@@ -46,9 +46,13 @@ thread, cancellable).
 
 ## 3. Reading appearance settings
 
-**Status: partial.** Default, Soft, Clear and Compact themes are bundled, with
-global persisted selection, fonts, spacing and light/dark colors. Per-book
-preferences, independent spacing/margin controls and two-column pages remain open.
+**Status: reading comfort implemented; two-column pages remain open.** Four
+bundled themes retain their palettes and paragraph spacing. Font, text size,
+line spacing and side margins have independent defaults and per-book overrides
+for reflowable books. Book Fit width follows window/sidebar resizing, and
+F11/Esc fullscreen preserves the previous window state. Page numbers remain
+canonical; PDF Book keeps its source typography. See the
+[comfort follow-up](reader-comfort-review-2026-09-30.md).
 
 **Goal.** More themes (sepia), line spacing, margins, font choice (Literata is
 already bundled), optional two-column pages. Remembered per book.
@@ -84,7 +88,10 @@ guarantee or the page-number stability.
 also offers page bookmarks and removal of an existing highlight. The list is a
 right sidebar with a persistent edge toggle. Overlapping highlights of the same
 color merge without darkening, while different colors remain independent.
-Ctrl+H, Ctrl+D and Ctrl+B provide keyboard access
+Settings → Library & data exports Markdown, text or full-anchor JSON and creates
+verified portable profile snapshots, with optional books and dictionary packs.
+Restore stages and validates the data, remaps managed book paths, and retains the
+previous profile for recovery. Ctrl+H, Ctrl+D and Ctrl+B provide keyboard access
 without another toolbar control. A versioned file per book fingerprint stores
 bookmarks, highlights and notes under the local simPl profile. Reflow highlights
 use item IDs and UTF-8 offsets, with selected-text recovery if IDs change; PDF
@@ -153,7 +160,8 @@ voices. Listen (Ctrl+Shift+U) continues from the current page through the book,
 even with an existing selection; context-menu Read aloud reads only the passage.
 Listen toggles it off. Pause/resume and rate controls remain in the player. Voice
 and rate are persisted. Scroll follows native spoken-line/glyph geometry within
-and across pages and asynchronous EPUB chapter loads;
+and across pages and asynchronous EPUB chapter loads. The current spoken word
+has a transient outline and tint in both Book and PDF Document mode;
 PDF selection/page replies are tied to the active session. Image-only pages are
 skipped. Automatic language selection is a heuristic, with a Windows default fallback.
 
@@ -174,10 +182,12 @@ clean; voice availability varies per machine.
 The 0.1.1 work includes bounded, cancellable background search for large books,
 shared page/contents data on frequent UI paths, and PDF raster rendering after a
 text-layer error. See [stabilization-report.md](stabilization-report.md) for checks,
-measurements and remaining release qualification. Next priorities are independent
-Windows/accessibility QA, profile backup and annotation export. Offline word
-translation and verified optional dictionary downloads are now implemented.
-Per-book appearance can follow once its storage and page-map rules are specified.
+measurements and remaining release qualification. Profile backup/restore,
+annotation export, per-book typography, Book Fit width and fullscreen are now
+implemented; the [comfort follow-up](reader-comfort-review-2026-09-30.md) records
+their validation and the reduced high-DPI painting cost. Independent clean
+Windows, multi-monitor and accessibility QA remain release qualification work.
+Offline word translation and verified optional dictionary downloads are implemented.
 The [final local reader review](reader-release-review-2026-09-30.md) compares the
 current product with other readers and separates release qualification from
 future features.

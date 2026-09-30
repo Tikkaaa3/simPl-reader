@@ -538,14 +538,16 @@ pub(super) fn refine_pdf(atlas: &mut Atlas, book: &Book, index: &virtual_reader:
 /// (at the same row, or, inside a long paragraph, at the matching line). A page
 /// that comes out shorter than the default sheet keeps the sheet's size and is
 /// left partly blank; a longer one grows.
-pub fn adapt_section(
+pub fn adapt_section_with(
     book: Arc<Book>,
     canonical: &Section,
     theme: &'static themes::ReadingTheme,
+    options: reader_document::reading::Options,
     cancel: &AtomicBool,
 ) -> Result<Option<Section>, String> {
-    let Some(heights) = measure_book_for(book.clone(), TEXT, DEFAULT_FONT_SIZE, cancel, theme)
-    else {
+    let width = PAPER - options.margin as f32 * 2.0;
+    let body = options.size as f32;
+    let Some(heights) = measure_book_with(book.clone(), width, body, cancel, theme, options) else {
         return Ok(None);
     };
     if heights.len() != canonical.heights.len() || canonical.pages.is_empty() {
@@ -553,19 +555,23 @@ pub fn adapt_section(
     }
     let old = virtual_reader::HeightIndex::new(canonical.heights.clone());
     let new = virtual_reader::HeightIndex::new(heights.clone());
-    let style = style_for(theme, &book);
+    let style = reading_ui::effective_style(theme, &book, options);
     // Lines of a paragraph in a layout: (line height, space above the text, line count).
-    let grid = |style: &BookStyle, index: &virtual_reader::HeightIndex, row: usize| {
+    let grid = |style: &BookStyle,
+                index: &virtual_reader::HeightIndex,
+                row: usize,
+                body: f32,
+                width: f32| {
         let item = book.items.get(row)?;
         item.text()?;
         let semantics = book.structure.get(item.id());
-        let size = styled_item_size(style, &book, row, item, DEFAULT_FONT_SIZE);
+        let size = styled_item_size(style, &book, row, item, body);
         let line = size * style.line_height;
-        let padding = style.block_padding(item, semantics, DEFAULT_FONT_SIZE, TEXT);
+        let padding = style.block_padding(item, semantics, body, width);
         let gap = if row + 1 == index.len() {
             0.0
         } else {
-            style.gap(DEFAULT_FONT_SIZE)
+            style.gap(body)
         };
         let text = (index.height(row) - gap - padding.top - padding.bottom).max(line);
         Some((line, padding.top, (text / line).round().max(1.0) as usize))
@@ -582,7 +588,10 @@ pub fn adapt_section(
         if within < 0.5 {
             return new.start(row);
         }
-        match (grid(&MINIMAL, &old, row), grid(style, &new, row)) {
+        match (
+            grid(&MINIMAL, &old, row, DEFAULT_FONT_SIZE, TEXT),
+            grid(&style, &new, row, body, width),
+        ) {
             (Some((line, top, lines)), Some((new_line, new_top, new_lines))) if new_lines >= 2 => {
                 let above = ((within - top) / line)
                     .round()

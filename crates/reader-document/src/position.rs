@@ -318,7 +318,7 @@ pub(crate) fn saved_record_path(document: &Path) -> PathBuf {
         .join(format!("{}.json", path_key(document)))
 }
 
-fn path_key(path: &Path) -> String {
+pub(crate) fn path_key(path: &Path) -> String {
     let mut digest = Sha256::new();
     #[cfg(windows)]
     {
@@ -443,7 +443,11 @@ pub(crate) fn atomic_write(
 }
 
 #[cfg(windows)]
-fn replace_file(temporary: &Path, destination: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn replace_file(
+    temporary: &Path,
+    destination: &Path,
+    label: &str,
+) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -474,9 +478,34 @@ fn replace_file(temporary: &Path, destination: &Path, label: &str) -> Result<(),
 }
 
 #[cfg(not(windows))]
-fn replace_file(temporary: &Path, destination: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn replace_file(
+    temporary: &Path,
+    destination: &Path,
+    label: &str,
+) -> Result<(), String> {
     fs::rename(temporary, destination)
         .map_err(|error| format!("cannot replace {label} {}: {error}", destination.display()))
+}
+
+pub(crate) fn validate_backup_record(path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid position filename")?;
+    if name.ends_with(".pdf.json") {
+        load_pdf_record(path)?;
+    } else if name.ends_with(".epub.json") {
+        load_epub_record(path)?;
+    } else if name.ends_with(".pdf-mode.json") {
+        if let Some(record) = read_record::<PdfModeRecord>(path)? {
+            validate_fingerprint(&record.fingerprint)?;
+        }
+    } else if name.ends_with(".json") {
+        load_record(path)?;
+    } else {
+        return Err("Unsupported position record".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

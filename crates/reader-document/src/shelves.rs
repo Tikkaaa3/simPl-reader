@@ -179,7 +179,7 @@ pub fn load() -> Result<Shelves, String> {
     load_at(&shelves_path())
 }
 
-fn load_at(path: &Path) -> Result<Shelves, String> {
+pub(crate) fn load_at(path: &Path) -> Result<Shelves, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

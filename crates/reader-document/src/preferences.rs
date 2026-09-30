@@ -55,6 +55,7 @@ pub struct Preferences {
     /// Read-aloud speed step, -10 (slowest) to 10 (fastest); 0 is normal.
     pub speech_rate: i8,
     pub dictionary: crate::dictionary::Settings,
+    pub reading: crate::reading::Options,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,6 +73,8 @@ struct Record {
     speech_rate: i8,
     #[serde(default)]
     dictionary: crate::dictionary::Settings,
+    #[serde(default)]
+    reading: crate::reading::Options,
 }
 
 fn is_zero(value: &i8) -> bool {
@@ -94,7 +97,7 @@ pub fn save(preferences: Preferences) -> Result<(), String> {
     save_to(&path(), preferences)
 }
 
-fn load_from(path: &Path) -> Result<Preferences, String> {
+pub(crate) fn load_from(path: &Path) -> Result<Preferences, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -128,6 +131,7 @@ fn load_from(path: &Path) -> Result<Preferences, String> {
         },
         speech_rate: record.speech_rate.clamp(-10, 10),
         dictionary: record.dictionary.validated(),
+        reading: record.reading.validated(),
     })
 }
 
@@ -140,6 +144,7 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         voice: preferences.voice,
         speech_rate: preferences.speech_rate,
         dictionary: preferences.dictionary.validated(),
+        reading: preferences.reading.validated(),
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -175,6 +180,10 @@ mod tests {
                     theme: "soft".into(),
                     voice: r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\X".into(),
                     speech_rate: -3,
+                    reading: crate::reading::Options {
+                        size: 26,
+                        ..Default::default()
+                    },
                     dictionary: crate::dictionary::Settings {
                         automatic: false,
                         source: crate::dictionary::Language::Spanish,

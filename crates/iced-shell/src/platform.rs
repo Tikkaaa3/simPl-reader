@@ -26,6 +26,109 @@ pub fn open_dictionary_dialog() -> Result<Option<PathBuf>, String> {
     open_file_dialog(false, true)
 }
 
+/// Native backup/export picker, run on a worker so the reader stays responsive.
+#[cfg(windows)]
+pub fn transfer_dialog(
+    save: bool,
+    format: Option<reader_document::backup::ExportFormat>,
+) -> Result<Option<PathBuf>, String> {
+    use reader_document::backup::ExportFormat;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_DONTADDTORECENT,
+        OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST,
+        OPENFILENAMEW,
+    };
+    let (filter, extension, name, title) = match format {
+        Some(ExportFormat::Markdown) => (
+            "Markdown (*.md)\0*.md\0\0",
+            "md\0",
+            "Reading notes.md",
+            "Export reading notes\0",
+        ),
+        Some(ExportFormat::Text) => (
+            "Text (*.txt)\0*.txt\0\0",
+            "txt\0",
+            "Reading notes.txt",
+            "Export reading notes\0",
+        ),
+        Some(ExportFormat::Json) => (
+            "JSON (*.json)\0*.json\0\0",
+            "json\0",
+            "Reading notes.json",
+            "Export reading notes\0",
+        ),
+        None => (
+            "simPl backup (*.zip)\0*.zip\0\0",
+            "zip\0",
+            "simPl-backup.zip",
+            if save {
+                "Create library backup\0"
+            } else {
+                "Restore library backup\0"
+            },
+        ),
+    };
+    let filter: Vec<u16> = filter.encode_utf16().collect();
+    let extension: Vec<u16> = extension.encode_utf16().collect();
+    let title: Vec<u16> = title.encode_utf16().collect();
+    let mut filename = vec![0_u16; 32_768];
+    if save {
+        for (index, unit) in name.encode_utf16().enumerate() {
+            filename[index] = unit;
+        }
+    }
+    let mut options = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        lpstrFilter: filter.as_ptr(),
+        nFilterIndex: 1,
+        lpstrFile: filename.as_mut_ptr(),
+        nMaxFile: filename.len() as u32,
+        lpstrTitle: title.as_ptr(),
+        lpstrDefExt: extension.as_ptr(),
+        Flags: OFN_EXPLORER
+            | OFN_DONTADDTORECENT
+            | OFN_NOCHANGEDIR
+            | OFN_PATHMUSTEXIST
+            | if save {
+                OFN_OVERWRITEPROMPT
+            } else {
+                OFN_FILEMUSTEXIST
+            },
+        ..OPENFILENAMEW::default()
+    };
+    // SAFETY: all referenced UTF-16 buffers stay alive through the synchronous dialog.
+    let chosen = unsafe {
+        if save {
+            GetSaveFileNameW(&mut options)
+        } else {
+            GetOpenFileNameW(&mut options)
+        }
+    };
+    if chosen == 0 {
+        let error = unsafe { CommDlgExtendedError() };
+        return if error == 0 {
+            Ok(None)
+        } else {
+            Err(format!("File dialog failed (0x{error:04X})"))
+        };
+    }
+    let end = filename
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or("Unterminated dialog filename")?;
+    Ok(Some(OsString::from_wide(&filename[..end]).into()))
+}
+
+#[cfg(not(windows))]
+pub fn transfer_dialog(
+    _save: bool,
+    _format: Option<reader_document::backup::ExportFormat>,
+) -> Result<Option<PathBuf>, String> {
+    Err("The native backup/export picker requires Windows".into())
+}
+
 #[cfg(windows)]
 fn open_file_dialog(locate: bool, dictionary: bool) -> Result<Option<PathBuf>, String> {
     use std::ffi::OsString;
