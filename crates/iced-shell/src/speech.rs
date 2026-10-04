@@ -241,24 +241,6 @@ impl Speaker {
     }
 }
 
-/// Converts SAPI's UTF-16 character offsets to safe UTF-8 source coordinates.
-pub(crate) fn word_bytes(text: &str, start: u32, length: u32) -> std::ops::Range<usize> {
-    let end = start.saturating_add(length.max(1));
-    let mut units = 0_u32;
-    let mut first = None;
-    for (byte, character) in text.char_indices() {
-        let next = units.saturating_add(character.len_utf16() as u32);
-        if first.is_none() && start < next {
-            first = Some(byte);
-        }
-        if units >= end {
-            return first.unwrap_or(byte)..byte;
-        }
-        units = next;
-    }
-    first.unwrap_or(text.len())..text.len()
-}
-
 impl Drop for Speaker {
     fn drop(&mut self) {
         self.stop();
@@ -340,45 +322,7 @@ fn locale_name(lcid: u32) -> Option<String> {
     (length > 1).then(|| String::from_utf16_lossy(&buffer[..length as usize - 1]))
 }
 
-/// A guess at the language of `text` from letters only some languages use, so
-/// "Automatic" can pick an installed voice that can pronounce it.
-pub fn guess_language(text: &str) -> Option<&'static str> {
-    let mut letters = 0_usize;
-    let mut counts = [0_usize; 5];
-    for c in text.chars().take(4000) {
-        if c.is_alphabetic() {
-            letters += 1;
-        }
-        let index = match c {
-            'ğ' | 'Ğ' | 'ş' | 'Ş' | 'ı' | 'İ' => 0,
-            'ß' | 'ä' | 'Ä' => 1,
-            'é' | 'è' | 'ê' | 'à' | 'œ' | 'ë' | 'ù' => 2,
-            'ñ' | 'Ñ' | '¿' | '¡' | 'á' | 'í' | 'ó' | 'ú' => 3,
-            'a'..='z' | 'A'..='Z' => 4,
-            _ => continue,
-        };
-        counts[index] += 1;
-    }
-    if letters < 20 {
-        return None;
-    }
-    let (best, count) = counts[..4]
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, count)| **count)
-        .map(|(index, count)| (index, *count))?;
-    // Distinctive letters are rare even in their own language: a few per hundred.
-    if count * 200 >= letters {
-        return Some(["tr", "de", "fr", "es"][best]);
-    }
-    (counts[4] * 10 >= letters * 9).then_some("en")
-}
-
-/// The speed a SAPI rate step roughly gives, for display: each step is about
-/// a tenth of a tripling.
-pub fn speed(rate: i8) -> f32 {
-    3.0_f32.powf(f32::from(rate) / 10.0)
-}
+pub use reader_core::read_aloud::{guess_language, speed, word_bytes};
 
 #[cfg(test)]
 mod tests {

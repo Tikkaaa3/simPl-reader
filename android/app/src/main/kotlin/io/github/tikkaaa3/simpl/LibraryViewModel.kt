@@ -80,6 +80,7 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
         saved["openRequest"] = fingerprint
         mutable.value = mutable.value.copy(openRequest = fingerprint)
     }
+    fun openSpokenBook(fingerprint: String) { requestOpen(fingerprint) }
 
     fun enqueue(uris: List<Uri>, tree: Boolean = false, openAfter: Boolean = false) {
         if ((getApplication<Application>() as SimplApplication).coreFailure != null || uris.isEmpty()) return

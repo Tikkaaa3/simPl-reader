@@ -37,6 +37,7 @@ internal class PdfBitmapCache(val limit: Long = 24L * 1024 * 1024) {
 }
 
 internal data class PdfState(
+    val spoken: SpeechRange? = null,
     val loading: Boolean = true,
     val rendering: Boolean = false,
     val info: PdfInfo? = null,
@@ -71,9 +72,36 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
     private var requested: PdfRasterKey? = null
     private var cleared = false
     private var openedAt = 0L
+    private var title = ""
+    private var speechStart: Job? = null
+    init {
+        viewModelScope.launch {
+            ReadAloud.state.collect { speech ->
+                val range = speech.range.takeIf { speech.active && !speech.passage && speech.fingerprint == fingerprint }
+                mutable.value = mutable.value.copy(spoken = range)
+                val page = (range?.pdfPage ?: speech.chunk?.pdfPage)?.takeIf { speech.active && !speech.passage && speech.fingerprint == fingerprint }
+                if (page != null && page > 0u && !mutable.value.loading) show(page, speech = true)
+            }
+        }
+    }
+    fun readAloud() {
+        speechStart?.cancel()
+        speechStart = launch {
+            val plan = withContext(Dispatchers.IO) { source!!.speechPlan(mutable.value.location.page) }
+            ReadAloud.start(getApplication(), fingerprint, title, plan)
+        }
+    }
+    fun readSelection() = copy(::readPassage)
+    fun readPassage(text: String) = launch {
+        val plan = withContext(Dispatchers.IO) { speechPassage(text) }
+        ReadAloud.start(getApplication(), fingerprint, title, plan, passage = true)
+    }
+
 
     fun open(book: LibraryBook) {
         if (path == book.path) return
+        if (ReadAloud.state.value.active && ReadAloud.state.value.fingerprint != book.fingerprint) ReadAloud.stop()
+        title = book.title
         path = book.path
         fingerprint = book.fingerprint
         viewModelScope.launch {
@@ -159,7 +187,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         }
         show(number); return true
     }
-    private fun show(page: UInt) {
+    private fun show(page: UInt, speech: Boolean = false) {
         if (page == mutable.value.location.page) return
         flush()
         rendering?.cancel(); requested = null
@@ -167,6 +195,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         mutable.value = mutable.value.copy(location = location, raster = null, rasterKey = null, text = null,
             rendering = true, error = null, revision = mutable.value.revision + 1)
         record(location)
+        if (!speech && ReadAloud.state.value.active && !ReadAloud.state.value.passage && ReadAloud.state.value.fingerprint == fingerprint) readAloud()
     }
     fun zoom(scale: Float) {
         record(mutable.value.location.copy(zoom = scale.coerceIn(.25f, 4f), fitWidth = false))
@@ -242,7 +271,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
             error = userError(error, action))
     }
     override fun onCleared() {
-        stop(); cleared = true; rendering?.cancel(); source?.close(); source = null
+        speechStart?.cancel(); stop(); cleared = true; rendering?.cancel(); source?.close(); source = null
         runBlocking(Dispatchers.IO) { native.withLock { cache.clear() } }
     }
 }

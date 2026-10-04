@@ -4,6 +4,7 @@
 //! timer asks the engine which one it is speaking and turns the page to
 //! follow it; moving to another page yourself restarts reading there.
 
+use reader_core::read_aloud::sentence_start;
 use std::collections::VecDeque;
 
 use super::*;
@@ -940,10 +941,10 @@ impl Reader {
             return Task::none();
         };
         let content = current.content.start + line.y - book_pages::TOP;
-        let Some(page) = self
-            .pages()
-            .iter()
-            .find(|page| page.content.start <= content && content < page.content.end)
+        let pages = self.pages();
+        let spans = pages.iter().map(|p| (p.content.start, p.content.end));
+        let Some(page) = reader_core::read_aloud::follow_offset(content, spans)
+            .and_then(|index| pages.get(index))
             .cloned()
         else {
             return Task::none();
@@ -996,38 +997,6 @@ impl Reader {
                 .unwrap_or_else(|| "Reading".into()),
             None => "Reading".into(),
         }
-    }
-}
-
-/// The start of the sentence holding byte `at`, or the next word start if the
-/// sentence began far back.
-fn sentence_start(text: &str, at: usize) -> usize {
-    let mut at = at.min(text.len());
-    while !text.is_char_boundary(at) {
-        at -= 1;
-    }
-    if at == 0 {
-        return 0;
-    }
-    let before = &text[..at];
-    let sentence = before
-        .char_indices()
-        .rev()
-        .find(|(index, c)| {
-            matches!(c, '.' | '!' | '?' | '…' | '"' | '”')
-                && before[index + c.len_utf8()..].starts_with(char::is_whitespace)
-        })
-        .map(|(index, c)| {
-            let after = index + c.len_utf8();
-            after + (before[after..].len() - before[after..].trim_start().len())
-        });
-    match sentence {
-        Some(start) if at - start < 400 => start,
-        _ => before
-            .char_indices()
-            .rev()
-            .find(|(_, c)| c.is_whitespace())
-            .map_or(0, |(space, c)| space + c.len_utf8()),
     }
 }
 

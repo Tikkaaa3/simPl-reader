@@ -1070,6 +1070,7 @@ dependencies = [
  "iced_tiny_skia",
  "image",
  "parking_lot",
+ "reader-core",
  "reader-document",
  "reader-layout",
  "reader-pdf",
@@ -2300,6 +2301,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "reader-core"
+version = "0.0.0"
+
+[[package]]
 name = "reader-document"
 version = "0.0.0"
 dependencies = [
@@ -2324,6 +2329,7 @@ dependencies = [
 name = "reader-ffi"
 version = "0.0.0"
 dependencies = [
+ "reader-core",
  "reader-document",
  "reader-layout",
  "reader-pdf",

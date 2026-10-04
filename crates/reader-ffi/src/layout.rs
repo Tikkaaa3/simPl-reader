@@ -287,7 +287,7 @@ pub(crate) fn section_book(book: &Arc<Book>, section: usize) -> Result<Arc<Book>
     }
 }
 
-fn paragraph_cut(
+pub(crate) fn paragraph_cut(
     book: &Book,
     index: &HeightIndex,
     offset: f32,
@@ -553,10 +553,10 @@ impl OpenBook {
 
 #[derive(uniffi::Object)]
 pub struct AdaptedBook {
-    book: Arc<OpenBook>,
-    sections: Vec<Section>,
-    theme: &'static themes::ReadingTheme,
-    options: Options,
+    pub(crate) book: Arc<OpenBook>,
+    pub(crate) sections: Vec<Section>,
+    pub(crate) theme: &'static themes::ReadingTheme,
+    pub(crate) options: Options,
 }
 #[uniffi::export]
 impl AdaptedBook {

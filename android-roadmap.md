@@ -408,12 +408,34 @@ license text opened successfully. See `docs/releases/android-0.1.0.md`.
 
 ### P1 — Read aloud
 
-- [ ] `read_aloud` text chunking, language guessing and page/section follow logic → `reader-core`
+- [x] `read_aloud` text chunking, language guessing and page/section follow logic → `reader-core`
       (the desktop SAPI path keeps working as is).
-- [ ] Android `TextToSpeech`: voice list, rate, word highlight with `onRangeStart`.
-- [ ] Listening with the screen off: `MediaSessionService` (foreground, `mediaPlayback`),
+- [x] Android `TextToSpeech`: voice list, rate, word highlight with `onRangeStart`.
+- [x] Listening with the screen off: `MediaSessionService` (foreground, `mediaPlayback`),
       notification controls, headset buttons, audio focus.
-- [ ] The view follows the spoken line, automatic page/section turns; reading the selection/highlight.
+- [x] The view follows the spoken line, automatic page/section turns; reading the selection/highlight.
+
+**Implementation:** the dependency-free `reader-core` shares source offsets,
+sentence boundaries, language hints and page-follow rules with the existing
+Windows SAPI adapter. The UniFFI speech plan retains its document and streams
+bounded utterances across canonical sections or physical PDF pages. Android
+synthesizes one temporary WAV at a time and plays it in simPl's own audio session;
+this makes system media keys target the reader rather than the external TTS
+engine. Word/frame markers follow the playback clock. Voice/rate preferences,
+foreground notification controls, audio focus and selection/highlight passages
+are documented in [android/README.md](android/README.md#read-aloud-p1).
+
+**Acceptance (2026-10-04):** Windows `scripts/dev.ps1 check` passed: 426 tests
+and 37 existing ignored tests. Two additional native SAPI selection/pause and
+EPUB chapter-transition tests passed. On the accepted API 36 x86_64 emulator,
+134 Rust tests passed (two ignored, three host-fixture skips); the 33 existing
+instrumented UI tests and all eight `ReadAloudTest` cases passed. The speech
+cases cover Unicode word overlays (including a visible-pixel check), pause and
+recreation, actual global media keys, screen-off playback, audio focus, canonical
+sheets/EPUB sections, PDF physical pages and selected/highlighted passages. A
+separate case uses the installed production TTS engine. ARM64/x86_64 R8 release
+assembly and debug/release lint passed with zero lint errors. Physical-device
+performance and individual voice quality remain follow-up checks, as in M5/M7.
 
 ### P2 — Offline dictionary
 

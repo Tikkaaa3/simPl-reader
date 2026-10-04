@@ -18,6 +18,8 @@ mod pdf;
 pub use pdf::*;
 mod annotations;
 pub use annotations::*;
+mod read_aloud;
+pub use read_aloud::*;
 
 uniffi::setup_scaffolding!();
 

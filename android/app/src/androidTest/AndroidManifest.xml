@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <!-- A deterministic engine installed only with instrumentation. Tests
+             restore the emulator's original TTS setting after every run. -->
+        <service android:name="io.github.tikkaaa3.simpl.TestSpeechEngine"
+            android:exported="true">
+            <intent-filter><action android:name="android.intent.action.TTS_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" /></intent-filter>
+            <meta-data android:name="android.speech.tts" android:resource="@xml/test_speech_engine" />
+        </service>
         <activity android:name="io.github.tikkaaa3.simpl.GrantFixtureActivity" android:exported="true" />
         <!-- Present only in the test APK; exercises provider streams and trees. -->
         <provider android:name="io.github.tikkaaa3.simpl.ImportFixtureProvider"

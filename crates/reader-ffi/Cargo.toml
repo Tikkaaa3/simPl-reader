@@ -12,6 +12,7 @@ license-file.workspace = true
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+reader-core = { path = "../reader-core" }
 uniffi = "=0.32.2"
 reader-document = { path = "../reader-document" }
 reader-pdf = { path = "../reader-pdf" }

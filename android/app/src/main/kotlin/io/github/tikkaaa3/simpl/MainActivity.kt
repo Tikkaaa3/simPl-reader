@@ -33,6 +33,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun receive(intent: Intent) {
+        if (intent.action == ReadAloudService.OPEN_READER) {
+            ReadAloud.state.value.fingerprint.takeIf { it.isNotBlank() }?.let(library::openSpokenBook)
+            return
+        }
         val uris = when (intent.action) {
             Intent.ACTION_VIEW -> listOfNotNull(intent.data)
             Intent.ACTION_SEND -> listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))

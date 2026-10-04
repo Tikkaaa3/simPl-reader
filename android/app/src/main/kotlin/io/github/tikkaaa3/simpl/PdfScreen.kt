@@ -132,6 +132,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
                 IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } })
         if (toolbar && !state.loading && state.info != null) FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
             Text("PDF", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
+            ReadAloudControls(book.fingerprint, model::readAloud, enabled = state.info?.canCopy == true)
             TextButton(onClick = model::fit) { Text("Fit width") }
             TextButton(onClick = model::selectAll, enabled = !state.text?.glyphs.isNullOrEmpty()) { Text("Select page text") }
         }
@@ -140,7 +141,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
             else if (state.info != null) PdfViewport(state, model, { toolbar = !toolbar; copied = false }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
             else Column(Modifier.padding(24.dp)) { Text(state.error ?: "Could not open this PDF"); TextButton(onClick = back) { Text("Return to library") } }
             state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
-                key(selection) { SelectionMenu("pdfSelection", model::copy, model::highlight) { model.select(null) } }
+                key(selection) { SelectionMenu("pdfSelection", model::copy, model::highlight, read = { model.readSelection() }) { model.select(null) } }
             } }
             if (state.rendering) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("pdfRendering"))
         }
@@ -151,7 +152,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
             TextButton(onClick = { model.turn(1) }, enabled = state.location.page < state.info!!.pages.size.toUInt()) { Text("Next") }
         }
     }
-    if (annotations) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove)
+    if (annotations) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) })
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (jump) {
         var value by rememberSaveable { mutableStateOf("") }
@@ -208,6 +209,12 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
             if (index != null) { model.select(geometry.word(index)); true } else false
         }, { point, start -> draggingStart = start; hit(point)?.let { model.extend(it, start) } }, { dragging = it }, lift(state.selection?.from) to lift(state.selection?.to))
         SelectionEdgeDrag(dragging, constraints.maxHeight.toFloat(), { vertical.scrollBy(it) }, { model.selectionTurn(it, draggingStart) }) { point -> hit(point)?.let { model.extend(it, draggingStart) } }
+        LaunchedEffect(state.spoken, state.text, height) {
+            val word = state.spoken?.takeIf { it.pdfPage == location.page } ?: return@LaunchedEffect
+            val bounds = state.text?.glyphs?.firstOrNull { it.end > word.from.byte && it.start < word.to.byte }?.bounds ?: return@LaunchedEffect
+            val top = bounds.top * height; val bottom = bounds.bottom * height
+            if (top < vertical.value || bottom > vertical.value + constraints.maxHeight) vertical.scrollTo((top - constraints.maxHeight * .25f).roundToInt().coerceAtLeast(0))
+        }
         val zoomNow by rememberUpdatedState(zoom)
         LaunchedEffect(location.page, width) { model.render(width) }
         var ready by remember(state.revision) { mutableStateOf(false) }
@@ -244,7 +251,7 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
             Canvas(Modifier.requiredWidth((width / density).dp).requiredHeight((height / density).dp).background(Color.White).testTag("pdfPage")
                 .semantics {
                     contentDescription = "PDF page ${location.page}"
-                    stateDescription = if (image == null) "Loading page" else "Page ready"
+                    stateDescription = if (image == null) "Loading page" else if (state.spoken?.pdfPage == location.page) "Reading aloud" else "Page ready"
                     if (state.text != null) text = androidx.compose.ui.text.AnnotatedString(state.text.text)
                     if (!state.text?.glyphs.isNullOrEmpty()) customActions = listOf(CustomAccessibilityAction("Select page text") { model.selectAll(); true })
                 }
@@ -270,6 +277,11 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                 val count = state.text?.glyphs?.size ?: 0
                 coloredRanges(state.marks.mapNotNull { mark -> mark.range(location.page, count)?.let { it to mark.color } }).forEach { (range, color) -> paint(range, color.tint()) }
                 state.marks.filter { it.note }.forEach { mark -> mark.range(location.page, count)?.let { paint(it, mark.color.tint(), true) } }
+                state.spoken?.takeIf { it.pdfPage == location.page }?.let { word ->
+                    state.text?.glyphs?.forEachIndexed { index, glyph ->
+                        if (glyph.start < word.to.byte && glyph.end > word.from.byte) paint(index..index, Color(0x6657a8ef))
+                    }
+                }
                 state.selection?.range(location.page, count)?.let { paint(it, Color(0x6657a8ef)) }
             }
         }

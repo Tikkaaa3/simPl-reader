@@ -12,6 +12,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 data class ReaderState(
+    val spoken: SpeechRange? = null,
+    val speechRow: BookRow? = null,
     val selection: ReflowSelection? = null,
     val selectionEdge: Boolean? = null,
     val annotations: AnnotationCollection = emptyAnnotations,
@@ -54,9 +56,64 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     private var current: ReaderLocation? = null
     private val history = ArrayDeque<ReaderLocation>()
     private var cleared = false
+    private var speechStart: Job? = null
+    private var speechRowKey: Pair<UInt, UInt>? = null
+    private var speechSheetsKey: Triple<UInt, UInt, UInt>? = null
+    private var speechSheets: List<SpeechSheet> = emptyList()
+    private var title = ""
 
+    init {
+        viewModelScope.launch {
+            ReadAloud.state.collect { speech ->
+                val range = speech.range.takeIf { speech.active && !speech.passage && speech.fingerprint == fingerprint }
+                mutable.value = mutable.value.copy(spoken = range)
+                val point = range?.from ?: speech.chunk?.source.takeIf { speech.active && !speech.passage && speech.fingerprint == fingerprint }
+                if (point != null && source != null && speechRowKey != (point.section to point.row)) {
+                    speechRowKey = point.section to point.row
+                    mutable.value = mutable.value.copy(speechRow = null)
+                    try {
+                        val row = withContext(Dispatchers.IO) { source!!.speechRow(point, mutable.value.theme, mutable.value.options) }
+                        mutable.value = mutable.value.copy(speechRow = row)
+                    } catch (error: CancellationException) { throw error }
+                    catch (error: Exception) { speechRowKey = null; fail(error) }
+                }
+            }
+        }
+    }
+    fun readAloud() {
+        speechStart?.cancel()
+        speechStart = launch {
+            val location = current ?: firstLocation(mutable.value.pages) ?: return@launch
+            val row = mutable.value.pages.firstOrNull { it.section == location.section }?.rows?.firstOrNull { it.index == location.row }
+            val text = row?.text.orEmpty()
+            val at = sourceByte(text, (text.length * location.within).toInt())
+            val plan = withContext(Dispatchers.IO) { source!!.speechPlan(SourcePoint(location.section, location.row, at)) }
+            ReadAloud.start(getApplication(), fingerprint, title, plan)
+        }
+    }
+    fun readSelection() = copy(::readPassage)
+    fun readPassage(text: String) = launch {
+        val plan = withContext(Dispatchers.IO) { speechPassage(text) }
+        ReadAloud.start(getApplication(), fingerprint, title, plan, passage = true)
+    }
+    suspend fun speechFollow(point: SourcePoint, line: UInt, lines: UInt) {
+        try {
+            if (mutable.value.loading || mutable.value.adapting) return
+            val key = Triple(point.section, point.row, lines)
+            if (speechSheetsKey != key) {
+                speechSheets = withContext(Dispatchers.IO) { adapted?.speechSheets(point, lines).orEmpty() }
+                speechSheetsKey = key
+            }
+            val page = speechFollowPage(line, lines, speechSheets) ?: return
+            if (mutable.value.spoken?.from != point) return
+            if (page != mutable.value.page) show(page, ReaderLocation(page, point.section, point.row, line.toFloat() / lines.coerceAtLeast(1u).toFloat()), speech = true)
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) { fail(error) }
+    }
     fun open(book: LibraryBook) {
         if (path == book.path) return
+        if (ReadAloud.state.value.active && ReadAloud.state.value.fingerprint != book.fingerprint) ReadAloud.stop()
+        title = book.title
         path = book.path
         fingerprint = book.fingerprint
         loadJob = viewModelScope.launch {
@@ -112,11 +169,19 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
             val content = withContext(Dispatchers.IO) { next.page(page) }
             adapted?.close()
             adapted = next
+            speechSheetsKey = null; speechRowKey = null
             mutable.value = mutable.value.copy(loading = false, adapting = false, options = options, theme = theme,
                 page = page, pages = content, location = location, revision = mutable.value.revision + 1)
             refreshAnnotations()
             current = location ?: firstLocation(content)
             current?.let(::record)
+            val speech = ReadAloud.state.value
+            val point = speech.range?.from ?: speech.chunk?.source
+            if (speech.active && !speech.passage && speech.fingerprint == fingerprint && point != null) {
+                val row = withContext(Dispatchers.IO) { opened.speechRow(point, theme, options) }
+                speechRowKey = point.section to point.row
+                mutable.value = mutable.value.copy(spoken = speech.range, speechRow = row)
+            }
         } finally { task.cancel(); task.close(); if (adaptation === task) adaptation = null }
     }
 
@@ -138,7 +203,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         val page = withContext(Dispatchers.IO) { source!!.jump(value) }
         show(page); done()
     }
-    private fun show(page: UInt, location: ReaderLocation? = null, edge: Boolean? = null) {
+    private fun show(page: UInt, location: ReaderLocation? = null, edge: Boolean? = null, speech: Boolean = false) {
         if (mutable.value.loading || mutable.value.adapting) return
         flush()
         pageJob?.cancel()
@@ -152,6 +217,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
             refreshAnnotations()
             current = location ?: firstLocation(content)
             current?.let(::record)
+            if (!speech && ReadAloud.state.value.active && !ReadAloud.state.value.passage && ReadAloud.state.value.fingerprint == fingerprint) readAloud()
         }
     }
     fun follow(section: UInt, link: BookLink) = launch {
@@ -263,7 +329,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         mutable.value = mutable.value.copy(loading = false, adapting = false, error = message)
     }
     override fun onCleared() {
-        stop(); cleared = true
+        speechStart?.cancel(); stop(); cleared = true
         opening?.cancel(); adaptation?.cancel()
         adapted?.close(); source?.close()
     }

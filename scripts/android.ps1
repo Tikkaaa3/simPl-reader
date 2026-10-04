@@ -135,7 +135,7 @@ function Invoke-CoreTests([string]$Sdk) {
     Invoke-Native $adb @('push', $pdfium, '/data/local/tmp/simpl-test/libpdfium.so')
 
     $cargoArgs = @('ndk', '-t', $Abi, '-P', $minSdk, 'test', '--locked', '--config', $runnerConfig,
-        '-p', 'reader-profile', '-p', 'reader-document', '-p', 'reader-pdf', '-p', 'reader-layout', '-p', 'reader-ffi')
+        '-p', 'reader-core', '-p', 'reader-profile', '-p', 'reader-document', '-p', 'reader-pdf', '-p', 'reader-layout', '-p', 'reader-ffi')
     if ($Offline) { $cargoArgs += '--offline' }
     $cargoArgs += '--'
     foreach ($name in $hostOnlyTests) { $cargoArgs += @('--skip', $name) }

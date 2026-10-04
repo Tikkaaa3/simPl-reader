@@ -7,12 +7,76 @@ its build, scripts and release workflow do not use anything in this folder.
 
 | Part | Responsibility |
 | --- | --- |
+| [`crates/reader-core`](../crates/reader-core) | Engine-independent speech chunking, language hints, source offsets and page follow rules shared with Windows |
 | [`crates/reader-ffi`](../crates/reader-ffi) | UniFFI surface of the Rust core; the only Rust API the app sees |
 | [`crates/reader-profile`](../crates/reader-profile) | Data/cache roots: `LOCALAPPDATA` on the desktop, `filesDir`/`cacheDir` on Android |
 | [`crates/reader-layout`](../crates/reader-layout) | Window-free canonical atlas, page cuts, typography and theme adaptation shared with Windows |
 | [`crates/uniffi-bindgen`](../crates/uniffi-bindgen) | Workspace-pinned binding generator (same version as the `uniffi` runtime) |
 | `build-logic/` | Gradle plugin `simpl.rust-android`: cargo-ndk build and Kotlin binding generation per variant |
 | `app/` | Compose application (`io.github.tikkaaa3.simpl`) |
+
+## Read aloud (P1)
+
+Both reader modes offer **Read aloud**, **Pause/Resume**, **Stop reading** and
+**Voice & speed**. Selection menus and highlight cards can read a passage by
+itself. Voice and speed persist locally. Automatic voice selection uses the
+shared conservative language hint and prefers an installed local voice.
+Explicit voices marked **network** can use the selected engine's network
+service; simPl itself does not request Internet access for speech.
+
+`reader-core` owns text boundaries, UTF-16/source-byte conversion and page
+following rules. `reader-ffi::SpeechPlan` retains the native document separately
+from the Activity, streams at most 3500 UTF-16 units per utterance, skips images,
+auxiliary EPUB sections and textless PDF pages, and respects PDF copy permissions.
+Reflow chunks borrow their source paragraph; PDF speech retains only its current
+text page and does not rasterize the document.
+
+`ReadAloudService` owns Android `TextToSpeech`, a `MediaPlayer` audio output and a
+Media3 `SimpleBasePlayer` transport in a `MediaSessionService` with the
+`mediaPlayback` foreground type. One bounded utterance is synthesized to a
+temporary WAV, then played by simPl. Owning the output makes Android route media
+keys to simPl's session instead of the external TTS engine. The file is removed
+after playback, cancellation or service cleanup; startup removes any speech file
+left by process death. Media3 supplies
+notification and headset controls. Audio focus loss pauses speech (including
+duck requests); transient focus return resumes only playback interrupted by that
+loss. Unplugging headphones pauses. Stopping releases speech, focus, the bounded
+wake lock and the native plan. Process death never restarts speech automatically.
+
+Android TTS has no native pause. Resume repeats the last reported word, or the
+current chunk if the engine supplies no word timing. Voice/rate changes resume
+that retained word. `onRangeStart` supplies word/frame markers; a playback-clock
+timer updates their source-byte ranges without changing
+the selection or annotations. Compose's actual paragraph line grid selects the
+canonical sheet and scrolls the spoken line into view; PDF glyph bounds provide
+the same overlay/scroll behavior. Engines without timing still follow paragraph
+or PDF-page starts. Page navigation restarts continuous reading at that page;
+opening another document stops the previous speech. Background playback saves a
+source checkpoint at chunk starts and pauses, and the notification reopens its
+book. Reflow checkpoints use an approximate source-byte fraction; live following
+uses actual shaped lines.
+
+The service validates synthesis markers before playback. It accepts correctly
+ordered callbacks and compensates for AOSP's `FileSynthesisCallback` argument
+rotation (`frame, start, end` dispatched as `start, end, frame`). Invalid or
+unsupported timing falls back to paragraph/page following.
+
+The speech instrumentation installs a test-only, silent PCM TTS engine with
+deterministic word timings and restores the emulator's original engine setting.
+It exercises the platform engine/service/MediaSession path, rather than mocking
+the player. An additional smoke test uses an installed production engine (and
+skips only that test if none is installed). Reflow/PDF word-overlay screenshots
+are written to `Pictures/simPl-P1`:
+
+```powershell
+android\gradlew.bat -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.tikkaaa3.simpl.ReadAloudTest
+adb pull /sdcard/Pictures/simPl-P1 target/p1-visual
+```
+
+Use a development emulator for instrumentation: Gradle may remove installed
+app/test packages during its cleanup, including after a signature-mismatch
+installation failure. Device performance and individual third-party voices are
+separate from deterministic emulator acceptance.
 
 ## Library (M3)
 
@@ -361,7 +425,7 @@ ten Perfetto traces remain in the additional connected-test output directory.
 The setup follows Android's [Baseline Profile configuration](https://developer.android.com/topic/performance/baselineprofiles/configure-baselineprofiles)
 and [SplashScreen migration](https://developer.android.com/develop/ui/views/launch/splash-screen/migrate).
 
-`test` runs the `reader-profile`, `reader-document`, `reader-pdf`, `reader-layout` and `reader-ffi`
+`test` runs the `reader-core`, `reader-profile`, `reader-document`, `reader-pdf`, `reader-layout` and `reader-ffi`
 tests through `cargo ndk test` with `scripts/android-test-runner.ps1` as Cargo's
 runner: it pushes each test executable to `/data/local/tmp/simpl-test` (beside
 `libpdfium.so`) and runs it there with `TMPDIR` in that folder. Tests that read

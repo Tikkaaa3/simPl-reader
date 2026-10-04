@@ -60,7 +60,7 @@ internal fun coloredRanges(ranges: List<Pair<IntRange, AnnotationColor>>): List<
 }
 
 @Composable
-internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highlight: (AnnotationColor, String?) -> Unit, clear: () -> Unit) {
+internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highlight: (AnnotationColor, String?) -> Unit, read: (() -> Unit)? = null, clear: () -> Unit) {
     val context = LocalContext.current
     var copied by remember(tag) { mutableStateOf(false) }
     var note by rememberSaveable { mutableStateOf(false) }
@@ -73,6 +73,7 @@ internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highli
             TextButton(onClick = { copy { text -> context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
             }, "Share text")) } }) { Text("Share") }
+            if (read != null) TextButton(onClick = read) { Text("Read selection") }
             TextButton(onClick = clear) { Text("Clear") }
         }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -106,7 +107,7 @@ internal fun NoteEditor(entry: AnnotationEntry?, dismiss: () -> Unit, save: (Ann
 
 @Composable
 internal fun AnnotationSheet(data: AnnotationCollection, dismiss: () -> Unit, go: (ULong, Boolean) -> Unit,
-    edit: (ULong, AnnotationColor, String) -> Unit, remove: (ULong, Boolean) -> Unit) {
+    edit: (ULong, AnnotationColor, String) -> Unit, remove: (ULong, Boolean) -> Unit, read: ((String) -> Unit)? = null) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
     var deleting by remember { mutableStateOf<Pair<AnnotationEntry, Boolean>?>(null) }
@@ -129,6 +130,7 @@ internal fun AnnotationSheet(data: AnnotationCollection, dismiss: () -> Unit, go
                         entry.color?.let { Box(Modifier.padding(start = 8.dp).size(16.dp).background(it.tint().copy(alpha = 1f), CircleShape)) }
                     }
                     Row(Modifier.align(Alignment.End)) {
+                        if (tab != 0 && read != null) TextButton(onClick = { read(entry.quote); dismiss() }) { Text("Read aloud") }
                         if (tab != 0) TextButton(onClick = { editing = entry }) { Text("Edit") }
                         TextButton(onClick = { deleting = entry to (tab == 0) }) { Text("Delete") }
                     }

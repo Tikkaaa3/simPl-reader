@@ -85,6 +85,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
             colors = TopAppBarDefaults.topAppBarColors(containerColor = paper, titleContentColor = text, navigationIconContentColor = text, actionIconContentColor = text))
         if (toolbar && !state.loading) FlowRow(Modifier.fillMaxWidth().background(paper).padding(horizontal = 8.dp)) {
             TextButton(onClick = { panel = "contents" }) { Text("Contents") }
+            ReadAloudControls(book.fingerprint, model::readAloud)
             TextButton(onClick = { panel = "options" }) { Text("Reading options") }
             TextButton(onClick = { zoom = 1f }) { Text("Fit width") }
             if (state.canReturn) IconButton(onClick = model::returnFromLink) { Icon(AppIcons.Back, "Return from link", tint = accent) }
@@ -93,7 +94,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         else Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.pages.isNotEmpty()) ReaderViewport(state, model, zoom, { zoom = it }, { toolbar = !toolbar }, paper, text, accent) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
             state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
-                key(selection) { SelectionMenu("readerSelection", model::copy, model::highlight) { model.select(null) } }
+                key(selection) { SelectionMenu("readerSelection", model::copy, model::highlight, read = { model.readSelection() }) { model.select(null) } }
             } }
             if (state.adapting) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("layoutProgress"))
             if (state.pages.isEmpty() && state.error != null) Column(Modifier.padding(24.dp)) {
@@ -110,7 +111,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
             TextButton(onClick = { model.turn(1) }, enabled = state.page < state.total && !state.adapting) { Text("Next") }
         }
     }
-    if (panel == "annotations") AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove)
+    if (panel == "annotations") AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) })
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (panel == "contents") ModalBottomSheet(onDismissRequest = { panel = null }) {
         Text("Contents", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
@@ -149,6 +150,17 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
     paper: Color, text: Color, accent: Color, editMark: (ULong) -> Unit) {
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val measured = remember(state.pages, state.options, text, accent) { measurePage(state.pages, state.options, measurer, text, accent) }
+    val spoken = state.spoken
+    val spokenRow = state.speechRow
+    val spokenLayout = remember(spokenRow, state.options, text, accent) {
+        spokenRow?.let { measureRows(0u, listOf(it), state.options, measurer, text, accent).firstOrNull()?.text }
+    }
+    LaunchedEffect(spoken, spokenLayout, state.revision, state.adapting) {
+        if (spoken != null && spokenRow?.index == spoken.from.row && spokenLayout != null) {
+            val line = spokenLayout.getLineForOffset(byteIndex(spokenRow.text.orEmpty(), spoken.from.byte))
+            model.speechFollow(spoken.from, line.toUInt(), spokenLayout.lineCount.toUInt())
+        }
+    }
     val density = LocalDensity.current.density
     val vertical = rememberScrollState()
     val horizontal = rememberScrollState()
@@ -259,6 +271,19 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
                 }
             }
         }
+        LaunchedEffect(state.spoken, measured, scale) {
+            val word = state.spoken ?: return@LaunchedEffect
+            val index = measured.indexOfFirst { it.section == word.from.section && it.row.index == word.from.row }
+            val row = measured.getOrNull(index) ?: return@LaunchedEffect
+            val layout = row.text ?: return@LaunchedEffect
+            val line = layout.getLineForOffset(byteIndex(row.row.text.orEmpty(), word.from.byte))
+            if (line !in row.firstLine until row.lastLine) return@LaunchedEffect
+            val top = (heights[index] + row.top - row.textTop + layout.getLineTop(line)) * scale
+            val bottom = top + row.row.presentation.lineHeight * scale
+            if (top < vertical.value || bottom > vertical.value + constraints.maxHeight) {
+                vertical.scrollTo((top - constraints.maxHeight * .25f).roundToInt().coerceAtLeast(0))
+            }
+        }
         val tap: (Offset) -> Unit = { point ->
             // Row offsets are within the text column; margins count as edge zones too.
             val x = point.x + state.options.margin.toInt() * scale - horizontal.value
@@ -274,7 +299,7 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
                 } }
                 .padding(horizontal = (state.options.margin.toInt() * scale / density).dp, vertical = (42f * scale / density).dp)) {
                 measured.forEach { row -> key(row.section, row.row.index) { PaperRow(row, scale, text, accent, model::image, model::follow, tap,
-                    selection = state.selection, marks = state.marks.filter { it.section == row.section && it.row == row.row.index }, editMark = editMark,
+                    selection = state.selection, spoken = state.spoken, marks = state.marks.filter { it.section == row.section && it.row == row.row.index }, editMark = editMark,
                     extend = { model.extend(it, false) }) } }
             }
           }

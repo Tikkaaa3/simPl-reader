@@ -130,7 +130,7 @@ internal fun measureRows(section: UInt, rows: List<BookRow>, options: LayoutOpti
 internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, accent: Color,
     image: suspend (UInt, String) -> ReaderImage?, follow: (UInt, BookLink) -> Unit,
     tap: (Offset) -> Unit, modifier: Modifier = Modifier, selection: ReflowSelection? = null,
-    marks: List<ReaderMark> = emptyList(), editMark: (ULong) -> Unit = {}, extend: (SourcePoint) -> Unit = {}) {
+    spoken: SpeechRange? = null, marks: List<ReaderMark> = emptyList(), editMark: (ULong) -> Unit = {}, extend: (SourcePoint) -> Unit = {}) {
     val density = LocalDensity.current.density
     val row = measured.row
     val p = row.presentation
@@ -151,6 +151,8 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
     }
     val semantics = Modifier.semantics {
         if (layout != null) text = AnnotatedString(visibleText) else contentDescription = "Book illustration"
+        if (spoken?.from?.section == measured.section && spoken.from.row == row.index && layout != null &&
+            layout.getLineForOffset(byteIndex(row.text.orEmpty(), spoken.from.byte)) in measured.firstLine until measured.lastLine) stateDescription = "Reading aloud"
         if (row.kind == RowKind.HEADING) heading()
         if (links.isNotEmpty()) customActions = links.map { link ->
             val label = row.text.orEmpty().substring(byteIndex(row.text.orEmpty(), link.startByte), byteIndex(row.text.orEmpty(), link.endByte))
@@ -197,6 +199,11 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
                 translate(p.left, measured.top - measured.textTop) {
                     coloredRanges(marks.map { (byteIndex(row.text.orEmpty(), it.startByte) until byteIndex(row.text.orEmpty(), it.endByte)) to it.color }).forEach { (range, shade) ->
                         drawPath(layout.getPathForRange(range.first, range.last + 1), shade.tint())
+                    }
+                    if (spoken?.from?.section == measured.section && spoken.from.row == row.index) {
+                        val a = byteIndex(row.text.orEmpty(), spoken.from.byte)
+                        val b = byteIndex(row.text.orEmpty(), spoken.to.byte)
+                        if (a < b) drawPath(layout.getPathForRange(a, b), accent.copy(alpha = .32f))
                     }
                     selection?.range(measured.section, row)?.let { range -> drawPath(layout.getPathForRange(range.first, range.last + 1), Color(0x6657a8ef)) }
                     marks.filter { it.note }.forEach { mark ->
