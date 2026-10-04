@@ -1,10 +1,12 @@
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
@@ -17,8 +19,8 @@ import javax.inject.Inject
 
 /**
  * `cargo ndk … build -p <crate>`, then copies only `lib<libraryName>.so` into a
- * per-variant `jniLibs/<abi>/` tree. (`cargo ndk -o` would also copy any
- * dependency cdylibs, which the app never loads.)
+ * per-variant `jniLibs/<abi>/` tree. (`cargo ndk -o` would also copy dependency
+ * cdylibs such as pdfium-render's, which the app never loads.)
  */
 abstract class CargoNdkBuild @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
     @get:Input abstract val cargo: Property<String>
@@ -74,6 +76,33 @@ abstract class CargoNdkBuild @Inject constructor(private val exec: ExecOperation
             "x86_64" to "x86_64-linux-android",
             "x86" to "i686-linux-android",
         )
+    }
+}
+
+/**
+ * Stages the pinned Android PDFium (`scripts/pdfium-android.ps1`, which verifies
+ * the archives) as `jniLibs/<abi>/libpdfium.so` plus its legal notices.
+ */
+abstract class StagePdfium @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
+    /** The script carries the pinned URLs, lengths and SHA-256 sums. */
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val script: RegularFileProperty
+
+    @get:Input abstract val offline: Property<Boolean>
+    @get:Internal abstract val destination: DirectoryProperty
+    @get:OutputDirectory abstract val jniLibsDir: DirectoryProperty
+    @get:OutputDirectory abstract val noticesDir: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        exec.exec {
+            executable = if (windows) "powershell.exe" else "pwsh"
+            args("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.get().asFile.absolutePath)
+            args("-Destination", destination.get().asFile.absolutePath)
+            if (offline.get()) args("-Offline")
+        }
     }
 }
 

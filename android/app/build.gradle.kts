@@ -19,6 +19,7 @@ android {
         versionCode = 1
         versionName = "0.1.0-dev"
         ndk { abiFilters += appAbis }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -43,6 +44,7 @@ rustAndroid {
     crate = "reader-ffi"
     libraryName = "reader_ffi"
     abis = appAbis
+    pdfium = true
 }
 
 dependencies {
@@ -55,4 +57,8 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     // JNA's Android AAR bundles its native dispatcher for every ABI.
     implementation(variantOf(libs.jna) { artifactType("aar") })
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }

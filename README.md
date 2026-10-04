@@ -285,6 +285,7 @@ it does not embed a browser or WebView.
 | [`reader-pdf`](crates/reader-pdf) | PDFium worker, PDF text/graphics and Book conversion |
 | [`reader-workload`](crates/reader-workload) | Authored diagnostic workloads and assets |
 | [`process-measure`](crates/process-measure) | Opt-in process measurements |
+| [`reader-profile`](crates/reader-profile) | Profile and cache roots shared by the core crates |
 | [`reader-ffi`](crates/reader-ffi), [`uniffi-bindgen`](crates/uniffi-bindgen) | Rust core API and binding generator for the Android app in progress ([android/](android/README.md)) |
 
 See the [developer guide](crates/iced-shell/README.md), [project roadmap](roadmap.md),

@@ -14,7 +14,8 @@ fn is_markdown_extension(ext: &str) -> bool {
     matches!(ext, "md" | "markdown")
 }
 
-/// Decode UTF-8 (with or without BOM), UTF-16 with BOM, or else the system ANSI code page.
+/// Decode UTF-8 (with or without BOM), UTF-16 with BOM, or else the system ANSI code page
+/// (elsewhere: the code page of [`set_legacy_text_language`]).
 pub(crate) fn decode(bytes: &[u8]) -> Result<String, String> {
     if let Some(rest) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         return std::str::from_utf8(rest)
@@ -74,12 +75,63 @@ fn legacy(bytes: &[u8]) -> String {
     }
 }
 
+/// Without a system ANSI code page, decode with the Windows code page of the
+/// reader's language, so a file written on that locale's desktop reads the same.
 #[cfg(not(windows))]
 fn legacy(bytes: &[u8]) -> String {
-    latin1(bytes)
+    let encoding = LEGACY
+        .read()
+        .ok()
+        .and_then(|encoding| *encoding)
+        .unwrap_or(encoding_rs::WINDOWS_1252);
+    encoding.decode_without_bom_handling(bytes).0.into_owned()
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
+static LEGACY: std::sync::RwLock<Option<&'static encoding_rs::Encoding>> =
+    std::sync::RwLock::new(None);
+
+/// Choose the legacy text code page from a BCP 47 language tag (for example the
+/// app locale, `tr-TR`). Windows decodes with its own ANSI code page, so this has
+/// no effect there.
+pub fn set_legacy_text_language(tag: &str) {
+    #[cfg(not(windows))]
+    if let Ok(mut legacy) = LEGACY.write() {
+        *legacy = Some(legacy_encoding(tag));
+    }
+    #[cfg(windows)]
+    let _ = tag;
+}
+
+/// The Windows ANSI code page that desktop Windows uses for this language.
+#[cfg(not(windows))]
+fn legacy_encoding(tag: &str) -> &'static encoding_rs::Encoding {
+    use encoding_rs::*;
+    let tag = tag.to_ascii_lowercase().replace('_', "-");
+    let mut parts = tag.split('-');
+    let language = parts.next().unwrap_or_default();
+    let subtags: Vec<&str> = parts.collect();
+    let has = |subtag: &str| subtags.contains(&subtag);
+    match language {
+        "tr" | "az" => WINDOWS_1254,
+        "el" => WINDOWS_1253,
+        "sr" if has("latn") => WINDOWS_1250,
+        "ru" | "uk" | "be" | "bg" | "sr" | "mk" | "kk" | "ky" | "tt" | "mn" => WINDOWS_1251,
+        "pl" | "cs" | "sk" | "hu" | "ro" | "hr" | "sl" | "bs" | "sq" => WINDOWS_1250,
+        "et" | "lv" | "lt" => WINDOWS_1257,
+        "he" | "iw" => WINDOWS_1255,
+        "ar" | "fa" | "ur" => WINDOWS_1256,
+        "vi" => WINDOWS_1258,
+        "th" => WINDOWS_874,
+        "ja" => SHIFT_JIS,
+        "ko" => EUC_KR,
+        "zh" if has("hant") || has("tw") || has("hk") || has("mo") => BIG5,
+        "zh" => GBK,
+        _ => WINDOWS_1252,
+    }
+}
+
+#[cfg(windows)]
 fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| char::from(byte)).collect()
 }
@@ -197,6 +249,24 @@ mod tests {
         // Not valid UTF-8: decoded with a legacy code page instead of failing.
         let legacy = decode(b"caf\xe9").unwrap();
         assert!(legacy.starts_with("caf") && legacy.chars().count() == 4);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn legacy_text_follows_the_language_code_page() {
+        use encoding_rs::*;
+        assert_eq!(legacy_encoding("tr-TR"), WINDOWS_1254);
+        assert_eq!(legacy_encoding("sr_Latn_RS"), WINDOWS_1250);
+        assert_eq!(legacy_encoding("sr-RS"), WINDOWS_1251);
+        assert_eq!(legacy_encoding("zh-Hant-HK"), BIG5);
+        assert_eq!(legacy_encoding("zh-CN"), GBK);
+        assert_eq!(legacy_encoding("en-US"), WINDOWS_1252);
+        assert_eq!(legacy_encoding(""), WINDOWS_1252);
+        // The process-wide choice is exercised in one test to avoid races.
+        set_legacy_text_language("tr-TR");
+        assert_eq!(decode(b"\xd0\xfeiir").unwrap(), "Ğşiir");
+        set_legacy_text_language("en-US");
+        assert_eq!(decode(b"caf\xe9").unwrap(), "café");
     }
 
     #[test]

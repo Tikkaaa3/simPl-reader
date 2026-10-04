@@ -18,6 +18,7 @@ pub mod recent;
 pub mod shelves;
 mod text;
 pub use html::load_html;
+pub use text::set_legacy_text_language;
 
 /// Gutenberg's NCX labels sometimes wrap printed page numbers in braces.
 /// Remove only that numeric decoration, never arbitrary source text.

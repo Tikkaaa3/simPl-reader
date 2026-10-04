@@ -22,6 +22,9 @@ abstract class RustAndroidExtension {
 
     /** ABI whose library UniFFI reads to generate the Kotlin bindings. */
     abstract val bindingsAbi: Property<String>
+
+    /** Package the pinned PDFium (`libpdfium.so`) that the Rust core loads by name. */
+    abstract val pdfium: Property<Boolean>
 }
 
 /**
@@ -36,10 +39,21 @@ class RustAndroidPlugin : Plugin<Project> {
         extension.workspaceDir.convention(project.rootProject.layout.projectDirectory.dir(".."))
         extension.abis.convention(listOf("arm64-v8a", "x86_64"))
         extension.bindingsAbi.convention("x86_64")
+        extension.pdfium.convention(false)
 
         project.plugins.withId("com.android.application") {
             val components = project.extensions.getByType(ApplicationAndroidComponentsExtension::class.java)
             val cargoPath = cargoExecutable()
+            val pdfium = project.tasks.register("stagePdfium", StagePdfium::class.java) {
+                group = "rust"
+                description = "Stages the pinned Android PDFium libraries and notices."
+                val staged = project.layout.buildDirectory.dir("pdfium")
+                script.set(extension.workspaceDir.file("scripts/pdfium-android.ps1"))
+                offline.set(project.gradle.startParameter.isOffline)
+                destination.set(staged)
+                jniLibsDir.set(staged.map { it.dir("jniLibs") })
+                noticesDir.set(staged.map { it.dir("third-party") })
+            }
             components.onVariants { variant ->
                 val suffix = variant.name.replaceFirstChar { it.uppercase() }
                 // Debug builds use Cargo's dev profile; others the Android release
@@ -78,6 +92,9 @@ class RustAndroidPlugin : Plugin<Project> {
                 }
 
                 variant.sources.jniLibs?.addGeneratedSourceDirectory(build, CargoNdkBuild::outputDir)
+                if (extension.pdfium.get()) {
+                    variant.sources.jniLibs?.addGeneratedSourceDirectory(pdfium, StagePdfium::jniLibsDir)
+                }
                 val kotlin = variant.sources.kotlin ?: variant.sources.java
                 kotlin?.addGeneratedSourceDirectory(bindings, UniffiBindgen::outputDir)
             }

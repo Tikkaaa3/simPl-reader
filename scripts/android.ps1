@@ -1,10 +1,13 @@
 # Windows PowerShell 5.1+. Android app workflow: environment check, APK build,
-# install-and-launch, and PDFium staging.
+# install-and-launch, tests on a device or emulator, and PDFium staging.
 param(
-    [ValidateSet('doctor', 'build', 'run', 'pdfium')]
+    [ValidateSet('doctor', 'build', 'run', 'test', 'pdfium')]
     [string]$Command = 'doctor',
     [switch]$Release,
-    [switch]$Offline
+    [switch]$Offline,
+    # Device ABI for `test`: x86_64 (emulator) or arm64-v8a (phone).
+    [ValidateSet('x86_64', 'arm64-v8a')]
+    [string]$Abi = 'x86_64'
 )
 
 Set-StrictMode -Version Latest
@@ -104,6 +107,41 @@ function Initialize-Environment {
     return $sdk
 }
 
+# Rust unit and integration tests of the shared core, run on the connected device.
+# Tests that read repository files through CARGO_MANIFEST_DIR exist only on the host.
+$hostOnlyTests = @(
+    'dictionary::tests::downloadable_pairs_pass_integrity_and_return_real_words',
+    'dictionary::tests::fallbacks_are_labeled_and_missing_entries_are_not_invented',
+    'dictionary::tests::missing_corrupt_cancelled_and_removed_packages_preserve_storage_contract'
+)
+
+function Invoke-CoreTests([string]$Sdk) {
+    $triple = @{ 'x86_64' = 'x86_64-linux-android'; 'arm64-v8a' = 'aarch64-linux-android' }[$Abi]
+    $adb = Join-Path $Sdk 'platform-tools\adb.exe'
+    $runner = Join-Path $PSScriptRoot 'android-test-runner.ps1'
+    if ($runner.Contains(' ')) { throw "Cargo cannot run a test runner from a path with spaces: $runner" }
+    $env:ANDROID_NDK_HOME = Join-Path $Sdk ('ndk\' + (Get-BuildSetting 'ndkVersion'))
+    $minSdk = Get-BuildSetting 'minSdk'
+
+    # cargo-ndk provides the NDK compiler and linker; --config (which outranks
+    # cargo-ndk's environment) swaps its runner for the adb runner.
+    $runnerCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $runner.Replace('\', '/')
+    $runnerConfig = "target.$triple.runner='$runnerCommand'"
+    $env:SIMPL_ADB = $adb
+
+    & (Join-Path $PSScriptRoot 'pdfium-android.ps1') -Offline:$Offline | Out-Host
+    $pdfium = Join-Path $android ('app\build\pdfium\jniLibs\' + $Abi + '\libpdfium.so')
+    Invoke-Native $adb @('shell', 'mkdir', '-p', '/data/local/tmp/simpl-test')
+    Invoke-Native $adb @('push', $pdfium, '/data/local/tmp/simpl-test/libpdfium.so')
+
+    $cargoArgs = @('ndk', '-t', $Abi, '-P', $minSdk, 'test', '--locked', '--config', $runnerConfig,
+        '-p', 'reader-profile', '-p', 'reader-document', '-p', 'reader-pdf', '-p', 'reader-ffi')
+    if ($Offline) { $cargoArgs += '--offline' }
+    $cargoArgs += '--'
+    foreach ($name in $hostOnlyTests) { $cargoArgs += @('--skip', $name) }
+    Invoke-Native 'cargo' $cargoArgs
+}
+
 function Invoke-Gradle([string[]]$Tasks) {
     $arguments = @($Tasks)
     if ($Offline) { $arguments += '--offline' }
@@ -113,6 +151,11 @@ function Invoke-Gradle([string[]]$Tasks) {
 switch ($Command) {
     'doctor' { Invoke-Doctor }
     'pdfium' { & (Join-Path $PSScriptRoot 'pdfium-android.ps1') -Offline:$Offline }
+    'test' {
+        $sdk = Initialize-Environment
+        Invoke-CoreTests $sdk
+        Invoke-Gradle @('connectedDebugAndroidTest')
+    }
     'build' {
         Initialize-Environment | Out-Null
         if ($Release) { Invoke-Gradle @('assembleRelease') } else { Invoke-Gradle @('assembleDebug') }

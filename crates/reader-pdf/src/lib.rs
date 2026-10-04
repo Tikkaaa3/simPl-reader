@@ -341,14 +341,24 @@ impl Session {
     }
 }
 
+/// The bundled PDFium: `pdfium.dll` beside the desktop executable. An Android app
+/// packages `libpdfium.so` with its own libraries, where the dynamic linker finds it
+/// by name (the app's executable is the system `app_process`).
+fn library_path() -> Result<PathBuf, String> {
+    if cfg!(target_os = "android") {
+        return Ok(PathBuf::from("libpdfium.so"));
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("Cannot locate application executable: {error}"))?;
+    Ok(executable
+        .parent()
+        .ok_or("Application executable has no directory")?
+        .join("pdfium.dll"))
+}
+
 fn run_worker(receiver: mpsc::Receiver<Command>) {
     let pdfium = (|| {
-        let executable = std::env::current_exe()
-            .map_err(|error| format!("Cannot locate application executable: {error}"))?;
-        let library = executable
-            .parent()
-            .ok_or("Application executable has no directory")?
-            .join("pdfium.dll");
+        let library = library_path()?;
         let bindings = Pdfium::bind_to_library(&library).map_err(|error| {
             format!(
                 "Cannot load bundled PDFium at {}: {error}",

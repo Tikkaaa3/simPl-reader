@@ -82,11 +82,7 @@ fn is_zero(value: &i8) -> bool {
 }
 
 fn path() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("simPl/preferences.json")
+    reader_profile::storage_base().join("simPl/preferences.json")
 }
 
 pub fn load() -> Result<Preferences, String> {

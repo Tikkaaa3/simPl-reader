@@ -116,13 +116,7 @@ impl std::fmt::Debug for Store {
 }
 impl Default for Store {
     fn default() -> Self {
-        Self::new(
-            std::env::var_os("LOCALAPPDATA")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(std::env::temp_dir)
-                .join("simPl/dictionaries"),
-        )
+        Self::new(reader_profile::storage_base().join("simPl/dictionaries"))
     }
 }
 

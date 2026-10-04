@@ -9,7 +9,7 @@ fn path(key: &str) -> Option<PathBuf> {
         return None;
     }
     Some(
-        PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        reader_profile::cache_base()?
             .join("simPl")
             .join("pdf-books")
             .join(format!("v{VERSION}-{key}.json")),

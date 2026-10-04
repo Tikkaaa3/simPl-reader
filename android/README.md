@@ -48,12 +48,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android.ps1 run
 # Minified release APK (unsigned until release signing is configured).
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android.ps1 build -Release
 
+# Core Rust tests on the running emulator (-Abi arm64-v8a for a phone), then the
+# instrumented app tests (connectedDebugAndroidTest).
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android.ps1 test
+
 # Cache, verify and stage the pinned Android PDFium (app\build\pdfium).
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android.ps1 pdfium
 ```
 
-The staged PDFium is not packaged into the APK yet; the core starts using it
-when the document crates are ported (M1).
+`test` runs the `reader-profile`, `reader-document`, `reader-pdf` and `reader-ffi`
+tests through `cargo ndk test` with `scripts/android-test-runner.ps1` as Cargo's
+runner: it pushes each test executable to `/data/local/tmp/simpl-test` (beside
+`libpdfium.so`) and runs it there with `TMPDIR` in that folder. Tests that read
+repository files via `CARGO_MANIFEST_DIR` are skipped on the device; the list is in
+`scripts/android.ps1`. cargo-ndk's own runner does not handle Windows paths.
 
 Start the emulator with `emulator -avd simpl-api36` (create one with
 `avdmanager create avd -n simpl-api36 -k "system-images;android-36;google_apis;x86_64" -d pixel_8`).
@@ -64,12 +72,20 @@ For every variant, `simpl.rust-android` registers:
 
 1. `cargoNdkBuild<Variant>`: `cargo ndk -t arm64-v8a -t x86_64 -P <minSdk> build -p reader-ffi --locked`,
    then copies only `libreader_ffi.so` into `app/build/rust/<variant>/jniLibs`
-   (`cargo ndk -o` would also copy any dependency cdylibs). Debug uses Cargo's dev
+   (`cargo ndk -o` would also copy dependency cdylibs). Debug uses Cargo's dev
    profile; release uses `android-release` (the desktop release settings, but with
    the symbol table kept). AGP strips the packaged libraries.
 2. `uniffiBindgen<Variant>`: `cargo run -p uniffi-bindgen -- generate --library`
    on the x86_64 library into `app/build/rust/<variant>/kotlin`
    (package `io.github.tikkaaa3.simpl.core`, set in `crates/reader-ffi/uniffi.toml`).
+3. `stagePdfium` (with `pdfium = true`): runs `scripts/pdfium-android.ps1`, which
+   verifies the pinned archives, and packages `jniLibs/<abi>/libpdfium.so`. The core
+   loads it by name; notices are staged in `app/build/pdfium/third-party`.
+
+At startup `SimplApplication` calls `initialize(filesDir, cacheDir, language)`: user
+data goes to `filesDir/simPl/…` (the desktop profile layout), disposable caches to
+`cacheDir/simPl/…`, and the locale picks the code page for legacy non-Unicode text.
+
 UniFFI reads its metadata from the library's symbol table; a stripped library
 (the desktop `release` profile) yields "No UniFFI metadata found". The Kotlin
 bindings call the library through JNA (`jna@aar`); R8 keep rules are in

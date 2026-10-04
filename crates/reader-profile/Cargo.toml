@@ -1,0 +1,10 @@
+# Where reader data and disposable caches live; shared by every core crate.
+[package]
+name = "reader-profile"
+description = "Profile and cache roots for the reader core (desktop LOCALAPPDATA or app-configured)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]

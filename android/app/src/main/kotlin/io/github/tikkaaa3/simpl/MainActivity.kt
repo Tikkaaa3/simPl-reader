@@ -26,7 +26,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        val core = describeCore()
+        val core = (application as SimplApplication).coreFailure
+            ?.let { "Rust core unavailable: $it" }
+            ?: describeCore()
         setContent {
             SimplTheme {
                 CoreStatus(core)

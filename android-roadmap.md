@@ -128,20 +128,43 @@ It looks flaky under load; to be investigated separately on the desktop side.
 To decide: `applicationId` = `io.github.tikkaaa3.simpl` (must be final before the
 first public APK; changing it later forces users to reinstall).
 
-### M1 — Core builds on Android
+### M1 — Core builds on Android ✅ (2026-10-04)
 
-- [ ] `reader-document`: `windows-sys` only as a `cfg(windows)` target dependency;
-      check the `cfg(not(windows))` paths (atomic `rename`, path comparison, path key).
-  - `text.rs` ANSI fallback: outside Windows, use the Windows code page of the app language.
-- [ ] Profile root: `LOCALAPPDATA` stays on the desktop; on Android the app's
-      `filesDir`/`cacheDir` are set once at startup. Caches go to `cacheDir`.
-- [ ] `reader-pdf`: load the packaged `libpdfium.so` on Android (desktop: `pdfium.dll`
+- [x] `reader-document`: `windows-sys` is only a `cfg(windows)` target dependency;
+      `encoding_rs` only `cfg(not(windows))`. The existing `cfg(not(windows))` paths
+      (atomic `rename`, case-sensitive path comparison, Unix path key) were already
+      correct and did not change.
+  - `text.rs` ANSI fallback: outside Windows, the Windows code page of the app
+    language (`tr` → 1254, `ru` → 1251, `zh-Hant` → Big5 …; default 1252).
+    `reader_document::set_legacy_text_language(tag)`.
+- [x] Profile root: new `reader-profile` crate (not in `reader-document` because
+      `reader-pdf` uses it too). `storage_base()` and `cache_base()`; on the desktop
+      `LOCALAPPDATA` is read on every call (same behavior), on Android
+      `configure(files, cache)` sets them once. The `pdf-books` cache goes to `cacheDir`.
+      `page-maps` is still in `iced-shell` (desktop); it moves to `reader-layout` in M2
+      and uses `cache_base()` there.
+- [x] `reader-pdf`: on Android loads `libpdfium.so` by name (desktop: `pdfium.dll`
       beside the exe, unchanged). Same worker thread model.
-- [ ] `reader-ffi`: initialization, document import and a summary of an opened
-      document (format, title, author, SHA-256, chapter and source page count).
-- [ ] Gradle: package the verified PDFium into the APK `jniLibs`.
-- [ ] Tests: Windows `scripts\dev.ps1 check` green; the core crates' Rust tests and an
-      app smoke test (EPUB, PDF, TXT, error path) on the emulator.
+- [x] `reader-ffi`: `initialize(dataDir, cacheDir, language)`, `importDocument`,
+      `inspectDocument` (format, title, author, SHA-256, chapter and source page count),
+      `CoreException.Failed(reason)`. The app initializes it in `SimplApplication.onCreate`.
+- [x] Gradle: `stagePdfium` (verified PDFium → APK `jniLibs`); `cargoNdkBuild*`
+      copies only `libreader_ffi.so` (`cargo ndk -o` also copied dependency cdylibs).
+- [x] Tests:
+  - Windows `scripts\dev.ps1 check` green; the only addition to the `iced-shell`
+    dependency tree is the project's own `reader-profile` crate.
+  - `scripts\android.ps1 test`: Rust tests on the emulator (`reader-document` 74,
+    `reader-pdf` 31 + PDFium `page_text`, `reader-ffi` 3, `reader-profile` 1) and
+    `CoreSmokeTest` (5): EPUB chapters, PDF pages (packaged PDFium), TXT import,
+    error path. 3 dictionary tests that read repository files run on the host only.
+  - `cargo-ndk-runner` does not work with Windows paths, so
+    `scripts/android-test-runner.ps1` (adb push + run) is used via
+    `--config target.<triple>.runner`.
+
+Notes:
+- The release APK (two ABIs, uncompressed `.so`) is 28 MB; `libreader_ffi.so` ≈ 6.8 MB,
+  `libpdfium.so` ≈ 6.5 MB per ABI. M7 will consider an `arm64-v8a`-only APK (~14 MB)
+  and size settings (e.g. `opt-level`, unused `image` formats).
 
 ### M2 — `reader-layout`: page number parity (critical risk)
 

@@ -1,6 +1,7 @@
 //! One bounded, versioned position record per canonical source path.
-//! When LOCALAPPDATA is unavailable, records live in the process temp directory
-//! under `simPl/positions`; failures in a configured LOCALAPPDATA are not hidden.
+//! Records live under `simPl/positions` in the profile (`reader_profile`): LOCALAPPDATA
+//! on the desktop, else the process temp directory; failures in a configured
+//! profile are not hidden.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -303,10 +304,7 @@ fn record_path(document: &Path) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn storage_base() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+    reader_profile::storage_base()
 }
 
 // Recent history keeps the path captured on the last successful open. A moved

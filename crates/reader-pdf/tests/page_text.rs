@@ -56,13 +56,19 @@ fn sample_pdf() -> Vec<u8> {
 
 #[test]
 fn page_text_indices_are_the_glyph_indices_of_the_text_layer() {
+    // Android device runs load libpdfium.so by name from the test's directory.
+    let library = if cfg!(target_os = "android") {
+        "libpdfium.so"
+    } else {
+        "pdfium.dll"
+    };
     let dll = std::env::current_exe()
         .unwrap()
         .parent()
         .unwrap()
-        .join("pdfium.dll");
+        .join(library);
     if !dll.exists() {
-        eprintln!("skipped: pdfium.dll is not beside the test executable");
+        eprintln!("skipped: {library} is not beside the test executable");
         return;
     }
     let path = std::env::temp_dir().join(format!("simpl-page-text-{}.pdf", std::process::id()));
