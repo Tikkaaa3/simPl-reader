@@ -9,6 +9,8 @@ members = [
     "crates/process-measure",
     "crates/iced-shell",
     "crates/shell-startup-markers",
+    "crates/reader-ffi",
+    "crates/uniffi-bindgen",
 ]
 
 # Keep the verified RTL rich-run placement fix until an upstream replacement
@@ -32,3 +34,9 @@ opt-level = 3
 lto = "thin"
 panic = "unwind"
 strip = "symbols"
+
+# Android app core: release settings, but keep the symbol table. UniFFI reads its
+# binding metadata from it, and the Android Gradle build strips the packaged .so.
+[profile.android-release]
+inherits = "release"
+strip = "none"

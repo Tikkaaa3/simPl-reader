@@ -9,3 +9,7 @@
 
 # Shown verbatim by the Windows installer's license page.
 LICENSE-BINARY.txt text eol=crlf
+
+# Gradle wrapper: cmd.exe needs CRLF batch files; the wrapper JAR is binary.
+android/gradlew.bat text eol=crlf
+*.jar binary

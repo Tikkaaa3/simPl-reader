@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window theme only; Compose draws the interface. -->
+    <style name="Theme.Simpl" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

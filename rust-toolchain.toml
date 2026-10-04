@@ -3,3 +3,5 @@
 channel = "1.97.1-x86_64-pc-windows-msvc"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
+# Android app cores (device and emulator); the desktop build ignores them.
+targets = ["aarch64-linux-android", "x86_64-linux-android"]

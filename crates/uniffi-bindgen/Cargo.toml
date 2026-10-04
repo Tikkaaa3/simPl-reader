@@ -1,0 +1,12 @@
+# Pinned UniFFI binding generator, so Kotlin bindings always match the
+# `uniffi` runtime version used by reader-ffi. Run by the Android Gradle build.
+[package]
+name = "uniffi-bindgen"
+description = "Project-pinned UniFFI binding generator for the Android app."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+uniffi = { version = "=0.32.2", features = ["cli"] }

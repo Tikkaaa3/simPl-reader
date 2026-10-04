@@ -1,0 +1,15 @@
+# The Android app's only view of the Rust core (UniFFI). Desktop does not use it.
+[package]
+name = "reader-ffi"
+description = "UniFFI surface of the shared reader core for the Android app."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[lib]
+# cdylib is the Android libreader_ffi.so; lib keeps host unit tests working.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+uniffi = "=0.32.2"

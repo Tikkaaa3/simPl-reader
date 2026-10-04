@@ -1,0 +1,25 @@
+[versions]
+agp = "9.4.1"
+kotlin = "2.4.20"
+compose-bom = "2026.09.00"
+activity-compose = "1.13.0"
+core-ktx = "1.19.1"
+# UniFFI's Kotlin bindings call the Rust core through JNA.
+jna = "5.19.1"
+
+[libraries]
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+# Build logic
+android-gradle-api = { module = "com.android.tools.build:gradle-api", version.ref = "agp" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+simpl-rust-android = { id = "simpl.rust-android" }
