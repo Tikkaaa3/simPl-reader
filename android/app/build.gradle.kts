@@ -93,6 +93,7 @@ android {
         buildConfig = true
     }
     sourceSets.getByName("androidTest").assets.srcDir("../../crates/reader-ffi/tests/fixtures")
+    sourceSets.getByName("androidTest").assets.srcDir("../../assets/dictionaries/packs")
     splits {
         abi {
             isEnable = providers.gradleProperty("simplSplitApks").orElse("false").get().toBooleanStrict()
@@ -143,6 +144,7 @@ rustAndroid {
 }
 
 dependencies {
+    implementation(libs.androidx.work)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.splashscreen)
     implementation(libs.androidx.media3.session)

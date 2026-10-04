@@ -130,7 +130,7 @@ internal fun measureRows(section: UInt, rows: List<BookRow>, options: LayoutOpti
 internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, accent: Color,
     image: suspend (UInt, String) -> ReaderImage?, follow: (UInt, BookLink) -> Unit,
     tap: (Offset) -> Unit, modifier: Modifier = Modifier, selection: ReflowSelection? = null,
-    spoken: SpeechRange? = null, marks: List<ReaderMark> = emptyList(), editMark: (ULong) -> Unit = {}, extend: (SourcePoint) -> Unit = {}) {
+    spoken: SpeechRange? = null, marks: List<ReaderMark> = emptyList(), editMark: (ULong) -> Unit = {}, extend: (SourcePoint) -> Unit = {}, dictionary: (SourcePoint) -> Unit = {}) {
     val density = LocalDensity.current.density
     val row = measured.row
     val p = row.presentation
@@ -144,6 +144,7 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
     val marksNow by rememberUpdatedState(marks)
     val editNow by rememberUpdatedState(editMark)
     val extendNow by rememberUpdatedState(extend)
+    val dictionaryNow by rememberUpdatedState(dictionary)
     val links = row.semantics.links.filter { link ->
         val a = byteIndex(row.text.orEmpty(), link.startByte)
         val b = byteIndex(row.text.orEmpty(), link.endByte)
@@ -171,7 +172,22 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
     } else Canvas(modifier.fillMaxWidth().height((measured.height * scale / density).dp)
         .testTag("row:${measured.section}:${row.index}").then(semantics)
         .pointerInput(measured, scale) {
-            detectTapGestures { point ->
+            var selectedTap = false
+            detectTapGestures(onPress = { point ->
+                selectedTap = selectionNow != null
+                // Extending an existing selection must not wait for the double
+                // tap timeout; Copy immediately after this tap uses its new end.
+                if (selectedTap && tryAwaitRelease()) {
+                    val source = Offset(point.x / scale - p.left, point.y / scale - measured.top + measured.textTop)
+                    extendNow(SourcePoint(measured.section, row.index, sourceByte(row.text.orEmpty(), layout.getOffsetForPosition(source))))
+                }
+            }, onDoubleTap = { point ->
+                val source = Offset(point.x / scale - p.left, point.y / scale - measured.top + measured.textTop)
+                val offset = layout.getOffsetForPosition(source)
+                if (listOf(offset, offset - 1).any { it in row.text.orEmpty().indices && layout.getBoundingBox(it).contains(source) })
+                    dictionaryNow(SourcePoint(measured.section, row.index, sourceByte(row.text.orEmpty(), offset)))
+            }, onTap = tap@ { point ->
+                if (selectedTap) return@tap
                 val source = Offset(point.x / scale - p.left, point.y / scale - measured.top + measured.textTop)
                 val offset = layout.getOffsetForPosition(source)
                 val mark = marksNow.lastOrNull { offset in byteIndex(row.text.orEmpty(), it.startByte) until byteIndex(row.text.orEmpty(), it.endByte) &&
@@ -187,7 +203,7 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
                 else if (mark != null) editNow(mark.id)
                 else if (link != null) followHandler(measured.section, link)
                 else tapHandler(point)
-            }
+            })
         }) {
         scale(scale, scale, pivot = Offset.Zero) {
             val width = size.width / scale

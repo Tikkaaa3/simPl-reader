@@ -6,6 +6,7 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
+reader-core = { path = "../reader-core" }
 html5ever = "=0.35.0"
 markup5ever_rcdom = "=0.35.0"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

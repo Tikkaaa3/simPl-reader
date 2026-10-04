@@ -99,6 +99,8 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
     var toolbar by rememberSaveable { mutableStateOf(true) }
     var jump by rememberSaveable { mutableStateOf(false) }
     var annotations by rememberSaveable { mutableStateOf(false) }
+    var dictionary by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.selection) { if (state.selection == null) dictionary = false }
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
     LaunchedEffect(state.selection) { if (state.selection != null) toolbar = true }
     var copied by remember { mutableStateOf(false) }
@@ -138,10 +140,13 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
-            else if (state.info != null) PdfViewport(state, model, { toolbar = !toolbar; copied = false }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
+            else if (state.info != null) PdfViewport(state, model, { toolbar = !toolbar; copied = false }, dictionary = { dictionary = true }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
             else Column(Modifier.padding(24.dp)) { Text(state.error ?: "Could not open this PDF"); TextButton(onClick = back) { Text("Return to library") } }
             state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
-                key(selection) { SelectionMenu("pdfSelection", model::copy, model::highlight, read = { model.readSelection() }) { model.select(null) } }
+                key(selection) { Column {
+                    SelectionMenu("pdfSelection", model::copy, model::highlight, read = { model.readSelection() }, dictionary = if (state.info?.canCopy == true) ({ dictionary = true }) else null) { model.select(null) }
+                    if (state.info?.canCopy == true) DictionarySelection(model::copy, selection, dictionary) { dictionary = false }
+                } }
             } }
             if (state.rendering) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("pdfRendering"))
         }
@@ -166,7 +171,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
 }
 
 @Composable
-private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit, editMark: (ULong) -> Unit) {
+private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit, dictionary: () -> Unit, editMark: (ULong) -> Unit) {
     val density = LocalDensity.current.density
     val vertical = rememberScrollState(); val horizontal = rememberScrollState()
     val location = state.location
@@ -215,7 +220,8 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
             val top = bounds.top * height; val bottom = bounds.bottom * height
             if (top < vertical.value || bottom > vertical.value + constraints.maxHeight) vertical.scrollTo((top - constraints.maxHeight * .25f).roundToInt().coerceAtLeast(0))
         }
-        val zoomNow by rememberUpdatedState(zoom)
+    val zoomNow by rememberUpdatedState(zoom)
+        val dictionaryNow by rememberUpdatedState(dictionary)
         LaunchedEffect(location.page, width) { model.render(width) }
         var ready by remember(state.revision) { mutableStateOf(false) }
         LaunchedEffect(state.revision, width, height) {
@@ -256,7 +262,19 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                     if (!state.text?.glyphs.isNullOrEmpty()) customActions = listOf(CustomAccessibilityAction("Select page text") { model.selectAll(); true })
                 }
                 .pointerInput(location.page) {
-                    detectTapGestures { point ->
+                    var selectedTap = false
+                    detectTapGestures(onPress = { point ->
+                        selectedTap = selectionNow != null
+                        if (selectedTap && tryAwaitRelease()) {
+                            val index = geometryNow?.closest(point, size.width.toFloat(), size.height.toFloat(), 12 * density)
+                            if (index != null) model.extend(index, false) else model.select(null)
+                        }
+                    }, onDoubleTap = { point ->
+                        if (state.info.canCopy) geometryNow?.closest(point, size.width.toFloat(), size.height.toFloat(), 12 * density)?.let { index ->
+                            model.select(geometryNow!!.word(index)); dictionaryNow()
+                        }
+                    }, onTap = tap@ { point ->
+                        if (selectedTap) return@tap
                         val index = geometryNow?.closest(point, size.width.toFloat(), size.height.toFloat(), 12 * density)
                         val mark = index?.let { glyph -> marksNow.lastOrNull { glyph in (it.range(locationNow.page, Int.MAX_VALUE) ?: IntRange.EMPTY) } }
                         if (selectionNow != null && index != null) model.extend(index, false)
@@ -265,7 +283,7 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                         else if (locationNow.fitWidth && point.x < size.width * .18f) model.turn(-1)
                         else if (locationNow.fitWidth && point.x > size.width * .82f) model.turn(1)
                         else toggleNow()
-                    }
+                    })
                 }) {
                 image?.let { drawImage(it, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())) }
                 fun paint(range: IntRange, color: Color, underline: Boolean = false) {

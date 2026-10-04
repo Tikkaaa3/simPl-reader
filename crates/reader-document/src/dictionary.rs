@@ -1,12 +1,14 @@
 //! Bounded offline word lookup using separately installed data packages.
-use serde::{Deserialize, Serialize};
+use reader_core::word_translation::Lexicon;
+pub use reader_core::word_translation::{
+    Language, MAX_QUERY_BYTES, MAX_QUERY_WORDS, Settings, Translation, query, supported,
+};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     io::{Cursor, Read},
     sync::{Arc, LazyLock, Mutex},
 };
-use unicode_normalization::UnicodeNormalization;
-
 #[path = "dictionary_packages.rs"]
 mod packages;
 pub use packages::{
@@ -14,139 +16,6 @@ pub use packages::{
     packages,
 };
 const MAX_DATA: u64 = 16 * 1024 * 1024;
-pub const MAX_QUERY_BYTES: usize = 256;
-pub const MAX_QUERY_WORDS: usize = 4;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Language {
-    #[default]
-    English,
-    Turkish,
-    Spanish,
-    German,
-    French,
-    Japanese,
-    Korean,
-    Chinese,
-}
-
-impl Language {
-    pub const ALL: [Self; 8] = [
-        Self::English,
-        Self::Turkish,
-        Self::Spanish,
-        Self::German,
-        Self::French,
-        Self::Japanese,
-        Self::Korean,
-        Self::Chinese,
-    ];
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::English => "en",
-            Self::Turkish => "tr",
-            Self::Spanish => "es",
-            Self::German => "de",
-            Self::French => "fr",
-            Self::Japanese => "ja",
-            Self::Korean => "ko",
-            Self::Chinese => "zh",
-        }
-    }
-    pub fn targets(self) -> Vec<Self> {
-        Self::ALL
-            .into_iter()
-            .filter(|target| supported(self, *target))
-            .collect()
-    }
-}
-
-impl std::fmt::Display for Language {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::English => "English",
-            Self::Turkish => "Türkçe",
-            Self::Spanish => "Español",
-            Self::German => "Deutsch",
-            Self::French => "Français",
-            Self::Japanese => "日本語",
-            Self::Korean => "한국어",
-            Self::Chinese => "中文",
-        })
-    }
-}
-
-pub fn supported(source: Language, target: Language) -> bool {
-    source != target
-        && (target == Language::English
-            || source == Language::English && target != Language::Korean)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub automatic: bool,
-    pub source: Language,
-    pub target: Language,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            automatic: true,
-            source: Language::English,
-            target: Language::Turkish,
-        }
-    }
-}
-
-impl Settings {
-    pub fn validated(mut self) -> Self {
-        if !supported(self.source, self.target) {
-            self.target = self.source.targets()[0];
-        }
-        self
-    }
-}
-
-/// Normalization matches the package builder; punctuation around a selection is not a word.
-pub fn query(text: &str, language: Language) -> Option<String> {
-    if text.len() > MAX_QUERY_BYTES {
-        return None;
-    }
-    let normalized: String = text.nfkc().collect();
-    let text = normalized.trim().trim_matches(|c: char| {
-        !c.is_alphanumeric() && !unicode_normalization::char::is_combining_mark(c)
-    });
-    if !text.chars().any(char::is_alphanumeric) || text.split_whitespace().count() > MAX_QUERY_WORDS
-    {
-        return None;
-    }
-    let text = text.to_owned();
-    let text = if language == Language::Turkish {
-        text.replace('I', "ı").replace('İ', "i")
-    } else {
-        text
-    };
-    let text = text
-        .to_lowercase()
-        .replace('ß', "ss")
-        .replace('’', "'")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    (text.len() <= MAX_QUERY_BYTES).then_some(text)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Translation {
-    pub headword: String,
-    pub meanings: Vec<String>,
-    pub provider: String,
-    pub base_form: bool,
-}
-
 #[derive(Deserialize)]
 struct Manifest {
     version: u32,
@@ -158,122 +27,6 @@ struct Pair {
     target: String,
     provider: String,
     sha256: String,
-}
-
-struct Lexicon {
-    text: String,
-    lines: Vec<u32>,
-    provider: String,
-}
-
-impl Lexicon {
-    fn parse(text: String, provider: String) -> Result<Self, String> {
-        let mut lines = Vec::new();
-        let mut offset = 0;
-        let mut previous = "";
-        for line in text.split_inclusive('\n') {
-            let mut fields = line.trim_end_matches('\n').split('\t');
-            let key = fields.next().unwrap_or_default();
-            let headword = fields.next().unwrap_or_default();
-            let meanings = fields.next().unwrap_or_default();
-            if fields.next().is_some()
-                || key.is_empty()
-                || headword.is_empty()
-                || meanings.is_empty()
-                || key <= previous
-                || line.len() > 24 * 1024
-            {
-                return Err("The local dictionary index is invalid.".into());
-            }
-            previous = key;
-            lines.push(offset as u32);
-            offset += line.len();
-        }
-        if lines.is_empty() {
-            return Err("The local dictionary is empty.".into());
-        }
-        Ok(Self {
-            text,
-            lines,
-            provider,
-        })
-    }
-
-    fn line(&self, index: usize) -> &str {
-        &self.text[self.lines[index] as usize
-            ..self
-                .lines
-                .get(index + 1)
-                .map_or(self.text.len(), |offset| *offset as usize)]
-    }
-
-    fn find(&self, word: &str, base_form: bool) -> Option<Translation> {
-        let index = self
-            .lines
-            .binary_search_by(|offset| {
-                let tail = &self.text[*offset as usize..];
-                tail[..tail.find('\t').unwrap()].cmp(word)
-            })
-            .ok()?;
-        let mut fields = self.line(index).trim_end_matches('\n').split('\t');
-        fields.next()?;
-        Some(Translation {
-            headword: fields.next()?.to_owned(),
-            meanings: fields
-                .next()?
-                .split(" | ")
-                .take(8)
-                .map(str::to_owned)
-                .collect(),
-            provider: self.provider.clone(),
-            base_form,
-        })
-    }
-}
-
-fn english_bases(word: &str) -> Vec<String> {
-    let irregular = match word {
-        "ran" => Some("run"),
-        "went" | "gone" => Some("go"),
-        "was" | "were" | "been" | "is" | "are" => Some("be"),
-        "had" => Some("have"),
-        "did" | "done" => Some("do"),
-        "saw" | "seen" => Some("see"),
-        "took" | "taken" => Some("take"),
-        "came" => Some("come"),
-        "made" => Some("make"),
-        "children" => Some("child"),
-        "men" => Some("man"),
-        "women" => Some("woman"),
-        "feet" => Some("foot"),
-        "teeth" => Some("tooth"),
-        "mice" => Some("mouse"),
-        "better" | "best" => Some("good"),
-        _ => None,
-    };
-    let mut bases = irregular.into_iter().map(str::to_owned).collect::<Vec<_>>();
-    // Conservative, labeled fallbacks; an exact entry always wins.
-    for (suffix, replacement) in [
-        ("ies", "y"),
-        ("ied", "y"),
-        ("ing", ""),
-        ("ed", ""),
-        ("es", ""),
-        ("s", ""),
-    ] {
-        if let Some(base) = word.strip_suffix(suffix).filter(|base| base.len() >= 3) {
-            bases.push(format!("{base}{replacement}"));
-            if matches!(suffix, "ing" | "ed") {
-                bases.push(format!("{base}e"));
-                if base.is_ascii()
-                    && base.as_bytes()[base.len() - 1] == base.as_bytes()[base.len() - 2]
-                {
-                    bases.push(base[..base.len() - 1].to_owned());
-                }
-            }
-        }
-    }
-    bases
 }
 
 #[cfg(test)]

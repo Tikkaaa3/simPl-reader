@@ -415,7 +415,7 @@ license text opened successfully. See `docs/releases/android-0.1.0.md`.
       notification controls, headset buttons, audio focus.
 - [x] The view follows the spoken line, automatic page/section turns; reading the selection/highlight.
 
-**Implementation:** the dependency-free `reader-core` shares source offsets,
+**Implementation:** the platform-independent `reader-core` shares source offsets,
 sentence boundaries, language hints and page-follow rules with the existing
 Windows SAPI adapter. The UniFFI speech plan retains its document and streams
 bounded utterances across canonical sections or physical PDF pages. Android
@@ -439,11 +439,37 @@ performance and individual voice quality remain follow-up checks, as in M5/M7.
 
 ### P2 — Offline dictionary
 
-- [ ] `word_translation` lookup logic → `reader-core`.
-- [ ] Package downloads: WorkManager (progress, cancel, retry), verification and
+- [x] `word_translation` lookup logic → `reader-core`.
+- [x] Package downloads: WorkManager (progress, cancel, retry), verification and
       installation with the existing Rust code; import from ZIP via SAF.
-- [ ] Dictionary card on double tap/selection; language pair and automatic lookup settings.
-- [ ] `INTERNET` permission only for this feature; document text is never sent.
+- [x] Dictionary card on double tap/selection; language pair and automatic lookup settings.
+- [x] `INTERNET` permission only for this feature; document text is never sent.
+
+**Implementation:** `reader-core::word_translation` owns Unicode query/word
+boundaries, languages, settings validation, TSV lookup and labeled English base
+forms. The desktop reuses it without changing its saved settings or package
+format. Android's shared UniFFI store retains the existing Rust catalog,
+SHA-256/ZIP checks, bounded index and atomic installer. Compose offers a card on
+double tap, a selection-menu action, automatic selection lookup and persistent
+language/automatic preferences. Settings manages all 13 catalog directions and
+their full license notices. WorkManager owns bounded HTTPS downloads, progress,
+active/queued cancellation, transient retries and durable SAF ZIP imports. A
+startup barrier configures the native roots before a restored worker opens its
+store; terminal jobs release provider grants and discard staging. Only package
+IDs/ZIP URIs enter work requests; local queries never enter the downloader.
+Details are in [android/README.md](android/README.md#offline-dictionary-p2).
+
+**Acceptance (2026-10-04):** The Windows workspace check passed with 429 tests
+and 37 existing ignored cases. On the accepted API 36 x86_64 emulator, 137 Rust
+tests passed (two ignored, three host-fixture skips), and all 49 instrumented UI
+tests passed without failures or skips. The eight dictionary cases cover all
+13 catalog directions, Unicode queries and base forms, verified license notices,
+corrupt/cancelled installs, cache invalidation, durable SAF import and retry,
+real GitHub download progress through Activity recreation, active/queued
+cancellation, persistent language/automatic settings and reflow/PDF source
+selection. The dictionary cards and package screen were visually reviewed.
+ARM64/x86_64 R8 release assembly and debug/release lint passed with zero errors
+and the ten existing warnings; P2 introduced no lint warnings.
 
 ### P3 — Backup and export
 

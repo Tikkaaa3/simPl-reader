@@ -81,6 +81,8 @@ class ReaderUiTest {
         ui.onNodeWithText("Fit width").performClick()
         ui.onNodeWithTag("paperViewport").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Zoom 1.0; page 4"))
         ui.onNodeWithTag("paperViewport").performTouchInput { click(center) }
+        // A text tap first excludes a dictionary double tap.
+        ui.waitUntil(10_000) { ui.onAllNodesWithText("Next").fetchSemanticsNodes().isEmpty() }
         ui.onNodeWithText("Next").assertDoesNotExist()
         screenshot("immersive")
         ui.onNodeWithTag("paperViewport").performTouchInput { click(center) }

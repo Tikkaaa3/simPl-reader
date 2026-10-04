@@ -2303,6 +2303,11 @@ dependencies = [
 [[package]]
 name = "reader-core"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "unicode-normalization",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "reader-document"
@@ -2315,6 +2320,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",
+ "reader-core",
  "reader-profile",
  "roxmltree 0.21.1",
  "serde",

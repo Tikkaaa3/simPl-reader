@@ -82,11 +82,13 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
             }
             composable("settings") {
                 SettingsScreen(state, model, back = { navigation.popBackStack() },
+                    dictionaries = { navigation.navigate("dictionaries") { launchSingleTop = true } },
                     licenses = { navigation.navigate("licenses") { launchSingleTop = true } },
                     createShelf = { editShelf = "new" }, editShelf = { editShelf = it.id.toString() },
                     deleteShelf = { deleteShelf = it.id.toString() })
             }
             composable("licenses") { LicenseScreen { navigation.popBackStack() } }
+            composable("dictionaries") { DictionaryScreen(back = { navigation.popBackStack() }) }
             composable("reader/{fingerprint}") { entry ->
                 val fingerprint = entry.arguments?.getString("fingerprint")
                 val book = state.books.find { it.fingerprint == fingerprint }
@@ -292,6 +294,7 @@ internal fun BookCover(book: LibraryBook, modifier: Modifier = Modifier) {
 
 @Composable
 private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: () -> Unit,
+    dictionaries: () -> Unit,
     licenses: () -> Unit,
     createShelf: () -> Unit, editShelf: (LibraryShelf) -> Unit, deleteShelf: (LibraryShelf) -> Unit) {
     Column(Modifier.fillMaxSize().testTag("settings")) {
@@ -322,6 +325,7 @@ private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: (
                 }
             }
             item { OutlinedButton(onClick = createShelf) { Text("New shelf") } }
+            item { HorizontalDivider(); TextButton(onClick = dictionaries) { Text("Offline dictionaries") } }
             item {
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 TextButton(onClick = licenses) { Text("Licenses") }

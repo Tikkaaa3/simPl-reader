@@ -15,9 +15,11 @@ class SimplApplication : Application() {
         coreFailure =
             try {
                 initialize(filesDir.absolutePath, cacheDir.absolutePath, Locale.getDefault().toLanguageTag())
+                OfflineDictionary.initialize(this)
                 null
             } catch (error: Throwable) {
                 userError(error, FailureAction.Read)
             }
+        OfflineDictionary.coreReady(coreFailure)
     }
 }

@@ -347,6 +347,18 @@ impl OpenBook {
         let book = self.section(point.section as usize)?;
         let text = book.items[point.row as usize].text().unwrap();
         let start = point.byte as usize;
+        if let Some(range) = reader_core::word_translation::word_range(text, start) {
+            return Ok(ReflowSelection {
+                from: SourcePoint {
+                    byte: range.start as u32,
+                    ..point
+                },
+                to: SourcePoint {
+                    byte: range.end as u32,
+                    ..point
+                },
+            });
+        }
         let end = text[start..]
             .graphemes(true)
             .next()

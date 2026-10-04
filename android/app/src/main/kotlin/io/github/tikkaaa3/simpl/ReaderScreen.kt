@@ -49,6 +49,8 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
     LaunchedEffect(state.selection) { if (state.selection != null) toolbar = true }
     var panel by rememberSaveable { mutableStateOf<String?>(null) }
+    var dictionary by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.selection) { if (state.selection == null) dictionary = false }
     val theme = state.themes.firstOrNull { it.id == state.theme }
     val appDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val dark = when (state.paperAppearance) { "light" -> false; "dark" -> true; else -> appDark }
@@ -92,9 +94,13 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         }
         if (state.loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (state.pages.isNotEmpty()) ReaderViewport(state, model, zoom, { zoom = it }, { toolbar = !toolbar }, paper, text, accent) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
+            if (state.pages.isNotEmpty()) ReaderViewport(state, model, zoom, { zoom = it }, { toolbar = !toolbar }, paper, text, accent,
+                dictionary = { model.selectWord(it) { dictionary = true } }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
             state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
-                key(selection) { SelectionMenu("readerSelection", model::copy, model::highlight, read = { model.readSelection() }) { model.select(null) } }
+                key(selection) { Column {
+                    SelectionMenu("readerSelection", model::copy, model::highlight, read = { model.readSelection() }, dictionary = { dictionary = true }) { model.select(null) }
+                    DictionarySelection(model::copy, selection, dictionary) { dictionary = false }
+                } }
             } }
             if (state.adapting) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("layoutProgress"))
             if (state.pages.isEmpty() && state.error != null) Column(Modifier.padding(24.dp)) {
@@ -147,7 +153,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
 
 @Composable
 private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Float, zoomTo: (Float) -> Unit, toggle: () -> Unit,
-    paper: Color, text: Color, accent: Color, editMark: (ULong) -> Unit) {
+    paper: Color, text: Color, accent: Color, dictionary: (SourcePoint) -> Unit, editMark: (ULong) -> Unit) {
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val measured = remember(state.pages, state.options, text, accent) { measurePage(state.pages, state.options, measurer, text, accent) }
     val spoken = state.spoken
@@ -300,7 +306,7 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
                 .padding(horizontal = (state.options.margin.toInt() * scale / density).dp, vertical = (42f * scale / density).dp)) {
                 measured.forEach { row -> key(row.section, row.row.index) { PaperRow(row, scale, text, accent, model::image, model::follow, tap,
                     selection = state.selection, spoken = state.spoken, marks = state.marks.filter { it.section == row.section && it.row == row.row.index }, editMark = editMark,
-                    extend = { model.extend(it, false) }) } }
+                    extend = { model.extend(it, false) }, dictionary = dictionary) } }
             }
           }
           SelectionHandle(handles.first, true)

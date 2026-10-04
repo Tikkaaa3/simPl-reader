@@ -243,13 +243,14 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         mutable.value = mutable.value.copy(selection = selection)
         saved["selection"] = selection?.let { longArrayOf(it.from.section.toLong(), it.from.row.toLong(), it.from.byte.toLong(), it.to.section.toLong(), it.to.row.toLong(), it.to.byte.toLong()) }
     }
-    fun selectWord(point: SourcePoint) {
+    fun selectWord(point: SourcePoint, done: () -> Unit = {}) {
         selectionJob?.cancel()
         selectionJob = launch {
             val selection = withContext(Dispatchers.IO) { source!!.selectionWord(point) }
             // Do not cancel the coroutine that delivered the word.
             selectionJob = null
             select(selection)
+            done()
         }
     }
     fun extend(point: SourcePoint, start: Boolean) {

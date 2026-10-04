@@ -60,7 +60,7 @@ internal fun coloredRanges(ranges: List<Pair<IntRange, AnnotationColor>>): List<
 }
 
 @Composable
-internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highlight: (AnnotationColor, String?) -> Unit, read: (() -> Unit)? = null, clear: () -> Unit) {
+internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highlight: (AnnotationColor, String?) -> Unit, read: (() -> Unit)? = null, dictionary: (() -> Unit)? = null, clear: () -> Unit) {
     val context = LocalContext.current
     var copied by remember(tag) { mutableStateOf(false) }
     var note by rememberSaveable { mutableStateOf(false) }
@@ -74,6 +74,7 @@ internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highli
                 type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
             }, "Share text")) } }) { Text("Share") }
             if (read != null) TextButton(onClick = read) { Text("Read selection") }
+            if (dictionary != null) TextButton(onClick = dictionary) { Text("Dictionary") }
             TextButton(onClick = clear) { Text("Clear") }
         }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {

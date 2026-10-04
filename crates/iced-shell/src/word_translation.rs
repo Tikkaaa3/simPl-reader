@@ -10,7 +10,6 @@ use reader_document::dictionary::{
     self, Language, LookupError, PackageId, PackageState, Settings, Store, Translation,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
-use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Picker {
@@ -147,20 +146,7 @@ impl WordTranslation {
     }
 }
 
-pub(crate) fn word_range(text: &str, byte: usize) -> Option<std::ops::Range<usize>> {
-    let mut ending = None;
-    for (start, word) in text.unicode_word_indices() {
-        let end = start + word.len();
-        if start <= byte && byte < end {
-            return Some(start..end);
-        }
-        // Native paragraph hit tests may return the caret just after a final glyph.
-        if byte == end {
-            ending = Some(start..end);
-        }
-    }
-    ending
-}
+pub(crate) use reader_core::word_translation::word_range;
 
 impl Reader {
     pub(super) fn refresh_dictionaries(&mut self) -> Task<Message> {

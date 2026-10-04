@@ -20,6 +20,8 @@ mod annotations;
 pub use annotations::*;
 mod read_aloud;
 pub use read_aloud::*;
+mod dictionary;
+pub use dictionary::*;
 
 uniffi::setup_scaffolding!();
 

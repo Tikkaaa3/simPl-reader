@@ -201,6 +201,23 @@ impl Store {
         }
         Ok(())
     }
+    /// Read attribution from the same verified archive; never extract ZIP paths.
+    pub fn notices(&self, id: PackageId) -> Result<String, String> {
+        let p = package(id).ok_or("Unknown dictionary package.")?;
+        let bytes = read_package(&self.path(id)?, p)?;
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+        let mut notices = String::new();
+        for name in ["README.md", "LICENSE.txt"] {
+            let mut file = archive.by_name(name).map_err(|e| e.to_string())?;
+            if file.size() > 128 * 1024 {
+                return Err("Dictionary notices exceed the size limit.".into());
+            }
+            file.read_to_string(&mut notices)
+                .map_err(|e| e.to_string())?;
+            notices.push_str("\n\n");
+        }
+        Ok(notices)
+    }
     /// Run on a worker; only one active direction is decompressed and indexed.
     pub fn lookup(
         &self,
@@ -225,17 +242,7 @@ impl Store {
             *cache = Some((id, Arc::new(lexicon)));
         }
         let lexicon = &cache.as_ref().unwrap().1;
-        if let Some(result) = lexicon.find(&word, false) {
-            return Ok(Some(result));
-        }
-        if source == Language::English && !word.contains(' ') {
-            for candidate in english_bases(&word) {
-                if let Some(result) = lexicon.find(&candidate, true) {
-                    return Ok(Some(result));
-                }
-            }
-        }
-        Ok(None)
+        Ok(lexicon.lookup(&word, source))
     }
 }
 

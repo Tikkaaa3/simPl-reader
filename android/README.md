@@ -7,13 +7,61 @@ its build, scripts and release workflow do not use anything in this folder.
 
 | Part | Responsibility |
 | --- | --- |
-| [`crates/reader-core`](../crates/reader-core) | Engine-independent speech chunking, language hints, source offsets and page follow rules shared with Windows |
+| [`crates/reader-core`](../crates/reader-core) | Shared speech rules, word boundaries, dictionary normalization and lexicon lookup |
 | [`crates/reader-ffi`](../crates/reader-ffi) | UniFFI surface of the Rust core; the only Rust API the app sees |
 | [`crates/reader-profile`](../crates/reader-profile) | Data/cache roots: `LOCALAPPDATA` on the desktop, `filesDir`/`cacheDir` on Android |
 | [`crates/reader-layout`](../crates/reader-layout) | Window-free canonical atlas, page cuts, typography and theme adaptation shared with Windows |
 | [`crates/uniffi-bindgen`](../crates/uniffi-bindgen) | Workspace-pinned binding generator (same version as the `uniffi` runtime) |
 | `build-logic/` | Gradle plugin `simpl.rust-android`: cargo-ndk build and Kotlin binding generation per variant |
 | `app/` | Compose application (`io.github.tikkaaa3.simpl`) |
+
+## Offline dictionary (P2)
+
+Double tap a word in either reader to select it and open its dictionary card.
+The selection menu also offers **Dictionary**. Automatic lookup shows a compact
+card after a short selection settles; its switch and the source/target languages
+persist locally. Unsupported directions are excluded (Korean has English as its
+target). Lookups accept at most 256 UTF-8 bytes and four words, label English base
+form fallbacks, and respect PDF copy permissions. Changing or dismissing a
+selection cancels its card request so an older reply cannot replace a newer one.
+
+**Settings → Offline dictionaries** lists the 13 directions in the shared,
+versioned catalog. Download is an explicit action. WorkManager 2.12.0 keeps jobs
+through Activity recreation and process death, reports progress, supports cancel,
+and retries connection/transient host failures twice with exponential backoff.
+After failure or cancellation, **Retry download** starts a fresh job. Downloads
+are bounded by the pinned byte count (at most 8 MiB), five HTTPS redirects to
+GitHub release hosts, five-second socket timeouts and a three-minute attempt
+limit. Interrupted downloads restart from zero. These small jobs use ordinary
+WorkManager scheduling, with no additional foreground service or notification
+permission. WorkManager may wait for connectivity or a background execution slot.
+
+**Import dictionary ZIP** uses the Storage Access Framework and the same durable
+worker with an 8 MiB stream bound. It accepts the exact release ZIPs for this app's
+catalog version. Persisted provider grants are released after terminal jobs,
+including an import cancelled before its worker starts; incomplete cache files
+are disposable. Rust verifies the complete archive size/hash, metadata, index
+size/hash and TSV order before atomically replacing an installed package. A
+cancel received before commit leaves the installed dictionary intact; an already
+committed install wins. Removal clears the shared lookup cache. Package cards
+expose the full README/license attribution from their verified archive.
+
+The app's `INTERNET` permission exists for dictionary package downloads;
+`ACCESS_NETWORK_STATE` supports WorkManager's connected constraint. The downloader
+receives only a catalog package ID, and sends only an HTTPS GET to its pinned URL.
+No document text, selected word, query or reading metadata is sent. Lookup and ZIP
+import work without a network connection. Dictionary data is not bundled into the
+production APK; source ZIPs are test-only instrumentation assets.
+
+`DictionaryTest` covers all catalog directions on Android, Unicode/bounds and
+base forms, corrupt/cancelled installation, removal/cache invalidation, SAF ZIP
+failure/retry, real release downloads with byte progress, active/queued cancellation, both reader cards
+and persisted language/automatic settings:
+
+```powershell
+android\gradlew.bat -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.tikkaaa3.simpl.DictionaryTest
+adb pull /sdcard/Pictures/simPl-P2 target/p2-visual
+```
 
 ## Read aloud (P1)
 

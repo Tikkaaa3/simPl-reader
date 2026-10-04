@@ -34,13 +34,14 @@ public class ImportFixtureProvider extends DocumentsProvider {
         files.put("Harbour.epub", "application/epub+zip"); files.put("Tides.pdf", "application/pdf");
         files.put("chapter.html", "text/html"); files.put("bad.epub", "application/epub+zip");
         files.put("images/cover.png", "image/png");
+        files.put("Dictionary.zip", "application/zip"); files.put("bad.zip", "application/zip");
     }
     @Override public boolean onCreate() {
         return true;
     }
     public static void grant(android.content.Context context) {
         int flags = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION;
-        for (String id : new String[] {"Notes.txt", "Guide.md", "Harbour.epub", "Tides.pdf", "chapter.html", "bad.epub", "images/cover.png"}) context.grantUriPermission("io.github.tikkaaa3.simpl",
+        for (String id : new String[] {"Notes.txt", "Guide.md", "Harbour.epub", "Tides.pdf", "chapter.html", "bad.epub", "images/cover.png", "Dictionary.zip", "bad.zip"}) context.grantUriPermission("io.github.tikkaaa3.simpl",
             DocumentsContract.buildDocumentUri("io.github.tikkaaa3.simpl.test.documents", id), flags);
         context.grantUriPermission("io.github.tikkaaa3.simpl",
             DocumentsContract.buildTreeDocumentUri("io.github.tikkaaa3.simpl.test.documents", "root"), flags | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
@@ -92,6 +93,14 @@ public class ImportFixtureProvider extends DocumentsProvider {
                     bitmap.eraseColor(Color.rgb(35, 80, 130)); bitmap.compress(Bitmap.CompressFormat.PNG, 100, image); bitmap.recycle();
                     bytes = image.toByteArray(); break;
                 case "bad.epub": bytes = utf8("Broken EPUB"); break;
+                case "bad.zip": bytes = utf8("Broken dictionary ZIP"); break;
+                case "Dictionary.zip":
+                    try (java.io.InputStream input = getContext().getAssets().open("en-tr-2026-09-30.zip")) {
+                        ByteArrayOutputStream copied = new ByteArrayOutputStream(); byte[] buffer = new byte[32768]; int count;
+                        while ((count = input.read(buffer)) >= 0) copied.write(buffer, 0, count);
+                        bytes = copied.toByteArray();
+                    }
+                    break;
                 default: throw new java.io.FileNotFoundException(id);
             }
             File file = new File(getContext().getCacheDir(), "provider-" + id.replace('/', '-'));
