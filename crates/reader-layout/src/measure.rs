@@ -204,35 +204,10 @@ fn render_item(
         })
         .into();
     }
-    let mut mapped = match map_document_paragraph(logical, direction, styles) {
+    let mapped = match mapped_item(book, item) {
         Ok(mapped) => mapped,
         Err(error) => return text(format!("Cannot display this paragraph: {error}")).into(),
     };
-    if matches!(item, Item::Heading { .. }) {
-        for run in &mut mapped.runs {
-            if run.role == FontRole::EditorialBold {
-                run.role = FontRole::EditorialMedium;
-            }
-        }
-    }
-    let semantics = book.structure.get(item.id());
-    if semantics.is_some_and(|s| {
-        matches!(
-            s.kind,
-            reader_document::BlockKind::Preformatted | reader_document::BlockKind::Formula
-        )
-    }) {
-        for run in &mut mapped.runs {
-            run.role = match run.role {
-                FontRole::EditorialBold | FontRole::SystemBold => FontRole::CodeBold,
-                FontRole::EditorialItalic | FontRole::SystemItalic => FontRole::CodeItalic,
-                FontRole::EditorialBoldItalic | FontRole::SystemBoldItalic => {
-                    FontRole::CodeBoldItalic
-                }
-                _ => FontRole::Code,
-            };
-        }
-    }
     let alignment = match pdf {
         Some(reader_pdf::book::BlockLayout::Centered) => Alignment::Center,
         Some(reader_pdf::book::BlockLayout::Right) => Alignment::Right,
@@ -245,7 +220,7 @@ fn render_item(
         line: size * style.line_height,
         alignment,
     });
-    let mut padding = style.block_padding(item, semantics, body, width);
+    let mut padding = style.block_padding(item, book.structure.get(item.id()), body, width);
     if let Some(source) = &book.pdf_source
         && let Some(block) = source.conversion.blocks.get(index)
         && let Some(info) = source.document.pages.get(block.sources[0].page as usize)
@@ -322,4 +297,108 @@ pub fn measure_book_with(
         );
     }
     Some(heights)
+}
+
+fn mapped_item(book: &Book, item: &Item) -> Result<crate::text::MappedParagraph, String> {
+    let logical = item.text().unwrap_or_default();
+    let heading = [StyleRun {
+        start_byte: 0,
+        end_byte: logical.len(),
+        style: InlineStyle::Bold,
+    }];
+    let (direction, styles) = match item {
+        Item::Paragraph {
+            base_direction,
+            style_runs,
+            ..
+        } => (*base_direction, style_runs.as_slice()),
+        _ => (BaseDirection::Ltr, heading.as_slice()),
+    };
+    let mut mapped = map_document_paragraph(logical, direction, styles)?;
+    if matches!(item, Item::Heading { .. }) {
+        for run in &mut mapped.runs {
+            if run.role == FontRole::EditorialBold {
+                run.role = FontRole::EditorialMedium;
+            }
+        }
+    }
+    let semantics = book.structure.get(item.id());
+    if semantics.is_some_and(|s| {
+        matches!(
+            s.kind,
+            reader_document::BlockKind::Preformatted | reader_document::BlockKind::Formula
+        )
+    }) {
+        for run in &mut mapped.runs {
+            run.role = match run.role {
+                FontRole::EditorialBold | FontRole::SystemBold => FontRole::CodeBold,
+                FontRole::EditorialItalic | FontRole::SystemItalic => FontRole::CodeItalic,
+                FontRole::EditorialBoldItalic | FontRole::SystemBoldItalic => {
+                    FontRole::CodeBoldItalic
+                }
+                _ => FontRole::Code,
+            };
+        }
+    }
+    Ok(mapped)
+}
+
+/// Canonical vertical source position, using the same shaping as the page atlas.
+/// The midpoint of the source line avoids choosing the preceding page at a cut.
+pub fn source_y(book: &Book, row: usize, byte: usize) -> Result<f32, String> {
+    fonts::load();
+    let item = book.items.get(row).ok_or("Source row is unavailable")?;
+    let logical = item.text().ok_or("Source row has no text")?;
+    if byte > logical.len() || !logical.is_char_boundary(byte) {
+        return Err("Source byte is invalid".into());
+    }
+    let theme = themes::default_theme();
+    let options = Options::default();
+    let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
+    let family = themes::effective_family(theme, book.pdf_source.is_some(), options);
+    let mapped = mapped_item(book, item)?;
+    let byte = byte + mapped.text.len() - logical.len();
+    let size = styled_item_size(&style, book, row, item, MINIMAL.default_size);
+    let padding = style.block_padding(
+        item,
+        book.structure.get(item.id()),
+        MINIMAL.default_size,
+        crate::atlas::TEXT,
+    );
+    let runs = paragraph::runs(&mapped, family);
+    let spans = paragraph::spans(
+        runs.iter().map(|(s, f)| (s.as_str(), *f)),
+        size,
+        size * style.line_height,
+    );
+    let shaped = NativeParagraph::with_spans(paragraph::text(
+        spans.as_slice(),
+        Size::new(
+            (crate::atlas::TEXT - padding.left - padding.right).max(1.0),
+            f32::INFINITY,
+        ),
+        size,
+        size * style.line_height,
+    ));
+    let mut offsets = Vec::new();
+    let mut offset = 0;
+    for line in mapped.text.split_inclusive('\n') {
+        offsets.push(offset);
+        offset += line.len();
+    }
+    let mut y = 0.0;
+    for run in shaped.buffer().layout_runs() {
+        y = run.line_top + run.line_height * 0.5;
+        let start = offsets.get(run.line_i).copied().unwrap_or(offset);
+        let end = run
+            .glyphs
+            .iter()
+            .map(|g| start + g.end)
+            .max()
+            .unwrap_or(start);
+        if byte < end {
+            break;
+        }
+    }
+    Ok(padding.top + y)
 }

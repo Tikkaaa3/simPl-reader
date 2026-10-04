@@ -45,7 +45,9 @@ internal data class PdfState(
     val raster: Bitmap? = null,
     val rasterKey: PdfRasterKey? = null,
     val text: PdfPageText? = null,
-    val selection: IntRange? = null,
+    val selection: PdfSelection? = null,
+    val annotations: AnnotationCollection = emptyAnnotations,
+    val marks: List<PdfMark> = emptyList(),
     val error: String? = null,
     val firstOpenMs: Long = 0,
     val firstRasterMs: Long = 0,
@@ -59,6 +61,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
     private val mutable = MutableStateFlow(PdfState())
     val state = mutable.asStateFlow()
     private var source: PdfDocument? = null
+    private var fingerprint = ""
     private var path: String? = null
     private var rendering: Job? = null
     private var saving: Job? = null
@@ -72,6 +75,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
     fun open(book: LibraryBook) {
         if (path == book.path) return
         path = book.path
+        fingerprint = book.fingerprint
         viewModelScope.launch {
             val start = SystemClock.elapsedRealtime()
             openedAt = start
@@ -87,6 +91,10 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
                 }?.takeIf { it.page in 1u..info.pages.size.toUInt() } ?: info.restored
                 mutable.value = mutable.value.copy(loading = false, info = info, location = location,
                     firstOpenMs = SystemClock.elapsedRealtime() - start, revision = 1)
+                saved.get<LongArray>("pdfSelection")?.takeIf { it.size == 4 }?.let {
+                    selectSource(PdfSelection(PdfSelectionPoint(it[0].toUInt(), it[1].toUInt()), PdfSelectionPoint(it[2].toUInt(), it[3].toUInt())))
+                }
+                refreshAnnotations()
                 record(location)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { fail(error) }
@@ -138,6 +146,11 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         val total = mutable.value.info?.pages?.size ?: return
         show((mutable.value.location.page.toLong() + delta).coerceIn(1, total.toLong()).toUInt())
     }
+    fun selectionTurn(delta: Int, start: Boolean) {
+        val page = mutable.value.location.page
+        turn(delta)
+        if (mutable.value.location.page != page) extend(0, start)
+    }
     fun jump(value: String): Boolean {
         val number = value.trim().toUIntOrNull()
         if (number == null || number !in 1u..(mutable.value.info?.pages?.size?.toUInt() ?: 0u)) {
@@ -152,24 +165,53 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         rendering?.cancel(); requested = null
         val location = mutable.value.location.copy(page = page, within = 0f, horizontal = 0f)
         mutable.value = mutable.value.copy(location = location, raster = null, rasterKey = null, text = null,
-            selection = null, rendering = true, error = null, revision = mutable.value.revision + 1)
+            rendering = true, error = null, revision = mutable.value.revision + 1)
         record(location)
     }
     fun zoom(scale: Float) {
         record(mutable.value.location.copy(zoom = scale.coerceIn(.25f, 4f), fitWidth = false))
-        mutable.value = mutable.value.copy(selection = null)
     }
     fun fit() {
         record(mutable.value.location.copy(zoom = 1f, fitWidth = true, horizontal = 0f))
-        mutable.value = mutable.value.copy(selection = null, revision = mutable.value.revision + 1)
+        mutable.value = mutable.value.copy(revision = mutable.value.revision + 1)
     }
-    fun select(range: IntRange?) { mutable.value = mutable.value.copy(selection = range) }
+    private suspend fun refreshAnnotations() {
+        val result = withContext(Dispatchers.IO) { native.withLock { loadAnnotations(fingerprint) to source!!.pdfMarks() } }
+        mutable.value = mutable.value.copy(annotations = result.first, marks = result.second)
+    }
+    fun selectSource(selection: PdfSelection?) {
+        mutable.value = mutable.value.copy(selection = selection)
+        saved["pdfSelection"] = selection?.let { longArrayOf(it.from.page.toLong(), it.from.index.toLong(), it.to.page.toLong(), it.to.index.toLong()) }
+    }
+    fun select(range: IntRange?) = selectSource(range?.let { PdfSelection(PdfSelectionPoint(mutable.value.location.page, it.first.toUInt()), PdfSelectionPoint(mutable.value.location.page, it.last.toUInt())) })
+    fun extend(index: Int, start: Boolean) {
+        val selection = mutable.value.selection ?: return
+        val point = PdfSelectionPoint(mutable.value.location.page, index.toUInt())
+        selectSource(if (start) selection.copy(from = point) else selection.copy(to = point))
+    }
     fun selectAll() { mutable.value.text?.glyphs?.takeIf { it.isNotEmpty() }?.let { select(it.indices) } }
     fun copy(done: (String) -> Unit) = launch {
-        val range = mutable.value.selection ?: return@launch
-        val page = mutable.value.location.page
-        val text = withContext(Dispatchers.IO) { native.withLock { source!!.copy(page, range.first.toUInt(), range.last.toUInt()) } }
-        done(text)
+        val selection = mutable.value.selection ?: return@launch
+        done(withContext(Dispatchers.IO) { native.withLock { source!!.selectionText(selection) } })
+    }
+    fun highlight(color: AnnotationColor, note: String?) = launch {
+        val selection = mutable.value.selection ?: return@launch
+        withContext(Dispatchers.IO) { native.withLock { source!!.highlightSelection(selection, color, note) } }
+        select(null); refreshAnnotations()
+    }
+    fun bookmark() = launch { withContext(Dispatchers.IO) { native.withLock { source!!.toggleBookmark(mutable.value.location.page) } }; refreshAnnotations() }
+    fun edit(id: ULong, color: AnnotationColor, note: String) = launch {
+        withContext(Dispatchers.IO) { editAnnotation(fingerprint, id, color, note) }; refreshAnnotations()
+    }
+    fun remove(id: ULong, bookmark: Boolean) = launch {
+        withContext(Dispatchers.IO) { removeAnnotation(fingerprint, id, bookmark) }; refreshAnnotations()
+    }
+    fun annotation(id: ULong, bookmark: Boolean) = launch {
+        val target = withContext(Dispatchers.IO) { native.withLock { source!!.annotationTarget(id, bookmark) } }
+        selectSource(target.selection); show(target.page)
+        val location = mutable.value.location.copy(within = target.within, horizontal = 0f)
+        mutable.value = mutable.value.copy(location = location, revision = mutable.value.revision + 1)
+        record(location)
     }
     fun dismissError() { mutable.value = mutable.value.copy(error = null) }
     fun record(location: PdfLocation) {

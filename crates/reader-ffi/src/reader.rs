@@ -221,7 +221,12 @@ pub fn reader_themes() -> Vec<ReaderTheme> {
 }
 
 impl OpenBook {
-    fn locate(&self, section: usize, row: usize, within: f32) -> Result<ReaderLocation, CoreError> {
+    pub(crate) fn locate(
+        &self,
+        section: usize,
+        row: usize,
+        within: f32,
+    ) -> Result<ReaderLocation, CoreError> {
         let layout = self
             .atlas
             .sections

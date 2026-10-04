@@ -322,13 +322,37 @@ JSON records and screenshots are retained in `target/m5-performance` and
 
 ### M6 — Bookmarks, highlights, notes
 
-- [ ] Custom selection layer: long press, handles, selection across page edges;
+- [x] Custom selection layer: long press, handles, selection across page edges;
       selection ↔ `annotations::Place` (`item_id` + byte / PDF glyph) conversion in Rust.
-- [ ] Selection menu: Copy, 4 highlight colors, Add note (plus Share).
-- [ ] Drawing highlights: same colors merge, different colors may overlap (desktop rules).
-- [ ] Bookmark: page menu or toolbar; `BookmarkPlace` in the same format as the desktop.
-- [ ] A bottom sheet instead of the side panel: bookmarks, highlights, notes; tap to go.
-- [ ] Edit/delete a highlight, edit a note.
+- [x] Selection menu: Copy, 4 highlight colors, Add note (plus Share).
+- [x] Drawing highlights: same colors merge, different colors may overlap (desktop rules).
+- [x] Bookmark: page menu or toolbar; `BookmarkPlace` in the same format as the desktop.
+- [x] A bottom sheet instead of the side panel: bookmarks, highlights, notes; tap to go.
+- [x] Edit/delete a highlight, edit a note.
+
+M6 shares `reader-document::annotation_logic` with the desktop and exposes source
+selection, annotation mutation, paint marks and navigation through UniFFI. The
+version 1 JSON schema is unchanged. Reflowable ends are validated UTF-8 grapheme
+boundaries; PDF endpoints use inclusive source glyph ordinals. Cross-chapter EPUB
+selection splits into chapter-local records, while a PDF record can span pages.
+Copy, highlight/note creation, edits and bookmark toggles run off the UI thread;
+mutations reload the file and save atomically after validation. Corrupt or failed
+writes preserve the prior file. Restricted PDFs still permit bookmarks.
+
+The viewport owns pointer capture, including both 48 dp selection handles, so a
+held edge scrolls and replaces a page without dropping selection. The floating
+selection menu preserves the paper's position during a gesture. Tapping text
+after Previous/Next also extends a selection. Highlight painting uses desktop
+colors and component ordering; separate notes survive same-color merges.
+Canonical shaping locates saved selections inside long paragraph cuts.
+
+Validated on the accepted API 36 x86_64 emulator on 2026-10-04: all 26 Android
+instrumentation tests passed, including six M6 selection/annotation tests and the
+existing library, reflowable reader and PDF checks. Shared Rust tests pass on the
+host and emulator, including annotation schema compatibility, Unicode, chapter
+splitting, overlapping colors, permissions and atomic failure handling. Windows
+`scripts\dev.ps1 check` remains green. Screenshots are retained in
+`target/m6-visual`; see `android/README.md` for gestures, limits and test commands.
 
 ### M7 — MVP release (GitHub APK)
 

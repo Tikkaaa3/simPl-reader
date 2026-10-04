@@ -16,6 +16,8 @@ mod reader;
 pub use reader::*;
 mod pdf;
 pub use pdf::*;
+mod annotations;
+pub use annotations::*;
 
 uniffi::setup_scaffolding!();
 

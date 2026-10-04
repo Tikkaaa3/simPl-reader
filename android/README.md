@@ -128,7 +128,8 @@ keeps motion hit-testing out of full-page scans. Normalized PDFium bounds place
 the selection overlay on the raster; copy addresses native source glyphs and
 rechecks PDF permissions. Restricted PDFs still render but expose neither text
 nor selection/copy actions. Scanned pages without text do not invent an OCR layer.
-Selection handles, highlights and selection across pages remain M6 work.
+Selection handles, persisted highlights and selection across pages are provided
+by the shared M6 annotation layer described below.
 
 The native `open_pdf_document` object exposes `info`, `render`, `text`, `copy` and
 `save_location`; all blocking calls run on background threads. FFI page numbers
@@ -166,6 +167,57 @@ On API 29+ the JSON measurements and visual screenshots survive test APK removal
 Below API 29 artifacts use the app's external files directory; retrieve them before
 uninstalling it. Emulator validation was accepted for M5 on 2026-10-04; phone
 measurements remain follow-up work. Emulator timings are not phone performance claims.
+
+## Bookmarks, highlights and notes (M6)
+
+Long press a text word, then drag either 48 dp selection handle. Holding a dragged
+handle at the top or bottom scrolls the page and continues onto the adjacent page.
+Previous/Next also keeps the selection: tap text on the new page to extend its
+end. Clear or Back dismisses selection. The selection menu floats over the paper
+so opening it does not move the text under the pointer. Copy uses the Android
+clipboard; Share opens the system chooser with plain text. Four highlight colors
+and Add note create persisted annotations. Tap a painted highlight to edit its
+color/note. Notes have an underline.
+
+The star in the toolbar toggles a bookmark for the current canonical/source page.
+Annotations opens a bottom sheet with Bookmarks, Highlights and Notes tabs. Tap
+an entry to go to its passage; highlights restore their selection. Edit changes a
+color or note, a blank note removes it, and Delete requires confirmation. Records
+are reloaded after mutations and survive recreation and reopening the book.
+Restricted PDFs permit bookmarks but withhold selection, copy and highlights.
+
+`reader-document::annotation_logic` contains the desktop's source range, quote
+recovery, word snapping and merge rules; the desktop imports these unchanged.
+`reader-ffi` validates reflowable UTF-8 grapheme endpoints and converts source
+section/row coordinates to chapter href and item id. PDF endpoints address native
+glyph ordinals. EPUB selections spanning chapters become one record per chapter,
+matching the existing single-chapter `Place::Reflow` schema. PDF highlights can
+span physical pages in one record. Canonical shaping locates a highlight inside
+a paragraph that crosses page cuts; PDF navigation uses the source glyph bounds.
+Themes, zoom and Compose UTF-16 offsets never enter annotation storage.
+
+Same-color connected highlights merge; distinct notes are retained. Different
+colors remain separate translucent layers. Painting coalesces each same-color
+component once and preserves its original order among other colors, using the
+desktop RGBA values. JSON remains version 1 under `filesDir/simPl/annotations`,
+with zero-based stored PDF/canonical page numbers and the desktop `BookmarkPlace`
+format. Native mutations serialize reload/edit/atomic-save; a corrupt file or
+failed validation leaves the prior file intact. The existing 8 KiB quote, 16 KiB
+note and 8 MiB annotation-file limits remain. Reflowable copy is limited to 1 MiB,
+checked before allocating the selected text; PDF copy keeps its shared worker limit.
+
+The Rust annotation integration test covers every reflowable import format,
+Unicode boundaries, source anchors, overlapping colors, retained notes,
+chapter/page boundaries, bookmark toggling, permissions and failed writes.
+`AnnotationUiTest` exercises real long presses and handle drags, multi-page
+selection, clipboard/share payloads, creation, editing, deletion, navigation,
+recreation and held-edge page turns. Screenshots survive test APK removal on
+API 29+ in `Pictures/simPl-M6`:
+
+```powershell
+android\gradlew.bat -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.tikkaaa3.simpl.AnnotationUiTest
+adb pull /sdcard/Pictures/simPl-M6 target/m6-visual
+```
 
 ## Environment (Windows)
 

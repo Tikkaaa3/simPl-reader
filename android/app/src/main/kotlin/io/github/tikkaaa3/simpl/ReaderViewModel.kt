@@ -12,6 +12,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 data class ReaderState(
+    val selection: ReflowSelection? = null,
+    val selectionEdge: Boolean? = null,
+    val annotations: AnnotationCollection = emptyAnnotations,
+    val marks: List<ReaderMark> = emptyList(),
     val loading: Boolean = true,
     val adapting: Boolean = false,
     val total: UInt = 0u,
@@ -44,6 +48,8 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     private var settingsJob: Job? = null
     private var saveJob: Job? = null
     private val writes = Mutex()
+    private var fingerprint: String = ""
+    private var selectionJob: Job? = null
     private var path: String? = null
     private var current: ReaderLocation? = null
     private val history = ArrayDeque<ReaderLocation>()
@@ -52,6 +58,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     fun open(book: LibraryBook) {
         if (path == book.path) return
         path = book.path
+        fingerprint = book.fingerprint
         loadJob = viewModelScope.launch {
             try {
                 val task = withContext(Dispatchers.IO) { openBook(book.path) }
@@ -59,6 +66,9 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
                 while (withContext(Dispatchers.IO) { task.status() } == LayoutStatus.RUNNING) delay(16)
                 val opened = withContext(Dispatchers.IO) { task.result() } ?: error("Opening was cancelled")
                 source = opened
+                mutable.value = mutable.value.copy(selection = saved.get<LongArray>("selection")?.takeIf { it.size == 6 }?.let {
+                    ReflowSelection(SourcePoint(it[0].toUInt(), it[1].toUInt(), it[2].toUInt()), SourcePoint(it[3].toUInt(), it[4].toUInt(), it[5].toUInt()))
+                })
                 val info = withContext(Dispatchers.IO) { opened.readerInfo() }
                 val themes = withContext(Dispatchers.IO) { readerThemes() }
                 val theme = mutable.value.theme.takeIf { id -> themes.any { it.id == id } } ?: "default"
@@ -104,6 +114,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
             adapted = next
             mutable.value = mutable.value.copy(loading = false, adapting = false, options = options, theme = theme,
                 page = page, pages = content, location = location, revision = mutable.value.revision + 1)
+            refreshAnnotations()
             current = location ?: firstLocation(content)
             current?.let(::record)
         } finally { task.cancel(); task.close(); if (adaptation === task) adaptation = null }
@@ -113,19 +124,29 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         val page = (mutable.value.page.toLong() + delta).coerceIn(1, mutable.value.total.toLong().coerceAtLeast(1)).toUInt()
         if (page != mutable.value.page) show(page)
     }
+    fun selectionTurn(delta: Int, start: Boolean) {
+        val page = (mutable.value.page.toLong() + delta).coerceIn(1, mutable.value.total.toLong().coerceAtLeast(1)).toUInt()
+        if (page != mutable.value.page) show(page, edge = start)
+    }
+    fun completeSelectionEdge(point: SourcePoint) {
+        val start = mutable.value.selectionEdge ?: return
+        extend(point, start)
+        mutable.value = mutable.value.copy(selectionEdge = null)
+    }
     fun go(location: ReaderLocation) = show(location.page, location)
     fun jump(value: String, done: () -> Unit) = launch {
         val page = withContext(Dispatchers.IO) { source!!.jump(value) }
         show(page); done()
     }
-    private fun show(page: UInt, location: ReaderLocation? = null) {
+    private fun show(page: UInt, location: ReaderLocation? = null, edge: Boolean? = null) {
         if (mutable.value.loading || mutable.value.adapting) return
         flush()
         pageJob?.cancel()
         pageJob = launch {
             val content = withContext(Dispatchers.IO) { adapted!!.page(page) }
-            mutable.value = mutable.value.copy(page = page, pages = content, location = location, note = null,
+            mutable.value = mutable.value.copy(page = page, pages = content, location = location, note = null, selectionEdge = edge,
                 revision = mutable.value.revision + 1, error = null)
+            refreshAnnotations()
             current = location ?: firstLocation(content)
             current?.let(::record)
         }
@@ -142,6 +163,49 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     fun returnFromLink() {
         if (mutable.value.note != null) { dismissNote(); return }
         if (history.isNotEmpty()) { go(history.removeLast()); mutable.value = mutable.value.copy(canReturn = history.isNotEmpty()) }
+    }
+    private suspend fun refreshAnnotations() {
+        val sections = mutable.value.pages.map { it.section }.distinct()
+        val result = withContext(Dispatchers.IO) { loadAnnotations(fingerprint) to sections.flatMap { source!!.readerMarks(it) } }
+        mutable.value = mutable.value.copy(annotations = result.first, marks = result.second)
+    }
+    fun select(selection: ReflowSelection?) {
+        selectionJob?.cancel()
+        mutable.value = mutable.value.copy(selection = selection)
+        saved["selection"] = selection?.let { longArrayOf(it.from.section.toLong(), it.from.row.toLong(), it.from.byte.toLong(), it.to.section.toLong(), it.to.row.toLong(), it.to.byte.toLong()) }
+    }
+    fun selectWord(point: SourcePoint) {
+        selectionJob?.cancel()
+        selectionJob = launch {
+            val selection = withContext(Dispatchers.IO) { source!!.selectionWord(point) }
+            // Do not cancel the coroutine that delivered the word.
+            selectionJob = null
+            select(selection)
+        }
+    }
+    fun extend(point: SourcePoint, start: Boolean) {
+        val selection = mutable.value.selection ?: return
+        select(if (start) selection.copy(from = point) else selection.copy(to = point))
+    }
+    fun copy(done: (String) -> Unit) = launch {
+        val selection = mutable.value.selection ?: return@launch
+        done(withContext(Dispatchers.IO) { source!!.selectionText(selection) })
+    }
+    fun highlight(color: AnnotationColor, note: String?) = launch {
+        val selection = mutable.value.selection ?: return@launch
+        withContext(Dispatchers.IO) { source!!.highlightSelection(selection, color, note) }
+        select(null); refreshAnnotations()
+    }
+    fun bookmark() = launch { withContext(Dispatchers.IO) { source!!.toggleBookmark(mutable.value.page) }; refreshAnnotations() }
+    fun edit(id: ULong, color: AnnotationColor, note: String) = launch {
+        withContext(Dispatchers.IO) { editAnnotation(fingerprint, id, color, note) }; refreshAnnotations()
+    }
+    fun remove(id: ULong, bookmark: Boolean) = launch {
+        withContext(Dispatchers.IO) { removeAnnotation(fingerprint, id, bookmark) }; refreshAnnotations()
+    }
+    fun annotation(id: ULong, bookmark: Boolean) = launch {
+        val target = withContext(Dispatchers.IO) { source!!.annotationTarget(id, bookmark) }
+        select(target.selection); go(target.location)
     }
     fun dismissNote() { mutable.value = mutable.value.copy(note = null) }
     fun dismissError() { mutable.value = mutable.value.copy(error = null) }

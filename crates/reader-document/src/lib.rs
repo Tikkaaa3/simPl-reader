@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
+pub mod annotation_logic;
 pub mod annotations;
 pub mod backup;
 pub mod dictionary;

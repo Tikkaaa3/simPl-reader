@@ -46,6 +46,8 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
     val activity = requireNotNull(LocalActivity.current)
     var toolbar by rememberSaveable { mutableStateOf(true) }
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
+    var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
+    LaunchedEffect(state.selection) { if (state.selection != null) toolbar = true }
     var panel by rememberSaveable { mutableStateOf<String?>(null) }
     val theme = state.themes.firstOrNull { it.id == state.theme }
     val appDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
@@ -70,13 +72,16 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         onDispose { controller.show(WindowInsetsCompat.Type.systemBars()); controller.isAppearanceLightStatusBars = !appDark; controller.isAppearanceLightNavigationBars = !appDark }
     }
     BackHandler {
-        when { state.note != null -> model.dismissNote(); panel != null -> panel = null;
+        when { state.selection != null -> model.select(null); state.note != null -> model.dismissNote(); panel != null -> panel = null;
             state.canReturn -> model.returnFromLink(); !toolbar -> toolbar = true; else -> { model.stop(); back() } }
     }
     Column(Modifier.fillMaxSize().background(desk).testTag("reader")) {
         if (toolbar) TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { IconButton(onClick = { model.stop(); back() }) { Icon(AppIcons.Back, "Back to library") } },
-            actions = { IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } },
+            actions = {
+                IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
+                IconButton(onClick = { panel = "annotations" }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
+                IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = paper, titleContentColor = text, navigationIconContentColor = text, actionIconContentColor = text))
         if (toolbar && !state.loading) Row(Modifier.fillMaxWidth().background(paper).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { panel = "contents" }) { Text("Contents") }
@@ -86,7 +91,10 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         }
         if (state.loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (state.pages.isNotEmpty()) ReaderViewport(state, model, zoom, { zoom = it }, { toolbar = !toolbar }, paper, text, accent)
+            if (state.pages.isNotEmpty()) ReaderViewport(state, model, zoom, { zoom = it }, { toolbar = !toolbar }, paper, text, accent) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
+            state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
+                key(selection) { SelectionMenu("readerSelection", model::copy, model::highlight) { model.select(null) } }
+            } }
             if (state.adapting) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("layoutProgress"))
             if (state.pages.isEmpty() && state.error != null) Column(Modifier.padding(24.dp)) {
                 Text(state.error!!, color = text); TextButton(onClick = back) { Text("Return to library") }
@@ -102,6 +110,8 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
             TextButton(onClick = { model.turn(1) }, enabled = state.page < state.total && !state.adapting) { Text("Next") }
         }
     }
+    if (panel == "annotations") AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove)
+    editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (panel == "contents") ModalBottomSheet(onDismissRequest = { panel = null }) {
         Text("Contents", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
@@ -136,7 +146,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
 
 @Composable
 private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Float, zoomTo: (Float) -> Unit, toggle: () -> Unit,
-    paper: Color, text: Color, accent: Color) {
+    paper: Color, text: Color, accent: Color, editMark: (ULong) -> Unit) {
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val measured = remember(state.pages, state.options, text, accent) { measurePage(state.pages, state.options, measurer, text, accent) }
     val density = LocalDensity.current.density
@@ -146,8 +156,8 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
     val currentZoom by rememberUpdatedState(zoom)
     val currentZoomTo by rememberUpdatedState(zoomTo)
     BoxWithConstraints(Modifier.fillMaxSize().testTag("paperViewport").semantics { stateDescription = "Zoom $zoom; page ${state.page}" }
-        .pointerInput(state.page, zoom <= 1.01f) {
-            if (zoom <= 1.01f) {
+        .pointerInput(state.page, zoom <= 1.01f, state.selection != null) {
+            if (zoom <= 1.01f && state.selection == null) {
                 var distance = 0f
                 detectHorizontalDragGestures(onDragStart = { distance = 0f }, onDragEnd = {
                     if (kotlin.math.abs(distance) > 48 * density) model.turn(if (distance < 0) 1 else -1)
@@ -176,6 +186,41 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
             measured.forEach { starts += starts.last() + it.height }
             starts
         }
+        fun hit(point: Offset): SourcePoint? {
+            val y = (point.y + vertical.value) / scale
+            val index = (heights.indexOfLast { it <= y }).coerceIn(0, measured.lastIndex.coerceAtLeast(0))
+            val row = measured.getOrNull(index) ?: return null
+            val layout = row.text ?: return null
+            val source = Offset((point.x + horizontal.value) / scale - state.options.margin.toInt() - row.row.presentation.left,
+                (y - heights[index] - row.top + row.textTop).coerceIn(row.textTop, row.textBottom - .01f))
+            val offset = layout.getOffsetForPosition(source).coerceIn(layout.getLineStart(row.firstLine), layout.getLineEnd(row.lastLine - 1))
+            return SourcePoint(row.section, row.row.index, sourceByte(row.row.text.orEmpty(), offset))
+        }
+        fun handle(point: SourcePoint?): Offset? {
+            val index = measured.indexOfFirst { it.section == point?.section && it.row.index == point.row }
+            if (index < 0) return null
+            val row = measured[index]; val layout = row.text ?: return null
+            val offset = byteIndex(row.row.text.orEmpty(), point!!.byte)
+            val line = layout.getLineForOffset(offset)
+            if (line !in row.firstLine until row.lastLine) return null
+            val rect = layout.getCursorRect(offset)
+            val result = Offset((state.options.margin.toInt() + row.row.presentation.left + rect.left) * scale - horizontal.value,
+                (heights[index] + row.top - row.textTop + rect.bottom) * scale - vertical.value)
+            return result.takeIf { it.y in 0f..constraints.maxHeight.toFloat() }
+        }
+        val handles = handle(state.selection?.from) to handle(state.selection?.to)
+        fun lift(point: SourcePoint?): Float {
+            val row = measured.firstOrNull { it.section == point?.section && it.row.index == point.row } ?: return 0f
+            val layout = row.text ?: return 0f
+            val line = layout.getLineForOffset(byteIndex(row.row.text.orEmpty(), point!!.byte))
+            return (layout.getLineBottom(line) - layout.getLineTop(line)) * scale / 2
+        }
+        var dragging by remember { mutableStateOf<Offset?>(null) }
+        var draggingStart by remember { mutableStateOf(false) }
+        val gestures = selectionGesture(handles, { point ->
+            hit(point)?.let { source -> model.selectWord(source); true } ?: false
+        }, { point, start -> draggingStart = start; hit(point)?.let { model.extend(it, start) } }, { dragging = it }, lift(state.selection?.from) to lift(state.selection?.to))
+        SelectionEdgeDrag(dragging, constraints.maxHeight.toFloat(), { vertical.scrollBy(it) }, { model.selectionTurn(it, draggingStart) }) { point -> hit(point)?.let { model.extend(it, draggingStart) } }
         var positionReady by remember(state.revision) { mutableStateOf(false) }
         var previousScale by remember { mutableFloatStateOf(scale) }
         LaunchedEffect(state.revision) {
@@ -189,6 +234,9 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
                 (heights[index] + row.height * part) * scale
             }
             vertical.scrollTo(target.roundToInt())
+            state.selectionEdge?.let { start ->
+                hit(Offset(constraints.maxWidth * .5f, if (start) 0f else constraints.maxHeight.toFloat()))?.let(model::completeSelectionEdge)
+            }
             previousScale = scale
             positionReady = true
         }
@@ -214,18 +262,24 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
         val tap: (Offset) -> Unit = { point ->
             // Row offsets are within the text column; margins count as edge zones too.
             val x = point.x + state.options.margin.toInt() * scale - horizontal.value
-            when { x < constraints.maxWidth * 0.18f -> model.turn(-1);
+            when { state.selection != null -> model.select(null); x < constraints.maxWidth * 0.18f -> model.turn(-1);
                 x > constraints.maxWidth * 0.82f -> model.turn(1); else -> currentToggle() }
         }
-        Box(Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal, enabled = zoom > 1.01f)) {
+        Box(Modifier.fillMaxSize().then(gestures)) {
+          Box(Modifier.fillMaxSize().verticalScroll(vertical, enabled = dragging == null).horizontalScroll(horizontal, enabled = zoom > 1.01f && dragging == null)) {
             Column(Modifier.requiredWidth(paperWidth).heightIn(min = (720f * 1.414f * scale / density).dp)
                 .background(paper).pointerInput(scale) { detectTapGestures { point ->
-                    when { point.x - horizontal.value < viewportWidth * 0.18f -> model.turn(-1);
+                    when { state.selection != null -> model.select(null); point.x - horizontal.value < viewportWidth * 0.18f -> model.turn(-1);
                         point.x - horizontal.value > viewportWidth * 0.82f -> model.turn(1); else -> currentToggle() }
                 } }
                 .padding(horizontal = (state.options.margin.toInt() * scale / density).dp, vertical = (42f * scale / density).dp)) {
-                measured.forEach { row -> key(row.section, row.row.index) { PaperRow(row, scale, text, accent, model::image, model::follow, tap) } }
+                measured.forEach { row -> key(row.section, row.row.index) { PaperRow(row, scale, text, accent, model::image, model::follow, tap,
+                    selection = state.selection, marks = state.marks.filter { it.section == row.section && it.row == row.row.index }, editMark = editMark,
+                    extend = { model.extend(it, false) }) } }
             }
+          }
+          SelectionHandle(handles.first, true)
+          SelectionHandle(handles.second, false)
         }
     }
 }

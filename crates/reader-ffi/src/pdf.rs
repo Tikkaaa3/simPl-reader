@@ -62,7 +62,7 @@ pub struct PdfPageText {
 
 #[derive(uniffi::Object)]
 pub struct PdfDocument {
-    document: Arc<reader_pdf::Document>,
+    pub(crate) document: Arc<reader_pdf::Document>,
 }
 
 /// Call on a background thread. Opening hashes the file and reads dimensions,
@@ -198,7 +198,7 @@ impl PdfDocument {
 }
 
 impl PdfDocument {
-    fn page_index(&self, page: u32) -> Result<u32, CoreError> {
+    pub(crate) fn page_index(&self, page: u32) -> Result<u32, CoreError> {
         if page == 0 || page as usize > self.document.pages.len() {
             return Err(format!("PDF page {page} is out of range").into());
         }

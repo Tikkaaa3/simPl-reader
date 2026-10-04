@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -55,6 +56,25 @@ internal fun byteIndex(text: String, byte: UInt): Int {
         index += Character.charCount(point)
     }
     return index
+}
+
+internal fun sourceByte(text: String, offset: Int): UInt {
+    val iterator = android.icu.text.BreakIterator.getCharacterInstance(java.util.Locale.ROOT)
+    iterator.setText(text)
+    val at = offset.coerceIn(0, text.length)
+    val boundary = if (iterator.isBoundary(at)) at else iterator.preceding(at).coerceAtLeast(0)
+    return text.substring(0, boundary).toByteArray(Charsets.UTF_8).size.toUInt()
+}
+
+internal fun SourcePoint.compare(other: SourcePoint): Int = compareValuesBy(this, other, { it.section }, { it.row }, { it.byte })
+internal fun ReflowSelection.range(section: UInt, row: BookRow): IntRange? {
+    val (a, b) = if (from.compare(to) <= 0) from to to else to to from
+    val first = SourcePoint(section, row.index, 0u)
+    val last = SourcePoint(section, row.index, row.text.orEmpty().toByteArray(Charsets.UTF_8).size.toUInt())
+    if (a.compare(last) >= 0 || b.compare(first) <= 0) return null
+    val start = if (a.section == section && a.row == row.index) byteIndex(row.text.orEmpty(), a.byte) else 0
+    val end = if (b.section == section && b.row == row.index) byteIndex(row.text.orEmpty(), b.byte) else row.text.orEmpty().length
+    return start until end
 }
 
 internal fun cutLine(cut: ParagraphCut?, row: BookRow, lines: Int, fallback: Int): Int =
@@ -109,7 +129,8 @@ internal fun measureRows(section: UInt, rows: List<BookRow>, options: LayoutOpti
 @Composable
 internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, accent: Color,
     image: suspend (UInt, String) -> ReaderImage?, follow: (UInt, BookLink) -> Unit,
-    tap: (Offset) -> Unit, modifier: Modifier = Modifier) {
+    tap: (Offset) -> Unit, modifier: Modifier = Modifier, selection: ReflowSelection? = null,
+    marks: List<ReaderMark> = emptyList(), editMark: (ULong) -> Unit = {}, extend: (SourcePoint) -> Unit = {}) {
     val density = LocalDensity.current.density
     val row = measured.row
     val p = row.presentation
@@ -119,6 +140,10 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
     }.orEmpty()
     val tapHandler by rememberUpdatedState(tap)
     val followHandler by rememberUpdatedState(follow)
+    val selectionNow by rememberUpdatedState(selection)
+    val marksNow by rememberUpdatedState(marks)
+    val editNow by rememberUpdatedState(editMark)
+    val extendNow by rememberUpdatedState(extend)
     val links = row.semantics.links.filter { link ->
         val a = byteIndex(row.text.orEmpty(), link.startByte)
         val b = byteIndex(row.text.orEmpty(), link.endByte)
@@ -147,6 +172,8 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
             detectTapGestures { point ->
                 val source = Offset(point.x / scale - p.left, point.y / scale - measured.top + measured.textTop)
                 val offset = layout.getOffsetForPosition(source)
+                val mark = marksNow.lastOrNull { offset in byteIndex(row.text.orEmpty(), it.startByte) until byteIndex(row.text.orEmpty(), it.endByte) &&
+                    offset < row.text.orEmpty().length && layout.getBoundingBox(offset).contains(source) }
                 // TextLayoutResult returns the nearest caret, which may be
                 // either side of the hit glyph (including a link's end caret).
                 val link = links.firstOrNull { link ->
@@ -154,7 +181,9 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
                     val b = byteIndex(row.text.orEmpty(), link.endByte)
                     offset in a..b && listOf(offset, offset - 1).any { index -> index in a until b && layout.getBoundingBox(index).contains(source) }
                 }
-                if (link != null) followHandler(measured.section, link)
+                if (selectionNow != null) extendNow(SourcePoint(measured.section, row.index, sourceByte(row.text.orEmpty(), offset)))
+                else if (mark != null) editNow(mark.id)
+                else if (link != null) followHandler(measured.section, link)
                 else tapHandler(point)
             }
         }) {
@@ -165,11 +194,29 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
             }
             if (row.semantics.quoteDepth > 0u) drawLine(accent.copy(alpha = 0.45f), Offset(p.left - 8f, 0f), Offset(p.left - 8f, measured.height - measured.bottom), 2f)
             clipRect(0f, measured.top, width, measured.top + measured.textBottom - measured.textTop) {
+                translate(p.left, measured.top - measured.textTop) {
+                    coloredRanges(marks.map { (byteIndex(row.text.orEmpty(), it.startByte) until byteIndex(row.text.orEmpty(), it.endByte)) to it.color }).forEach { (range, shade) ->
+                        drawPath(layout.getPathForRange(range.first, range.last + 1), shade.tint())
+                    }
+                    selection?.range(measured.section, row)?.let { range -> drawPath(layout.getPathForRange(range.first, range.last + 1), Color(0x6657a8ef)) }
+                    marks.filter { it.note }.forEach { mark ->
+                        val start = byteIndex(row.text.orEmpty(), mark.startByte); val end = byteIndex(row.text.orEmpty(), mark.endByte)
+                        for (line in layout.getLineForOffset(start)..layout.getLineForOffset((end - 1).coerceAtLeast(start))) {
+                            val a = maxOf(start, layout.getLineStart(line)); val b = minOf(end, layout.getLineEnd(line))
+                            if (a < b) {
+                                val bounds = layout.getPathForRange(a, b).getBounds()
+                                drawLine(shadeForNote(mark.color), Offset(bounds.left, layout.getLineBottom(line) - 1), Offset(bounds.right, layout.getLineBottom(line) - 1), 1.5f)
+                            }
+                        }
+                    }
+                }
                 drawText(layout, topLeft = Offset(p.left, measured.top - measured.textTop))
             }
         }
     }
 }
+
+private fun shadeForNote(color: AnnotationColor) = color.tint().copy(alpha = .9f)
 
 private fun ReaderImage.asBitmap(): ImageBitmap {
     val pixels = IntArray(rgba.size / 4) { i ->

@@ -24,51 +24,7 @@ pub struct SelectionState {
     dragging: bool,
 }
 
-/// A normalized selection range using workload order and logical UTF-8 bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SelectionBounds {
-    /// Ordered workload index of the first endpoint item.
-    pub start_item: usize,
-    /// UTF-8 byte offset in the first endpoint item.
-    pub start_byte: usize,
-    /// Ordered workload index of the last endpoint item.
-    pub end_item: usize,
-    /// UTF-8 byte offset in the last endpoint item.
-    pub end_byte: usize,
-}
-
-impl SelectionBounds {
-    /// Selected logical byte range for one item, or `None` for unselected
-    /// text, collapsed ranges, images, and empty partial endpoints.
-    #[must_use]
-    pub fn range_for_item(self, item_index: usize, text: &str) -> Option<Range<usize>> {
-        if self.start_item == self.end_item && self.start_byte == self.end_byte {
-            return None;
-        }
-        if !(self.start_item..=self.end_item).contains(&item_index) {
-            return None;
-        }
-
-        let start = if item_index == self.start_item {
-            self.start_byte
-        } else {
-            0
-        };
-        let end = if item_index == self.end_item {
-            self.end_byte
-        } else {
-            text.len()
-        };
-        if start >= end
-            || end > text.len()
-            || !text.is_char_boundary(start)
-            || !text.is_char_boundary(end)
-        {
-            return None;
-        }
-        Some(start..end)
-    }
-}
+pub use reader_document::annotation_logic::SelectionBounds;
 
 impl SelectionState {
     /// Starts a fresh pointer selection at a native hit-test result.

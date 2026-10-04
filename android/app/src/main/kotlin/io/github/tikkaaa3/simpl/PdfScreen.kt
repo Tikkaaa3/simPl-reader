@@ -98,6 +98,9 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
     LaunchedEffect(book.path) { model.open(book) }
     var toolbar by rememberSaveable { mutableStateOf(true) }
     var jump by rememberSaveable { mutableStateOf(false) }
+    var annotations by rememberSaveable { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
+    LaunchedEffect(state.selection) { if (state.selection != null) toolbar = true }
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(state.selection, state.location.page) { copied = false }
     val activity = requireNotNull(LocalActivity.current)
@@ -117,30 +120,28 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
     }
     BackHandler {
-        when { state.selection != null -> model.select(null); jump -> jump = false;
+        when { annotations -> annotations = false; state.selection != null -> model.select(null); jump -> jump = false;
             !toolbar -> toolbar = true; else -> { model.stop(); back() } }
     }
     Column(Modifier.fillMaxSize().testTag("reader")) {
         if (toolbar) TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { IconButton(onClick = { model.stop(); back() }) { Icon(AppIcons.Back, "Back to library") } },
-            actions = { IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } })
+            actions = {
+                IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.location.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
+                IconButton(onClick = { annotations = true }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
+                IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } })
         if (toolbar && !state.loading && state.info != null) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("PDF", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
             TextButton(onClick = model::fit) { Text("Fit width") }
             TextButton(onClick = model::selectAll, enabled = !state.text?.glyphs.isNullOrEmpty()) { Text("Select page text") }
         }
-        if (state.selection != null) Row(Modifier.fillMaxWidth().testTag("pdfSelection"), verticalAlignment = Alignment.CenterVertically) {
-            Text("Text selected", Modifier.weight(1f).padding(start = 16.dp), style = MaterialTheme.typography.labelLarge)
-            TextButton(onClick = { model.copy { text ->
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("PDF text", text))
-                copied = true
-            } }, enabled = state.info?.canCopy == true) { Text(if (copied) "Copied" else "Copy") }
-            TextButton(onClick = { model.select(null); copied = false }) { Text("Clear") }
-        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
-            else if (state.info != null) PdfViewport(state, model) { toolbar = !toolbar; copied = false }
+            else if (state.info != null) PdfViewport(state, model, { toolbar = !toolbar; copied = false }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
             else Column(Modifier.padding(24.dp)) { Text(state.error ?: "Could not open this PDF"); TextButton(onClick = back) { Text("Return to library") } }
+            state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
+                key(selection) { SelectionMenu("pdfSelection", model::copy, model::highlight) { model.select(null) } }
+            } }
             if (state.rendering) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("pdfRendering"))
         }
         if (toolbar && state.info != null) Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp),
@@ -150,6 +151,8 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
             TextButton(onClick = { model.turn(1) }, enabled = state.location.page < state.info!!.pages.size.toUInt()) { Text("Next") }
         }
     }
+    if (annotations) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove)
+    editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (jump) {
         var value by rememberSaveable { mutableStateOf("") }
         AlertDialog(onDismissRequest = { jump = false }, title = { Text("Go to page") },
@@ -162,7 +165,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
 }
 
 @Composable
-private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit) {
+private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit, editMark: (ULong) -> Unit) {
     val density = LocalDensity.current.density
     val vertical = rememberScrollState(); val horizontal = rememberScrollState()
     val location = state.location
@@ -170,6 +173,8 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
     val toggleNow by rememberUpdatedState(toggle)
     val locationNow by rememberUpdatedState(location)
     val selectionNow by rememberUpdatedState(state.selection)
+    val editNow by rememberUpdatedState(editMark)
+    val marksNow by rememberUpdatedState(state.marks)
     val geometry = remember(state.text) { state.text?.let(::PdfTextGeometry) }
     val geometryNow by rememberUpdatedState(geometry)
     val background = MaterialTheme.colorScheme.surfaceContainer
@@ -186,6 +191,23 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
         val zoom = if (location.fitWidth) 1f else location.zoom / fitScale
         val width = constraints.maxWidth * zoom
         val height = width * pageSize.height / pageSize.width
+        fun hit(point: Offset): Int? = geometry?.closest(Offset(point.x + horizontal.value, point.y + vertical.value), width, height)
+        fun handle(point: PdfSelectionPoint?, end: Boolean): Offset? {
+            if (point?.page != location.page) return null
+            val r = state.text?.glyphs?.getOrNull(point.index.toInt())?.bounds ?: return null
+            return Offset((if (end) r.right else r.left) * width - horizontal.value, r.bottom * height - vertical.value)
+                .takeIf { it.y in 0f..constraints.maxHeight.toFloat() }
+        }
+        val handles = handle(state.selection?.from, false) to handle(state.selection?.to, true)
+        fun lift(point: PdfSelectionPoint?): Float = if (point?.page != location.page) 0f else
+            state.text?.glyphs?.getOrNull(point.index.toInt())?.bounds?.let { (it.bottom - it.top) * height / 2 } ?: 0f
+        var dragging by remember { mutableStateOf<Offset?>(null) }
+        var draggingStart by remember { mutableStateOf(false) }
+        val gestures = selectionGesture(handles, { point ->
+            val index = geometry?.closest(Offset(point.x + horizontal.value, point.y + vertical.value), width, height, 24 * density)
+            if (index != null) { model.select(geometry.word(index)); true } else false
+        }, { point, start -> draggingStart = start; hit(point)?.let { model.extend(it, start) } }, { dragging = it }, lift(state.selection?.from) to lift(state.selection?.to))
+        SelectionEdgeDrag(dragging, constraints.maxHeight.toFloat(), { vertical.scrollBy(it) }, { model.selectionTurn(it, draggingStart) }) { point -> hit(point)?.let { model.extend(it, draggingStart) } }
         val zoomNow by rememberUpdatedState(zoom)
         LaunchedEffect(location.page, width) { model.render(width) }
         var ready by remember(state.revision) { mutableStateOf(false) }
@@ -202,7 +224,8 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                     horizontal = if (horizontal.maxValue > 0) (x.toFloat() / horizontal.maxValue).coerceIn(0f, 1f) else 0f))
             }
         }
-        Box(Modifier.fillMaxSize().semantics { stateDescription = "Zoom $zoom; page ${location.page}" }
+        Box(Modifier.fillMaxSize().then(gestures)) {
+          Box(Modifier.fillMaxSize().semantics { stateDescription = "Zoom $zoom; page ${location.page}" }
             .pointerInput(fitScale) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -216,7 +239,7 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                         }
                     } while (event.changes.any { it.pressed })
                 }
-            }.verticalScroll(vertical).horizontalScroll(horizontal, enabled = !location.fitWidth)) {
+            }.verticalScroll(vertical, enabled = dragging == null).horizontalScroll(horizontal, enabled = !location.fitWidth && dragging == null)) {
             val image = remember(state.raster) { state.raster?.asImageBitmap() }
             Canvas(Modifier.requiredWidth((width / density).dp).requiredHeight((height / density).dp).background(Color.White).testTag("pdfPage")
                 .semantics {
@@ -226,45 +249,44 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                     if (!state.text?.glyphs.isNullOrEmpty()) customActions = listOf(CustomAccessibilityAction("Select page text") { model.selectAll(); true })
                 }
                 .pointerInput(location.page) {
-                    // One recognizer owns taps and selection, so lifting a long
-                    // press cannot also toggle the controls or turn a page.
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val held = awaitLongPressOrCancellation(down.id)
-                        if (held != null) {
-                            val geometry = geometryNow
-                            val index = geometry?.closest(held.position, size.width.toFloat(), size.height.toFloat(), 24 * density)
-                            if (index != null) {
-                                val word = geometry.word(index); model.select(word)
-                                held.consume()
-                                drag(held.id) { change ->
-                                    geometry.closest(change.position, size.width.toFloat(), size.height.toFloat())?.let { focus ->
-                                        model.select(min(word.first, focus)..max(word.first, focus))
-                                    }
-                                    change.consume()
-                                }
-                                currentEvent.changes.forEach { it.consume() }
-                            }
-                        } else {
-                            val up = currentEvent.changes.firstOrNull { it.id == down.id }
-                            if (up != null && !up.pressed && !up.isConsumed && (up.position - down.position).getDistance() <= viewConfiguration.touchSlop &&
-                                up.uptimeMillis - down.uptimeMillis < viewConfiguration.longPressTimeoutMillis) {
-                                if (selectionNow != null) model.select(null)
-                                else if (locationNow.fitWidth && up.position.x < size.width * .18f) model.turn(-1)
-                                else if (locationNow.fitWidth && up.position.x > size.width * .82f) model.turn(1)
-                                else toggleNow()
-                                up.consume()
-                            }
-                        }
+                    detectTapGestures { point ->
+                        val index = geometryNow?.closest(point, size.width.toFloat(), size.height.toFloat(), 12 * density)
+                        val mark = index?.let { glyph -> marksNow.lastOrNull { glyph in (it.range(locationNow.page, Int.MAX_VALUE) ?: IntRange.EMPTY) } }
+                        if (selectionNow != null && index != null) model.extend(index, false)
+                        else if (selectionNow != null) model.select(null)
+                        else if (mark != null) editNow(mark.id)
+                        else if (locationNow.fitWidth && point.x < size.width * .18f) model.turn(-1)
+                        else if (locationNow.fitWidth && point.x > size.width * .82f) model.turn(1)
+                        else toggleNow()
                     }
                 }) {
                 image?.let { drawImage(it, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())) }
-                state.selection?.let { range -> range.forEach { index -> state.text?.glyphs?.get(index)?.bounds?.let { r ->
-                    drawRect(Color(0x6657a8ef), Offset(r.left * size.width, r.top * size.height),
-                        Size((r.right - r.left) * size.width, (r.bottom - r.top) * size.height))
-                } } }
+                fun paint(range: IntRange, color: Color, underline: Boolean = false) {
+                    range.forEach { index -> state.text?.glyphs?.getOrNull(index)?.bounds?.let { r ->
+                        if (underline) drawLine(color.copy(alpha = .9f), Offset(r.left * size.width, r.bottom * size.height), Offset(r.right * size.width, r.bottom * size.height), 1.5f * density)
+                        else drawRect(color, Offset(r.left * size.width, r.top * size.height), Size((r.right - r.left) * size.width, (r.bottom - r.top) * size.height))
+                    } }
+                }
+                val count = state.text?.glyphs?.size ?: 0
+                coloredRanges(state.marks.mapNotNull { mark -> mark.range(location.page, count)?.let { it to mark.color } }).forEach { (range, color) -> paint(range, color.tint()) }
+                state.marks.filter { it.note }.forEach { mark -> mark.range(location.page, count)?.let { paint(it, mark.color.tint(), true) } }
+                state.selection?.range(location.page, count)?.let { paint(it, Color(0x6657a8ef)) }
             }
+        }
+          SelectionHandle(handles.first, true)
+          SelectionHandle(handles.second, false)
         }
         if (state.raster == null && state.error == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
     }
 }
+
+internal fun PdfSelectionPoint.compare(other: PdfSelectionPoint): Int = compareValuesBy(this, other, { it.page }, { it.index })
+internal fun PdfSelection.range(page: UInt, count: Int): IntRange? {
+    if (count <= 0) return null
+    val (a, b) = if (from.compare(to) <= 0) from to to else to to from
+    if (page !in a.page..b.page) return null
+    val start = if (page == a.page) a.index.toLong().coerceAtMost(count.toLong()).toInt() else 0
+    val end = if (page == b.page) b.index.toLong().coerceAtMost((count - 1).toLong()).toInt() else count - 1
+    return (start..end).takeUnless { it.isEmpty() }
+}
+internal fun PdfMark.range(page: UInt, count: Int): IntRange? = PdfSelection(from, to).range(page, count)

@@ -2329,6 +2329,7 @@ dependencies = [
  "reader-pdf",
  "reader-profile",
  "serde_json",
+ "unicode-segmentation",
  "uniffi",
 ]
 
