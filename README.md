@@ -280,7 +280,8 @@ it does not embed a browser or WebView.
 
 | Component | Responsibility |
 | --- | --- |
-| [`iced-shell`](crates/iced-shell) | Library, reader, native window, selection and page layout |
+| [`iced-shell`](crates/iced-shell) | Library, reader interface, native window and selection |
+| [`reader-layout`](crates/reader-layout) | Window-free book layout, canonical pages, reading fonts/themes and adaptation shared with Android |
 | [`reader-document`](crates/reader-document) | HTML/EPUB parsing, text and Markdown conversion, managed imports and reading state |
 | [`reader-pdf`](crates/reader-pdf) | PDFium worker, PDF text/graphics and Book conversion |
 | [`reader-workload`](crates/reader-workload) | Authored diagnostic workloads and assets |

@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
+mod layout;
+pub use layout::*;
+
 uniffi::setup_scaffolding!();
 
 /// Identifies the native core the app loaded.
@@ -34,7 +37,7 @@ pub fn build_info() -> BuildInfo {
 }
 
 /// A core operation failed; `reason` is shown to the reader as is.
-#[derive(Debug, PartialEq, Eq, uniffi::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Error)]
 pub enum CoreError {
     Failed { reason: String },
 }

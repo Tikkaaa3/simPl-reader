@@ -17,11 +17,12 @@
 
 ## Technical core: page number parity
 
-On the desktop the canonical page map (`iced-shell/src/book_map.rs`) is built like this:
+The shared canonical page map (`reader-layout/src/atlas.rs`, re-exported by
+`iced-shell/src/book_map.rs`) is built like this:
 
 1. Every block (`Item`) is measured with the default theme and `DEFAULT_FONT_SIZE`
    on a 720 px paper (`TEXT` = 624 px) using the **Iced widget layout**
-   (`app.rs::measure_book_with` → `render_item` → cosmic-text).
+   (`reader-layout::measure::measure_book_with` → item layout → cosmic-text).
 2. `book_pages::reflow` cuts pages from these heights; long paragraphs are split
    on the line grid.
 3. When the theme/font/margins change, `adapt_section_with` moves every canonical
@@ -35,9 +36,10 @@ Rust provides `(row range, in-paragraph cut row)` for every page, and Compose
 applies the cut at the matching line in its own layout — the same logic as the
 desktop theme adaptation.
 
-**Plan:** the measurement/pagination code moves, behavior-preserving, out of
-`iced-shell` into a window-free `reader-layout` crate (Iced's `core`/`widget`
-layout + the cosmic-text patch; no winit). Desktop and Android use the same crate.
+**Implemented in M2:** the measurement/pagination code lives in the window-free
+`reader-layout` crate (Iced's `core`/`widget` layout + the cosmic-text patch; no
+winit). Desktop and Android use the same crate. Its paragraph layout rule is also
+used by the desktop's selectable widget.
 
 **Acceptance criterion:** the atlas JSON (`sections`, `pages`, `total`) of the
 fixture books is **byte-for-byte identical** on Windows before and after the move,
@@ -166,21 +168,50 @@ Notes:
   `libpdfium.so` ≈ 6.5 MB per ABI. M7 will consider an `arm64-v8a`-only APK (~14 MB)
   and size settings (e.g. `opt-level`, unused `image` formats).
 
-### M2 — `reader-layout`: page number parity (critical risk)
+### M2 — `reader-layout`: page number parity ✅ (2026-10-04)
 
-- [ ] Golden data: the atlas JSON of the fixture books (book-structure, pdf-book,
+- [x] Golden data: the atlas JSON of the fixture books (book-structure, pdf-book,
       reader-workload, EPUB with and without source pages, HTML, TXT, MD) is
       recorded **before the move**.
-- [ ] Spike (1–3 days): does the Iced layout (`iced_core`/`iced_widget` + tiny-skia
-      renderer, without winit) compile for `aarch64-linux-android` and measure? → plan A or B.
-- [ ] Move: `Book`, the `render_item` measurement path, `book_style`, `themes`,
+- [x] Spike: the Iced layout (`iced_core`/`iced_widget` + tiny-skia renderer,
+      without winit) compiles for `aarch64-linux-android` and measures on the
+      x86_64 emulator. **Plan A.**
+- [x] Move: `Book`, the `render_item` measurement path, `book_style`, `themes`,
       `book_pages`, `book_map` (building, cache, `adapt_section_with`) → `reader-layout`.
       `iced-shell` re-exports them; desktop code behaves the same.
-- [ ] Fonts are loaded from a single source in `reader-layout` (the same `include_bytes!` set as the desktop).
-- [ ] Golden tests: on Windows before = after; on Android (on-device test) = Windows.
-- [ ] FFI: `open_book`, `atlas(fingerprint)`, `page(n) → { rows, cuts, label }`,
+- [x] Fonts are loaded from a single source in `reader-layout` (the same `include_bytes!` set as the desktop).
+- [x] Golden tests: on Windows before = after; on Android (on-device test) = Windows.
+- [x] FFI: `open_book`, `atlas(fingerprint)`, `page(n) → { rows, cuts, label }`,
       `adapt(theme, options)`; cancellable background work.
-- [ ] **Result:** the same book has the same total page count and the same page starts on Windows and Android.
+- [x] **Result:** the same portable fixture has the same total page count and
+      page starts on Windows and Android.
+
+Validation and API details:
+- Eight pre-move Windows golden JSON files, including canonical heights/cuts and
+  six theme/font/size/margin/spacing adaptations, remain byte-for-byte identical.
+  A separate test compares the shared measurements to real desktop selectable
+  widgets for all eight books and layouts.
+- Android `scripts\android.ps1 test`: six portable goldens match Windows
+  byte-for-byte, including PDF Book. The two structured fixtures use system
+  monospace/script fallback and are reported separately. Fixture ZIP creator
+  metadata is fixed to Windows so source fingerprints are identical too.
+- `reader-layout` unit tests (11), parity tests (2), cache test (1) and
+  `reader-ffi` tests (6) pass on the emulator. `CoreSmokeTest` (7) verifies the
+  packaged Kotlin bindings, long-paragraph cuts, atlas lookup, theme adaptation,
+  cache root and PDF Book source pages. Both Android ABIs build in Gradle.
+- Windows `scripts\dev.ps1 check` is green. Thirty `book_preview` PNGs (HTML,
+  EPUB, all themes, light/dark and responsive sizes) are byte-for-byte identical
+  to the M1 commit `14f048c`. No dependency versions, atlas schema, PDF conversion
+  version or Windows release workflow changed.
+- `open_book` returns an `OpenBookTask`; `adapt` returns an `AdaptBookTask`.
+  Both expose `status`, `result` and `cancel`, and closing a pending handle also
+  requests cancellation. PDF conversion finishes before cancellation is checked.
+  Keep `OpenBook` alive for `atlas(fingerprint)`. FFI page numbers are one-based;
+  a source page spanning chapters returns every section fragment. See
+  [`reader-layout/README.md`](crates/reader-layout/README.md).
+- The page-map cache keeps `v1-<fingerprint>.json`; Windows paths are unchanged,
+  Android uses `cacheDir/simPl/page-maps`. Tests explicitly disable persistence
+  or use isolated roots.
 
 ### M3 — Library
 

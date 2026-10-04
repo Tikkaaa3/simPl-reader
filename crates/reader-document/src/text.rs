@@ -216,6 +216,20 @@ fn markdown_body(text: &str) -> (String, Option<String>) {
     (body, first_heading.filter(|title| !title.is_empty()))
 }
 
+/// The HTML page the managed library stores for an imported text or Markdown file
+/// (`source` names the original `.txt`, `.text`, `.md` or `.markdown` file).
+pub fn text_page(source: &Path, bytes: &[u8]) -> Result<String, String> {
+    let ext = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !is_text_extension(&ext) {
+        return Err("Not a text or Markdown file".into());
+    }
+    to_html(source, &ext, bytes)
+}
+
 /// The generated page for `source` (a `.txt`, `.text`, `.md` or `.markdown` file's bytes).
 pub(crate) fn to_html(source: &Path, ext: &str, bytes: &[u8]) -> Result<String, String> {
     let text = clean(&decode(bytes)?);

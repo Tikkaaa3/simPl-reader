@@ -9,6 +9,7 @@ its build, scripts and release workflow do not use anything in this folder.
 | --- | --- |
 | [`crates/reader-ffi`](../crates/reader-ffi) | UniFFI surface of the Rust core; the only Rust API the app sees |
 | [`crates/reader-profile`](../crates/reader-profile) | Data/cache roots: `LOCALAPPDATA` on the desktop, `filesDir`/`cacheDir` on Android |
+| [`crates/reader-layout`](../crates/reader-layout) | Window-free canonical atlas, page cuts, typography and theme adaptation shared with Windows |
 | [`crates/uniffi-bindgen`](../crates/uniffi-bindgen) | Workspace-pinned binding generator (same version as the `uniffi` runtime) |
 | `build-logic/` | Gradle plugin `simpl.rust-android`: cargo-ndk build and Kotlin binding generation per variant |
 | `app/` | Compose application (`io.github.tikkaaa3.simpl`) |
@@ -56,12 +57,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android.ps1 test
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\android.ps1 pdfium
 ```
 
-`test` runs the `reader-profile`, `reader-document`, `reader-pdf` and `reader-ffi`
+`test` runs the `reader-profile`, `reader-document`, `reader-pdf`, `reader-layout` and `reader-ffi`
 tests through `cargo ndk test` with `scripts/android-test-runner.ps1` as Cargo's
 runner: it pushes each test executable to `/data/local/tmp/simpl-test` (beside
 `libpdfium.so`) and runs it there with `TMPDIR` in that folder. Tests that read
 repository files via `CARGO_MANIFEST_DIR` are skipped on the device; the list is in
 `scripts/android.ps1`. cargo-ndk's own runner does not handle Windows paths.
+The layout parity test embeds the pre-move Windows atlas JSON and requires
+identical canonical pages and theme adaptations for the portable fixtures.
+`CoreSmokeTest` also exercises the generated layout object bindings, page cuts,
+adaptation and PDF Book physical pages inside the app process.
 
 Start the emulator with `emulator -avd simpl-api36` (create one with
 `avdmanager create avd -n simpl-api36 -k "system-images;android-36;google_apis;x86_64" -d pixel_8`).

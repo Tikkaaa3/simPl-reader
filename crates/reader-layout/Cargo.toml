@@ -1,0 +1,20 @@
+# Canonical book measurement and pagination, shared by the desktop and Android.
+[package]
+name = "reader-layout"
+description = "Window-free book measurement, canonical page atlas and reading themes."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+iced_core = { version = "=0.14.0", features = ["advanced"] }
+iced_widget = { version = "=0.14.2", default-features = false, features = ["advanced", "image"] }
+iced_renderer = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "image"] }
+reader-document = { path = "../reader-document" }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+reader-pdf = { path = "../reader-pdf" }
+reader-profile = { path = "../reader-profile" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"

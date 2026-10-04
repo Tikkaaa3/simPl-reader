@@ -408,18 +408,7 @@ pub fn selectable_text<Message: 'static>(
     })
 }
 
-/// Swaps the default reading face (Literata) for another bundled family, keeping
-/// weight and style; monospace and other faces are left alone.
-pub fn with_reading_family(font: iced::Font, family: &'static str) -> iced::Font {
-    if font.family == iced::font::Family::Name("Literata") {
-        iced::Font {
-            family: iced::font::Family::Name(family),
-            ..font
-        }
-    } else {
-        font
-    }
-}
+pub use reader_layout::paragraph::with_reading_family;
 
 #[derive(Clone, Debug, PartialEq)]
 struct SpanKey {
@@ -634,17 +623,11 @@ fn native_spans(
     font_size: f32,
     line_height: f32,
 ) -> Vec<Span<'static, (), iced::Font>> {
-    spans
-        .iter()
-        .map(|key| {
-            Span::new(key.text.clone())
-                .font(key.font)
-                .size(font_size)
-                .line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(
-                    line_height,
-                )))
-        })
-        .collect()
+    reader_layout::paragraph::spans(
+        spans.iter().map(|key| (key.text.as_str(), key.font)),
+        font_size,
+        line_height,
+    )
 }
 
 struct ParagraphState {
@@ -708,14 +691,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
 {
     fn size(&self) -> iced::Size<iced::Length> {
         iced::Size::new(
-            if matches!(
-                self.alignment,
-                iced::advanced::text::Alignment::Center | iced::advanced::text::Alignment::Right
-            ) {
-                iced::Length::Shrink
-            } else {
-                iced::Length::Fill
-            },
+            reader_layout::paragraph::width(self.alignment),
             iced::Length::Shrink,
         )
     }
@@ -752,45 +728,28 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
             state.item_id.clone_from(&self.item_id);
             state.link_press = None;
         }
-        let bounds = limits.max();
         let spans = native_spans(&self.spans, self.font_size, self.line_height);
-        let text = iced::advanced::Text {
-            content: spans.as_slice(),
-            bounds,
-            size: iced::Pixels(self.font_size),
-            line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(self.line_height)),
-            font: iced::Font::with_name("Noto Sans"),
-            align_x: iced::advanced::text::Alignment::Default,
-            align_y: iced::alignment::Vertical::Top,
-            shaping: iced::advanced::text::Shaping::Advanced,
-            wrapping: iced::advanced::text::Wrapping::WordOrGlyph,
-        };
-
-        let limits = layout::Limits::new(iced::Size::ZERO, bounds);
-        layout::sized(&limits, self.size().width, iced::Length::Shrink, |_| {
+        // The shared rule keeps the canonical page atlas measuring this exact layout.
+        reader_layout::paragraph::node(limits, self.alignment, |bounds| {
+            let text = |content| {
+                reader_layout::paragraph::text(content, bounds, self.font_size, self.line_height)
+            };
             if state.spans != self.spans {
-                state.paragraph = NativeParagraph::with_spans(text);
+                state.paragraph = NativeParagraph::with_spans(text(spans.as_slice()));
                 state.spans.clone_from(&self.spans);
             } else {
-                match state.paragraph.compare(iced::advanced::Text {
-                    content: (),
+                match state.paragraph.compare(reader_layout::paragraph::text(
+                    (),
                     bounds,
-                    size: iced::Pixels(self.font_size),
-                    line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(
-                        self.line_height,
-                    )),
-                    font: iced::Font::with_name("Noto Sans"),
-                    align_x: iced::advanced::text::Alignment::Default,
-                    align_y: iced::alignment::Vertical::Top,
-                    shaping: iced::advanced::text::Shaping::Advanced,
-                    wrapping: iced::advanced::text::Wrapping::WordOrGlyph,
-                }) {
+                    self.font_size,
+                    self.line_height,
+                )) {
                     iced::advanced::text::Difference::None => {}
                     iced::advanced::text::Difference::Bounds => {
                         state.paragraph.resize(bounds);
                     }
                     iced::advanced::text::Difference::Shape => {
-                        state.paragraph = NativeParagraph::with_spans(text);
+                        state.paragraph = NativeParagraph::with_spans(text(spans.as_slice()));
                     }
                 }
             }
@@ -1062,9 +1021,9 @@ mod tests {
             .unwrap();
         let chapter = document.load_chapter(index).unwrap();
         for bytes in [
-            include_bytes!("../../../assets/fonts/Literata-Regular.ttf").as_slice(),
-            include_bytes!("../../../assets/fonts/Literata-Bold.ttf").as_slice(),
-            include_bytes!("../../../assets/fonts/Literata-Italic.ttf").as_slice(),
+            reader_layout::fonts::LITERATA_REGULAR,
+            reader_layout::fonts::LITERATA_BOLD,
+            reader_layout::fonts::LITERATA_ITALIC,
         ] {
             iced::advanced::graphics::text::font_system()
                 .write()

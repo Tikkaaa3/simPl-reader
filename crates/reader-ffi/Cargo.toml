@@ -16,3 +16,5 @@ uniffi = "=0.32.2"
 reader-document = { path = "../reader-document" }
 reader-pdf = { path = "../reader-pdf" }
 reader-profile = { path = "../reader-profile" }
+reader-layout = { path = "../reader-layout" }
+serde_json = "=1.0.151"

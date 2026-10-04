@@ -4,9 +4,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.tikkaaa3.simpl.core.CoreException
 import io.github.tikkaaa3.simpl.core.DocumentFormat
+import io.github.tikkaaa3.simpl.core.LayoutOptions
+import io.github.tikkaaa3.simpl.core.LayoutStatus
+import io.github.tikkaaa3.simpl.core.ReadingFont
+import io.github.tikkaaa3.simpl.core.atlas
 import io.github.tikkaaa3.simpl.core.buildInfo
 import io.github.tikkaaa3.simpl.core.importDocument
 import io.github.tikkaaa3.simpl.core.inspectDocument
+import io.github.tikkaaa3.simpl.core.openBook
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -71,6 +76,60 @@ class CoreSmokeTest {
         } catch (error: CoreException.Failed) {
             assertTrue(error.reason, error.reason.isNotBlank())
         }
+    }
+
+    @Test
+    fun pageLayoutAndAdaptationThroughKotlinBindings() {
+        val file = File(scratch, "long-chapter.html").apply {
+            writeText("<h1>Harbour</h1><p>" + "The boats came in before the evening lights. ".repeat(300) + "</p>")
+        }
+        openBook(file.absolutePath).use { task ->
+            awaitLayout(task::status)
+            requireNotNull(task.result()).use { book ->
+                val canonical = book.atlas()
+                assertTrue(canonical.total > 1u)
+                assertEquals(canonical.total, atlas(book.fingerprint()).total)
+                val first = book.page(1u).first()
+                assertEquals("Harbour", first.rows.first().text)
+                assertTrue(canonical.sections.flatMap { it.pages }.any { it.endCut != null })
+                assertTrue(File(context.cacheDir, "simPl/page-maps/v1-${book.fingerprint()}.json").isFile)
+                book.adapt("soft", LayoutOptions(ReadingFont.FIRA_SANS, 26u, 64u, 180u)).use { adaptation ->
+                    awaitLayout(adaptation::status)
+                    requireNotNull(adaptation.result()).use { adapted ->
+                        val layout = adapted.atlas()
+                        assertEquals(canonical.total, layout.total)
+                        assertEquals(
+                            canonical.sections.flatMap { it.pages }.map { it.number to it.label },
+                            layout.sections.flatMap { it.pages }.map { it.number to it.label },
+                        )
+                        assertEquals(first.rows.first().id, adapted.page(1u).first().rows.first().id)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun pdfBookAtlasPreservesPhysicalPages() {
+        val file = File(scratch, "book-tides.pdf").apply { writeBytes(samplePdf(listOf("High tide", "Low tide"))) }
+        openBook(file.absolutePath).use { task ->
+            awaitLayout(task::status)
+            requireNotNull(task.result()).use { book ->
+                val atlas = book.atlas()
+                assertEquals(2u, atlas.total)
+                assertTrue(atlas.sourcePages)
+                assertEquals(2u, book.page(2u).first().layout.number)
+            }
+        }
+    }
+
+    private fun awaitLayout(status: () -> LayoutStatus) {
+        val deadline = android.os.SystemClock.uptimeMillis() + 30_000
+        while (status() == LayoutStatus.RUNNING) {
+            assertTrue("layout worker timed out", android.os.SystemClock.uptimeMillis() < deadline)
+            Thread.sleep(10)
+        }
+        assertEquals(LayoutStatus.COMPLETE, status())
     }
 
     private fun sha256(file: File): String =

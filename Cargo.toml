@@ -4,6 +4,7 @@ resolver = "3"
 default-members = ["crates/iced-shell"]
 members = [
     "crates/reader-profile",
+    "crates/reader-layout",
     "crates/reader-document",
     "crates/reader-pdf",
     "crates/reader-workload",

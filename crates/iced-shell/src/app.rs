@@ -1,9 +1,9 @@
 //! The normal, fixture-independent local HTML, PDF and EPUB reader.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -38,6 +38,9 @@ mod reading_ui;
 pub(crate) mod word_translation;
 
 #[cfg(test)]
+#[path = "golden_atlas.rs"]
+mod golden_atlas;
+#[cfg(test)]
 #[path = "release_audit.rs"]
 mod release_audit;
 
@@ -47,47 +50,12 @@ const CONTENT_ROW_HEIGHT: f32 = 34.0;
 const RECENT_ROW_HEIGHT: f32 = 52.0;
 const RECENT_ROW_SPACING: f32 = 8.0;
 
-#[derive(Debug)]
-struct DisplayImage {
-    handle: image::Handle,
-    width: u32,
-    height: u32,
-}
-
+#[cfg(test)]
+use reader_layout::book::EpubChapter;
+use reader_layout::book::{Book, DisplayImage, display_book, load_epub_chapter};
+#[cfg(test)]
+use std::sync::OnceLock;
 type PdfBookRaster = (u64, u32, Result<HashMap<String, DisplayImage>, String>);
-
-#[derive(Debug)]
-struct EpubChapter {
-    document: Arc<reader_document::epub::Epub>,
-    index: usize,
-}
-
-#[derive(Debug)]
-struct PdfBook {
-    document: Arc<reader_pdf::Document>,
-    conversion: reader_pdf::book::Conversion,
-    original_position: PdfReadingPosition,
-    illustration_pages: HashSet<u32>,
-}
-
-#[derive(Debug)]
-struct Book {
-    path: PathBuf,
-    title: String,
-    author: Option<String>,
-    cover: bool,
-    fingerprint: String,
-    items: Vec<Item>,
-    images: HashMap<String, DisplayImage>,
-    structure: HashMap<String, reader_document::BlockSemantics>,
-    anchors: HashMap<String, String>,
-    page_breaks: Vec<(String, String)>,
-    warnings: Vec<String>,
-    restored: Option<ReadingPosition>,
-    epub: Option<EpubChapter>,
-    pdf_source: Option<PdfBook>,
-    contents: OnceLock<Vec<reader_document::epub::TocEntry>>,
-}
 
 fn load_book(
     path: PathBuf,
@@ -130,58 +98,6 @@ fn load_book(
     let mut book = display_book(document, restored, None);
     book.cover = cover;
     Ok(book)
-}
-
-fn display_book(
-    document: reader_document::Document,
-    restored: Option<ReadingPosition>,
-    epub: Option<EpubChapter>,
-) -> Book {
-    let reader_document::Document {
-        path,
-        title,
-        author,
-        fingerprint,
-        items,
-        structure,
-        anchors,
-        page_breaks,
-        images,
-        warnings,
-    } = document;
-    let images = images
-        .into_iter()
-        .map(|(key, asset)| {
-            let image = DisplayImage {
-                handle: image::Handle::from_rgba(asset.width, asset.height, asset.rgba),
-                width: asset.width,
-                height: asset.height,
-            };
-            (key, image)
-        })
-        .collect();
-    Book {
-        path,
-        title: epub
-            .as_ref()
-            .map_or(title, |chapter| chapter.document.title.clone()),
-        author: epub
-            .as_ref()
-            .and_then(|chapter| chapter.document.author.clone())
-            .or(author),
-        cover: false,
-        fingerprint,
-        items,
-        structure,
-        anchors,
-        page_breaks,
-        images,
-        warnings,
-        restored,
-        epub,
-        pdf_source: None,
-        contents: OnceLock::new(),
-    }
 }
 
 fn load_epub(
@@ -255,23 +171,6 @@ fn load_epub(
     };
     book.warnings.extend(warnings);
     Ok(book)
-}
-
-fn load_epub_chapter(
-    document: Arc<reader_document::epub::Epub>,
-    index: usize,
-    restored: Option<ReadingPosition>,
-) -> Result<Book, String> {
-    let mut chapter = document.load_chapter(index)?;
-    chapter
-        .document
-        .warnings
-        .extend(document.warnings.iter().cloned());
-    Ok(display_book(
-        chapter.document,
-        restored,
-        Some(EpubChapter { document, index }),
-    ))
 }
 
 #[derive(Clone, Debug)]
@@ -692,108 +591,7 @@ async fn load_pdf_book(
                 font_size,
             })
     });
-    let structure: HashMap<_, _> = conversion
-        .blocks
-        .iter()
-        .filter_map(|block| {
-            let links: Vec<_> = block
-                .links
-                .iter()
-                .filter(|link| {
-                    link.start < link.end
-                        && link.end <= block.text.len()
-                        && block.text.is_char_boundary(link.start)
-                        && block.text.is_char_boundary(link.end)
-                })
-                .map(|link| reader_document::Link {
-                    start_byte: link.start,
-                    end_byte: link.end,
-                    href: link.href.clone(),
-                    kind: reader_document::LinkKind::Reference,
-                })
-                .collect();
-            (!links.is_empty()).then(|| {
-                (
-                    block.id.clone(),
-                    reader_document::BlockSemantics {
-                        links,
-                        ..Default::default()
-                    },
-                )
-            })
-        })
-        .collect();
-    let items = conversion
-        .blocks
-        .iter()
-        .map(|block| {
-            if conversion.illustrations.contains_key(&block.id) {
-                Item::Image {
-                    id: block.id.clone(),
-                    asset_path: block.id.clone(),
-                }
-            } else if block.heading {
-                Item::Heading {
-                    id: block.id.clone(),
-                    text: block.text.clone(),
-                    level: 2,
-                }
-            } else {
-                Item::Paragraph {
-                    id: block.id.clone(),
-                    text: block.text.clone(),
-                    base_direction: BaseDirection::Ltr,
-                    style_runs: block
-                        .styles
-                        .iter()
-                        .filter_map(|run| {
-                            let style = match (run.bold, run.italic) {
-                                (true, true) => reader_document::InlineStyle::BoldItalic,
-                                (true, false) => reader_document::InlineStyle::Bold,
-                                (false, true) => reader_document::InlineStyle::Italic,
-                                (false, false) => return None,
-                            };
-                            (run.start < run.end && run.end <= block.text.len()).then_some(
-                                reader_document::StyleRun {
-                                    start_byte: run.start,
-                                    end_byte: run.end,
-                                    style,
-                                },
-                            )
-                        })
-                        .collect(),
-                }
-            }
-        })
-        .collect();
-    let illustration_pages = conversion
-        .blocks
-        .iter()
-        .filter(|block| conversion.illustrations.contains_key(&block.id))
-        .filter_map(|block| block.sources.first().map(|source| source.page))
-        .collect();
-    Ok(Book {
-        path: document.path.clone(),
-        title: document.title.clone(),
-        author: document.author.clone(),
-        cover: false,
-        fingerprint: document.fingerprint.clone(),
-        items,
-        images: HashMap::new(),
-        structure,
-        anchors: HashMap::new(),
-        page_breaks: Vec::new(),
-        warnings,
-        restored,
-        epub: None,
-        contents: OnceLock::new(),
-        pdf_source: Some(PdfBook {
-            document,
-            conversion,
-            original_position,
-            illustration_pages,
-        }),
-    })
+    reader_layout::book::pdf_book(document, conversion, original_position, restored, warnings)
 }
 
 fn forward_pdf(document: u64, task: Task<pdf_reader::Message>) -> Task<Message> {
@@ -5083,72 +4881,8 @@ fn scroll_to_widget(id: iced::advanced::widget::Id, offset: f32) -> Task<Message
 }
 
 /// Measure a complete reflowable section on the task executor. Only scalar heights survive.
-fn measure_book(
-    book: Arc<Book>,
-    width: f32,
-    font_size: f32,
-    cancel: &AtomicBool,
-) -> Option<Vec<f32>> {
-    measure_book_for(book, width, font_size, cancel, themes::default_theme())
-}
-
-/// Row heights of `book` as the reader draws them under `theme`.
-fn measure_book_for(
-    book: Arc<Book>,
-    width: f32,
-    font_size: f32,
-    cancel: &AtomicBool,
-    theme: &'static themes::ReadingTheme,
-) -> Option<Vec<f32>> {
-    measure_book_with(
-        book,
-        width,
-        font_size,
-        cancel,
-        theme,
-        reader_document::reading::Options::default(),
-    )
-}
-fn measure_book_with(
-    book: Arc<Book>,
-    width: f32,
-    font_size: f32,
-    cancel: &AtomicBool,
-    theme: &'static themes::ReadingTheme,
-    options: reader_document::reading::Options,
-) -> Option<Vec<f32>> {
-    use iced::advanced::{layout, widget::Tree};
-    let style = reading_ui::effective_style(theme, &book, options);
-    let mut reader = Reader {
-        width,
-        font_size,
-        theme,
-        ..Reader::default()
-    };
-    reader.reading.defaults = options;
-    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
-    let limits = layout::Limits::new(Size::ZERO, Size::new(width, f32::INFINITY));
-    let mut heights = Vec::with_capacity(book.items.len());
-    for (index, item) in book.items.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        let mut element = render_item(&reader, &book, index, item, None);
-        let mut tree = Tree::new(&element);
-        let node = element
-            .as_widget_mut()
-            .layout(&mut tree, &renderer, &limits);
-        heights.push(
-            node.size().height
-                + if index + 1 == book.items.len() {
-                    0.0
-                } else {
-                    style.gap(font_size)
-                },
-        );
-    }
-    Some(heights)
-}
+#[cfg(test)]
+use reader_layout::measure::measure_book;
 
 /// Spacing and heading scales for a book: the theme's, except that PDF Book
 /// keeps the default typography its layout was built around.
@@ -5167,10 +4901,6 @@ fn family_for(theme: &'static themes::ReadingTheme, book: &Book) -> Option<&'sta
     } else {
         theme.family
     }
-}
-
-fn book_item_size(book: &Book, index: usize, item: &Item, body: f32) -> f32 {
-    styled_item_size(&MINIMAL, book, index, item, body)
 }
 
 fn styled_item_size(style: &BookStyle, book: &Book, index: usize, item: &Item, body: f32) -> f32 {

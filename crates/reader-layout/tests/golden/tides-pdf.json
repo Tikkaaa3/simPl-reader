@@ -1,0 +1,78 @@
+{
+  "adapted": [],
+  "atlas": {
+    "fingerprint": "1bb81b257be98f9a27f53bf5d55bd5adf097b34312e69db73fdee551faa85918",
+    "pdf_book_version": 12,
+    "sections": [
+      {
+        "heights": [
+          591.0,
+          719.0,
+          623.0,
+          672.0
+        ],
+        "pages": [
+          {
+            "content": {
+              "end": 591.0,
+              "start": 0.0
+            },
+            "height": 1018.0800170898438,
+            "label": "1",
+            "number": 0,
+            "rows": {
+              "end": 1,
+              "start": 0
+            },
+            "top": 24.0
+          },
+          {
+            "content": {
+              "end": 1310.0,
+              "start": 591.0
+            },
+            "height": 1018.0800170898438,
+            "label": "2",
+            "number": 1,
+            "rows": {
+              "end": 2,
+              "start": 1
+            },
+            "top": 1066.080078125
+          },
+          {
+            "content": {
+              "end": 1933.0,
+              "start": 1310.0
+            },
+            "height": 1018.0800170898438,
+            "label": "3",
+            "number": 2,
+            "rows": {
+              "end": 3,
+              "start": 2
+            },
+            "top": 2108.16015625
+          },
+          {
+            "content": {
+              "end": 2605.0,
+              "start": 1933.0
+            },
+            "height": 1018.0800170898438,
+            "label": "4",
+            "number": 3,
+            "rows": {
+              "end": 4,
+              "start": 3
+            },
+            "top": 3150.240234375
+          }
+        ]
+      }
+    ],
+    "source_pages": true,
+    "total": 4,
+    "version": 1
+  }
+}

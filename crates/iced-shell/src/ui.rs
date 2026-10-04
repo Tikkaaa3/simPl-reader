@@ -6,49 +6,9 @@ use iced::advanced::widget::{Id, Operation, operation};
 use iced::widget::{button, container, scrollable, text_input};
 use iced::{Border, Color, Font, Rectangle, Theme, Vector};
 
-#[derive(Clone, Copy, Debug)]
-pub struct Palette {
-    pub background: Color,
-    pub surface: Color,
-    pub raised: Color,
-    pub lowest: Color,
-    pub border: Color,
-    pub text: Color,
-    pub secondary: Color,
-    pub muted: Color,
-    pub accent: Color,
-    pub danger: Color,
-    pub control_border: Color,
-}
+pub use reader_layout::themes::Palette;
+pub(crate) use reader_layout::themes::{DARK, LIGHT};
 
-/// Neutral surfaces with a restrained ice-blue accent.
-pub(crate) const DARK: Palette = Palette {
-    background: Color::from_rgb8(0x0c, 0x0c, 0x0c),
-    surface: Color::from_rgb8(0x10, 0x10, 0x10),
-    raised: Color::from_rgb8(0x16, 0x16, 0x16),
-    lowest: Color::from_rgb8(0x0c, 0x0c, 0x0c),
-    border: Color::from_rgb8(0x27, 0x27, 0x27),
-    text: Color::from_rgb8(0xed, 0xed, 0xed),
-    secondary: Color::from_rgb8(0xb5, 0xb5, 0xb5),
-    muted: Color::from_rgb8(0x85, 0x85, 0x85),
-    accent: Color::from_rgb8(0x58, 0xa6, 0xff),
-    danger: Color::from_rgb8(0xff, 0xb4, 0xab),
-    control_border: Color::from_rgb8(0x2a, 0x2a, 0x2a),
-};
-
-pub(crate) const LIGHT: Palette = Palette {
-    background: Color::from_rgb8(0xff, 0xff, 0xff),
-    surface: Color::from_rgb8(0xf6, 0xf6, 0xf6),
-    raised: Color::from_rgb8(0xff, 0xff, 0xff),
-    lowest: Color::from_rgb8(0xff, 0xff, 0xff),
-    border: Color::from_rgb8(0xe5, 0xe5, 0xe5),
-    text: Color::from_rgb8(0x10, 0x10, 0x10),
-    secondary: Color::from_rgb8(0x52, 0x52, 0x52),
-    muted: Color::from_rgb8(0x73, 0x73, 0x73),
-    accent: Color::from_rgb8(0x09, 0x69, 0xda),
-    danger: Color::from_rgb8(0xa3, 0x2b, 0x2b),
-    control_border: Color::from_rgb8(0xe2, 0xe2, 0xe2),
-};
 pub fn palette(theme: &Theme) -> Palette {
     crate::themes::palette_of(theme).unwrap_or(if theme.extended_palette().is_dark {
         DARK
@@ -120,28 +80,30 @@ pub const SERIF_ITALIC: Font = Font {
 pub const ICONS: Font = Font::with_name("Material Symbols Outlined");
 
 /// The text faces retain upstream glyph coverage; native fallback handles other scripts.
-/// Embedded bytes keep the portable executable independent of installed fonts.
+/// Embedded bytes keep the portable executable independent of installed fonts. The
+/// reading faces come from `reader-layout`, the one copy both apps measure with.
 pub fn font_data() -> [&'static [u8]; 18] {
+    use reader_layout::fonts;
     [
-        include_bytes!("../../../assets/fonts/Geist-Variable-Latin.ttf"),
+        fonts::GEIST,
         include_bytes!("../../../assets/fonts/Geist-UI-560.ttf"),
-        include_bytes!("../../../assets/fonts/Literata-Regular.ttf"),
-        include_bytes!("../../../assets/fonts/Literata-Medium.ttf"),
-        include_bytes!("../../../assets/fonts/Literata-Bold.ttf"),
-        include_bytes!("../../../assets/fonts/Literata-Italic.ttf"),
-        include_bytes!("../../../assets/fonts/Literata-BoldItalic.ttf"),
+        fonts::LITERATA_REGULAR,
+        fonts::LITERATA_MEDIUM,
+        fonts::LITERATA_BOLD,
+        fonts::LITERATA_ITALIC,
+        fonts::LITERATA_BOLD_ITALIC,
         include_bytes!("../../../assets/fonts/MaterialSymbolsOutlined-Subset.ttf"),
         // Reading families offered by the bundled themes (see themes.rs).
-        include_bytes!("../../../assets/fonts/Spectral-Regular.ttf"),
-        include_bytes!("../../../assets/fonts/Spectral-Medium.ttf"),
-        include_bytes!("../../../assets/fonts/Spectral-Bold.ttf"),
-        include_bytes!("../../../assets/fonts/Spectral-Italic.ttf"),
-        include_bytes!("../../../assets/fonts/Spectral-BoldItalic.ttf"),
-        include_bytes!("../../../assets/fonts/FiraSans-Regular.ttf"),
-        include_bytes!("../../../assets/fonts/FiraSans-Medium.ttf"),
-        include_bytes!("../../../assets/fonts/FiraSans-Bold.ttf"),
-        include_bytes!("../../../assets/fonts/FiraSans-Italic.ttf"),
-        include_bytes!("../../../assets/fonts/FiraSans-BoldItalic.ttf"),
+        fonts::SPECTRAL_REGULAR,
+        fonts::SPECTRAL_MEDIUM,
+        fonts::SPECTRAL_BOLD,
+        fonts::SPECTRAL_ITALIC,
+        fonts::SPECTRAL_BOLD_ITALIC,
+        fonts::FIRA_SANS_REGULAR,
+        fonts::FIRA_SANS_MEDIUM,
+        fonts::FIRA_SANS_BOLD,
+        fonts::FIRA_SANS_ITALIC,
+        fonts::FIRA_SANS_BOLD_ITALIC,
     ]
 }
 

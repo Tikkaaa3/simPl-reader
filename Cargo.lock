@@ -1071,6 +1071,7 @@ dependencies = [
  "image",
  "parking_lot",
  "reader-document",
+ "reader-layout",
  "reader-pdf",
  "reader-workload",
  "serde",
@@ -2324,9 +2325,26 @@ name = "reader-ffi"
 version = "0.0.0"
 dependencies = [
  "reader-document",
+ "reader-layout",
  "reader-pdf",
  "reader-profile",
+ "serde_json",
  "uniffi",
+]
+
+[[package]]
+name = "reader-layout"
+version = "0.0.0"
+dependencies = [
+ "iced_core",
+ "iced_renderer",
+ "iced_widget",
+ "reader-document",
+ "reader-pdf",
+ "reader-profile",
+ "serde",
+ "serde_json",
+ "zip",
 ]
 
 [[package]]
