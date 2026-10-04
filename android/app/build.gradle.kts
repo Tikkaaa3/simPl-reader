@@ -7,6 +7,31 @@ plugins {
 // Phones run arm64; x86_64 is for the emulator on this Windows machine.
 val appAbis = listOf("arm64-v8a", "x86_64")
 
+// Reuse the repository's font bytes and licenses through AGP's generated sources.
+abstract class StageThemeAssets : DefaultTask() {
+    @get:InputDirectory abstract val fonts: DirectoryProperty
+    @get:InputDirectory abstract val licenses: DirectoryProperty
+    @get:OutputDirectory abstract val resources: DirectoryProperty
+    @get:OutputDirectory abstract val notices: DirectoryProperty
+
+    @TaskAction fun stage() {
+        val fontOutput = resources.get().dir("font").asFile.apply { mkdirs() }
+        mapOf("Geist-UI-560.ttf" to "geist_ui.ttf", "Literata-Regular.ttf" to "literata_regular.ttf").forEach { (source, target) ->
+            fonts.get().file(source).asFile.copyTo(fontOutput.resolve(target), overwrite = true)
+        }
+        val noticeOutput = notices.get().dir("licenses").asFile.apply { mkdirs() }
+        listOf("Geist-OFL.txt", "Literata-OFL.txt", "Typeface-SOURCES.txt").forEach { name ->
+            licenses.get().file(name).asFile.copyTo(noticeOutput.resolve(name), overwrite = true)
+        }
+    }
+}
+val stageThemeAssets = tasks.register<StageThemeAssets>("stageThemeAssets") {
+    fonts.set(layout.projectDirectory.dir("../../assets/fonts"))
+    licenses.set(layout.projectDirectory.dir("../../assets/licenses"))
+    resources.set(layout.buildDirectory.dir("generated/theme/res"))
+    notices.set(layout.buildDirectory.dir("generated/theme/assets"))
+}
+
 android {
     namespace = "io.github.tikkaaa3.simpl"
     compileSdk = 37
@@ -40,6 +65,11 @@ android {
     }
 }
 
+androidComponents.onVariants { variant ->
+    variant.sources.res?.addGeneratedSourceDirectory(stageThemeAssets) { it.resources }
+    variant.sources.assets?.addGeneratedSourceDirectory(stageThemeAssets) { it.notices }
+}
+
 rustAndroid {
     crate = "reader-ffi"
     libraryName = "reader_ffi"
@@ -50,6 +80,11 @@ rustAndroid {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.savedstate)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.kotlinx.coroutines.android)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
@@ -59,6 +94,9 @@ dependencies {
     implementation(variantOf(libs.jna) { artifactType("aar") })
 
     androidTestImplementation(libs.junit)
+    androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
 }

@@ -213,16 +213,36 @@ Validation and API details:
   Android uses `cacheDir/simPl/page-maps`. Tests explicitly disable persistence
   or use isolated roots.
 
-### M3 — Library
+### M3 — Library (completed)
 
-- [ ] Compose theme: `design/DESIGN.md` colors and typography, light/dark, Geist/Literata.
-- [ ] Navigation: Library ↔ Reader ↔ Settings (Navigation Compose).
-- [ ] Import: SAF `ACTION_OPEN_DOCUMENT` (multi-select), `content://` stream →
+- [x] Compose theme: `design/DESIGN.md` colors and typography, light/dark, Geist/Literata.
+- [x] Navigation: Library ↔ Reader ↔ Settings (Navigation Compose).
+- [x] Import: SAF `ACTION_OPEN_DOCUMENT` (multi-select), `content://` stream →
       in-app copy → `reader-document::managed`. `OPEN_DOCUMENT_TREE` for an HTML folder.
-- [ ] "Open with" / share target: intent filters for `.epub`, `.pdf`, `.html`, `.txt`, `.md`.
-- [ ] Card grid, cover thumbnails (generated in Rust, shown with Coil/bitmaps),
+- [x] "Open with" / share target: intent filters for `.epub`, `.pdf`, `.html`, `.txt`, `.md`.
+- [x] Card grid, cover thumbnails (generated in Rust, shown with Coil/bitmaps),
       Continue, Favorites, shelves, title/author search, delete confirmation.
-- [ ] Process death and recreation: state in `ViewModel` + `SavedStateHandle`.
+- [x] Process death and recreation: state in `ViewModel` + `SavedStateHandle`.
+
+The UniFFI catalog uses the existing desktop library, shelf, recent and cover
+storage schemas. Imports are validated before being listed, duplicate content
+keeps its state, missing private copies can be repaired, and deletion retains
+original files and annotations. Provider streams and HTML trees have bounded
+private staging; pending SAF imports retain read grants until completion.
+Fonts and licenses are generated Android resources from the shared assets.
+
+The Reader destination is a book-details screen in M3. It records recently
+opened books without inventing reading progress; page rendering follows in M4
+and PDF Document mode in M5.
+
+Validation: shared Rust tests on Android, the host catalog integration test,
+13 app instrumentation tests, the desktop `dev.ps1 check`, Android lint, and
+debug/minified-release builds for both ABIs. UI tests cover recreation, all
+incoming intent actions, shelf operations and deletion confirmation. A typing
+regression test keeps search focused when the Continue card disappears.
+Host-driven emulator QA also restores navigation, theme, query and Favorites
+after stopping the activity and killing its process; screenshots and PID
+records are in `target/m3-visual`.
 
 ### M4 — Reader: reflowable books (EPUB/HTML/TXT/MD)
 

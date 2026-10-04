@@ -14,6 +14,45 @@ its build, scripts and release workflow do not use anything in this folder.
 | `build-logic/` | Gradle plugin `simpl.rust-android`: cargo-ndk build and Kotlin binding generation per variant |
 | `app/` | Compose application (`io.github.tikkaaa3.simpl`) |
 
+## Library (M3)
+
+The app opens a responsive card grid with title/author search, Favorites,
+Continue and named shelves. Settings selects the device, light or dark theme
+and manages shelves. Geist and Literata come from the repository's font files;
+Gradle stages the fonts and their license notices as generated resources/assets.
+The Reader route currently shows book details. Reflowable page rendering is M4;
+PDF Document mode is M5.
+
+The import menu uses `ACTION_OPEN_DOCUMENT` for multiple EPUB, PDF, HTML, TXT
+and Markdown files, or `ACTION_OPEN_DOCUMENT_TREE` for an HTML book folder.
+Provider streams are copied into bounded private staging before Rust validates
+and imports them through `reader-document::managed`. Folder imports retain
+relative HTML, image, stylesheet and font resources. Use folder import when
+HTML depends on sibling assets. No broad storage permission is required.
+`ACTION_VIEW`, `ACTION_SEND` and `ACTION_SEND_MULTIPLE` use the same importer.
+
+The UniFFI catalog API uses the desktop `library.json`, `shelves.json`, recent
+list and cover cache schemas. It serializes mutations, coalesces identical
+content and preserves progress, favorites and shelf membership on reimport or
+repair. Rust generates bounded RGBA cover thumbnails; Compose displays them
+as bitmaps with a title fallback. Removal requires confirmation and deletes
+only the marked managed copy, retaining originals and saved annotations.
+
+`LibraryViewModel` keeps search, filters, pending imports and navigation requests
+in `SavedStateHandle`. Navigation Compose and `rememberSaveable` retain the
+route, grid position and dialogs. SAF read grants are persisted while an import
+is pending, then released. A restored import restarts an incomplete staging
+copy; a provider that no longer grants access produces an error requesting a
+new selection. App appearance persists separately in private preferences.
+
+`LibraryImportTest` exercises real provider streams, HTML tree assets, corrupt
+input, PDF thumbnails and a restored ViewModel finishing its pending import.
+`LibraryUiTest` covers search, favorites, shelf creation/membership/rename/delete,
+removal confirmation, all three incoming intent actions, themes and navigation
+across Activity recreation. The fixture provider/picker exists only in the test
+APK. The host/device Rust catalog integration test also checks missing-copy
+repair and preservation of source files and state.
+
 ## Environment (Windows)
 
 | Tool | Version | Notes |

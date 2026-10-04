@@ -10,6 +10,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 mod layout;
 pub use layout::*;
+mod library;
+pub use library::*;
 
 uniffi::setup_scaffolding!();
 

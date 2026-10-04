@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name="io.github.tikkaaa3.simpl.GrantFixtureActivity" android:exported="true" />
+        <!-- Present only in the test APK; exercises provider streams and trees. -->
+        <provider android:name="io.github.tikkaaa3.simpl.ImportFixtureProvider"
+            android:authorities="io.github.tikkaaa3.simpl.test.documents"
+            android:permission="android.permission.MANAGE_DOCUMENTS"
+            android:exported="true" android:grantUriPermissions="true">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>
