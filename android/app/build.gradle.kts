@@ -67,6 +67,7 @@ android {
     buildFeatures {
         compose = true
     }
+    sourceSets.getByName("androidTest").assets.srcDir("../../crates/reader-ffi/tests/fixtures")
 }
 
 androidComponents.onVariants { variant ->

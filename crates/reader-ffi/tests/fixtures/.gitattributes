@@ -1,0 +1,2 @@
+# Preserve encrypted streams and byte offsets regardless of core.autocrlf.
+*.pdf binary

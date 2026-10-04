@@ -21,7 +21,7 @@ Continue and named shelves. Settings selects the device, light or dark theme
 and manages shelves. Geist and Literata come from the repository's font files;
 Gradle stages the fonts and their license notices as generated resources/assets.
 The Reader route opens reflowable pages for EPUB, HTML, TXT and Markdown (M4).
-PDF keeps the book-details destination until PDF Document mode in M5.
+PDF opens the original physical pages in PDF Document mode (M5).
 
 The import menu uses `ACTION_OPEN_DOCUMENT` for multiple EPUB, PDF, HTML, TXT
 and Markdown files, or `ACTION_OPEN_DOCUMENT_TREE` for an HTML book folder.
@@ -100,6 +100,72 @@ On API 29+ UI screenshots survive test APK removal in `Pictures/simPl-M4`:
 ```powershell
 adb pull /sdcard/Pictures/simPl-M4 target/m4-visual
 ```
+
+## PDF Document reader (M5)
+
+PDFs open directly through the existing serial PDFium worker, without Book
+conversion or canonical repagination. The file stays backed by a reader;
+opening hashes it and reads page dimensions. The Compose reader displays one
+physical page, with Previous/Next, horizontal swipes and edge taps at fit width,
+a validated page field, pinch zoom, pan, vertical scroll and Fit width. Tap the
+center to toggle controls and system bars. Source page colors remain unchanged
+when the surrounding app uses a dark theme.
+
+`PdfViewModel` renders only the current page. Requested widths are quantized to
+128 px and pinch changes are coalesced for 80 ms. A raster stays near two million
+pixels (width rounding may slightly exceed this); the shared worker additionally
+enforces four million pixels and 8192 px per dimension. A 24 MiB LRU holds software
+bitmaps by page and width, evicting the least recently used entry. RGBA transfer,
+temporary pixel conversion, the displayed bitmap, text geometry and PDFium's
+working memory are additional transient allocations; the cache cap is not a
+whole-process memory limit. Eviction releases references rather than recycling
+bitmaps still referenced by a Compose frame. Rendering is serial and stale
+requests cannot replace a newer page. Only the current page's text layer is kept.
+
+Long press text to select a word, then drag to extend the inclusive glyph range.
+Use Copy or Select page text; Clear removes the selection. A spatial glyph index
+keeps motion hit-testing out of full-page scans. Normalized PDFium bounds place
+the selection overlay on the raster; copy addresses native source glyphs and
+rechecks PDF permissions. Restricted PDFs still render but expose neither text
+nor selection/copy actions. Scanned pages without text do not invent an OCR layer.
+Selection handles, highlights and selection across pages remain M6 work.
+
+The native `open_pdf_document` object exposes `info`, `render`, `text`, `copy` and
+`save_location`; all blocking calls run on background threads. FFI page numbers
+are one-based. Positions use the desktop `PdfReadingPosition` schema with a
+zero-based stored page, vertical fraction of the entire page, horizontal fraction
+of the scroll extent and distinct FitWidth/Scale modes. Scale keeps the desktop's
+96 DPI units. Debounced writes and a completed STOP/disposal checkpoint update
+the saved position and library progress. Handles are reopened after recreation;
+native pointers and bitmaps never enter the saved-state bundle.
+
+`PdfUiTest` covers raster page turns, jump validation, pinch/fit, persistence,
+real glyph long-press/drag, clipboard contents, copy restrictions and LRU eviction.
+The host/device Rust PDF integration test checks pixel limits, glyph indices,
+reverse selections, permissions and compatibility with desktop position records.
+The restricted fixture is self-authored and can be regenerated with Python's
+standard library using `crates/reader-ffi/tests/fixtures/generate_restricted.py`.
+
+The large-PDF test records metadata open time, time until the first raster is
+published, individual raster/cache-hit times, sampled process PSS, cache bytes,
+hits and evictions for a 512-page, approximately 13 MiB text PDF. It runs inside
+the debug instrumentation process after library import, so PDFium and the file
+cache are warm; PSS includes the app, test runner and fixture setup. It does not
+measure cold startup, import time, GPU presentation or transient allocation peaks.
+Run the same test on a connected phone for physical-device acceptance:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/android.ps1 test -Abi arm64-v8a
+# Or just the Android PDF UI/measurement tests, from the repository root:
+android\gradlew.bat -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.github.tikkaaa3.simpl.PdfUiTest
+adb pull /sdcard/Download/simPl-M5 target/m5-performance
+adb pull /sdcard/Pictures/simPl-M5 target/m5-visual
+```
+
+On API 29+ the JSON measurements and visual screenshots survive test APK removal.
+Below API 29 artifacts use the app's external files directory; retrieve them before
+uninstalling it. Emulator validation was accepted for M5 on 2026-10-04; phone
+measurements remain follow-up work. Emulator timings are not phone performance claims.
 
 ## Environment (Windows)
 

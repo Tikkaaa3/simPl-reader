@@ -88,7 +88,9 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
             composable("reader/{fingerprint}") { entry ->
                 val fingerprint = entry.arguments?.getString("fingerprint")
                 val book = state.books.find { it.fingerprint == fingerprint }
-                if (book != null && book.format != DocumentFormat.PDF) ReaderScreen(book, viewModel(viewModelStoreOwner = entry),
+                if (book != null && book.format == DocumentFormat.PDF) PdfScreen(book, viewModel(viewModelStoreOwner = entry),
+                    back = { navigation.popBackStack(); model.reload() }, settings = settings)
+                else if (book != null) ReaderScreen(book, viewModel(viewModelStoreOwner = entry),
                     back = { navigation.popBackStack(); model.reload() }, settings = settings)
                 else BookOverview(book,
                     back = { navigation.popBackStack() }, settings = settings,

@@ -279,15 +279,46 @@ screenshots include lists, quotes, code, table text, images and mixed Arabic,
 Hebrew and Latin text. A real stopped-process kill changes PID 17525 → 18214
 and restores page 4/19, font size 26 and the exact source-row fraction
 0.15744351. Screenshots and checkpoint records are in `target/m4-visual`.
-PDF keeps its details destination until M5.
+PDF Document mode is implemented in M5.
 
-### M5 — Reader: PDF Document view
+### M5 — Reader: PDF Document view (completed)
 
-- [ ] Page rendering with PDFium: tiles/bitmaps for visible pages, re-rendering by
+- [x] Page rendering with PDFium: tiles/bitmaps for visible pages, re-rendering by
       scale, LRU bitmap cache (memory cap).
-- [ ] Page-by-page navigation, page field, pinch zoom, fit width.
-- [ ] Selection and copy via the text layer (permissions respected).
-- [ ] Memory and first-open time measurement for large PDFs (real device).
+- [x] Page-by-page navigation, page field, pinch zoom, fit width.
+- [x] Selection and copy via the text layer (permissions respected).
+- [x] Memory and first-open time measurement for large PDFs (emulator accepted
+      for M5 on 2026-10-04; physical-device measurement deferred).
+
+The Compose Document reader renders only the active physical page through the
+shared PDFium worker, with quantized/coalesced scale requests and a 24 MiB LRU.
+The worker's four-megapixel/8192 px limits remain unchanged; Android targets
+approximately two megapixels before width quantization. Text selection uses a
+spatial glyph index, source glyph ordinals and a native permission check on copy.
+Restricted documents render without exposing text. Page/scroll/zoom positions
+use the existing desktop PDF schema and completed lifecycle STOP checkpoints.
+See [Android implementation and measurement instructions](android/README.md#pdf-document-reader-m5).
+
+The self-authored 512-page PDF measurement and screenshot tests run on the API 36
+x86_64 emulator. The user accepted emulator validation for M5 on 2026-10-04;
+physical-phone measurements remain follow-up work. Reported PSS is sampled
+debug instrumentation process memory,
+including fixture setup; it is not a cache-only or transient peak measurement.
+
+Validation: Windows `dev.ps1 check`, shared Rust tests (including the new PDF FFI
+integration test) on API 36, all 20 app instrumentation tests, Android lint and
+minified arm64-v8a/x86_64 release builds. The three PDF UI tests pass again after
+the gesture fix; a long press no longer also hides controls. Visual checks cover
+fit, zoom, glyph selection and a restricted PDF. No dependency versions, desktop
+PDF code or position/cache schema versions changed.
+
+The final debug measurement uses a 13,474,555-byte, 512-page PDF: metadata open
+463 ms, first published raster 1124 ms, uncached high-resolution renders
+480–618 ms, cached render 1 ms, cache 18,923,520 bytes, one cache hit and two
+evictions. Sampled process PSS rises from 135,850 KiB to 245,676 KiB. These are
+warm-library instrumentation measurements, not cold startup or phone benchmarks.
+JSON records and screenshots are retained in `target/m5-performance` and
+`target/m5-visual`.
 
 ### M6 — Bookmarks, highlights, notes
 
