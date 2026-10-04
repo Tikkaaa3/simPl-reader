@@ -93,7 +93,7 @@ internal class PdfTextGeometry(private val layer: PdfPageText) {
 }
 
 @Composable
-internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit, settings: () -> Unit) {
+internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit, settings: () -> Unit, bookMode: (() -> Unit)? = null) {
     val state by model.state.collectAsStateWithLifecycle()
     LaunchedEffect(book.path) { model.open(book) }
     var toolbar by rememberSaveable { mutableStateOf(true) }
@@ -135,6 +135,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         if (toolbar && !state.loading && state.info != null) FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
             Text("PDF", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
             ReadAloudControls(book.fingerprint, model::readAloud, enabled = state.info?.canCopy == true)
+            if (bookMode != null) TextButton(onClick = bookMode, enabled = state.info?.canCopy == true) { Text("Book") }
             TextButton(onClick = model::fit) { Text("Fit width") }
             TextButton(onClick = model::selectAll, enabled = !state.text?.glyphs.isNullOrEmpty()) { Text("Select page text") }
         }
@@ -157,7 +158,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
             TextButton(onClick = { model.turn(1) }, enabled = state.location.page < state.info!!.pages.size.toUInt()) { Text("Next") }
         }
     }
-    if (annotations) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) })
+    if (annotations) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (jump) {
         var value by rememberSaveable { mutableStateOf("") }

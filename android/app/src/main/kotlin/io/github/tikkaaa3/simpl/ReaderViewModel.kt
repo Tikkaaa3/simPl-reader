@@ -12,6 +12,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 data class ReaderState(
+    val preparation: BookPreparation? = null,
+    val openMs: Long = 0,
     val spoken: SpeechRange? = null,
     val speechRow: BookRow? = null,
     val selection: ReflowSelection? = null,
@@ -117,12 +119,18 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         path = book.path
         fingerprint = book.fingerprint
         loadJob = viewModelScope.launch {
+            val started = android.os.SystemClock.elapsedRealtime()
+            var localTask: OpenBookTask? = null
             try {
                 val task = withContext(Dispatchers.IO) { openBook(book.path) }
+                localTask = task
                 opening = task
-                while (withContext(Dispatchers.IO) { task.status() } == LayoutStatus.RUNNING) delay(16)
+                while (withContext(Dispatchers.IO) { task.status() } == LayoutStatus.RUNNING) {
+                    mutable.value = mutable.value.copy(preparation = withContext(Dispatchers.IO) { task.progress() }); delay(50)
+                }
                 val opened = withContext(Dispatchers.IO) { task.result() } ?: error("Opening was cancelled")
                 source = opened
+                mutable.value = mutable.value.copy(preparation = withContext(Dispatchers.IO) { task.progress() }, openMs = android.os.SystemClock.elapsedRealtime() - started)
                 mutable.value = mutable.value.copy(selection = saved.get<LongArray>("selection")?.takeIf { it.size == 6 }?.let {
                     ReflowSelection(SourcePoint(it[0].toUInt(), it[1].toUInt(), it[2].toUInt()), SourcePoint(it[3].toUInt(), it[4].toUInt(), it[5].toUInt()))
                 })
@@ -137,8 +145,14 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
                 mutable.value = mutable.value.copy(contents = withContext(Dispatchers.IO) { opened.contents() })
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { fail(error) }
-            finally { opening?.cancel(); opening?.close(); opening = null }
+            finally { localTask?.cancel(); localTask?.close(); if (opening === localTask) opening = null }
         }
+    }
+
+    fun cancelOpening() {
+        opening?.cancel(); loadJob?.cancel(); path = null
+        adaptation?.cancel(); adapted?.close(); adapted = null; source?.close(); source = null
+        mutable.value = mutable.value.copy(loading = false, adapting = false, error = "Book preparation cancelled. Return to Document or retry.")
     }
 
     fun change(options: LayoutOptions = mutable.value.options, theme: String = mutable.value.theme) {
@@ -235,7 +249,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     }
     private suspend fun refreshAnnotations() {
         val sections = mutable.value.pages.map { it.section }.distinct()
-        val result = withContext(Dispatchers.IO) { loadAnnotations(fingerprint) to sections.flatMap { source!!.readerMarks(it) } }
+        val result = withContext(Dispatchers.IO) { source!!.readerAnnotations() to sections.flatMap { source!!.readerMarks(it) } }
         mutable.value = mutable.value.copy(annotations = result.first, marks = result.second)
     }
     fun select(selection: ReflowSelection?) {

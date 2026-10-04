@@ -6,6 +6,7 @@ import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import io.github.tikkaaa3.simpl.core.LibraryBook
 import io.github.tikkaaa3.simpl.core.importLibraryBook
+import io.github.tikkaaa3.simpl.core.locateLibraryBook
 import java.io.File
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -21,7 +22,7 @@ class DocumentImport(private val context: Context) {
 
     private val resolver = context.contentResolver
 
-    suspend fun import(uri: Uri, tree: Boolean, jobId: String): LibraryBook {
+    suspend fun import(uri: Uri, tree: Boolean, jobId: String, fingerprint: String? = null): LibraryBook {
         require(uri.scheme == "content") { "Choose a document from a storage provider." }
         require(jobId.matches(Regex("[a-f0-9-]{36}"))) { "Invalid import request." }
         val stage = File(context.cacheDir, "imports/$jobId")
@@ -41,7 +42,7 @@ class DocumentImport(private val context: Context) {
                 File(stage, name).also { copyStream(uri, it, MAX_BYTES, Budget()) }
             }
             currentCoroutineContext().ensureActive()
-            importLibraryBook(source.absolutePath)
+            if (fingerprint == null) importLibraryBook(source.absolutePath) else locateLibraryBook(source.absolutePath, fingerprint)
         } finally {
             stage.deleteRecursively()
         }

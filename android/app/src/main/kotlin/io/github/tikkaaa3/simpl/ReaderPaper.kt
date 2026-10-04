@@ -110,10 +110,10 @@ internal fun measureRows(section: UInt, rows: List<BookRow>, options: LayoutOpti
             fontFamily = when (p.family) { "Spectral" -> spectral; "Fira Sans" -> fira; "monospace" -> FontFamily.Monospace; else -> literata },
             fontWeight = if (row.kind == RowKind.HEADING) FontWeight.Medium else FontWeight.Normal,
             textDirection = if (row.rightToLeft) TextDirection.ContentOrRtl else TextDirection.ContentOrLtr,
-            textAlign = if (row.rightToLeft) TextAlign.Right else TextAlign.Left,
+            textAlign = when { p.alignment == "center" -> TextAlign.Center; p.alignment == "right" || row.rightToLeft -> TextAlign.Right; else -> TextAlign.Left },
             platformStyle = PlatformTextStyle(includeFontPadding = false),
             lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None)),
-        constraints = Constraints(minWidth = if (row.rightToLeft) width else 0, maxWidth = width), density = Density(1f, 1f), layoutDirection = LayoutDirection.Ltr)
+        constraints = Constraints(minWidth = if (row.rightToLeft || p.alignment != "left") width else 0, maxWidth = width), density = Density(1f, 1f), layoutDirection = LayoutDirection.Ltr)
     val lines = layout?.lineCount ?: 1
     val first = cutLine(start, row, lines, 0)
     val last = cutLine(end, row, lines, lines)
@@ -166,7 +166,8 @@ internal fun PaperRow(measured: MeasuredBookRow, scale: Float, color: Color, acc
         }
         Box(modifier.fillMaxWidth().height((measured.height * scale / density).dp).then(semantics)
             .pointerInput(scale) { detectTapGestures { tapHandler(it) } }, contentAlignment = Alignment.TopCenter) {
-            if (bitmap != null) Image(bitmap!!, null, Modifier.width((p.imageWidth * scale / density).dp).height((p.imageHeight * scale / density).dp))
+            if (bitmap != null) Image(bitmap!!, null, Modifier.align(if (row.id.startsWith("pdf-b")) Alignment.TopStart else Alignment.TopCenter)
+                .offset(x = (p.imageLeft * scale / density).dp).width((p.imageWidth * scale / density).dp).height((p.imageHeight * scale / density).dp))
             else Text("Image unavailable", color = color)
         }
     } else Canvas(modifier.fillMaxWidth().height((measured.height * scale / density).dp)

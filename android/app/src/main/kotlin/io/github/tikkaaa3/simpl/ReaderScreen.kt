@@ -39,7 +39,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.roundToInt
 
 @Composable
-internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () -> Unit, settings: () -> Unit) {
+internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () -> Unit, settings: () -> Unit, document: (() -> Unit)? = null) {
     val state by model.state.collectAsStateWithLifecycle()
     LaunchedEffect(book.path) { model.open(book) }
     val lifecycle = LocalLifecycleOwner.current
@@ -81,6 +81,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         if (toolbar) TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { IconButton(onClick = { model.stop(); back() }) { Icon(AppIcons.Back, "Back to library") } },
             actions = {
+                if (document != null) TextButton(onClick = document) { Text("Document") }
                 IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
                 IconButton(onClick = { panel = "annotations" }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
                 IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } },
@@ -92,7 +93,14 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
             TextButton(onClick = { zoom = 1f }) { Text("Fit width") }
             if (state.canReturn) IconButton(onClick = model::returnFromLink) { Icon(AppIcons.Back, "Return from link", tint = accent) }
         }
-        if (state.loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        if (state.loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator()
+            if (document != null) {
+                val progress = state.preparation
+                Text(if ((progress?.total ?: 0u) > 0u) "Preparing Book: ${progress?.completed} of ${progress?.total} pages" else "Preparing Book…", Modifier.testTag("bookPreparation"))
+                TextButton(onClick = { model.cancelOpening(); document() }) { Text("Cancel preparation") }
+            }
+        } }
         else Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.pages.isNotEmpty()) ReaderViewport(state, model, zoom, { zoom = it }, { toolbar = !toolbar }, paper, text, accent,
                 dictionary = { model.selectWord(it) { dictionary = true } }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
@@ -117,7 +125,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
             TextButton(onClick = { model.turn(1) }, enabled = state.page < state.total && !state.adapting) { Text("Next") }
         }
     }
-    if (panel == "annotations") AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) })
+    if (panel == "annotations") AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (panel == "contents") ModalBottomSheet(onDismissRequest = { panel = null }) {
         Text("Contents", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)

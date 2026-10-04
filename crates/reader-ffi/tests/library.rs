@@ -45,6 +45,37 @@ fn catalog_import_repair_shelves_and_removal_preserve_sources_and_state() {
     std::fs::write(&corrupt, "not a zip archive").unwrap();
     assert!(import_library_book(corrupt.to_string_lossy().into_owned()).is_err());
     assert_eq!(load_library().unwrap().books.len(), 1);
+    // A history failure after publication must never delete the repaired copy.
+    std::fs::remove_file(&repaired.path).unwrap();
+    let profile = data.join("simPl");
+    let catalog = profile.join("library.json");
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+    record["entries"][0]["document"]["path"] = root
+        .join("missing.html")
+        .to_string_lossy()
+        .into_owned()
+        .into();
+    std::fs::write(&catalog, serde_json::to_vec(&record).unwrap()).unwrap();
+    let history = profile.join("recent.json");
+    let retained = profile.join("recent-before.json");
+    std::fs::rename(&history, &retained).unwrap();
+    std::fs::create_dir(&history).unwrap();
+    let replacement_dir = root.join("located");
+    std::fs::create_dir(&replacement_dir).unwrap();
+    let replacement = replacement_dir.join("Notes.txt");
+    std::fs::copy(&source, &replacement).unwrap();
+    let failure = locate_library_book(
+        replacement.to_string_lossy().into_owned(),
+        book.fingerprint.clone(),
+    )
+    .unwrap_err();
+    assert!(failure.to_string().contains("recent"), "{failure}");
+    let published = load_library().unwrap().books.remove(0);
+    assert!(!published.missing);
+    assert!(std::path::Path::new(&published.path).is_file());
+    std::fs::remove_dir(&history).unwrap();
+    std::fs::rename(&retained, &history).unwrap();
     rename_library_shelf(shelf, "Finished".into()).unwrap();
     assert_eq!(load_library().unwrap().shelves[0].name, "Finished");
     assert!(toggle_library_shelf(shelf, "a".repeat(64)).is_err());
@@ -53,6 +84,7 @@ fn catalog_import_repair_shelves_and_removal_preserve_sources_and_state() {
     assert!(empty.books.is_empty());
     assert!(empty.shelves[0].books.is_empty());
     assert!(!std::path::Path::new(&repaired.path).exists());
+    assert!(!std::path::Path::new(&published.path).exists());
     assert!(source.is_file());
     assert!(copy.is_file());
     delete_library_shelf(shelf).unwrap();

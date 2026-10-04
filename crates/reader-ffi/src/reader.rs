@@ -36,6 +36,8 @@ pub struct RowSemantics {
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct RowPresentation {
+    pub alignment: String,
+    pub image_left: f32,
     pub font_size: f32,
     pub line_height: f32,
     pub family: String,
@@ -85,33 +87,82 @@ pub(crate) fn presentation(
     theme: &'static themes::ReadingTheme,
     options: reading::Options,
 ) -> RowPresentation {
-    let style = themes::effective_style(theme, false, options);
+    let pdf = book.pdf_source.is_some();
+    let style = themes::effective_style(theme, pdf, options);
     let body = options.size as f32;
     let width = reader_layout::atlas::PAPER - 2.0 * options.margin as f32;
-    let padding = style.block_padding(item, book.structure.get(item.id()), body, width);
+    let mut padding = style.block_padding(item, book.structure.get(item.id()), body, width);
+    let mut alignment = "left";
+    let mut image_left = 0.0;
+    if let Some(source) = &book.pdf_source {
+        let block = &source.conversion.blocks[index];
+        match block.layout {
+            reader_pdf::book::BlockLayout::Centered => alignment = "center",
+            reader_pdf::book::BlockLayout::Right => alignment = "right",
+            reader_pdf::book::BlockLayout::List { indent }
+            | reader_pdf::book::BlockLayout::Inset { indent }
+            | reader_pdf::book::BlockLayout::Toc { indent, .. } => {
+                padding.left += width * indent.clamp(0.0, 0.2)
+            }
+            _ => {}
+        }
+        let page = source.document.pages[block.sources[0].page as usize];
+        padding.top += width * page.height / page.width.max(1.0) * block.top_gap.clamp(0.0, 0.55);
+        image_left = width
+            * source
+                .conversion
+                .placements
+                .get(item.id())
+                .map_or(0.0, |p| p.offset);
+    }
     let size = measure::styled_item_size(&style, book, index, item, body);
     let code = book
         .structure
         .get(item.id())
         .is_some_and(|s| matches!(s.kind, BlockKind::Preformatted | BlockKind::Formula));
     let (image_width, image_height) = if let Item::Image { asset_path, .. } = item {
-        book.images
-            .get(asset_path)
-            .map(|asset| {
-                let scale = (width / asset.width.max(1) as f32).min(1.0);
-                (asset.width as f32 * scale, asset.height as f32 * scale)
-            })
-            .unwrap_or((0.0, body * style.line_height))
+        if let Some(source) = &book.pdf_source {
+            source
+                .conversion
+                .illustrations
+                .get(asset_path)
+                .map(|rect| {
+                    let page = source.document.pages
+                        [source.conversion.blocks[index].sources[0].page as usize];
+                    let w = width
+                        * source
+                            .conversion
+                            .placements
+                            .get(asset_path)
+                            .map_or(1.0, |p| p.width);
+                    (
+                        w,
+                        w * page.height * (rect.bottom - rect.top)
+                            / (page.width * (rect.right - rect.left)),
+                    )
+                })
+                .unwrap_or((0.0, body * style.line_height))
+        } else {
+            book.images
+                .get(asset_path)
+                .map(|asset| {
+                    let scale = (width / asset.width.max(1) as f32).min(1.0);
+                    (asset.width as f32 * scale, asset.height as f32 * scale)
+                })
+                .unwrap_or((0.0, body * style.line_height))
+        }
     } else {
         (0.0, 0.0)
     };
     RowPresentation {
+        alignment: alignment.into(),
+        image_left,
         font_size: size,
         line_height: size * style.line_height,
         family: if code {
             "monospace"
         } else {
-            themes::effective_family(theme, false, options).unwrap_or("Literata")
+            themes::effective_family(theme, pdf, options).unwrap_or("Literata")
         }
         .into(),
         top: padding.top,
@@ -289,6 +340,10 @@ impl OpenBook {
                         .section_index(&p.chapter)
                         .map(|section| (section, p.item_id, p.within))
                 })
+        } else if self.book.pdf_source.is_some() {
+            position::load_pdf_book(&self.book.path)?
+                .filter(|p| p.fingerprint == self.book.fingerprint)
+                .map(|p| (0, p.item_id, p.within))
         } else {
             position::load(&self.book.path)?
                 .filter(|p| p.fingerprint == self.book.fingerprint)
@@ -366,6 +421,24 @@ impl OpenBook {
         theme: String,
         options: LayoutOptions,
     ) -> Result<LinkDestination, CoreError> {
+        if let Some(pdf) = &self.book.pdf_source {
+            let page = href
+                .strip_prefix("pdf-page:")
+                .and_then(|p| p.parse::<u32>().ok())
+                .filter(|p| (*p as usize) < pdf.document.pages.len())
+                .ok_or("PDF link target is unavailable".to_owned())?;
+            let row = pdf
+                .conversion
+                .blocks
+                .iter()
+                .position(|b| b.sources.first().is_some_and(|s| s.page == page))
+                .ok_or("PDF link page is unavailable".to_owned())?;
+            return Ok(LinkDestination {
+                location: Some(self.locate(0, row, 0.0)?),
+                section: 0,
+                note_rows: Vec::new(),
+            });
+        }
         let (section, fragment) = if let Some(epub) = &self.book.epub {
             epub.document.resolve_link(section as usize, &href)?
         } else {
@@ -414,6 +487,24 @@ impl OpenBook {
     }
     pub fn image(&self, section: u32, asset: String) -> Result<Option<ReaderImage>, CoreError> {
         let book = self.section(section as usize)?;
+        if let Some(pdf) = &book.pdf_source {
+            let Some(rect) = pdf.conversion.illustrations.get(&asset) else {
+                return Ok(None);
+            };
+            let block = pdf
+                .conversion
+                .blocks
+                .iter()
+                .find(|b| b.id == asset)
+                .ok_or("PDF illustration is unavailable".to_owned())?;
+            let raster = crate::complete(pdf.document.session.render(block.sources[0].page, 1200))?;
+            let cropped = reader_pdf::book::crop(&raster, *rect)?;
+            return Ok(Some(ReaderImage {
+                width: cropped.width,
+                height: cropped.height,
+                rgba: cropped.rgba,
+            }));
+        }
         Ok(book.images.get(&asset).and_then(|image| {
             image.rgba().map(|pixels| {
                 // Bound the FFI copy and Android bitmap; layout retains the
@@ -441,11 +532,15 @@ impl OpenBook {
         }))
     }
     pub fn save_options(&self, options: LayoutOptions) -> Result<LayoutOptions, CoreError> {
+        let _guard = crate::backup::read()?;
+        crate::backup::current(self.epoch)?;
         let options: reading::Options = options.into();
         reading::save(&self.book.fingerprint, Some(options))?;
         Ok(options.into())
     }
     pub fn save_location(&self, location: ReaderLocation, font_size: u16) -> Result<(), CoreError> {
+        let _guard = crate::backup::read()?;
+        crate::backup::current(self.epoch)?;
         if !location.within.is_finite()
             || !(0.0..=1.0).contains(&location.within)
             || location.page == 0
@@ -497,6 +592,29 @@ impl OpenBook {
                     font_size: size,
                 },
             )?;
+        } else if let Some(pdf) = &self.book.pdf_source {
+            position::save_pdf_book(
+                &self.book.path,
+                &position::ReadingPosition {
+                    fingerprint: self.book.fingerprint.clone(),
+                    item_id: item.id().into(),
+                    within,
+                    font_size: size,
+                },
+            )?;
+            let mut original = position::load_pdf(&self.book.path)?
+                .filter(|p| p.fingerprint == self.book.fingerprint)
+                .unwrap_or_else(|| pdf.original_position.clone());
+            original.page = location.page - 1;
+            original.within = pdf
+                .conversion
+                .blocks
+                .get(location.row as usize)
+                .and_then(|b| b.sources.first())
+                .map_or(0.0, |s| {
+                    (s.top + (s.bottom - s.top) * within).clamp(0.0, 1.0)
+                });
+            position::save_pdf(&self.book.path, &original)?;
         } else {
             position::save(
                 &self.book.path,

@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{Read, Seek};
 use std::mem::size_of;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, mpsc};
 
 pub mod book;
@@ -219,6 +219,15 @@ struct OpenData {
     can_copy: bool,
 }
 
+/// Shared progress and cancellation contain no PDFium handles.
+#[derive(Default)]
+pub struct BookProgress {
+    pub completed: AtomicU32,
+    pub total: AtomicU32,
+    pub cached: AtomicBool,
+    pub cancel: AtomicBool,
+}
+
 enum Command {
     Open(u64, PathBuf, oneshot::Sender<Result<OpenData, String>>),
     Render(u64, u32, u32, oneshot::Sender<Result<RenderedPage, String>>),
@@ -229,7 +238,11 @@ enum Command {
         Option<Selection>,
         oneshot::Sender<Result<String, String>>,
     ),
-    Book(u64, oneshot::Sender<Result<book::Conversion, String>>),
+    Book(
+        u64,
+        Option<Arc<BookProgress>>,
+        oneshot::Sender<Result<book::Conversion, String>>,
+    ),
     Close(u64),
 }
 
@@ -278,10 +291,17 @@ pub async fn open(path: PathBuf) -> Result<Arc<Document>, String> {
 
 impl Session {
     pub async fn book(&self) -> Result<book::Conversion, String> {
+        self.book_with_progress(None).await
+    }
+
+    pub async fn book_with_progress(
+        &self,
+        progress: Option<Arc<BookProgress>>,
+    ) -> Result<book::Conversion, String> {
         let (reply, result) = oneshot::channel();
         self.0
             .worker
-            .send(Command::Book(self.0.id, reply))
+            .send(Command::Book(self.0.id, progress, reply))
             .map_err(|_| "PDF reader worker stopped".to_owned())?;
         result
             .await
@@ -388,7 +408,7 @@ fn run_worker(receiver: mpsc::Receiver<Command>) {
                     Command::Copy(_, _, reply) => {
                         let _ = reply.send(Err(error.clone()));
                     }
-                    Command::Book(_, reply) => {
+                    Command::Book(_, _, reply) => {
                         let _ = reply.send(Err(error.clone()));
                     }
                     Command::Close(_) => {}
@@ -463,13 +483,16 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                     .and_then(|document| copy_text(document, selection, &reply));
                 let _ = reply.send(result);
             }
-            Command::Book(id, reply) => {
+            Command::Book(id, progress, reply) => {
                 if reply.is_canceled() {
                     continue;
                 }
                 if let Some((cached_id, conversion)) = &last_book
                     && *cached_id == id
                 {
+                    if let Some(p) = &progress {
+                        p.cached.store(true, Ordering::Relaxed);
+                    }
                     let _ = reply.send(Ok(conversion.clone()));
                     continue;
                 }
@@ -477,13 +500,22 @@ fn serve<'a>(pdfium: &'a Pdfium, receiver: mpsc::Receiver<Command>) {
                     .get(&id)
                     .ok_or_else(|| "PDF document is closed".to_owned())
                     .and_then(|document| {
+                        if let Some(p) = &progress {
+                            p.total
+                                .store(document.pages().len() as u32, Ordering::Relaxed);
+                        }
                         let key = fingerprints.get(&id).expect("open document fingerprint");
                         if let Some(conversion) =
                             book_cache::load(key, document.pages().len() as usize)
                         {
+                            if let Some(p) = &progress {
+                                p.cached.store(true, Ordering::Relaxed);
+                                p.completed
+                                    .store(document.pages().len() as u32, Ordering::Relaxed);
+                            }
                             return Ok(conversion);
                         }
-                        let conversion = convert_book(document, &reply)?;
+                        let conversion = convert_book(document, &reply, progress.as_deref())?;
                         if !reply.is_canceled() {
                             let save_start = std::time::Instant::now();
                             book_cache::save(key, &conversion);
@@ -913,6 +945,7 @@ impl PageTransform {
 fn convert_book(
     document: &PdfDocument<'_>,
     reply: &oneshot::Sender<Result<book::Conversion, String>>,
+    progress: Option<&BookProgress>,
 ) -> Result<book::Conversion, String> {
     if !document
         .permissions()
@@ -932,7 +965,7 @@ fn convert_book(
     // Text extents of text-filled pages locate the book's usual text block.
     let mut extents: Vec<Rect> = Vec::new();
     for page in 0..count {
-        if reply.is_canceled() {
+        if reply.is_canceled() || progress.is_some_and(|p| p.cancel.load(Ordering::Relaxed)) {
             return Err("PDF Book conversion canceled".into());
         }
         let stage = std::time::Instant::now();
@@ -989,12 +1022,17 @@ fn convert_book(
         }
         builder.illustrations(page as u32, regions);
         builder.push(page as u32, layer)?;
+        if let Some(p) = progress {
+            p.completed.store(page as u32 + 1, Ordering::Relaxed);
+        }
     }
     if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
         eprintln!("PDF book text/objects/raster/regions: {timings:?}");
     }
     let reconstruct_start = std::time::Instant::now();
-    let conversion = builder.finish(|| reply.is_canceled())?;
+    let conversion = builder.finish(|| {
+        reply.is_canceled() || progress.is_some_and(|p| p.cancel.load(Ordering::Relaxed))
+    })?;
     if std::env::var_os("SIMPL_PDF_TIMING").is_some() {
         eprintln!("PDF Book reconstruction: {:?}", reconstruct_start.elapsed());
     }

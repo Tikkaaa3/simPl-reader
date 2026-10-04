@@ -39,7 +39,7 @@ pub struct DictionaryResult {
     pub message: Option<String>,
 }
 
-fn language(code: &str) -> Result<Language, CoreError> {
+pub(crate) fn language(code: &str) -> Result<Language, CoreError> {
     Language::ALL
         .into_iter()
         .find(|language| language.code() == code)
@@ -161,6 +161,7 @@ impl DictionaryStore {
         path: String,
         cancel: Arc<DictionaryCancellation>,
     ) -> Result<u32, CoreError> {
+        let _guard = crate::backup::read()?;
         Ok(self.store.import(Path::new(&path), &cancel.cancelled)?.0 as u32)
     }
 
@@ -170,6 +171,7 @@ impl DictionaryStore {
         path: String,
         cancel: Arc<DictionaryCancellation>,
     ) -> Result<(), CoreError> {
+        let _guard = crate::backup::read()?;
         use std::io::Read;
         let package = dictionary::package(PackageId(id as usize))
             .ok_or_else(|| "Unknown dictionary package.".to_owned())?;
@@ -185,6 +187,7 @@ impl DictionaryStore {
     }
 
     pub fn remove_package(&self, id: u32) -> Result<(), CoreError> {
+        let _guard = crate::backup::read()?;
         Ok(self.store.remove(PackageId(id as usize))?)
     }
     pub fn package_notices(&self, id: u32) -> Result<String, CoreError> {

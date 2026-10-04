@@ -40,6 +40,37 @@ struct Manifest {
     files: Vec<Item>,
 }
 
+fn windows_path(text: &str) -> bool {
+    if text.starts_with("\\\\?\\UNC\\") {
+        return true;
+    }
+    let text = text.strip_prefix("\\\\?\\").unwrap_or(text);
+    text.starts_with("\\\\")
+        || (text.as_bytes().get(1) == Some(&b':')
+            && text.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && text
+                .as_bytes()
+                .get(2)
+                .is_some_and(|b| matches!(b, b'\\' | b'/')))
+}
+
+fn portable_absolute(text: &str) -> bool {
+    text.starts_with('/') || windows_path(text)
+}
+
+/// Old v1 archives hash paths using their source platform's encoding.
+fn source_path_key(text: &str, windows: bool) -> String {
+    let mut digest = Sha256::new();
+    if windows {
+        for unit in text.encode_utf16() {
+            digest.update(unit.to_le_bytes());
+        }
+    } else {
+        digest.update(text.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
 #[derive(Clone, Debug)]
 pub struct Summary {
     pub files: usize,
@@ -317,7 +348,7 @@ fn manifest(zip: &mut ZipArchive<File>) -> Result<Manifest, String> {
     let record: Manifest =
         serde_json::from_reader(file.take(MAX_MANIFEST + 1)).map_err(|e| e.to_string())?;
     if record.version != VERSION
-        || !record.source_root.is_absolute()
+        || !record.source_root.to_str().is_some_and(portable_absolute)
         || record.files.len() > MAX_FILES
         || record
             .files
@@ -434,7 +465,6 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
             file.sync_all().map_err(|e| e.to_string())?;
         }
         drop(zip);
-        validate_profile(&stage)?;
         remap_paths(&stage, &record.source_root, &root)?;
         validate_profile(&stage)?;
         // A lightweight backup retains the current local document/dictionary
@@ -498,21 +528,51 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
     let mut paths = Vec::new();
+    let from = from.to_str().ok_or("Backup profile path is not Unicode")?;
+    let windows = windows_path(from);
+    let prefix = if windows {
+        from.replace('\\', "/")
+    } else {
+        from.into()
+    };
+    let prefix = format!("{}/", prefix.trim_end_matches('/'));
     fn walk(
         value: &mut serde_json::Value,
-        from: &Path,
+        prefix: &str,
+        windows: bool,
         to: &Path,
-        paths: &mut Vec<(PathBuf, PathBuf)>,
-    ) {
+        paths: &mut Vec<(String, PathBuf)>,
+    ) -> Result<(), String> {
         match value {
             serde_json::Value::String(text) => {
-                if let Ok(relative) = Path::new(text).strip_prefix(from)
-                    && relative
-                        .components()
-                        .all(|c| matches!(c, Component::Normal(_)))
-                {
-                    let old = PathBuf::from(text.as_str());
-                    let new = to.join(relative);
+                if !portable_absolute(text) || text.contains('\0') || text.len() > 4096 {
+                    return Err("Restored document has an invalid source path".into());
+                }
+                let normalized = if windows {
+                    text.replace('\\', "/")
+                } else {
+                    text.clone()
+                };
+                let relative = normalized.strip_prefix(prefix);
+                let new = if let Some(relative) = relative {
+                    to.join(checked_name(
+                        relative,
+                        Options {
+                            documents: true,
+                            dictionaries: true,
+                        },
+                    )?)
+                } else if Path::new(text).is_absolute() && windows_path(text) == cfg!(windows) {
+                    PathBuf::from(text.as_str())
+                } else {
+                    // Foreign external paths remain visibly missing until Locate
+                    // imports matching content; never interpret them as local files.
+                    to.join("documents/.missing")
+                        .join(source_path_key(text, windows))
+                        .join("book")
+                };
+                if new.to_string_lossy() != *text {
+                    let old = text.clone();
                     *text = new.to_string_lossy().into_owned();
                     paths.push((old, new));
                 }
@@ -520,17 +580,18 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
             serde_json::Value::Object(map) => {
                 for (key, value) in map.iter_mut() {
                     if key == "path" || !value.is_string() {
-                        walk(value, from, to, paths);
+                        walk(value, prefix, windows, to, paths)?;
                     }
                 }
             }
             serde_json::Value::Array(array) => {
                 for value in array {
-                    walk(value, from, to, paths);
+                    walk(value, prefix, windows, to, paths)?;
                 }
             }
             _ => {}
         }
+        Ok(())
     }
     for name in ["library.json", "recent.json"] {
         let path = stage.join(name);
@@ -543,14 +604,14 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
         let mut data: serde_json::Value =
             serde_json::from_reader(File::open(&path).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("Invalid restored {name}: {e}"))?;
-        walk(&mut data, from, to, &mut paths);
+        walk(&mut data, &prefix, windows, to, &mut paths)?;
         fs::write(&path, serde_json::to_vec(&data).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     }
     paths.sort();
     paths.dedup();
     for (old, new) in paths {
-        let old_key = crate::position::path_key(&old);
+        let old_key = source_path_key(&old, windows);
         let new_key = crate::position::path_key(&new);
         for suffix in [
             "json",
@@ -705,6 +766,66 @@ fn validate_profile(stage: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn windows_and_android_v1_archives_remap_documents_and_encoded_position_keys() {
+        assert!(windows_path(r"\\?\UNC\server\share\simPl"));
+        assert!(windows_path(r"\\server\share\simPl"));
+        for bytes in [
+            include_bytes!("../../../android/app/src/androidTest/assets/p3-windows.zip").as_slice(),
+            include_bytes!("../../../android/app/src/androidTest/assets/p3-android.zip").as_slice(),
+        ] {
+            let dir = TestDir::new();
+            let zip = dir.0.join("portable.zip");
+            fs::write(&zip, bytes).unwrap();
+            let root = dir.0.join("restored");
+            restore_into(&zip, &root).unwrap();
+            let books = crate::library::load_at(&root.join("library.json")).unwrap();
+            let document = &books[0].document;
+            assert!(document.path.is_file());
+            assert_eq!(document.title, "Portable Harbour");
+            let key = crate::position::path_key(&document.path);
+            let position: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.join(format!("positions/{key}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(position["position"]["within"], 0.5);
+            let notes =
+                crate::annotations::load_from(&root.join("annotations"), &document.fingerprint)
+                    .unwrap();
+            assert_eq!(
+                notes.highlights[0].note.as_deref(),
+                Some("Travel note — İstanbul 😀")
+            );
+        }
+    }
+
+    #[test]
+    fn foreign_external_paths_become_missing_without_being_interpreted_locally() {
+        let dir = TestDir::new();
+        let source = if cfg!(windows) {
+            "/home/reader/simPl"
+        } else {
+            "C:\\Users\\Reader\\simPl"
+        };
+        let path = if cfg!(windows) {
+            "/home/reader/books/one.html"
+        } else {
+            "D:\\Books\\one.html"
+        };
+        dir.write(
+            "stage/library.json",
+            &serde_json::to_vec(&json!({"entries":[{"document":{"path":path,"title":"A title"}}]}))
+                .unwrap(),
+        );
+        let root = dir.0.join("restored");
+        remap_paths(&dir.0.join("stage"), Path::new(source), &root).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.0.join("stage/library.json")).unwrap()).unwrap();
+        let mapped = PathBuf::from(data["entries"][0]["document"]["path"].as_str().unwrap());
+        assert!(mapped.starts_with(root.join("documents/.missing")));
+        assert!(!mapped.exists());
+        assert_eq!(data["entries"][0]["document"]["title"], "A title");
+    }
     struct TestDir(PathBuf);
     impl TestDir {
         fn new() -> Self {

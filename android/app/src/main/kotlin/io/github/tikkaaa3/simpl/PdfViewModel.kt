@@ -205,7 +205,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         mutable.value = mutable.value.copy(revision = mutable.value.revision + 1)
     }
     private suspend fun refreshAnnotations() {
-        val result = withContext(Dispatchers.IO) { native.withLock { loadAnnotations(fingerprint) to source!!.pdfMarks() } }
+        val result = withContext(Dispatchers.IO) { native.withLock { source!!.documentAnnotations() to source!!.pdfMarks() } }
         mutable.value = mutable.value.copy(annotations = result.first, marks = result.second)
     }
     fun selectSource(selection: PdfSelection?) {

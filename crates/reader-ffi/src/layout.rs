@@ -185,9 +185,23 @@ impl<T: Clone> Job<T> {
 #[derive(uniffi::Object)]
 pub struct OpenBookTask {
     job: Arc<Job<Arc<OpenBook>>>,
+    progress: Arc<reader_pdf::BookProgress>,
+}
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct BookPreparation {
+    pub completed: u32,
+    pub total: u32,
+    pub cached: bool,
 }
 #[uniffi::export]
 impl OpenBookTask {
+    pub fn progress(&self) -> BookPreparation {
+        BookPreparation {
+            completed: self.progress.completed.load(Ordering::Relaxed),
+            total: self.progress.total.load(Ordering::Relaxed),
+            cached: self.progress.cached.load(Ordering::Relaxed),
+        }
+    }
     pub fn status(&self) -> LayoutStatus {
         self.job.status()
     }
@@ -197,11 +211,13 @@ impl OpenBookTask {
     }
     pub fn cancel(&self) {
         self.job.cancel.store(true, Ordering::Relaxed);
+        self.progress.cancel.store(true, Ordering::Relaxed);
     }
 }
 impl Drop for OpenBookTask {
     fn drop(&mut self) {
         self.job.cancel.store(true, Ordering::Relaxed);
+        self.progress.cancel.store(true, Ordering::Relaxed);
     }
 }
 
@@ -210,19 +226,23 @@ static OPEN_BOOKS: OnceLock<OpenBooks> = OnceLock::new();
 
 #[derive(uniffi::Object)]
 pub struct OpenBook {
+    pub(crate) epoch: u64,
     pub(crate) book: Arc<Book>,
     pub(crate) atlas: Atlas,
     sections: Mutex<HashMap<usize, Arc<Book>>>,
 }
 
 /// Start opening and measuring a managed HTML/EPUB or PDF Book. The worker
-/// checks cancellation between items/sections; PDF conversion finishes first.
+/// checks cancellation between items/sections and physical PDF conversion pages.
 #[uniffi::export]
 pub fn open_book(path: String) -> Result<Arc<OpenBookTask>, CoreError> {
     start_book(path, true)
 }
 fn start_book(path: String, cache: bool) -> Result<Arc<OpenBookTask>, CoreError> {
     let job = Job::new();
+    let progress = Arc::new(reader_pdf::BookProgress::default());
+    let work_progress = progress.clone();
+    let epoch = crate::backup::epoch();
     job.run(move |cancel| {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
@@ -233,7 +253,20 @@ fn start_book(path: String, cache: bool) -> Result<Arc<OpenBookTask>, CoreError>
                 .extension()
                 .is_some_and(|s| s.eq_ignore_ascii_case("pdf"))
             {
-                complete(book::open_pdf(path))?
+                let document = complete(reader_pdf::open(path))?;
+                let conversion =
+                    complete(document.session.book_with_progress(Some(work_progress)))?;
+                let warnings = conversion.warnings.clone();
+                let original = reader_document::position::load_pdf(&document.path)?
+                    .filter(|p| p.fingerprint == document.fingerprint)
+                    .unwrap_or(reader_document::position::PdfReadingPosition {
+                        fingerprint: document.fingerprint.clone(),
+                        page: 0,
+                        within: 0.0,
+                        horizontal: 0.0,
+                        zoom: reader_document::position::PdfZoom::FitWidth,
+                    });
+                book::pdf_book(document, conversion, original, None, warnings)?
             } else {
                 book::open(&path)?
             },
@@ -245,6 +278,7 @@ fn start_book(path: String, cache: bool) -> Result<Arc<OpenBookTask>, CoreError>
             return Ok(None);
         }
         let opened = Arc::new(OpenBook {
+            epoch,
             book,
             atlas,
             sections: Mutex::new(HashMap::new()),
@@ -257,7 +291,7 @@ fn start_book(path: String, cache: bool) -> Result<Arc<OpenBookTask>, CoreError>
         books.insert(opened.book.fingerprint.clone(), Arc::downgrade(&opened));
         Ok(Some(opened))
     })?;
-    Ok(Arc::new(OpenBookTask { job }))
+    Ok(Arc::new(OpenBookTask { job, progress }))
 }
 
 /// Look up a live book by its source fingerprint. Holding OpenBook retains it.

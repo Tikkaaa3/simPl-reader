@@ -204,8 +204,8 @@ Validation and API details:
   to the M1 commit `14f048c`. No dependency versions, atlas schema, PDF conversion
   version or Windows release workflow changed.
 - `open_book` returns an `OpenBookTask`; `adapt` returns an `AdaptBookTask`.
-  Both expose `status`, `result` and `cancel`, and closing a pending handle also
-  requests cancellation. PDF conversion finishes before cancellation is checked.
+   Both expose `status`, `result` and `cancel`, and closing a pending handle also
+   requests cancellation. P4 adds cancellation checks between PDF conversion pages.
   Keep `OpenBook` alive for `atlas(fingerprint)`. FFI page numbers are one-based;
   a source page spanning chapters returns every section fragment. See
   [`reader-layout/README.md`](crates/reader-layout/README.md).
@@ -473,15 +473,65 @@ and the ten existing warnings; P2 introduced no lint warnings.
 
 ### P3 — Backup and export
 
-- [ ] Create/restore backups (`backup.rs`), SAF `CREATE_DOCUMENT`/`OPEN_DOCUMENT`.
-- [ ] **Windows ↔ Android backup compatibility:** path remapping, a "Locate" flow for missing books.
-- [ ] Export notes as Markdown/Text/JSON + share sheet.
+- [x] Create/restore backups (`backup.rs`), SAF `CREATE_DOCUMENT`/`OPEN_DOCUMENT`.
+- [x] **Windows ↔ Android backup compatibility:** path remapping, a "Locate" flow for missing books.
+- [x] Export notes as Markdown/Text/JSON + share sheet.
+
+**Implementation:** Settings offers verified portable version 1 ZIP snapshots,
+optional private documents/dictionaries, background SAF transfers, rotation
+retention and restartable provider requests. Restore requires replacement
+confirmation, atomically swaps the shared profile and retains its predecessor.
+A profile barrier serializes snapshots/restores with native writes; old reader
+handles reject later writes. Appearance and dictionary preferences use the
+desktop preferences record. Cross-platform restoration remaps managed paths,
+Windows UTF-16 and Android UTF-8 position keys, and all five position/mode
+suffixes. Foreign external files remain missing. Locate verifies matching
+content before repairing the catalog and transfers saved positions while
+retaining metadata, favorites, shelves and annotations. Each Annotations sheet
+exports Markdown/Text/JSON through SAF or a read-only FileProvider share URI.
+See [android/README.md](android/README.md#backup-and-note-export-p3).
 
 ### P4 — PDF Book view
 
-- [ ] `reader-pdf::book` conversion, progress indicator and cache; switching
+- [x] `reader-pdf::book` conversion, progress indicator and cache; switching
       Document ↔ Book keeps the page.
-- [ ] Time/memory measurement on a phone CPU; background preparation if needed.
+- [x] Time/memory measurement on the accepted emulator; background preparation
+      with progress, cancellation and retry. Physical-phone timing is deferred.
+
+**Implementation:** PDF Book uses the desktop conversion and canonical atlas
+without changing either cache schema. Preparation reports converted pages,
+checks cancellation between pages and atlas work, and reuses verified persistent
+caches. Corrupt conversion caches are rebuilt. Compose receives PDF alignment,
+indentation, gaps and illustration placement, with bounded source-page crops
+for figures and textless-page fallbacks. Physical page identity survives
+Document ↔ Book switches, recreation and reopening; mode choice and separate
+Book/Document checkpoints use the existing desktop position files. Existing
+same-page Book anchors are retained. Copy restrictions disable Book conversion.
+Mode-specific annotation lists keep glyph and source-byte anchors separate;
+portable export includes both. See
+[android/README.md](android/README.md#pdf-book-reader-p4).
+
+The final debug measurement on the API 36 x86_64 emulator uses a self-authored
+512-page PDF with 240 lines per page: conversion plus canonical-atlas preparation
+takes 37,894 ms cold and 543 ms from cache. Sampled process PSS rises from
+193,230 KiB to 289,740 KiB. It excludes Compose adaptation and is a warm-app
+instrumentation measurement, not physical-phone performance or an exact transient
+memory peak. Background preparation remains necessary. JSON and reviewed
+screenshots are retained in `target/p34-performance` and `target/p34-visual-final`.
+
+**P3/P4 acceptance (2026-10-04):** The Windows workspace check passes with
+431 tests and 37 existing ignored cases. The accepted API 36 x86_64 emulator
+passes 139 shared Rust tests (two ignored, three host-fixture skips) and all
+58 instrumentation tests without failures or skips. Five new backup/export
+cases cover portable positions/notes/shelves, matching-content Locate through
+SAF, corrupt restore, stale reader rejection, rotation and replacement
+confirmation, export formats and read-only sharing. Four new PDF Book cases
+cover cancellation/retry, permissions, persistent mode/page identity,
+mode-specific bookmarks, corrupt/reused caches and the large-PDF measurement.
+The final Locate history-failure regression is also checked on Windows and
+Android; its five UI cases pass again after that fix. ARM64/x86_64 R8 release
+assembly and debug/release lint pass with zero errors and the ten existing
+warnings. No dependencies or storage/cache schema versions changed.
 
 ### P5 — Polish
 

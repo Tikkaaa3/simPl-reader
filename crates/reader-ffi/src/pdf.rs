@@ -62,6 +62,7 @@ pub struct PdfPageText {
 
 #[derive(uniffi::Object)]
 pub struct PdfDocument {
+    pub(crate) epoch: u64,
     pub(crate) document: Arc<reader_pdf::Document>,
 }
 
@@ -69,9 +70,34 @@ pub struct PdfDocument {
 /// without converting the book or allocating page rasters.
 #[uniffi::export]
 pub fn open_pdf_document(path: String) -> Result<Arc<PdfDocument>, CoreError> {
+    let epoch = crate::backup::epoch();
     Ok(Arc::new(PdfDocument {
+        epoch,
         document: complete(reader_pdf::open(PathBuf::from(path)))?,
     }))
+}
+
+#[uniffi::export]
+pub fn pdf_book_mode(path: String, fingerprint: String) -> Result<bool, CoreError> {
+    let _guard = crate::backup::read()?;
+    Ok(
+        position::load_pdf_mode(std::path::Path::new(&path), &fingerprint)?
+            == position::PdfMode::Book,
+    )
+}
+#[uniffi::export]
+pub fn save_pdf_book_mode(path: String, fingerprint: String, book: bool) -> Result<(), CoreError> {
+    let _guard = crate::backup::read()?;
+    position::save_pdf_mode(
+        std::path::Path::new(&path),
+        &fingerprint,
+        if book {
+            position::PdfMode::Book
+        } else {
+            position::PdfMode::Document
+        },
+    )?;
+    Ok(())
 }
 
 #[uniffi::export]
@@ -173,6 +199,13 @@ impl PdfDocument {
     }
 
     pub fn save_location(&self, location: PdfLocation) -> Result<(), CoreError> {
+        let _guard = crate::backup::read()?;
+        crate::backup::current(self.epoch)?;
+        if position::load_pdf_mode(&self.document.path, &self.document.fingerprint)?
+            == position::PdfMode::Book
+        {
+            return Ok(());
+        }
         let page = self.page_index(location.page)?;
         position::save_pdf(
             &self.document.path,

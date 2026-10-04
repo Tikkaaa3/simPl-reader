@@ -77,22 +77,27 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
                 LibraryScreen(state, model,
                     importBooks = { documents.launch(arrayOf("*/*")) },
                     importFolder = { folder.launch(null) }, settings = settings,
+                    navigationToMissing = { navigation.navigate("backups") { popUpTo("library") } },
                     remove = { remove = it.fingerprint }, membership = { membership = it.fingerprint },
                     createShelf = { editShelf = "new" })
             }
             composable("settings") {
                 SettingsScreen(state, model, back = { navigation.popBackStack() },
                     dictionaries = { navigation.navigate("dictionaries") { launchSingleTop = true } },
+                    backups = { navigation.navigate("backups") { launchSingleTop = true; popUpTo("library") } },
                     licenses = { navigation.navigate("licenses") { launchSingleTop = true } },
                     createShelf = { editShelf = "new" }, editShelf = { editShelf = it.id.toString() },
                     deleteShelf = { deleteShelf = it.id.toString() })
             }
             composable("licenses") { LicenseScreen { navigation.popBackStack() } }
             composable("dictionaries") { DictionaryScreen(back = { navigation.popBackStack() }) }
+            composable("backups") { BackupScreen(state, model::locate, back = { navigation.popBackStack() }, restored = {
+                model.restored(); navigation.navigate("library") { popUpTo("library") { inclusive = true }; launchSingleTop = true }
+            }) }
             composable("reader/{fingerprint}") { entry ->
                 val fingerprint = entry.arguments?.getString("fingerprint")
                 val book = state.books.find { it.fingerprint == fingerprint }
-                if (book != null && book.format == DocumentFormat.PDF) PdfScreen(book, viewModel(viewModelStoreOwner = entry),
+                if (book != null && book.format == DocumentFormat.PDF) PdfReaderScreen(book,
                     back = { navigation.popBackStack(); model.reload() }, settings = settings)
                 else if (book != null) ReaderScreen(book, viewModel(viewModelStoreOwner = entry),
                     back = { navigation.popBackStack(); model.reload() }, settings = settings)
@@ -142,7 +147,7 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
 
 @Composable
 private fun LibraryScreen(state: LibraryState, model: LibraryViewModel, importBooks: () -> Unit,
-    importFolder: () -> Unit, settings: () -> Unit, remove: (LibraryBook) -> Unit,
+    importFolder: () -> Unit, settings: () -> Unit, navigationToMissing: () -> Unit, remove: (LibraryBook) -> Unit,
     membership: (LibraryBook) -> Unit, createShelf: () -> Unit) {
     val books = remember(state.books, state.shelves, state.filter, state.query) {
         val members = state.shelves.find { "shelf:${it.id}" == state.filter }?.books
@@ -226,7 +231,7 @@ private fun LibraryScreen(state: LibraryState, model: LibraryViewModel, importBo
                 }
             }
             items(books, key = { it.fingerprint }) { book ->
-                BookCard(book, open = { model.open(book) }, favourite = { model.favourite(book) },
+                BookCard(book, open = { if (book.missing) navigationToMissing() else model.open(book) }, favourite = { model.favourite(book) },
                     remove = { remove(book) }, membership = { membership(book) })
             }
         }
@@ -295,6 +300,7 @@ internal fun BookCover(book: LibraryBook, modifier: Modifier = Modifier) {
 @Composable
 private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: () -> Unit,
     dictionaries: () -> Unit,
+    backups: () -> Unit,
     licenses: () -> Unit,
     createShelf: () -> Unit, editShelf: (LibraryShelf) -> Unit, deleteShelf: (LibraryShelf) -> Unit) {
     Column(Modifier.fillMaxSize().testTag("settings")) {
@@ -326,6 +332,7 @@ private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: (
             }
             item { OutlinedButton(onClick = createShelf) { Text("New shelf") } }
             item { HorizontalDivider(); TextButton(onClick = dictionaries) { Text("Offline dictionaries") } }
+            item { TextButton(onClick = backups) { Text("Backup and export") } }
             item {
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 TextButton(onClick = licenses) { Text("Licenses") }

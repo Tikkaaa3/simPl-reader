@@ -86,6 +86,7 @@ fn mutate<T>(
     fingerprint: &str,
     edit: impl FnOnce(&mut store::Annotations) -> Result<T, String>,
 ) -> Result<T, CoreError> {
+    let _profile = crate::backup::read()?;
     let _guard = WRITES
         .lock()
         .map_err(|_| "Annotation storage is unavailable".to_owned())?;
@@ -342,6 +343,14 @@ impl OpenBook {
 }
 #[uniffi::export]
 impl OpenBook {
+    pub fn reader_annotations(&self) -> Result<AnnotationCollection, CoreError> {
+        let mut data = store::load(&self.book.fingerprint)?;
+        data.bookmarks
+            .retain(|b| matches!(b.place, store::BookmarkPlace::Reflow { .. }));
+        data.highlights
+            .retain(|h| matches!(h.place, store::Place::Reflow { .. }));
+        Ok(collection(&data))
+    }
     pub fn selection_word(&self, point: SourcePoint) -> Result<ReflowSelection, CoreError> {
         self.validate_point(point)?;
         let book = self.section(point.section as usize)?;
@@ -428,6 +437,7 @@ impl OpenBook {
     ) -> Result<Vec<u64>, CoreError> {
         let parts = self.selected_parts(&selection, true)?;
         mutate(&self.book.fingerprint, |data| {
+            crate::backup::current(self.epoch).map_err(|e| e.to_string())?;
             let mut ids = Vec::new();
             for (section, bounds) in parts {
                 let book = self.section(section).map_err(|e| e.to_string())?;
@@ -498,6 +508,7 @@ impl OpenBook {
                 .map(|s| s.href.clone())
         });
         mutate(&self.book.fingerprint, |data| {
+            crate::backup::current(self.epoch).map_err(|e| e.to_string())?;
             if let Some(id) = data.bookmarks.iter().find(|b| matches!(b.place, store::BookmarkPlace::Reflow { page_number, .. } if page_number + 1 == page)).map(|b| b.id) { data.remove_bookmark(id); }
             else { data.add_bookmark(store::BookmarkPlace::Reflow { chapter, item_id: row.id.clone(), within, page_number: page - 1 },
                 fragment.layout.label.clone(), preview_parts(fragment.rows.iter().filter_map(|r| r.text.as_deref())))?; }
@@ -606,6 +617,14 @@ impl PdfDocument {
 }
 #[uniffi::export]
 impl PdfDocument {
+    pub fn document_annotations(&self) -> Result<AnnotationCollection, CoreError> {
+        let mut data = store::load(&self.document.fingerprint)?;
+        data.bookmarks
+            .retain(|b| matches!(b.place, store::BookmarkPlace::Pdf { .. }));
+        data.highlights
+            .retain(|h| matches!(h.place, store::Place::Pdf { .. }));
+        Ok(collection(&data))
+    }
     pub fn selection_text(&self, selection: PdfSelection) -> Result<String, CoreError> {
         Ok(complete(
             self.document.session.copy(self.pdf_selection(&selection)?),
@@ -643,6 +662,8 @@ impl PdfDocument {
     ) -> Result<u64, CoreError> {
         let selected = self.pdf_selection(&selection)?;
         mutate(&self.document.fingerprint, |data| {
+            crate::backup::current(self.epoch).map_err(|e| e.to_string())?;
+            crate::backup::current(self.epoch).map_err(|e| e.to_string())?;
             let from = store::PdfPoint {
                 page: selected.anchor.page,
                 index: selected.anchor.index,

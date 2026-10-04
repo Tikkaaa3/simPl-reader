@@ -35,6 +35,8 @@ public class ImportFixtureProvider extends DocumentsProvider {
         files.put("chapter.html", "text/html"); files.put("bad.epub", "application/epub+zip");
         files.put("images/cover.png", "image/png");
         files.put("Dictionary.zip", "application/zip"); files.put("bad.zip", "application/zip");
+        files.put("p3-windows.zip", "application/zip"); files.put("p3-windows-light.zip", "application/zip");
+        files.put("p3-backup.zip", "application/zip"); files.put("p3-notes.md", "text/markdown");
     }
     @Override public boolean onCreate() {
         return true;
@@ -45,6 +47,8 @@ public class ImportFixtureProvider extends DocumentsProvider {
             DocumentsContract.buildDocumentUri("io.github.tikkaaa3.simpl.test.documents", id), flags);
         context.grantUriPermission("io.github.tikkaaa3.simpl",
             DocumentsContract.buildTreeDocumentUri("io.github.tikkaaa3.simpl.test.documents", "root"), flags | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        for (String id : new String[] {"p3-windows.zip", "p3-windows-light.zip", "p3-portable.html", "p3-backup.zip", "p3-notes.md"}) context.grantUriPermission("io.github.tikkaaa3.simpl",
+            DocumentsContract.buildDocumentUri("io.github.tikkaaa3.simpl.test.documents", id), flags | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
     }
     @Override public Cursor queryRoots(String[] projection) {
         MatrixCursor cursor = new MatrixCursor(projection != null ? projection : new String[] {
@@ -78,6 +82,12 @@ public class ImportFixtureProvider extends DocumentsProvider {
     }
     @Override public boolean isChildDocument(String parent, String id) { return parent.equals("root") || id.startsWith(parent + "/"); }
     @Override public ParcelFileDescriptor openDocument(String id, String mode, CancellationSignal signal) throws java.io.FileNotFoundException {
+        File output = new File(getContext().getCacheDir(), "provider-" + id.replace('/', '-'));
+        if (id.equals("p3-backup.zip") || id.equals("p3-notes.md")) {
+            try { if (!output.exists()) output.createNewFile(); }
+            catch (IOException error) { throw new java.io.FileNotFoundException(error.toString()); }
+            return ParcelFileDescriptor.open(output, ParcelFileDescriptor.parseMode(mode));
+        }
         if (!mode.equals("r")) throw new java.io.FileNotFoundException("Read only");
         try {
             byte[] bytes;
@@ -94,6 +104,13 @@ public class ImportFixtureProvider extends DocumentsProvider {
                     bytes = image.toByteArray(); break;
                 case "bad.epub": bytes = utf8("Broken EPUB"); break;
                 case "bad.zip": bytes = utf8("Broken dictionary ZIP"); break;
+                case "p3-windows.zip": case "p3-windows-light.zip": case "p3-portable.html":
+                    try (java.io.InputStream input = getContext().getAssets().open(id)) {
+                        ByteArrayOutputStream copied = new ByteArrayOutputStream(); byte[] buffer = new byte[32768]; int count;
+                        while ((count = input.read(buffer)) >= 0) copied.write(buffer, 0, count);
+                        bytes = copied.toByteArray();
+                    }
+                    break;
                 case "Dictionary.zip":
                     try (java.io.InputStream input = getContext().getAssets().open("en-tr-2026-09-30.zip")) {
                         ByteArrayOutputStream copied = new ByteArrayOutputStream(); byte[] buffer = new byte[32768]; int count;

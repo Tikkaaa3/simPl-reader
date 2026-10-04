@@ -21,12 +21,14 @@ pub struct LibraryBook {
     pub total: u32,
     pub cover: bool,
     pub favourite: bool,
+    pub missing: bool,
 }
 
 impl From<library::Entry> for LibraryBook {
     fn from(entry: library::Entry) -> Self {
         let format = entry.format().into();
         Self {
+            missing: !entry.document.path.is_file(),
             path: entry.document.path.to_string_lossy().into_owned(),
             fingerprint: entry.document.fingerprint,
             title: entry.document.title,
@@ -71,10 +73,18 @@ fn snapshot() -> Result<LibrarySnapshot, CoreError> {
     })
 }
 
-fn lock() -> Result<std::sync::MutexGuard<'static, ()>, CoreError> {
-    CATALOG
+fn lock() -> Result<
+    (
+        std::sync::RwLockReadGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ),
+    CoreError,
+> {
+    let profile = crate::backup::read()?;
+    let catalog = CATALOG
         .lock()
-        .map_err(|_| "Library is unavailable".to_owned().into())
+        .map_err(|_| CoreError::from("Library is unavailable".to_owned()))?;
+    Ok((profile, catalog))
 }
 
 #[uniffi::export]
@@ -87,6 +97,15 @@ pub fn load_library() -> Result<LibrarySnapshot, CoreError> {
 /// an entry, and coalesce identical content without resetting reading state.
 #[uniffi::export]
 pub fn import_library_book(source: String) -> Result<LibraryBook, CoreError> {
+    import_book(source, None)
+}
+
+#[uniffi::export]
+pub fn locate_library_book(source: String, fingerprint: String) -> Result<LibraryBook, CoreError> {
+    import_book(source, Some(fingerprint))
+}
+
+fn import_book(source: String, expected: Option<String>) -> Result<LibraryBook, CoreError> {
     let _guard = lock()?;
     let mut entries = library::load()?;
     let previous_paths = entries
@@ -94,8 +113,21 @@ pub fn import_library_book(source: String) -> Result<LibraryBook, CoreError> {
         .map(|entry| entry.document.path.clone())
         .collect::<Vec<_>>();
     let path = managed::import(Path::new(&source))?;
+    let mut published = false;
     let result = (|| {
         let summary = inspect_document(path.to_string_lossy().into_owned())?;
+        if let Some(expected) = &expected {
+            if !entries.iter().any(|e| e.document.fingerprint == *expected) {
+                return Err("That book is no longer in the library.".to_owned().into());
+            }
+            if summary.fingerprint != *expected {
+                return Err(
+                    "This file does not match the missing book. Choose the original content."
+                        .to_owned()
+                        .into(),
+                );
+            }
+        }
         if let Some(existing) = entries.iter().find(|entry| {
             entry.document.fingerprint == summary.fingerprint && entry.document.path.is_file()
         }) {
@@ -118,11 +150,16 @@ pub fn import_library_book(source: String) -> Result<LibraryBook, CoreError> {
         let entry = library::Entry {
             document: recent::Entry {
                 path: path.clone(),
-                title: summary.title,
+                title: previous
+                    .as_ref()
+                    .map_or(summary.title, |e| e.document.title.clone()),
                 fingerprint: summary.fingerprint,
                 kind,
             },
-            author: summary.author,
+            author: previous
+                .as_ref()
+                .and_then(|e| e.author.clone())
+                .or(summary.author),
             byte_len: std::fs::metadata(&path).map_err(|e| e.to_string())?.len(),
             opened_at: previous.as_ref().map_or(0, |entry| entry.opened_at),
             progress: previous.as_ref().map_or(0.0, |entry| entry.progress),
@@ -130,17 +167,32 @@ pub fn import_library_book(source: String) -> Result<LibraryBook, CoreError> {
             total: previous.as_ref().map_or(0, |entry| entry.total),
             cover,
             favourite: previous.as_ref().is_some_and(|entry| entry.favourite),
-            source_kind: managed::source_kind(&path),
+            source_kind: previous
+                .as_ref()
+                .and_then(|e| e.source_kind)
+                .or_else(|| managed::source_kind(&path)),
         };
+        if let Some(previous) = &previous {
+            recent::relocate(&previous.document, &entry.document)?;
+        }
         library::remember(
             &mut entries,
             entry.clone(),
             previous.as_ref().map(|entry| entry.document.path.as_path()),
         )?;
         library::save(&entries)?;
+        published = true;
+        if previous.is_some() {
+            let mut history = recent::load()?;
+            if let Some(previous) = &previous {
+                recent::remove(&mut history, &previous.document.path);
+            }
+            recent::remember(&mut history, entry.document.clone());
+            recent::save(&history)?;
+        }
         Ok(entry.into())
     })();
-    if result.is_err() && !previous_paths.contains(&path) {
+    if result.is_err() && !published && !previous_paths.contains(&path) {
         let _ = managed::remove(&path);
     }
     result
@@ -253,7 +305,10 @@ fn find<'a>(
 }
 
 pub(crate) fn save_progress(fingerprint: &str, current: u32, total: u32) -> Result<(), CoreError> {
-    let _guard = lock()?;
+    // Reader writes already hold the profile read barrier.
+    let _guard = CATALOG
+        .lock()
+        .map_err(|_| "Library is unavailable".to_owned())?;
     let mut entries = library::load()?;
     if let Some(entry) = entries
         .iter_mut()

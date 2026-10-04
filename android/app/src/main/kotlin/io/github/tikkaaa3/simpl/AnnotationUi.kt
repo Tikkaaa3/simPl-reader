@@ -108,12 +108,13 @@ internal fun NoteEditor(entry: AnnotationEntry?, dismiss: () -> Unit, save: (Ann
 
 @Composable
 internal fun AnnotationSheet(data: AnnotationCollection, dismiss: () -> Unit, go: (ULong, Boolean) -> Unit,
-    edit: (ULong, AnnotationColor, String) -> Unit, remove: (ULong, Boolean) -> Unit, read: ((String) -> Unit)? = null) {
+    edit: (ULong, AnnotationColor, String) -> Unit, remove: (ULong, Boolean) -> Unit, read: ((String) -> Unit)? = null, book: LibraryBook? = null) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
     var deleting by remember { mutableStateOf<Pair<AnnotationEntry, Boolean>?>(null) }
     ModalBottomSheet(onDismissRequest = dismiss) {
         Text("Annotations", Modifier.padding(horizontal = 20.dp, vertical = 12.dp), style = MaterialTheme.typography.headlineSmall)
+        if (book != null) NotesExport(book)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             listOf("Bookmarks", "Highlights", "Notes").forEachIndexed { index, title -> FilterChip(tab == index, onClick = { tab = index }, label = { Text(title) }) }
         }

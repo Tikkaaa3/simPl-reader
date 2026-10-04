@@ -75,6 +75,16 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
         openLibraryBook(book.fingerprint); refresh()
         withContext(Dispatchers.Main) { requestOpen(book.fingerprint) }
     }
+    fun locate(book: LibraryBook, uri: Uri) = mutate(FailureAction.Import) {
+        importer.import(uri, false, UUID.randomUUID().toString(), book.fingerprint)
+        refresh()
+        withContext(Dispatchers.Main) { mutable.value = mutable.value.copy(notice = "Book located. Reading position and notes were preserved.") }
+    }
+    fun restored() {
+        val appearance = runCatching { Appearance.valueOf(preferences.getString("appearance", "System")!!) }.getOrDefault(Appearance.System)
+        mutable.value = mutable.value.copy(appearance = appearance)
+        reload()
+    }
 
     private fun requestOpen(fingerprint: String) {
         saved["openRequest"] = fingerprint

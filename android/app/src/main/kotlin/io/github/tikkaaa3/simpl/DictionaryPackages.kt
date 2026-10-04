@@ -29,7 +29,9 @@ internal object OfflineDictionary {
         check(ready.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "The reader core has not started. Reopen the app and retry." }
         check(startupFailure == null) { startupFailure.orEmpty() }
     }
-    val store by lazy { DictionaryStore() }
+    private var cached: DictionaryStore? = null
+    val store: DictionaryStore get() = synchronized(this) { cached ?: DictionaryStore().also { cached = it } }
+    fun resetCache() { synchronized(this) { cached = null } }
     val languages by lazy { dictionaryLanguages() }
     private val mutable = MutableStateFlow(DictionaryOptions())
     val options = mutable.asStateFlow()
