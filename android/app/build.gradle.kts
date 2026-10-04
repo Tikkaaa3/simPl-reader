@@ -16,11 +16,15 @@ abstract class StageThemeAssets : DefaultTask() {
 
     @TaskAction fun stage() {
         val fontOutput = resources.get().dir("font").asFile.apply { mkdirs() }
-        mapOf("Geist-UI-560.ttf" to "geist_ui.ttf", "Literata-Regular.ttf" to "literata_regular.ttf").forEach { (source, target) ->
+        val faces = listOf("Regular", "Medium", "Bold", "Italic", "BoldItalic")
+        val reading = listOf("Literata", "Spectral", "FiraSans").flatMap { family ->
+            faces.map { face -> "$family-$face.ttf" to "${family.lowercase()}_${face.lowercase()}.ttf" }
+        }.toMap()
+        (reading + ("Geist-UI-560.ttf" to "geist_ui.ttf")).forEach { (source, target) ->
             fonts.get().file(source).asFile.copyTo(fontOutput.resolve(target), overwrite = true)
         }
         val noticeOutput = notices.get().dir("licenses").asFile.apply { mkdirs() }
-        listOf("Geist-OFL.txt", "Literata-OFL.txt", "Typeface-SOURCES.txt").forEach { name ->
+        listOf("Geist-OFL.txt", "Literata-OFL.txt", "Spectral-OFL.txt", "FiraSans-OFL.txt", "Typeface-SOURCES.txt").forEach { name ->
             licenses.get().file(name).asFile.copyTo(noticeOutput.resolve(name), overwrite = true)
         }
     }

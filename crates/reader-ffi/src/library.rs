@@ -252,6 +252,21 @@ fn find<'a>(
         .ok_or_else(|| "That book is no longer in the library.".to_owned().into())
 }
 
+pub(crate) fn save_progress(fingerprint: &str, current: u32, total: u32) -> Result<(), CoreError> {
+    let _guard = lock()?;
+    let mut entries = library::load()?;
+    if let Some(entry) = entries
+        .iter_mut()
+        .find(|e| e.document.fingerprint == fingerprint)
+    {
+        entry.current = current;
+        entry.total = total;
+        entry.progress = current as f32 / total.max(1) as f32;
+        library::save(&entries)?;
+    }
+    Ok(())
+}
+
 /// Remove only the managed copy; source documents and reading annotations stay.
 #[uniffi::export]
 pub fn remove_library_book(fingerprint: String) -> Result<(), CoreError> {

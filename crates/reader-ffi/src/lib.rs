@@ -12,6 +12,8 @@ mod layout;
 pub use layout::*;
 mod library;
 pub use library::*;
+mod reader;
+pub use reader::*;
 
 uniffi::setup_scaffolding!();
 

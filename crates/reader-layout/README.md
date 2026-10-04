@@ -71,4 +71,13 @@ fragments with rows, labels and start/end paragraph cuts (`row`, `line`, `lines`
 `AdaptedBook`, preserving the canonical atlas and page identities. Unknown themes
 fall back to Default; options use the existing validation bounds. PDF Book keeps
 canonical typography and physical pages. Close task/book/adaptation handles when
-finished (`use` in Kotlin). Rendering and gestures belong to later milestones.
+finished (`use` in Kotlin).
+
+M4's reader API adds source block semantics, UTF-8 style/link ranges, resolved
+typography and local image keys to page rows. `reader_info`, `contents`, `jump`,
+`follow_link`, `image`, `save_options` and `save_location` retain shared anchors,
+canonical identity and desktop position/typography storage schemas. Navigation
+targets use source section/row/fraction anchors; auxiliary EPUB notes have no
+invented page number. Theme palettes come from `reader_themes`, and image FFI
+copies are bounded to 2048 px per dimension. The Compose implementation and
+its line coverage/gesture tests live in `android/app`.

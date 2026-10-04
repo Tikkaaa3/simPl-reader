@@ -20,8 +20,8 @@ The app opens a responsive card grid with title/author search, Favorites,
 Continue and named shelves. Settings selects the device, light or dark theme
 and manages shelves. Geist and Literata come from the repository's font files;
 Gradle stages the fonts and their license notices as generated resources/assets.
-The Reader route currently shows book details. Reflowable page rendering is M4;
-PDF Document mode is M5.
+The Reader route opens reflowable pages for EPUB, HTML, TXT and Markdown (M4).
+PDF keeps the book-details destination until PDF Document mode in M5.
 
 The import menu uses `ACTION_OPEN_DOCUMENT` for multiple EPUB, PDF, HTML, TXT
 and Markdown files, or `ACTION_OPEN_DOCUMENT_TREE` for an HTML book folder.
@@ -52,6 +52,54 @@ removal confirmation, all three incoming intent actions, themes and navigation
 across Activity recreation. The fixture provider/picker exists only in the test
 APK. The host/device Rust catalog integration test also checks missing-copy
 repair and preservation of source files and state.
+
+## Reflowable reader (M4)
+
+The reader displays one canonical page at a time. Rust supplies its section
+fragments, source rows, structural semantics and start/end paragraph cuts.
+Compose `TextMeasurer` measures the complete source paragraph at the canonical
+paper width, maps the native cut ratio to its own line grid and draws only those
+lines. Adjacent pages cover each paragraph exactly once. RTL text retains its
+logical order and uses Android's bidirectional shaper and script fallback.
+Lists, quotations, code, captions, formula alternatives, table text rows and
+footnotes retain the shared document semantics; publisher CSS is not applied.
+
+Use Previous/Next, a horizontal swipe or the outer page edges to turn; tap the
+page field to enter an ordinal number or printed label. The label is shown
+alongside the ordinal when they differ. Scroll vertically within a tall page.
+Pinch to zoom up to 3×, pan the enlarged paper and select Fit width to reset.
+Zoom changes display scale only. Tap the center to toggle controls and Android
+system bars. Contents and internal links resolve through the native anchors;
+Return from link restores the source-row position. Auxiliary EPUB notes appear
+in a sheet outside canonical page order, with a return action and backlinks.
+Missing and external targets report an error without leaving the document.
+
+Reading options selects Default, Soft, Clear or Compact in light/dark paper,
+or follows the app appearance. All Literata, Spectral and Fira Sans reading
+faces and their licenses are generated from the shared repository assets.
+Per-book font, size, spacing and margin settings use `reader_document::reading`.
+Every change runs cancellable Rust `adapt_section_with` work and retains the
+canonical page number/count. Theme and paper appearance persist on the device.
+
+`ReaderViewModel` keeps native handles off the saved-state bundle, reopens them
+after process death and retains source-row anchors in `SavedStateHandle`.
+Position writes use the desktop HTML/EPUB schemas in `position.rs`, with a
+debounced write during reading and a completed checkpoint on lifecycle STOP
+and reader disposal. Library progress uses the same canonical ordinal/total.
+Decoded sections are bounded to three cached entries; exported images are
+bounded to 2048 px per dimension, with original dimensions retained for layout.
+
+`ReaderCutTest` checks complete, nonoverlapping Compose line coverage for long
+Unicode paragraphs under four contrasting typography configurations.
+`ReaderUiTest` exercises page gestures, pinch/fit, immersion, contents, links,
+auxiliary notes, printed labels, settings, STOP persistence and recreation.
+The host/device Rust reader integration test checks all seven reflowable golden
+fixtures, including position roundtrips at every canonical page boundary.
+On API 29+ UI screenshots survive test APK removal in `Pictures/simPl-M4`:
+
+```powershell
+adb pull /sdcard/Pictures/simPl-M4 target/m4-visual
+```
 
 ## Environment (Windows)
 

@@ -120,6 +120,8 @@ pub struct BookRow {
     pub right_to_left: bool,
     pub styles: Vec<TextRun>,
     pub image_asset: Option<String>,
+    pub semantics: crate::RowSemantics,
+    pub presentation: crate::RowPresentation,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct PageContent {
@@ -208,8 +210,9 @@ static OPEN_BOOKS: OnceLock<OpenBooks> = OnceLock::new();
 
 #[derive(uniffi::Object)]
 pub struct OpenBook {
-    book: Arc<Book>,
-    atlas: Atlas,
+    pub(crate) book: Arc<Book>,
+    pub(crate) atlas: Atlas,
+    sections: Mutex<HashMap<usize, Arc<Book>>>,
 }
 
 /// Start opening and measuring a managed HTML/EPUB or PDF Book. The worker
@@ -241,7 +244,11 @@ fn start_book(path: String, cache: bool) -> Result<Arc<OpenBookTask>, CoreError>
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let opened = Arc::new(OpenBook { book, atlas });
+        let opened = Arc::new(OpenBook {
+            book,
+            atlas,
+            sections: Mutex::new(HashMap::new()),
+        });
         let mut books = OPEN_BOOKS
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
@@ -266,7 +273,7 @@ pub fn atlas(fingerprint: String) -> Result<BookAtlas, CoreError> {
     book.atlas()
 }
 
-fn section_book(book: &Arc<Book>, section: usize) -> Result<Arc<Book>, CoreError> {
+pub(crate) fn section_book(book: &Arc<Book>, section: usize) -> Result<Arc<Book>, CoreError> {
     match &book.epub {
         Some(epub) if section != epub.index => Ok(Arc::new(book::load_epub_chapter(
             epub.document.clone(),
@@ -370,7 +377,13 @@ fn describe(
         sections,
     })
 }
-fn book_row(index: usize, item: &Item) -> BookRow {
+pub(crate) fn book_row(
+    book: &Book,
+    index: usize,
+    item: &Item,
+    theme: &'static themes::ReadingTheme,
+    options: Options,
+) -> BookRow {
     let (kind, heading_level, right_to_left, styles, image_asset) = match item {
         Item::Heading { level, .. } => (RowKind::Heading, Some(*level), false, Vec::new(), None),
         Item::Image { asset_path, .. } => (
@@ -412,10 +425,12 @@ fn book_row(index: usize, item: &Item) -> BookRow {
         right_to_left,
         styles,
         image_asset,
+        semantics: crate::reader::semantics(book, item),
+        presentation: crate::reader::presentation(book, index, item, theme, options),
     }
 }
 fn page_content(
-    book: &Arc<Book>,
+    book: &OpenBook,
     atlas: &Atlas,
     sections: &[Section],
     number: u32,
@@ -428,16 +443,19 @@ fn page_content(
     let mut result = Vec::new();
     // A publisher page can continue across EPUB chapter boundaries.
     for (index, section) in sections.iter().enumerate() {
+        if !section.pages.iter().any(|page| page.number + 1 == number) {
+            continue;
+        }
         let geometry = HeightIndex::new(section.heights.clone());
         for page in section.pages.iter().filter(|p| p.number + 1 == number) {
-            let book = section_book(book, index)?;
+            let book = book.section(index)?;
             result.push(PageContent {
                 section: count(index),
                 layout: page_layout(&book, &geometry, page, theme, options),
                 rows: book.items[page.rows.clone()]
                     .iter()
                     .enumerate()
-                    .map(|(row, item)| book_row(row + page.rows.start, item))
+                    .map(|(row, item)| book_row(&book, row + page.rows.start, item, theme, options))
                     .collect(),
             });
         }
@@ -465,7 +483,7 @@ impl OpenBook {
     }
     pub fn page(&self, number: u32) -> Result<Vec<PageContent>, CoreError> {
         page_content(
-            &self.book,
+            self,
             &self.atlas,
             &self.atlas.sections,
             number,
@@ -495,7 +513,7 @@ impl OpenBook {
                     sections.push(section.clone());
                     continue;
                 }
-                let current = section_book(&self.book, index)?;
+                let current = self.section(index)?;
                 let Some(adapted) =
                     atlas::adapt_section_with(current, section, theme, options, cancel)?
                 else {
@@ -511,6 +529,25 @@ impl OpenBook {
             })))
         })?;
         Ok(Arc::new(AdaptBookTask { job }))
+    }
+}
+
+impl OpenBook {
+    /// Bound decoded section assets independently of the size of the book.
+    pub(crate) fn section(&self, index: usize) -> Result<Arc<Book>, CoreError> {
+        let mut cached = self
+            .sections
+            .lock()
+            .map_err(|_| CoreError::from("Book section cache is unavailable".to_owned()))?;
+        if let Some(book) = cached.get(&index) {
+            return Ok(book.clone());
+        }
+        let book = section_book(&self.book, index)?;
+        if cached.len() >= 3 {
+            cached.clear();
+        }
+        cached.insert(index, book.clone());
+        Ok(book)
     }
 }
 
@@ -534,7 +571,7 @@ impl AdaptedBook {
     }
     pub fn page(&self, number: u32) -> Result<Vec<PageContent>, CoreError> {
         page_content(
-            &self.book.book,
+            &self.book,
             &self.book.atlas,
             &self.sections,
             number,

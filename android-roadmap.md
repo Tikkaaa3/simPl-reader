@@ -244,21 +244,42 @@ Host-driven emulator QA also restores navigation, theme, query and Favorites
 after stopping the activity and killing its process; screenshots and PID
 records are in `target/m3-visual`.
 
-### M4 — Reader: reflowable books (EPUB/HTML/TXT/MD)
+### M4 — Reader: reflowable books (EPUB/HTML/TXT/MD) (completed)
 
-- [ ] Page view: a "paper" with the row range and cut row from Rust; blocks
+- [x] Page view: a "paper" with the row range and cut row from Rust; blocks
       (heading, paragraph, list, quote, table, code, image, footnote) are drawn in Compose.
-- [ ] In-paragraph cut: split at the line of the Compose `TextMeasurer` layout that
+- [x] In-paragraph cut: split at the line of the Compose `TextMeasurer` layout that
       corresponds to the canonical cut row.
-- [ ] Navigation: previous/next page by swipe and edge tap zones, jump by typing a
+- [x] Navigation: previous/next page by swipe and edge tap zones, jump by typing a
       number/label in the page field, vertical scrolling inside a page.
-- [ ] Contents, internal links, footnotes, returning from a link.
-- [ ] Zoom (pinch) and "Fit width"; zoom does not change page numbers.
-- [ ] Reading themes (Default/Soft/Clear/Compact × light/dark); per-book font,
+- [x] Contents, internal links, footnotes, returning from a link.
+- [x] Zoom (pinch) and "Fit width"; zoom does not change page numbers.
+- [x] Reading themes (Default/Soft/Clear/Compact × light/dark); per-book font,
       size, line spacing and margins (`adapt_section_with`).
-- [ ] Immersive full screen; tap to show/hide the toolbar.
-- [ ] Save/restore position (`position.rs`); forced save in `onStop`.
-- [ ] Visual check of right-to-left and bidirectional text (fixtures).
+- [x] Immersive full screen; tap to show/hide the toolbar.
+- [x] Save/restore position (`position.rs`); forced save in `onStop`.
+- [x] Visual check of right-to-left and bidirectional text (fixtures).
+
+The Compose reader measures full source paragraphs and clips their matching
+line ranges, retaining Unicode styles and accessible link actions. Rust exports
+resolved block typography/palettes, bounded images, contents and navigation
+targets. Auxiliary EPUB notes stay outside next/previous page order. Printed
+labels appear alongside canonical ordinals; missing/external links report an
+error. Theme adaptation, pinch and fit never change canonical page identity.
+Typography and HTML/EPUB positions use the existing desktop storage schemas.
+
+Validation: Windows `dev.ps1 check`, shared Rust unit/integration/golden tests on
+the API 36 emulator, all 17 app instrumentation tests, Android lint and the
+minified release APK for arm64-v8a/x86_64. The new Rust integration test checks
+all seven reflowable golden fixtures and restores every split-page boundary.
+Compose line coverage is exact under four contrasting typography settings;
+UI tests cover gestures, zoom/fit, immersion, contents/links/notes, printed
+labels, STOP checkpoints, recreation and per-book options. Eight theme/paper
+screenshots include lists, quotes, code, table text, images and mixed Arabic,
+Hebrew and Latin text. A real stopped-process kill changes PID 17525 → 18214
+and restores page 4/19, font size 26 and the exact source-row fraction
+0.15744351. Screenshots and checkpoint records are in `target/m4-visual`.
+PDF keeps its details destination until M5.
 
 ### M5 — Reader: PDF Document view
 

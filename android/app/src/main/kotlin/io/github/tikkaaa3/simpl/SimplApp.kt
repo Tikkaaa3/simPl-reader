@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.*
+import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.tikkaaa3.simpl.core.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -86,7 +87,10 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
             }
             composable("reader/{fingerprint}") { entry ->
                 val fingerprint = entry.arguments?.getString("fingerprint")
-                BookOverview(state.books.find { it.fingerprint == fingerprint },
+                val book = state.books.find { it.fingerprint == fingerprint }
+                if (book != null && book.format != DocumentFormat.PDF) ReaderScreen(book, viewModel(viewModelStoreOwner = entry),
+                    back = { navigation.popBackStack(); model.reload() }, settings = settings)
+                else BookOverview(book,
                     back = { navigation.popBackStack() }, settings = settings,
                     membership = { membership = it.fingerprint }, model = model)
             }

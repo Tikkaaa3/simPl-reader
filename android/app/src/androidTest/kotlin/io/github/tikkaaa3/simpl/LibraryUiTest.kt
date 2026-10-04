@@ -115,7 +115,8 @@ class LibraryUiTest {
         ui.onNodeWithContentDescription("Back").performClick()
         ui.onNodeWithTag("reader").assertExists()
         ui.onNodeWithContentDescription("Back to library").performClick()
-        ui.onNodeWithText("CONTINUE").assertExists()
+        // Opening the one-page fixture now records real reading progress.
+        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 1 of 1 · 100%").fetchSemanticsNodes().isNotEmpty() }
         screenshot("library-dark")
     }
 

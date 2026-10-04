@@ -12,6 +12,15 @@ pub struct DisplayImage {
     pub height: u32,
 }
 
+impl DisplayImage {
+    pub fn rgba(&self) -> Option<&[u8]> {
+        match &self.handle {
+            image::Handle::Rgba { pixels, .. } => Some(pixels.as_ref()),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct EpubChapter {
     pub document: Arc<reader_document::epub::Epub>,
