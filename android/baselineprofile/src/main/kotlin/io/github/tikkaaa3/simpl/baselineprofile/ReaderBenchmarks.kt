@@ -29,8 +29,14 @@ private fun device() = UiDevice.getInstance(InstrumentationRegistry.getInstrumen
 
 private fun awaitPage(): String {
     val device = device()
-    check(device.wait(Until.hasObject(By.textStartsWith("Page ")), 30_000)) { "Reader did not finish loading" }
-    return device.findObject(By.textStartsWith("Page ")).text
+    val deadline = android.os.SystemClock.elapsedRealtime() + 30_000
+    while (android.os.SystemClock.elapsedRealtime() < deadline) {
+        // Open-with navigation can replace a page between finding and reading it.
+        val page = device.wait(Until.findObject(By.textStartsWith("Page ")),
+            (deadline - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(1)) ?: break
+        try { return page.text } catch (_: androidx.test.uiautomator.StaleObjectException) { }
+    }
+    error("Reader did not finish loading")
 }
 
 private fun nextPage() {
