@@ -5,10 +5,13 @@
         android:name=".SimplApplication"
         android:allowBackup="false"
         android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Simpl">
         <activity
             android:name=".MainActivity"
+            android:theme="@style/Theme.Simpl.Starting"
             android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>

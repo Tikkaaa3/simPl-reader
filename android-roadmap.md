@@ -356,20 +356,51 @@ splitting, overlapping colors, permissions and atomic failure handling. Windows
 
 ### M7 — MVP release (GitHub APK)
 
-- [ ] Icon (adaptive icon from `installer/simPl.svg`), splash screen, app name.
-- [ ] Error states: corrupt file, unsupported format, disk full, save failure.
-- [ ] Basic accessibility check: content descriptions, touch targets, font scale.
-- [ ] Baseline Profile; R8 shrinking; startup and page turn measurements.
-- [ ] License screen: PDFium, Rust dependencies (`collect-licenses.ps1` output), fonts, AndroidX.
-- [ ] Signing: release keystore (outside the repository; base64 in GitHub Secrets).
-- [ ] `.github/workflows/android-release.yml`: `android-v*.*.*` tag → `windows-latest`
+- [x] Icon (adaptive icon from `installer/simPl.svg`), splash screen, app name.
+- [x] Error states: corrupt file, unsupported format, disk full, save failure.
+- [x] Basic accessibility check: content descriptions, touch targets, font scale.
+- [x] Baseline Profile; R8 shrinking; startup and page turn measurements.
+- [x] License screen: PDFium, Rust dependencies (`collect-licenses.ps1` output), fonts, AndroidX.
+- [x] Signing: release keystore (outside the repository; base64 in GitHub Secrets).
+- [x] `.github/workflows/android-release.yml`: `android-v*.*.*` tag → `windows-latest`
       (so the toolchain file stays unchanged) → `check` + APK → draft GitHub Release.
       `versionCode` derived from the tag.
-- [ ] Artifacts: `simPl-<version>-android-arm64.apk` (+ SHA-256); optional universal APK.
-- [ ] `docs/releases/android-<version>.md` and an Android section in the README.
-- [ ] **MVP acceptance:** all 5 formats open on a real device; page numbers match
+- [x] Artifacts: `simPl-<version>-android-arm64.apk` (+ SHA-256); optional universal APK.
+- [x] `docs/releases/android-<version>.md` and an Android section in the README.
+- [x] **MVP acceptance:** all 5 formats open on the accepted API 36 emulator; page numbers match
       the desktop; position/highlights/notes persist; Windows `check` and the
-      Windows release build are green.
+       Windows release build are green.
+
+**Acceptance scope:** emulator validation was explicitly accepted by the user
+for M5 and remains the M7 device requirement. Physical-phone measurements remain
+follow-up work. On 2026-10-04, 33 Android instrumented tests passed, including seven
+M7 checks for five-format opening, complete notice assets, 1.8x font scale,
+corrupt-import cleanup, disk-full recovery and actual annotation-save failure
+followed by a successful retry. Shared Rust checks passed on Windows (423 tests)
+and the emulator (131 tests); the Windows release build also passed.
+
+The license index packages 700 offline legal/provenance documents. Both Android
+Rust target graphs are collected (208 arm64 dependencies, 209 x86_64 dependencies)
+so architecture-specific notices are retained. A distribution identity lives
+outside the checkout and the four signing secrets are configured in GitHub.
+The workflow is validated with actionlint; it will create a draft when triggered.
+No tag or GitHub release has been published as part of this implementation.
+
+Two Baseline Profile generation tests and two minified release benchmarks passed.
+The committed startup/reader profiles are compiled into the release APK. Five
+iterations measured cold-start initial display at 1242.13 ms median and native
+page fetch at 0.2501 ms median. Page-turn frame CPU P50/P90 was 38.15/56.72 ms;
+deadline overrun P50/P90 was 27.03/63.63 ms. The emulator missed frame deadlines;
+these are diagnostic measurements, and native fetch excludes drawing/gestures.
+See `android/README.md` for the complete scope and reproduction commands.
+
+The signed 0.1.0 artifacts and SHA-256 sidecars are in
+`target/android-release/0.1.0/`: arm64 (27.2 MB) and universal (49.2 MB),
+`versionCode=100001`. Release lint passed with zero errors (nine warnings).
+Both APK signatures, complete notice assets, ABI contents and the compiled
+10,108-byte Baseline Profile were verified. The signed universal APK installed
+and launched on the emulator; library, settings, the notice index and full
+license text opened successfully. See `docs/releases/android-0.1.0.md`.
 
 ---
 

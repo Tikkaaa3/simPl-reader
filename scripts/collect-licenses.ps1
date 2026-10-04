@@ -1,16 +1,19 @@
-# Copy notices for the shipped Windows x64 release binary of the simPl reader.
+# Copy notices for a feature-resolved release package of the simPl reader.
 # Notices come from the crate package itself when it ships one, otherwise from the exact
 # upstream revision recorded in the package provenance; fetched texts are cached under
 # target/native/rust-licenses so later runs (including -Offline) reuse them.
 param(
     [Parameter(Mandatory = $true)][string]$Destination,
-    [switch]$Offline
+    [switch]$Offline,
+    [ValidateSet('iced-shell', 'reader-ffi')][string]$Crate = 'iced-shell',
+    [ValidateSet('x86_64-pc-windows-msvc', 'aarch64-linux-android', 'x86_64-linux-android')]
+    [string]$Target = 'x86_64-pc-windows-msvc'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$target = 'x86_64-pc-windows-msvc'
+$target = $Target
 $cacheRoot = Join-Path $root 'target\native\rust-licenses'
 $candidateNames = @(
     'LICENSE', 'LICENCE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE.md',
@@ -153,16 +156,16 @@ try {
     if ((Split-Path -Leaf $sysroot) -ne $channel) {
         throw "Rust sysroot $sysroot does not match pinned channel $channel."
     }
-    if (-not (@($toolchainInfo | Where-Object { $_ -eq "host: $target" }).Count -gt 0) -or
+    if (-not (@($toolchainInfo | Where-Object { $_ -eq 'host: x86_64-pc-windows-msvc' }).Count -gt 0) -or
         -not (@($toolchainInfo | Where-Object { $_ -match '^commit-hash: [0-9a-f]{40}$' }).Count -eq 1)) {
-        throw "Rust toolchain is missing the $target host or commit provenance."
+        throw 'Pinned Rust toolchain is missing the Windows x64 host or commit provenance.'
     }
     $json = & cargo metadata --offline --locked --format-version 1 | Out-String
     if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'Cargo metadata failed; build or fetch dependencies before packaging.' }
     $metadata = $json | ConvertFrom-Json
     # Cargo metadata's resolve graph includes optional dependencies that the release features
     # do not activate, so the shipped package set comes from the actual feature-resolved tree.
-    $treeLines = @(& cargo tree -p iced-shell --offline --locked --target $target -e normal,build --prefix none --format '{p}`{l}`{r}')
+    $treeLines = @(& cargo tree -p $Crate --offline --locked --target $target -e normal,build --prefix none --format '{p}`{l}`{r}')
     if ($LASTEXITCODE -ne 0) { throw 'Cargo tree failed; cannot determine the shipped dependency set.' }
 } finally {
     Pop-Location
@@ -199,8 +202,8 @@ if ($shipped.Count -eq 0) { throw 'Cargo tree returned no shipped dependencies.'
 $rust = Join-Path $Destination 'rust'
 New-Item -ItemType Directory -Path $rust -Force | Out-Null
 $inventory = New-Object 'System.Collections.Generic.List[string]'
-$inventory.Add('Third-party Rust notices for the Windows x64 release build of the simPl reader.')
-$inventory.Add('Generated from cargo tree -p iced-shell -e normal,build --target ' + $target + ' (locked, offline).')
+$inventory.Add("Third-party Rust notices for the $Crate release build of the simPl reader ($target).")
+$inventory.Add('Generated from cargo tree -p ' + $Crate + ' -e normal,build --target ' + $target + ' (locked, offline).')
 $inventory.Add('The application license itself is unspecified and is not asserted by this file.')
 $inventory.Add('Legal texts are in rust/<crate>-<version>/. Fields: <crate> <version> | declared license | source | notice provenance.')
 $inventory.Add('Linked Rust standard-library notices: rust-standard-library/COPYRIGHT-library.html;')

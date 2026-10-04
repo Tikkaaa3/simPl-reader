@@ -17,7 +17,7 @@ class SimplApplication : Application() {
                 initialize(filesDir.absolutePath, cacheDir.absolutePath, Locale.getDefault().toLanguageTag())
                 null
             } catch (error: Throwable) {
-                error.message ?: error::class.java.simpleName
+                userError(error, FailureAction.Read)
             }
     }
 }

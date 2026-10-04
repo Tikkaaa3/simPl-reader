@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths from installer/simPl.svg, scaled inside the adaptive icon safe area. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="432" android:viewportHeight="432">
+    <group android:translateX="88" android:translateY="80">
+        <path android:fillColor="@android:color/transparent" android:strokeColor="#ededed"
+            android:strokeWidth="10" android:strokeLineJoin="round" android:strokeLineCap="round"
+            android:pathData="M128,79 Q94,58 52,69 V181 Q94,170 128,191 Q162,170 204,181 V69 Q162,58 128,79 V191" />
+        <path android:fillColor="@android:color/transparent" android:strokeColor="#ededed"
+            android:strokeWidth="10" android:strokeLineJoin="round" android:strokeLineCap="round"
+            android:pathData="M77,101 Q92,99 104,105 M77,127 Q92,125 104,131 M152,105 Q164,99 179,101 M152,131 Q164,125 179,127" />
+    </group>
+</vector>

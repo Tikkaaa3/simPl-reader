@@ -1,7 +1,7 @@
 # Windows PowerShell 5.1+. Android app workflow: environment check, APK build,
 # install-and-launch, tests on a device or emulator, and PDFium staging.
 param(
-    [ValidateSet('doctor', 'build', 'run', 'test', 'pdfium')]
+    [ValidateSet('doctor', 'build', 'run', 'test', 'pdfium', 'profile', 'benchmark')]
     [string]$Command = 'doctor',
     [switch]$Release,
     [switch]$Offline,
@@ -151,6 +151,16 @@ function Invoke-Gradle([string[]]$Tasks) {
 switch ($Command) {
     'doctor' { Invoke-Doctor }
     'pdfium' { & (Join-Path $PSScriptRoot 'pdfium-android.ps1') -Offline:$Offline }
+    'profile' {
+        Initialize-Environment | Out-Null
+        Invoke-Gradle @(':app:generateBaselineProfile',
+            '-Pandroid.testInstrumentationRunnerArguments.class=io.github.tikkaaa3.simpl.baselineprofile.BaselineProfileGenerator')
+    }
+    'benchmark' {
+        Initialize-Environment | Out-Null
+        Invoke-Gradle @(':baselineprofile:connectedBenchmarkReleaseAndroidTest',
+            '-Pandroid.testInstrumentationRunnerArguments.class=io.github.tikkaaa3.simpl.baselineprofile.ReaderBenchmarks')
+    }
     'test' {
         $sdk = Initialize-Environment
         Invoke-CoreTests $sdk
@@ -161,7 +171,7 @@ switch ($Command) {
         if ($Release) { Invoke-Gradle @('assembleRelease') } else { Invoke-Gradle @('assembleDebug') }
     }
     'run' {
-        if ($Release) { throw 'run installs the debug build; release APKs are unsigned until signing is configured.' }
+        if ($Release) { throw 'Use scripts/android-release.ps1 to produce a verified signed APK, then install it with adb.' }
         $sdk = Initialize-Environment
         Invoke-Gradle @('installDebug')
         $adb = Join-Path $sdk 'platform-tools\adb.exe'

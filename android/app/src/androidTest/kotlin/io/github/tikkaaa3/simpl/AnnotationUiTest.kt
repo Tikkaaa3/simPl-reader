@@ -103,7 +103,11 @@ class AnnotationUiTest {
         ui.onNodeWithContentDescription("Highlight blue").performClick(); ui.onNodeWithText("Save").performClick()
         ui.waitUntil(10_000) { loadAnnotations(book.fingerprint).highlights.single().note == "Edited harbour note" }
         assertEquals(AnnotationColor.BLUE, loadAnnotations(book.fingerprint).highlights.single().color)
-        ui.onNodeWithText("Highlights", substring = false).performClick()
+        // The editor's keyboard can still animate the sheet after the native save.
+        // Use the accessible tab action, then wait for the list's visible action.
+        ui.onNodeWithText("Highlights", substring = false)
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+        ui.onNodeWithTag("annotationList").performScrollToNode(hasText("Delete", substring = false))
         ui.onNodeWithText("Delete", substring = false).performClick()
         ui.onNodeWithTag("annotationDeleteConfirm").performClick(); waitCount(0, 1)
         ui.onNodeWithText("Bookmarks", substring = false).performClick(); ui.onNodeWithText("Page 1", substring = false).performClick()

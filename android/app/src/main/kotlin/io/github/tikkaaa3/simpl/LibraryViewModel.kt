@@ -48,7 +48,7 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
         val failure = (application as SimplApplication).coreFailure
         if (failure != null) mutable.value = mutable.value.copy(loading = false, error = "Cannot open the library: $failure")
         else {
-            mutate { refresh() }
+            mutate(FailureAction.Read) { refresh() }
             drainImports()
         }
     }
@@ -61,7 +61,7 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
     }
     fun dismissMessage() { mutable.value = mutable.value.copy(error = null, notice = null) }
     fun navigated() { saved["openRequest"] = null; mutable.value = mutable.value.copy(openRequest = null) }
-    fun reload() = mutate { refresh() }
+    fun reload() = mutate(FailureAction.Read) { refresh() }
     fun favourite(book: LibraryBook) = mutate { setLibraryFavourite(book.fingerprint, !book.favourite); refresh() }
     fun remove(book: LibraryBook) = mutate { removeLibraryBook(book.fingerprint); refresh() }
     fun createShelf(name: String) = mutate { createLibraryShelf(name); refresh() }
@@ -71,7 +71,7 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
         if (mutable.value.filter == "shelf:$id") withContext(Dispatchers.Main) { filter("all") }
     }
     fun toggleShelf(id: ULong, book: LibraryBook) = mutate { toggleLibraryShelf(id, book.fingerprint); refresh() }
-    fun open(book: LibraryBook) = mutate {
+    fun open(book: LibraryBook) = mutate(FailureAction.Read) {
         openLibraryBook(book.fingerprint); refresh()
         withContext(Dispatchers.Main) { requestOpen(book.fingerprint) }
     }
@@ -119,7 +119,7 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Exception) {
-                        mutable.value = mutable.value.copy(error = error.message ?: "Could not import this document.")
+                        mutable.value = mutable.value.copy(error = userError(error, FailureAction.Import))
                     }
                     saved["imports"] = ArrayList(pending().drop(1))
                     // Keep grants only while a process-restorable copy is pending.
@@ -149,14 +149,14 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
         }
     }
 
-    private fun mutate(operation: suspend () -> Unit) {
+    private fun mutate(action: FailureAction = FailureAction.Save, operation: suspend () -> Unit) {
         viewModelScope.launch {
             try {
                 mutations.withLock { withContext(Dispatchers.IO) { operation() } }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                mutable.value = mutable.value.copy(loading = false, error = error.message ?: "Could not update the library.")
+                mutable.value = mutable.value.copy(loading = false, error = userError(error, action))
             }
         }
     }

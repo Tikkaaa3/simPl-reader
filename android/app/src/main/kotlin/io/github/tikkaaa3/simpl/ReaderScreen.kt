@@ -83,7 +83,7 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
                 IconButton(onClick = { panel = "annotations" }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
                 IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = paper, titleContentColor = text, navigationIconContentColor = text, actionIconContentColor = text))
-        if (toolbar && !state.loading) Row(Modifier.fillMaxWidth().background(paper).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (toolbar && !state.loading) FlowRow(Modifier.fillMaxWidth().background(paper).padding(horizontal = 8.dp)) {
             TextButton(onClick = { panel = "contents" }) { Text("Contents") }
             TextButton(onClick = { panel = "options" }) { Text("Reading options") }
             TextButton(onClick = { zoom = 1f }) { Text("Fit width") }
@@ -103,9 +103,9 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         if (toolbar && state.total > 0u && !state.loading) Row(Modifier.fillMaxWidth().background(paper).navigationBarsPadding().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { model.turn(-1) }, enabled = state.page > 1u && !state.adapting) { Text("Previous") }
-            TextButton(onClick = { panel = "jump" }, modifier = Modifier.testTag("pageLabel")) {
+            TextButton(onClick = { panel = "jump" }, modifier = Modifier.weight(1f).testTag("pageLabel")) {
                 val label = state.pages.firstOrNull()?.layout?.label ?: state.page.toString()
-                Text(if (label == state.page.toString()) "Page $label of ${state.total}" else "Page $label · ${state.page} of ${state.total}", color = text)
+                Text(if (label == state.page.toString()) "Page $label of ${state.total}" else "Page $label · ${state.page} of ${state.total}", color = text, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             TextButton(onClick = { model.turn(1) }, enabled = state.page < state.total && !state.adapting) { Text("Next") }
         }

@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,8 +65,8 @@ internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highli
     var copied by remember(tag) { mutableStateOf(false) }
     var note by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().testTag(tag)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Text selected", Modifier.weight(1f).padding(start = 12.dp), style = MaterialTheme.typography.labelLarge)
+        FlowRow(Modifier.fillMaxWidth()) {
+            Text("Text selected", Modifier.padding(start = 12.dp, top = 14.dp), style = MaterialTheme.typography.labelLarge)
             TextButton(onClick = { copy { text ->
                 (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Book text", text)); copied = true
             } }) { Text(if (copied) "Copied" else "Copy") }
@@ -73,7 +75,7 @@ internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highli
             }, "Share text")) } }) { Text("Share") }
             TextButton(onClick = clear) { Text("Clear") }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             AnnotationColor.entries.forEach { color -> ColorButton(color, false) { highlight(color, null) } }
             TextButton(onClick = { note = true }) { Text("Add note") }
         }

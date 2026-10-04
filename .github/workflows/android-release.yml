@@ -1,0 +1,133 @@
+name: Android release
+
+on:
+  push:
+    tags:
+      - 'android-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Android version (x.y.z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  android:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive the Android version
+        id: version
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = if ($env:REF_TYPE -eq 'tag') { $env:REF_NAME -replace '^android-v', '' } else { $env:INPUT_VERSION }
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid Android version.' }
+          if (-not (Test-Path -LiteralPath "docs/releases/android-$version.md")) { throw 'Missing Android release notes.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=android-v$version" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install the pinned Android SDK and NDK
+        shell: pwsh
+        run: |
+          # Keep these packages aligned with android/app/build.gradle.kts.
+          sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0' 'ndk;29.0.14206865' 'platform-tools'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed.' }
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install cargo-ndk and fetch locked dependencies
+        shell: pwsh
+        run: |
+          cargo install cargo-ndk --version 4.1.2 --locked
+          if ($LASTEXITCODE -ne 0) { throw 'cargo-ndk installation failed.' }
+          cargo fetch --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo dependency fetch failed.' }
+
+      - name: Check Windows and shared core compatibility
+        shell: pwsh
+        run: |
+          & scripts/pdfium.ps1 -Destination target/debug/deps
+          & scripts/dev.ps1 check -Offline
+          & scripts/dev.ps1 build -Offline
+
+      - name: Restore the distribution signing identity
+        shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIMPL_ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.SIMPL_ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIMPL_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIMPL_ANDROID_KEY_PASSWORD }}
+        run: |
+          if (-not $env:KEYSTORE_BASE64 -or -not $env:STORE_PASSWORD -or -not $env:KEY_ALIAS -or -not $env:KEY_PASSWORD) { throw 'Configure the four Android signing secrets before releasing.' }
+          $key = Join-Path $env:RUNNER_TEMP 'simpl-release.jks'
+          [IO.File]::WriteAllBytes($key, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          "SIMPL_ANDROID_KEYSTORE=$key" >> $env:GITHUB_ENV
+          "SIMPL_ANDROID_STORE_PASSWORD=$env:STORE_PASSWORD" >> $env:GITHUB_ENV
+          "SIMPL_ANDROID_KEY_ALIAS=$env:KEY_ALIAS" >> $env:GITHUB_ENV
+          "SIMPL_ANDROID_KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
+
+      - name: Build and verify signed APKs
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          & scripts/android-release.ps1 -Version $env:RELEASE_VERSION -Universal
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: simPl-android-${{ steps.version.outputs.version }}
+          path: target/android-release/${{ steps.version.outputs.version }}/
+          if-no-files-found: error
+
+      - name: Create the draft Android release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: simPl Android ${{ steps.version.outputs.version }}
+          draft: true
+          body_path: docs/releases/android-${{ steps.version.outputs.version }}.md
+          fail_on_unmatched_files: true
+          files: |
+            target/android-release/${{ steps.version.outputs.version }}/*.apk
+            target/android-release/${{ steps.version.outputs.version }}/*.sha256
+
+      - name: Remove the temporary signing key
+        if: always()
+        shell: pwsh
+        run: |
+          $key = Join-Path $env:RUNNER_TEMP 'simpl-release.jks'
+          if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Force }

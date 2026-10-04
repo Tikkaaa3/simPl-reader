@@ -2,4 +2,9 @@
 <resources>
     <!-- Window theme only; Compose draws the interface. -->
     <style name="Theme.Simpl" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Simpl.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/icon_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.Simpl</item>
+    </style>
 </resources>

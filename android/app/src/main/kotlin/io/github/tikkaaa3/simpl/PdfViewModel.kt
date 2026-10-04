@@ -194,16 +194,16 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         val selection = mutable.value.selection ?: return@launch
         done(withContext(Dispatchers.IO) { native.withLock { source!!.selectionText(selection) } })
     }
-    fun highlight(color: AnnotationColor, note: String?) = launch {
+    fun highlight(color: AnnotationColor, note: String?) = launch(FailureAction.Save) {
         val selection = mutable.value.selection ?: return@launch
         withContext(Dispatchers.IO) { native.withLock { source!!.highlightSelection(selection, color, note) } }
         select(null); refreshAnnotations()
     }
-    fun bookmark() = launch { withContext(Dispatchers.IO) { native.withLock { source!!.toggleBookmark(mutable.value.location.page) } }; refreshAnnotations() }
-    fun edit(id: ULong, color: AnnotationColor, note: String) = launch {
+    fun bookmark() = launch(FailureAction.Save) { withContext(Dispatchers.IO) { native.withLock { source!!.toggleBookmark(mutable.value.location.page) } }; refreshAnnotations() }
+    fun edit(id: ULong, color: AnnotationColor, note: String) = launch(FailureAction.Save) {
         withContext(Dispatchers.IO) { editAnnotation(fingerprint, id, color, note) }; refreshAnnotations()
     }
-    fun remove(id: ULong, bookmark: Boolean) = launch {
+    fun remove(id: ULong, bookmark: Boolean) = launch(FailureAction.Save) {
         withContext(Dispatchers.IO) { removeAnnotation(fingerprint, id, bookmark) }; refreshAnnotations()
     }
     fun annotation(id: ULong, bookmark: Boolean) = launch {
@@ -223,7 +223,7 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
     }
     private suspend fun persist(location: PdfLocation) {
         val opened = source ?: return
-        withContext(Dispatchers.IO) { writes.withLock { runCatching { opened.saveLocation(location) }.onFailure(::fail) } }
+        withContext(Dispatchers.IO) { writes.withLock { runCatching { opened.saveLocation(location) }.onFailure { fail(it, FailureAction.Save) } } }
     }
     private fun flush() {
         saving?.cancel(); val location = mutable.value.location
@@ -232,14 +232,14 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
     fun stop() {
         saving?.cancel(); val opened = source ?: return
         val location = mutable.value.location
-        runBlocking(Dispatchers.IO) { writes.withLock { runCatching { opened.saveLocation(location) }.onFailure(::fail) } }
+        runBlocking(Dispatchers.IO) { writes.withLock { runCatching { opened.saveLocation(location) }.onFailure { fail(it, FailureAction.Save) } } }
     }
-    private fun launch(block: suspend CoroutineScope.() -> Unit) = viewModelScope.launch {
-        try { block() } catch (error: CancellationException) { throw error } catch (error: Exception) { requested = null; fail(error) }
+    private fun launch(action: FailureAction = FailureAction.Read, block: suspend CoroutineScope.() -> Unit) = viewModelScope.launch {
+        try { block() } catch (error: CancellationException) { throw error } catch (error: Exception) { requested = null; fail(error, action) }
     }
-    private fun fail(error: Throwable) {
+    private fun fail(error: Throwable, action: FailureAction = FailureAction.Read) {
         mutable.value = mutable.value.copy(loading = false, rendering = false,
-            error = if (error is CoreException.Failed) error.reason else error.message ?: "Could not open this PDF page")
+            error = userError(error, action))
     }
     override fun onCleared() {
         stop(); cleared = true; rendering?.cancel(); source?.close(); source = null

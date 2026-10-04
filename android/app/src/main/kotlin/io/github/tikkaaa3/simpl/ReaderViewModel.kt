@@ -95,7 +95,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
                 preferences.edit().putString("theme", theme).apply()
                 adapt(valid, theme, current)
             } catch (error: CancellationException) { throw error }
-            catch (error: Exception) { fail(error) }
+            catch (error: Exception) { fail(error, FailureAction.Save) }
         }
     }
 
@@ -143,7 +143,10 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         flush()
         pageJob?.cancel()
         pageJob = launch {
-            val content = withContext(Dispatchers.IO) { adapted!!.page(page) }
+            val content = withContext(Dispatchers.IO) {
+                android.os.Trace.beginSection("simPl.pageContent")
+                try { adapted!!.page(page) } finally { android.os.Trace.endSection() }
+            }
             mutable.value = mutable.value.copy(page = page, pages = content, location = location, note = null, selectionEdge = edge,
                 revision = mutable.value.revision + 1, error = null)
             refreshAnnotations()
@@ -191,16 +194,16 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         val selection = mutable.value.selection ?: return@launch
         done(withContext(Dispatchers.IO) { source!!.selectionText(selection) })
     }
-    fun highlight(color: AnnotationColor, note: String?) = launch {
+    fun highlight(color: AnnotationColor, note: String?) = launch(FailureAction.Save) {
         val selection = mutable.value.selection ?: return@launch
         withContext(Dispatchers.IO) { source!!.highlightSelection(selection, color, note) }
         select(null); refreshAnnotations()
     }
-    fun bookmark() = launch { withContext(Dispatchers.IO) { source!!.toggleBookmark(mutable.value.page) }; refreshAnnotations() }
-    fun edit(id: ULong, color: AnnotationColor, note: String) = launch {
+    fun bookmark() = launch(FailureAction.Save) { withContext(Dispatchers.IO) { source!!.toggleBookmark(mutable.value.page) }; refreshAnnotations() }
+    fun edit(id: ULong, color: AnnotationColor, note: String) = launch(FailureAction.Save) {
         withContext(Dispatchers.IO) { editAnnotation(fingerprint, id, color, note) }; refreshAnnotations()
     }
-    fun remove(id: ULong, bookmark: Boolean) = launch {
+    fun remove(id: ULong, bookmark: Boolean) = launch(FailureAction.Save) {
         withContext(Dispatchers.IO) { removeAnnotation(fingerprint, id, bookmark) }; refreshAnnotations()
     }
     fun annotation(id: ULong, bookmark: Boolean) = launch {
@@ -233,13 +236,13 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         val location = current ?: return
         val size = mutable.value.options.size
         runBlocking(Dispatchers.IO) {
-            writes.withLock { runCatching { opened.saveLocation(location, size) }.onFailure { fail(it) } }
+            writes.withLock { runCatching { opened.saveLocation(location, size) }.onFailure { fail(it, FailureAction.Save) } }
         }
     }
     private suspend fun persist(location: ReaderLocation) {
         val opened = source ?: return
         val size = mutable.value.options.size
-        withContext(Dispatchers.IO) { writes.withLock { runCatching { opened.saveLocation(location, size) }.onFailure { fail(it) } } }
+        withContext(Dispatchers.IO) { writes.withLock { runCatching { opened.saveLocation(location, size) }.onFailure { fail(it, FailureAction.Save) } } }
     }
     private fun savedLocation(): ReaderLocation? = saved.get<Long>("page")?.let {
         ReaderLocation(it.toUInt(), (saved.get<Long>("section") ?: 0).toUInt(), (saved.get<Long>("row") ?: 0).toUInt(), saved["within"] ?: 0f)
@@ -252,11 +255,11 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         }
     }
     suspend fun image(section: UInt, asset: String): ReaderImage? = withContext(Dispatchers.IO) { source?.image(section, asset) }
-    private fun launch(block: suspend () -> Unit): Job = viewModelScope.launch {
-        try { block() } catch (error: CancellationException) { throw error } catch (error: Exception) { fail(error) }
+    private fun launch(action: FailureAction = FailureAction.Read, block: suspend () -> Unit): Job = viewModelScope.launch {
+        try { block() } catch (error: CancellationException) { throw error } catch (error: Exception) { fail(error, action) }
     }
-    private fun fail(error: Throwable) {
-        val message = if (error is CoreException.Failed) error.reason else error.message ?: "Could not open this page"
+    private fun fail(error: Throwable, action: FailureAction = FailureAction.Read) {
+        val message = userError(error, action)
         mutable.value = mutable.value.copy(loading = false, adapting = false, error = message)
     }
     override fun onCleared() {

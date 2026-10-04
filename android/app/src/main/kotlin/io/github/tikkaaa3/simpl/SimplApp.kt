@@ -82,9 +82,11 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
             }
             composable("settings") {
                 SettingsScreen(state, model, back = { navigation.popBackStack() },
+                    licenses = { navigation.navigate("licenses") { launchSingleTop = true } },
                     createShelf = { editShelf = "new" }, editShelf = { editShelf = it.id.toString() },
                     deleteShelf = { deleteShelf = it.id.toString() })
             }
+            composable("licenses") { LicenseScreen { navigation.popBackStack() } }
             composable("reader/{fingerprint}") { entry ->
                 val fingerprint = entry.arguments?.getString("fingerprint")
                 val book = state.books.find { it.fingerprint == fingerprint }
@@ -290,10 +292,11 @@ internal fun BookCover(book: LibraryBook, modifier: Modifier = Modifier) {
 
 @Composable
 private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: () -> Unit,
+    licenses: () -> Unit,
     createShelf: () -> Unit, editShelf: (LibraryShelf) -> Unit, deleteShelf: (LibraryShelf) -> Unit) {
     Column(Modifier.fillMaxSize().testTag("settings")) {
         TopAppBar(title = { Text("Settings") }, navigationIcon = { IconButton(onClick = back) { Icon(AppIcons.Back, "Back") } })
-        LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(Modifier.weight(1f).testTag("settingsList"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { Text("Appearance", style = MaterialTheme.typography.headlineSmall) }
             items(Appearance.entries) { appearance ->
                 Row(Modifier.fillMaxWidth().clickable { model.appearance(appearance) }, verticalAlignment = Alignment.CenterVertically) {
@@ -321,6 +324,8 @@ private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: (
             item { OutlinedButton(onClick = createShelf) { Text("New shelf") } }
             item {
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                TextButton(onClick = licenses) { Text("Licenses") }
+                Text("simPl ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelMedium)
                 Text("Your books stay on this device", style = MaterialTheme.typography.titleMedium)
                 Text("Imports are copied into private storage. Removing a book never deletes its original file.",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -2,14 +2,14 @@
 
 **A quiet place for your books.**
 
-A native, offline reader for **PDF, EPUB, HTML, text and Markdown**, built with Rust for Windows x64.
+A native, offline reader for **PDF, EPUB, HTML, text and Markdown**, built with Rust for Windows x64, with an Android app using the same core.
 Keep a local library, pick up where you stopped, and read in a minimal interface
 with light and dark themes. Listen with Windows voices, look up words offline,
 and keep your highlights and notes with your books.
 
 ![The Quiet Hours in simPl's dark Book view](docs/screenshots/web/reading-dark.webp)
 
-[Get started](#get-started) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
+[Get started](#get-started) · [Android](#android) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
 
 ## Made for reading
 
@@ -96,7 +96,7 @@ not OS desktop captures. No controls or features were composited into the images
 — installer and portable ZIP. See the [release notes](docs/releases/0.1.5.md)
 for changes since 0.1.4.
 
-The current target is **Windows x64**. The setup package is named
+Desktop releases target **Windows x64**. The setup package is named
 `simPl-<version>-windows-x64-setup.exe`. It installs for your Windows account, offers
 desktop and Start menu shortcuts, and registers an uninstaller in Windows Settings.
 When uninstalling, you can keep your library or delete simPl's imported copies and
@@ -113,6 +113,21 @@ If you already have a portable folder:
 The portable executable needs no Rust installation. Move or copy the **whole
 application folder**, not just the executable. Library data is stored in your
 Windows profile rather than beside the executable.
+
+## Android
+
+The Android MVP supports EPUB, PDF, HTML, TXT and Markdown, a private library,
+shared desktop page numbers, saved position, bookmarks, highlights and notes.
+It requires Android 8.0 or later. APKs are distributed through
+[GitHub Releases](https://github.com/Tikkaaa3/simPl-reader/releases), with Android
+tags named `android-v<version>` and a SHA-256 file beside each signed download.
+Use `simPl-<version>-android-arm64.apk` on most phones; the optional universal
+APK also supports x86_64 emulators. Allow installation from your browser or file
+manager when prompted, then open the APK. Updates use the same signing key.
+
+Read aloud, dictionaries, backup/export and PDF Book view are planned after the
+Android MVP. See the [Android guide](android/README.md),
+[0.1.0 notes](docs/releases/android-0.1.0.md) and [roadmap](android-roadmap.md).
 
 ## Reading modes
 
@@ -287,7 +302,7 @@ it does not embed a browser or WebView.
 | [`reader-workload`](crates/reader-workload) | Authored diagnostic workloads and assets |
 | [`process-measure`](crates/process-measure) | Opt-in process measurements |
 | [`reader-profile`](crates/reader-profile) | Profile and cache roots shared by the core crates |
-| [`reader-ffi`](crates/reader-ffi), [`uniffi-bindgen`](crates/uniffi-bindgen) | Rust core API and binding generator for the Android app in progress ([android/](android/README.md)) |
+| [`reader-ffi`](crates/reader-ffi), [`uniffi-bindgen`](crates/uniffi-bindgen) | Rust core API and binding generator for the Android app ([android/](android/README.md)) |
 
 See the [developer guide](crates/iced-shell/README.md), [project roadmap](roadmap.md),
 [Book parser roadmap](book-parser-roadmap.md), and [design reference](design/DESIGN.md).

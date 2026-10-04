@@ -130,7 +130,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
                 IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.location.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
                 IconButton(onClick = { annotations = true }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
                 IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } })
-        if (toolbar && !state.loading && state.info != null) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (toolbar && !state.loading && state.info != null) FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
             Text("PDF", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
             TextButton(onClick = model::fit) { Text("Fit width") }
             TextButton(onClick = model::selectAll, enabled = !state.text?.glyphs.isNullOrEmpty()) { Text("Select page text") }
@@ -147,7 +147,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         if (toolbar && state.info != null) Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = { model.turn(-1) }, enabled = state.location.page > 1u) { Text("Previous") }
-            TextButton(onClick = { jump = true }, modifier = Modifier.testTag("pageLabel")) { Text("Page ${state.location.page} of ${state.info!!.pages.size}") }
+            TextButton(onClick = { jump = true }, modifier = Modifier.weight(1f).testTag("pageLabel")) { Text("Page ${state.location.page} of ${state.info!!.pages.size}", maxLines = 2, overflow = TextOverflow.Ellipsis) }
             TextButton(onClick = { model.turn(1) }, enabled = state.location.page < state.info!!.pages.size.toUInt()) { Text("Next") }
         }
     }
