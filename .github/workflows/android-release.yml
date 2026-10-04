@@ -80,7 +80,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cargo dependency fetch failed.' }
 
       - name: Check Windows and shared core compatibility
-        shell: pwsh
+        # Helpers and Rust fixture hashing launch powershell.exe (Windows PowerShell 5.1).
+        # Start in that shell so child processes inherit the matching module path.
+        shell: powershell
         run: |
           & scripts/pdfium.ps1 -Destination target/debug/deps
           & scripts/dev.ps1 check -Offline
@@ -103,7 +105,7 @@ jobs:
           "SIMPL_ANDROID_KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
 
       - name: Build and verify signed APKs
-        shell: pwsh
+        shell: powershell
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
