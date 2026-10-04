@@ -108,6 +108,7 @@ jobs:
         shell: powershell
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           & scripts/android-release.ps1 -Version $env:RELEASE_VERSION -Universal
 

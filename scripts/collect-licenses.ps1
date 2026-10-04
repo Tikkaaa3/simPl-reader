@@ -90,8 +90,14 @@ function Write-LicenseDeclaration([string]$PackageSource, [string]$Name, [string
 }
 
 function Get-UpstreamText([string]$Url) {
+    $headers = @{ 'User-Agent' = 'simPl-license-collector' }
+    $uri = [Uri]$Url
+    # Authenticate API metadata in CI without sending the token to license-text hosts.
+    if ($uri.Scheme -eq 'https' -and $uri.Host -eq 'api.github.com' -and $env:GITHUB_TOKEN) {
+        $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN"
+    }
     try {
-        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -Headers @{ 'User-Agent' = 'simPl-license-collector' }
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -Headers $headers
     } catch {
         $status = $null
         $webResponse = Get-Field $_.Exception 'Response'
