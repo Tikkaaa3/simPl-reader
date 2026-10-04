@@ -1,153 +1,167 @@
-# Yerel sözlük ve çeviri seçenekleri — 30 Eylül 2026
+# Local dictionary and translation options — 30 September 2026
 
-Bu belge ilk araştırma ve tasarım önerisidir. Sonraki uygulamada yerel kelime
-sözlükleri eklendi; kapsam ve kaynaklar [veri bildiriminde](assets/dictionaries/README.md)
-ve [README'de](README.md) yer alıyor. Argos/model/eklenti altyapısı eklenmedi.
-Veriler/modeller bir kez dosyadan kurulunca kullanım
-çevrimdışı olabilir; internetten paket edinmek ayrı bir işlemdir. Aşağıdaki
-karşılaştırma bir çeviri kalitesi veya Windows performans benchmark'ı değildir.
+This document is the initial research and design proposal. Local word
+dictionaries were added later; their coverage and sources are in the
+[data notice](assets/dictionaries/README.md) and the [README](README.md). No
+Argos/model/plugin infrastructure was added. Once data or models are installed
+from a file, use can be offline; obtaining packages from the internet is a
+separate step. The comparison below is not a translation quality or Windows
+performance benchmark.
 
-## Hafif sözlük verileri
+## Lightweight dictionary data
 
-| Kaynak | Kapsam ve format | simPl açısından değerlendirme |
+| Source | Coverage and format | Assessment for simPl |
 | --- | --- | --- |
-| [WikDict](https://www.wikdict.com/page/download) | Wiktionary tabanlı; SQLite, StarDict, TEI; CC BY-SA 4.0 | Hazır SQLite verisiyle ilk kelime karşılığı için güçlü aday. Kelime türü/çekim verileri ayrı dil veritabanlarında; iki yöndeki dosyalar birbirinin aynısı değil. |
-| [FreeDict](https://freedict.org/downloads/) | TEI, dictd, StarDict vb.; dil çiftine göre kapsam/lisans değişir | Alternatif ve tamamlayıcı kaynak. İngilizce→Türkçe katalogda 36.589 başlık. [eng-tur kaynağı](https://github.com/freedict/fd-dictionaries/blob/master/eng-tur/eng-tur.tei) GPL-2.0-or-later; veri güncelliği/kalitesi çift bazında kontrol edilmeli. |
-| [JMdict/EDICT](https://www.edrdg.org/wiki/JMdict-EDICT_Dictionary_Project.html) | Japonca başlıklar, okunuşlar, anlamlar; XML/metin | Japonca→İngilizce için özel aday. [EDRDG lisansı](https://www.edrdg.org/edrdg/licence.html) CC BY-SA 4.0; kaynak ve lisans bildirimi gerekli. İngilizce→Japonca için ayrı ters arama indeksi gerekir. |
-| [CC-CEDICT](https://www.mdbg.net/chinese/dictionary?page=cedict) | Mandarin→İngilizce; geleneksel/basitleştirilmiş karakterler ve pinyin; metin | Çince için özel aday. CC BY-SA 4.0. İncelenen sayfa 125.139 kayıt bildiriyor. İngilizce ters arama mümkün olsa da iki bağımsız sözlükle aynı kapsamı vaat etmez. |
-| [Kaikki / Wiktextract](https://kaikki.org/dictionary/) | Wiktionary'den JSONL; yüzlerce dil, anlamlar ve dilbilgisi bilgileri; CC BY-SA/GFDL | Korece dahil genel altyapı. Hazır son kullanıcı paketi yerine derleme sırasında süzülüp indekslenmesi daha uygun. |
-| [Korean-English Learners' Dictionary](https://krdict.korean.go.kr/eng/mainAction) | Kore Ulusal Dil Enstitüsü'nün öğrenici sözlüğü | Korece için ikinci aday. [Metin politikası](https://krdict.korean.go.kr/eng/kboardPolicy/copyRightTermsInfo) CC BY-SA; medya lisansları ayrıca değişebilir. Eksiksiz İngilizce dışa aktarımın kapsamı/edinme süreci ayrıca doğrulanmalı. Online API, tek başına yerel çözüm değildir. |
+| [WikDict](https://www.wikdict.com/page/download) | Wiktionary-based; SQLite, StarDict, TEI; CC BY-SA 4.0 | Strong candidate for first word lookups thanks to ready SQLite data. Part-of-speech/inflection data lives in separate language databases; the files for the two directions are not mirror images. |
+| [FreeDict](https://freedict.org/downloads/) | TEI, dictd, StarDict, etc.; coverage/license vary per language pair | Alternative and complementary source. The English→Turkish catalog has 36,589 headwords. The [eng-tur source](https://github.com/freedict/fd-dictionaries/blob/master/eng-tur/eng-tur.tei) is GPL-2.0-or-later; freshness/quality must be checked per pair. |
+| [JMdict/EDICT](https://www.edrdg.org/wiki/JMdict-EDICT_Dictionary_Project.html) | Japanese headwords, readings, senses; XML/text | Dedicated candidate for Japanese→English. The [EDRDG license](https://www.edrdg.org/edrdg/licence.html) is CC BY-SA 4.0; source and license attribution required. English→Japanese needs a separate reverse lookup index. |
+| [CC-CEDICT](https://www.mdbg.net/chinese/dictionary?page=cedict) | Mandarin→English; traditional/simplified characters and pinyin; text | Dedicated candidate for Chinese. CC BY-SA 4.0. The reviewed page reports 125,139 entries. Reverse English lookup is possible but does not promise the coverage of two independent dictionaries. |
+| [Kaikki / Wiktextract](https://kaikki.org/dictionary/) | JSONL from Wiktionary; hundreds of languages, senses and grammatical data; CC BY-SA/GFDL | General infrastructure, including Korean. Better filtered and indexed at build time than shipped as a ready end-user package. |
+| [Korean-English Learners' Dictionary](https://krdict.korean.go.kr/eng/mainAction) | Learners' dictionary of the National Institute of Korean Language | Second candidate for Korean. The [text policy](https://krdict.korean.go.kr/eng/kboardPolicy/copyRightTermsInfo) is CC BY-SA; media licenses may differ. The scope and process for obtaining a complete English export must be verified separately. The online API alone is not a local solution. |
 
-WikDict'in [güncel SQLite kataloğundaki](https://download.wikdict.com/dictionaries/sqlite/2/)
-yaklaşık dosya boyutları aşağıda. Bunlar yalnızca çeviri çiftinin dosyalarıdır;
-çekim/kelime türü için ayrı dil veritabanları eklenirse toplam büyür. Boyut, anlam
-kapsamını veya kaliteyi ölçmez.
+Approximate file sizes in WikDict's [current SQLite catalog](https://download.wikdict.com/dictionaries/sqlite/2/)
+are below. These are the translation pair files only; adding the separate
+language databases for inflection/part of speech increases the total. Size does
+not measure sense coverage or quality.
 
-| Yön | SQLite dosyası | İkinci yön |
+| Direction | SQLite file | Reverse direction |
 | --- | ---: | ---: |
-| İngilizce→Türkçe | 8 MB | Türkçe→İngilizce: 4 MB |
-| İspanyolca→İngilizce | 11 MB | İngilizce→İspanyolca: 15 MB |
-| Almanca→İngilizce | 25 MB | İngilizce→Almanca: 20 MB |
-| Fransızca→İngilizce | 22 MB | İngilizce→Fransızca: 23 MB |
-| Japonca→İngilizce | 5 MB | İngilizce→Japonca: 9 MB |
-| Çince→İngilizce | 12 MB | İngilizce→Çince: 5 MB |
-| Korece→İngilizce | İncelenen WikDict kataloğunda yok | Kaikki / öğrenici sözlüğü değerlendirilmeli |
+| English→Turkish | 8 MB | Turkish→English: 4 MB |
+| Spanish→English | 11 MB | English→Spanish: 15 MB |
+| German→English | 25 MB | English→German: 20 MB |
+| French→English | 22 MB | English→French: 23 MB |
+| Japanese→English | 5 MB | English→Japanese: 9 MB |
+| Chinese→English | 12 MB | English→Chinese: 5 MB |
+| Korean→English | Not in the reviewed WikDict catalog | Evaluate Kaikki / the learners' dictionary |
 
-Araştırma sırasında İngilizce→Türkçe SQLite dosyası indirildi ve salt okunur
-sorgulandı: 8.417.280 bayt, `simple_translation` tablosunda 47.626 satır.
-`book` ve `read` karşılık verdi; `ran` doğrudan bulunmadı. `lead` için yalnızca
-metal anlamı geldi. Bu küçük örnek, çekimli sözcükleri köke götürme ve çok anlamlı
-kelimeler için kapsam kontrolünün gerekli olduğunu gösteriyor; tam kalite testi değil.
-Dosya ve örnek sorgular `target/dictionary-research/` içinde, uygulamaya dahil değil.
+During the research the English→Turkish SQLite file was downloaded and queried
+read-only: 8,417,280 bytes, 47,626 rows in the `simple_translation` table.
+`book` and `read` returned translations; `ran` was not found directly. `lead`
+returned only the metal sense. This small sample shows that mapping inflected
+words to their lemma and checking coverage of polysemous words are necessary; it
+is not a full quality test. The file and sample queries are in
+`target/dictionary-research/`, not part of the app.
 
-[Korece Kaikki sayfası](https://kaikki.org/dictionary/Korean/index.html) İngilizce
-Wiktionary'den 57.252 farklı biçim ve 195,4 MB işlenmiş JSONL bildiriyor; bunlara
-karakterler/özel adlar da dahil. Bu işlenmiş indirme kullanımdan kaldırılacak.
-[Önerilen ham kaynağın](https://kaikki.org/dictionary/rawdata.html) İngilizce
-sürümü 2,8 GB sıkıştırılmış / 23,9 GB açık; paket üretiminde `lang_code=ko` süzülmeli.
-Sayfadaki `ko-extract` ise Korece Wiktionary sürümüdür; İngilizce açıklamalı Korece
-paketi yerine yanlışlıkla o dosya seçilmemeli. Son kullanıcının bütün dump'ı
-indirmesi gerekmez; bizim hazırlayacağımız süzülmüş paketin boyutu henüz ölçülmedi.
+The [Korean Kaikki page](https://kaikki.org/dictionary/Korean/index.html) reports
+57,252 distinct forms and 195.4 MB of processed JSONL from the English
+Wiktionary, including characters and proper names. This processed download is
+being deprecated. The English edition of the [recommended raw source](https://kaikki.org/dictionary/rawdata.html)
+is 2.8 GB compressed / 23.9 GB uncompressed; package builds must filter
+`lang_code=ko`. The `ko-extract` on that page is the Korean Wiktionary edition;
+it must not be picked by mistake instead of the Korean package with English
+glosses. End users do not need to download the whole dump; the size of the
+filtered package we would prepare has not been measured yet.
 
-## Yerel cümle/paragraf çevirisi
+## Local sentence/paragraph translation
 
-| Seçenek | Kapsam/lisans | Değerlendirme |
+| Option | Coverage/license | Assessment |
 | --- | --- | --- |
-| [Argos Translate](https://github.com/argosopentech/argos-translate) | Yerel Python motoru, ayrı `.argosmodel` paketleri; MIT/CC0 | İlk isteğe bağlı çeviri motoru adayı. Eksik doğrudan çiftlerde ara dil kullanabilir; ek kalite kaybı olabilir. Python/native bağımlılıklarının Windows paketlemesi ayrıca denenmeli. |
-| [OPUS-MT / Marian](https://github.com/Helsinki-NLP/Opus-MT) | İndirilebilir dil modelleri; proje kodu MIT, belirtilen OPUS-MT modelleri CC BY 4.0 | Dil çiftine özel modeller seçilebilir. Argos'a göre tokenizer/model/runtime entegrasyonunu daha çok kendimiz üstleniriz. Her checkpoint'in kartı ayrıca kontrol edilmeli. |
-| [Bergamot / translateLocally](https://github.com/XapaJIaMnu/translateLocally) | C++ tabanlı yerel motor; Windows uygulaması ve CLI; uygulama MIT | CPU odaklı alternatif. Katalogdaki modellerle sınırlı; tüm hedef çiftlerin varlığı doğrulanmadı. Motor, arayüz ve model lisansları ayrı kontrol edilmeli. |
-| [Apertium](https://github.com/apertium/apertium) | Kural tabanlı çeviri; çekirdek GPL-2.0 | [Dil çiftleri](https://www.wiki.apertium.org/wiki/List_of_language_pairs) olgunluk/yön bakımından değişiyor. Bazı Avrupa dillerinde aday; istenen yedi çift için ortak başlangıç çözümü olarak önermiyorum. |
-| [M2M100 418M](https://huggingface.co/facebook/m2m100_418M) | 100 dil, hedef yedi dil dahil; MIT | Çok sayıda çifti tek modelle kapsama adayı. 418 milyon parametre; sözlük paketinden daha ağır. Gerçek Windows hız/RAM/kalite ölçülmedi. |
-| [NLLB-200 600M](https://huggingface.co/facebook/nllb-200-distilled-600M) | Geniş dil kapsamı; CC BY-NC 4.0 | Yerel araştırma için seçenek; ticari kullanımı sınırlayan lisansı nedeniyle varsayılan dağıtım adayı olarak önermiyorum. Model kartı araştırma kullanımını öne çıkarıyor. |
-| [MADLAD-400 3B](https://huggingface.co/google/madlad400-3b-mt) | 400+ dil; Apache-2.0 | Geniş kapsamlı, isteğe bağlı büyük model adayı. Üç milyar parametre ve ek çalışma ortamı hafif okuyucu paketini belirgin büyütür. |
-| [TranslateGemma](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/) | 55 dil; 4B, 12B, 27B | Yeni büyük model alternatifi. [Model kartı](https://huggingface.co/google/translategemma-4b-it) Gemma kullanım şartları ve indirme için lisans kabulü belirtiyor. Hafif ilk sürüm için fazla büyük; kullanıcı tercihiyle ayrı motor olabilir. |
-| [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) | Yerelde kurulabilen HTTP servisi; Argos tabanlı; AGPL-3.0 | Yeni bir çeviri modeli değil. Yerel servis kullanan kullanıcıya bağlanma seçeneği; simPl için başlangıçta ekstra servis kurdurmak yerine doğrudan motor daha sade olur. |
+| [Argos Translate](https://github.com/argosopentech/argos-translate) | Local Python engine, separate `.argosmodel` packages; MIT/CC0 | First candidate for an optional translation engine. Missing direct pairs can pivot through an intermediate language, with possible extra quality loss. Windows packaging of the Python/native dependencies must be tried separately. |
+| [OPUS-MT / Marian](https://github.com/Helsinki-NLP/Opus-MT) | Downloadable language models; project code MIT, the listed OPUS-MT models CC BY 4.0 | Pair-specific models can be chosen. Compared to Argos, we would own more of the tokenizer/model/runtime integration. Each checkpoint's card must be checked separately. |
+| [Bergamot / translateLocally](https://github.com/XapaJIaMnu/translateLocally) | C++ local engine; Windows app and CLI; app MIT | CPU-focused alternative. Limited to the models in its catalog; availability of all target pairs not verified. Engine, UI and model licenses must be checked separately. |
+| [Apertium](https://github.com/apertium/apertium) | Rule-based translation; core GPL-2.0 | [Language pairs](https://www.wiki.apertium.org/wiki/List_of_language_pairs) vary in maturity/direction. A candidate for some European languages; not recommended as a common starting point for the seven requested pairs. |
+| [M2M100 418M](https://huggingface.co/facebook/m2m100_418M) | 100 languages, including the seven targets; MIT | Candidate for covering many pairs with one model. 418 million parameters; heavier than a dictionary package. Real Windows speed/RAM/quality not measured. |
+| [NLLB-200 600M](https://huggingface.co/facebook/nllb-200-distilled-600M) | Broad language coverage; CC BY-NC 4.0 | An option for local research; not recommended as a default distribution candidate because the license restricts commercial use. The model card emphasizes research use. |
+| [MADLAD-400 3B](https://huggingface.co/google/madlad400-3b-mt) | 400+ languages; Apache-2.0 | Broad-coverage optional large model candidate. Three billion parameters plus an extra runtime would noticeably grow the lightweight reader package. |
+| [TranslateGemma](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/) | 55 languages; 4B, 12B, 27B | New large-model alternative. The [model card](https://huggingface.co/google/translategemma-4b-it) states the Gemma terms of use and license acceptance for download. Too large for a lightweight first release; could be a separate engine by user choice. |
+| [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) | Locally installable HTTP service; Argos-based; AGPL-3.0 | Not a new translation model. An option to connect to users who run a local service; for simPl a direct engine is simpler than requiring an extra service at first. |
 
-Argos'un [30 Eylül'de okunan resmi paket indeksi](https://raw.githubusercontent.com/argosopentech/argospm-index/main/index.json)
-Türkçe, İspanyolca, Almanca, Fransızca, Japonca, Korece ve Çince için İngilizceyle
-iki yönde doğrudan paket içeriyor. Geleneksel Çince için ayrıca `zt` paketleri var.
-Türkçe paket sürümü 1.5; Japonca/Korece 1.1; bunlar motorun güncel sürümü veya kalite
-puanı değildir. Bakımcı [model dosyalarının da MIT/CC0 olduğunu açıklamış](https://github.com/argosopentech/argos-translate/issues/533#issuecomment-5160080718).
-Paket URL'lerine yapılan HEAD sorguları 403 döndü; bu oturumda model indirme boyutları
-ve indirme/çalıştırma başarısı doğrulanmadı. Hiçbir çeviri motoru kurulup çalıştırılmadı.
+Argos's [official package index, read on 30 September](https://raw.githubusercontent.com/argosopentech/argospm-index/main/index.json),
+contains direct packages in both directions with English for Turkish, Spanish,
+German, French, Japanese, Korean and Chinese. Traditional Chinese additionally
+has `zt` packages. The Turkish package version is 1.5, Japanese/Korean 1.1;
+these are not the engine's current version or a quality score. The maintainer
+[stated that the model files are MIT/CC0 as well](https://github.com/argosopentech/argos-translate/issues/533#issuecomment-5160080718).
+HEAD requests to the package URLs returned 403; model download sizes and
+download/run success were not verified in this session. No translation engine
+was installed or run.
 
-## Dosya formatları ve hazır uygulamalar
+## File formats and existing apps
 
-[GoldenDict](https://github.com/goldendict/goldendict) çok sayıda yerel sözlük
-formatını okuyor; kullanıcı isterse ilk aşamada harici sözlük uygulaması olarak
-değerlendirilebilir. Bu, simPl içindeki anlam panelinin yerini tamamen tutmaz.
-[Yomitan](https://github.com/yomidevs/yomitan) açılır sözlük/dil öğrenme arayüzü için
-örnek; bir tarayıcı eklentisidir. [PyGlossary](https://github.com/ilius/pyglossary)
-paket üretiminde format dönüştürme adayıdır. StarDict/MDict/Yomitan birer dosya
-formatı veya ekosistemdir; dosyanın formatı, içindeki sözlük verisinin lisansını belirlemez.
+[GoldenDict](https://github.com/goldendict/goldendict) reads many local
+dictionary formats; if the user wishes, it could serve as an external dictionary
+app in a first stage. It does not fully replace a meaning panel inside simPl.
+[Yomitan](https://github.com/yomidevs/yomitan) is a reference for a pop-up
+dictionary/language-learning interface; it is a browser extension.
+[PyGlossary](https://github.com/ilius/pyglossary) is a candidate for format
+conversion when building packages. StarDict/MDict/Yomitan are file formats or
+ecosystems; a file's format does not determine the license of the dictionary
+data inside it.
 
-## simPl için öneri
+## Recommendation for simPl
 
-Önce kelime/ifade araması ve sonradan eklenebilen veri paketleri. İlk paketler
-WikDict İngilizce→Türkçe, İspanyolca→İngilizce, Almanca→İngilizce,
-Fransızca→İngilizce olabilir. Japonca JMdict, Çince CC-CEDICT, Korece süzülmüş
-Kaikki verisiyle ayrı veri adaptörleri üzerinden eklenebilir. Bunlar başlangıç önerisiydi. Kelime araması şimdi 13 yönü kapsayan çevrimdışı
-sözlüklerle uygulandı. Kullanıcı kararıyla tüm sözlükler isteğe bağlı indirilebilir
-paketlere ayrıldı; ana uygulama kelime verisini taşımıyor.
+First, word/phrase lookup with data packages that can be added later. The first
+packages could be WikDict English→Turkish, Spanish→English, German→English and
+French→English. Japanese JMdict, Chinese CC-CEDICT and filtered Korean Kaikki
+data could be added through separate data adapters. These were the initial
+recommendations. Word lookup is now implemented with offline dictionaries
+covering 13 directions. By the user's decision, all dictionaries were split into
+optional downloadable packages; the main app carries no word data.
 
-İlk sürüm için DLL çalıştıran genel eklenti sistemi yerine, kaynak/hedef dil,
-sürüm, kaynak bağlantısı, lisans ve hash içeren bir bildirim ile salt okunur
-indeks dosyası yeterli olabilir. Kullanıcı istediği dil paketini seçer; ana
-kurulum tüm dilleri taşımaz. Çekimden köke erişim, Japonca/Çince sözcük sınırları
-ve Korece ekler, sadece eşit metin aramasıyla çözülemeyecek ayrı ürün işleri.
+For the first release, instead of a general plugin system that runs DLLs, a
+manifest with source/target language, version, source link, license and hash
+plus a read-only index file may be enough. Users pick the language packages they
+want; the main installation does not carry every language. Inflection-to-lemma
+mapping, Japanese/Chinese word boundaries and Korean suffixes are separate
+product work that exact text matching cannot solve.
 
-Sonra isteğe bağlı cümle çevirisi: aynı panelde ayrı çeviri sağlayıcısı,
-öncelikle Argos ve karşılaştırma için OPUS-MT/Bergamot. Modeller yalnızca
-gerektiğinde yüklenmeli, iş UI iş parçacığını durdurmamalı, yeni seçim önceki işi
-iptal etmeli. Daha büyük M2M100/MADLAD/TranslateGemma modelleri tercihe bağlı kalmalı.
+Then optional sentence translation: a separate translation provider in the same
+panel, Argos first, with OPUS-MT/Bergamot for comparison. Models should load
+only when needed, work must not block the UI thread, and a new selection should
+cancel the previous job. The larger M2M100/MADLAD/TranslateGemma models should
+stay opt-in.
 
-Karardan önce her hedef dil için ortak bir küçük değerlendirme setiyle nadir
-kelimeler, çok anlamlılık, çekimler, deyimler ve birkaç kısa paragraf denenmeli.
-Windows'ta ilk yükleme, tekrar arama, RAM ve CPU ölçülmeli. Bugün doğrulanan
-katalog kapsamıdır; kalite, sözlük indeksleme performansı ve model performansı açık.
+Before deciding, rare words, polysemy, inflections, idioms and a few short
+paragraphs should be tried with a shared small evaluation set for each target
+language. First load, repeated lookup, RAM and CPU should be measured on
+Windows. What is verified today is catalog coverage; quality, dictionary
+indexing performance and model performance remain open.
 
-## Uygulanan indirilebilir sözlükler — 30 Eylül 2026
+## Implemented downloadable dictionaries — 30 September 2026
 
-Tüm 13 dil yönü ayrı, isteğe bağlı paketlere ayrıldı. Ana exe yalnızca
-**5.175 bayt katalog** taşır; kelime verileri ve çeviri modelleri içermez.
-Kaynak SQLite/JSONL boyutu kullanıcıya gönderilen boyut değildir. Hazırlanan
-ZIP paketlerinin lisans ve kaynak bildirimleri dahil toplamı **19.769.702 bayt
-(19,77 MB)**. MB değerleri ondalıktır.
+All 13 language directions were split into separate, optional packages. The main
+exe carries only a **5,175-byte catalog**; it contains no word data or
+translation models. The source SQLite/JSONL size is not the size shipped to
+users. The prepared ZIP packages, including license and source notices, total
+**19,769,702 bytes (19.77 MB)**. MB values are decimal.
 
-| Dil paketi | İndirme toplamı | Açık TSV veri |
+| Language package | Download total | Uncompressed TSV data |
 | --- | ---: | ---: |
-| İngilizce ↔ Türkçe | 1,13 MB | 3,22 MB |
-| İngilizce ↔ İspanyolca | 2,22 MB | 7,07 MB |
-| İngilizce ↔ Almanca | 3,65 MB | 11,30 MB |
-| İngilizce ↔ Fransızca | 4,02 MB | 13,67 MB |
-| İngilizce ↔ Japonca | 1,58 MB | 4,31 MB |
-| İngilizce ↔ Çince | 5,91 MB | 16,40 MB |
-| Korece → İngilizce | 1,26 MB | 3,36 MB |
+| English ↔ Turkish | 1.13 MB | 3.22 MB |
+| English ↔ Spanish | 2.22 MB | 7.07 MB |
+| English ↔ German | 3.65 MB | 11.30 MB |
+| English ↔ French | 4.02 MB | 13.67 MB |
+| English ↔ Japanese | 1.58 MB | 4.31 MB |
+| English ↔ Chinese | 5.91 MB | 16.40 MB |
+| Korean → English | 1.26 MB | 3.36 MB |
 
-Yönler bağımsız indirilir. Örneğin yalnızca İngilizce→Türkçe **0,63 MB**;
-Türkçe→İngilizce **0,50 MB**. En büyük yön Çince→İngilizce **5,52 MB**.
-Dosyalar `%LOCALAPPDATA%\simPl\dictionaries` altında sıkıştırılmış ZIP olarak
-saklanır; yeniden açılışta internet gerekmez. Yalnızca etkin yön açılır ve
-bellekte indekslenir. Açık TSV boyutu RAM kullanımını belirtmez; dizeler ve
-arama indeksi de yer kaplar.
+Directions are downloaded independently. For example, English→Turkish alone is
+**0.63 MB** and Turkish→English **0.50 MB**. The largest direction is
+Chinese→English at **5.52 MB**. Files are stored as compressed ZIPs under
+`%LOCALAPPDATA%\simPl\dictionaries`; reopening needs no internet. Only the
+active direction is opened and indexed in memory. The uncompressed TSV size does
+not indicate RAM use; strings and the lookup index take space too.
 
-Ayarlar seçili yönü, paket boyutunu ve durumunu gösterir. Manage dictionaries
-13 yönü açar; Download/Remove, ilerleme/Cancel, hata sonrası yeniden deneme ve
-Import ZIP bulunur. Eksik sözlükte kelime kartı da indirme sunar; başarılı
-kurulum aynı açık kartın sonucunu yeniler. Otomatik kelime araması otomatik
-indirme başlatmaz. Seçili metin veya belge içeriği internete gönderilmez.
+Settings show the selected direction, package size and status. Manage
+dictionaries opens the 13 directions, with Download/Remove, progress/Cancel,
+retry after an error and Import ZIP. When a dictionary is missing, the word card
+also offers the download; a successful installation refreshes the result of the
+same open card. Automatic word lookup never starts a download automatically.
+Selected text and document content are never sent to the internet.
 
-Paketler ayrı GitHub veri sürümünden HTTPS ile alınır. Boyut ve SHA-256,
-exe içindeki değişmez katalogla doğrulanır; TSV ve manifest de doğrulanır.
-Dosyadan ekleme aynı doğrulama yolunu kullanır. İptal veya bozuk indirme mevcut
-geçerli paketi değiştirmez. Bir veri sürümünün dosyaları yerinde değiştirilmemeli;
-yeni sürüm farklı ad ve güncel uygulama kataloğu gerektirir. Genel üçüncü taraf
-sözlük biçimleri ve Argos motoru/model paketleri sonraki işlerdir.
+Packages are fetched over HTTPS from a separate GitHub data release. Size and
+SHA-256 are verified against the immutable catalog inside the exe; the TSV and
+manifest are verified too. Adding from a file uses the same verification path. A
+cancelled or corrupt download does not replace the current valid package. Files
+of a data release must not be changed in place; a new release needs a different
+name and an updated app catalog. General third-party dictionary formats and the
+Argos engine/model packages are later work.
 
-Önceki gömülü veri build'inde exe **38.008.320 bayt (38,01 MB)**, PDFium dahil
-portable klasör **47.591.520 bayt (47,59 MB)**, portable ZIP **31.489.574 bayt
-(31,49 MB)** idi. Yeni indirilebilir paket build'inde exe **18,444,288 bayt (18.44 MB)**,
-portable klasör **28,033,234 bayt (28.03 MB)**, portable ZIP
-**11,862,130 bayt (11.86 MB)**. Release ve portable exe SHA-256 eşleşti;
-ZIP CRC kontrolü geçti. Sözlük ZIP'leri normal portable paketine kopyalanmadı.
-Bunlar installer boyutu değildir.
+In the previous build with embedded data, the exe was **38,008,320 bytes
+(38.01 MB)**, the portable folder including PDFium **47,591,520 bytes
+(47.59 MB)** and the portable ZIP **31,489,574 bytes (31.49 MB)**. In the new
+downloadable-package build, the exe is **18,444,288 bytes (18.44 MB)**, the
+portable folder **28,033,234 bytes (28.03 MB)** and the portable ZIP
+**11,862,130 bytes (11.86 MB)**. The release and portable exe SHA-256 matched;
+the ZIP CRC check passed. Dictionary ZIPs were not copied into the regular
+portable package. These are not installer sizes.
