@@ -3,11 +3,13 @@
 package io.github.tikkaaa3.simpl
 
 import android.content.Intent
+import androidx.core.net.toUri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -22,6 +24,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -41,6 +44,10 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
     val navigation = rememberNavController()
     val snackbars = remember { SnackbarHostState() }
     val context = LocalContext.current
+    var quick by rememberSaveable { mutableStateOf(false) }
+    var recent by rememberSaveable { mutableStateOf(false) }
+    var help by rememberSaveable { mutableStateOf(false) }
+    var libraryFocused by remember { mutableStateOf(false) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
         model.enqueue(uris)
@@ -70,6 +77,25 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
     var editShelf by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteShelf by rememberSaveable { mutableStateOf<String?>(null) }
     val settings = { navigation.navigate("settings") { launchSingleTop = true } }
+    val activity = androidx.activity.compose.LocalActivity.current as MainActivity
+    val currentRoute by navigation.currentBackStackEntryAsState()
+    val route = currentRoute?.destination?.route
+    val keys by rememberUpdatedState<(android.view.KeyEvent) -> Boolean> { event ->
+        when {
+            event.isCtrlPressed && event.keyCode in listOf(android.view.KeyEvent.KEYCODE_K, android.view.KeyEvent.KEYCODE_R) -> { if (event.repeatCount == 0) { recent = event.keyCode == android.view.KeyEvent.KEYCODE_R; quick = true }; true }
+            event.isCtrlPressed && event.keyCode == android.view.KeyEvent.KEYCODE_O -> { if (event.repeatCount == 0) documents.launch(arrayOf("*/*")); true }
+            event.isCtrlPressed && event.keyCode == android.view.KeyEvent.KEYCODE_W && route?.startsWith("reader") != true -> { navigation.popBackStack("library", false); true }
+            event.keyCode == android.view.KeyEvent.KEYCODE_F1 && route?.startsWith("reader") != true -> { help = true; true }
+            event.keyCode == android.view.KeyEvent.KEYCODE_SPACE && route == "library" && !libraryFocused && !quick -> {
+                val resume = state.books.firstOrNull { it.openedAt > 0uL && it.progress < 1f }
+                if (resume != null && event.repeatCount == 0) { if (resume.missing) navigation.navigate("backups") else model.open(resume) }
+                resume != null
+            }
+            else -> false
+        }
+    }
+    DisposableEffect(activity) { val handler: (android.view.KeyEvent) -> Boolean = { keys(it) }; activity.appKeys = handler; onDispose { if (activity.appKeys === handler) activity.appKeys = null } }
+    CompositionLocalProvider(LocalQuickSwitch provides { recent = false; quick = true }, LocalLibraryFocus provides { libraryFocused = it }) {
     Scaffold(snackbarHost = { SnackbarHost(snackbars) },
         contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)) { padding ->
         NavHost(navigation, startDestination = "library", modifier = Modifier.padding(padding)) {
@@ -107,6 +133,12 @@ fun SimplApp(state: LibraryState, model: LibraryViewModel) {
             }
         }
     }
+    }
+    if (quick) QuickSwitch(state.books, recent, { quick = false }) { book ->
+        quick = false; ReadAloud.stop()
+        if (book.missing) navigation.navigate("backups") { popUpTo("library") } else model.open(book)
+    }
+    if (help) KeyboardHelp { help = false }
     state.books.find { it.fingerprint == remove }?.let { book ->
         AlertDialog(onDismissRequest = { remove = null }, title = { Text("Remove book?") },
             text = { Text("Remove “${book.title}” and its private copy from your library? Your original file and saved annotations are kept.") },
@@ -159,8 +191,23 @@ private fun LibraryScreen(state: LibraryState, model: LibraryViewModel, importBo
     }
     val resume = state.books.firstOrNull { it.openedAt > 0uL && it.progress < 1f }
     var importMenu by rememberSaveable { mutableStateOf(false) }
+    val switchBook = LocalQuickSwitch.current
+    val focusNow by rememberUpdatedState(LocalLibraryFocus.current)
+    DisposableEffect(Unit) { onDispose { focusNow(false) } }
+    AdaptivePanes(sideAtStart = true, modifier = Modifier.onFocusChanged { focusNow(it.hasFocus) }.focusGroup(), side = {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+            Text("Library", style = MaterialTheme.typography.headlineSmall)
+            FilterChip(state.filter == "all", { model.filter("all") }, label = { Text("All books") })
+            FilterChip(state.filter == "favorites", { model.filter("favorites") }, label = { Text("Favorites") })
+            state.shelves.forEach { shelf -> FilterChip(state.filter == "shelf:${shelf.id}", { model.filter("shelf:${shelf.id}") }, label = { Text(shelf.name) }) }
+            TextButton(onClick = createShelf) { Text("New shelf") }
+            TextButton(onClick = switchBook) { Text("Switch book") }
+            TextButton(onClick = settings) { Text("Settings") }
+        }
+    }) { wide ->
     Column(Modifier.fillMaxSize().testTag("library")) {
         TopAppBar(title = { Text("simPl", style = MaterialTheme.typography.headlineSmall) }, actions = {
+            IconButton(onClick = switchBook) { Icon(AppIcons.Search, "Switch book") }
             IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") }
         })
         LazyVerticalGrid(columns = GridCells.Adaptive(148.dp), state = rememberLazyGridState(),
@@ -189,7 +236,7 @@ private fun LibraryScreen(state: LibraryState, model: LibraryViewModel, importBo
                 }
             }
             if (resume != null && state.filter == "all" && state.query.isBlank()) item(key = "header:continue", span = { GridItemSpan(maxLineSpan) }) {
-                Card(onClick = { model.open(resume) }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+                Card(onClick = { if (resume.missing) navigationToMissing() else model.open(resume) }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         BookCover(resume, Modifier.width(62.dp).aspectRatio(2f / 3f))
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -206,7 +253,7 @@ private fun LibraryScreen(state: LibraryState, model: LibraryViewModel, importBo
                     leadingIcon = { Icon(AppIcons.Search, null) },
                     trailingIcon = { if (state.query.isNotEmpty()) TextButton(onClick = { model.query("") }) { Text("Clear") } })
             }
-            item(key = "header:filters", span = { GridItemSpan(maxLineSpan) }) {
+            if (!wide) item(key = "header:filters", span = { GridItemSpan(maxLineSpan) }) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     item { FilterChip(selected = state.filter == "all", onClick = { model.filter("all") }, label = { Text("All books") }) }
                     item { FilterChip(selected = state.filter == "favorites", onClick = { model.filter("favorites") }, label = { Text("Favorites") }) }
@@ -235,6 +282,7 @@ private fun LibraryScreen(state: LibraryState, model: LibraryViewModel, importBo
                     remove = { remove(book) }, membership = { membership(book) })
             }
         }
+    }
     }
 }
 
@@ -303,9 +351,22 @@ private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: (
     backups: () -> Unit,
     licenses: () -> Unit,
     createShelf: () -> Unit, editShelf: (LibraryShelf) -> Unit, deleteShelf: (LibraryShelf) -> Unit) {
+    val context = LocalContext.current
+    val controls by ReadingControls.state.collectAsState()
+    var keyboardHelp by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().testTag("settings")) {
         TopAppBar(title = { Text("Settings") }, navigationIcon = { IconButton(onClick = back) { Icon(AppIcons.Back, "Back") } })
         LazyColumn(Modifier.weight(1f).testTag("settingsList"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Text("Reading controls", style = MaterialTheme.typography.headlineSmall) }
+            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text("Volume keys turn pages"); Text("While reading: up goes back, down goes forward", style = MaterialTheme.typography.bodySmall) }
+                Switch(controls.volumeTurns, { ReadingControls.update(context, volumeTurns = it) }, Modifier.testTag("volumeTurns"))
+            } }
+            item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Keep screen on while reading", Modifier.weight(1f))
+                Switch(controls.keepScreenOn, { ReadingControls.update(context, keepScreenOn = it) }, Modifier.testTag("keepScreenOn"))
+            } }
+            item { TextButton(onClick = { keyboardHelp = true }) { Text("Keyboard shortcuts") }; HorizontalDivider() }
             item { Text("Appearance", style = MaterialTheme.typography.headlineSmall) }
             items(Appearance.entries) { appearance ->
                 Row(Modifier.fillMaxWidth().clickable { model.appearance(appearance) }, verticalAlignment = Alignment.CenterVertically) {
@@ -336,6 +397,7 @@ private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: (
             item {
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 TextButton(onClick = licenses) { Text("Licenses") }
+                TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/Tikkaaa3/simPl-reader/blob/main/docs/privacy.md".toUri())) }) { Text("Privacy policy") }
                 Text("simPl ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelMedium)
                 Text("Your books stay on this device", style = MaterialTheme.typography.titleMedium)
                 Text("Imports are copied into private storage. Removing a book never deletes its original file.",
@@ -343,6 +405,7 @@ private fun SettingsScreen(state: LibraryState, model: LibraryViewModel, back: (
             }
         }
     }
+    if (keyboardHelp) KeyboardHelp { keyboardHelp = false }
 }
 
 /** M3's reader destination. Page rendering and reader controls belong to M4/M5. */

@@ -1,0 +1,19 @@
+Make room for a good book.
+
+simPl is a reader for the books and documents you bring. Import EPUB, PDF, HTML, TXT and Markdown files through Android's file picker. Your library and reading progress stay in private storage on your device.
+
+Read your way
+Choose reading fonts, themes, paper colors and margins. Canonical page numbers stay stable as you change typography or move between phone and tablet. PDFs offer both a faithful Document view and a text-oriented Book view when copying is permitted.
+
+Keep your place and your ideas
+Organize books with shelves and favorites. Add bookmarks, highlights and notes, search inside books, and switch quickly between titles. Export notes as Markdown, plain text or JSON. Portable backups can move supported reading state between Android and Windows.
+
+Listen and look up words
+Read aloud with an installed Android speech engine. Offline voices are preferred; network voices require your consent. Download dictionary packages explicitly, then look up words on your device without sending search queries to a server.
+
+At home on larger screens
+Tablets show a library sidebar and a persistent reader panel. Foldable layouts keep content clear of separating hinges. Hardware keyboards support navigation, search, zoom, bookmarks and quick book switching. Optional volume-key page turns and a keep-screen-on setting make reading comfortable.
+
+No account, advertisements or analytics. An Internet connection is only needed for optional dictionary downloads and speech engines that use the network. Speech engines, document providers and apps you share with have their own privacy practices.
+
+Bring your own DRM-free files. No bookstore or bundled commercial books are included. Scanned PDFs need an existing text layer for text search and Book conversion. Some scripts may use device font fallbacks.

@@ -200,6 +200,9 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
     fun zoom(scale: Float) {
         record(mutable.value.location.copy(zoom = scale.coerceIn(.25f, 4f), fitWidth = false))
     }
+    private var fitScale = 1f
+    fun viewportScale(scale: Float) { fitScale = scale }
+    fun stepZoom(factor: Float) { zoom((if (mutable.value.location.fitWidth) fitScale else mutable.value.location.zoom) * factor) }
     fun fit() {
         record(mutable.value.location.copy(zoom = 1f, fitWidth = true, horizontal = 0f))
         mutable.value = mutable.value.copy(revision = mutable.value.revision + 1)
@@ -219,6 +222,13 @@ internal class PdfViewModel(application: Application, private val saved: SavedSt
         selectSource(if (start) selection.copy(from = point) else selection.copy(to = point))
     }
     fun selectAll() { mutable.value.text?.glyphs?.takeIf { it.isNotEmpty() }?.let { select(it.indices) } }
+    suspend fun find(query: String): FindTask = native.withLock { checkNotNull(source).find(query) }
+    fun searchHit(hit: SearchHit) {
+        selectSource(hit.pdf); show(hit.page)
+        val location = mutable.value.location.copy(within = hit.within, horizontal = 0f)
+        mutable.value = mutable.value.copy(location = location, revision = mutable.value.revision + 1)
+        record(location)
+    }
     fun copy(done: (String) -> Unit) = launch {
         val selection = mutable.value.selection ?: return@launch
         done(withContext(Dispatchers.IO) { native.withLock { source!!.selectionText(selection) } })

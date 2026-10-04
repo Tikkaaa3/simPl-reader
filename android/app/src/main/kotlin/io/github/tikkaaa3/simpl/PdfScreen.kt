@@ -20,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -99,6 +100,14 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
     var toolbar by rememberSaveable { mutableStateOf(true) }
     var jump by rememberSaveable { mutableStateOf(false) }
     var annotations by rememberSaveable { mutableStateOf(false) }
+    var finding by rememberSaveable { mutableStateOf(false) }
+    val findState = rememberFindState()
+    var sideVisible by rememberSaveable { mutableStateOf(true) }
+    var paneAvailable by remember { mutableStateOf(false) }
+    var help by rememberSaveable { mutableStateOf(false) }
+    var previousZoom by rememberSaveable { mutableFloatStateOf(1.5f) }
+    val scrollKeys = remember { kotlinx.coroutines.channels.Channel<Int>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+    val quickSwitch = LocalQuickSwitch.current
     var dictionary by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.selection) { if (state.selection == null) dictionary = false }
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
@@ -121,22 +130,65 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         controller.isAppearanceLightStatusBars = !dark; controller.isAppearanceLightNavigationBars = !dark
         onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
     }
-    BackHandler {
-        when { annotations -> annotations = false; state.selection != null -> model.select(null); jump -> jump = false;
+    fun escape() {
+        when { finding -> { finding = false; model.select(null) }; annotations -> annotations = false; state.selection != null -> model.select(null); jump -> jump = false;
             !toolbar -> toolbar = true; else -> { model.stop(); back() } }
     }
+    BackHandler { escape() }
+    ReaderKeys(!state.loading && state.info != null) { command ->
+        when (command) {
+            ReaderCommand.Previous -> model.turn(-1)
+            ReaderCommand.Next -> model.turn(1)
+            ReaderCommand.ScrollUp -> scrollKeys.trySend(-1)
+            ReaderCommand.ScrollDown -> scrollKeys.trySend(1)
+            ReaderCommand.First -> model.jump("1")
+            ReaderCommand.Last -> model.jump(state.info!!.pages.size.toString())
+            ReaderCommand.Find -> if (state.info?.canCopy == true) { finding = true; toolbar = true }
+            ReaderCommand.Jump -> jump = true
+            ReaderCommand.ZoomIn -> model.stepZoom(1.1f)
+            ReaderCommand.ZoomOut -> model.stepZoom(1 / 1.1f)
+            ReaderCommand.ResetZoom -> model.zoom(1f)
+            ReaderCommand.Fit -> if (state.location.fitWidth) model.zoom(previousZoom) else { previousZoom = state.location.zoom; model.fit() }
+            ReaderCommand.Copy -> model.copy { (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Book text", it)) }
+            ReaderCommand.SelectAll -> model.selectAll()
+            ReaderCommand.Speech -> if (ReadAloud.state.value.active) ReadAloud.stop() else model.readAloud()
+            ReaderCommand.Highlight -> model.highlight(AnnotationColor.YELLOW, null)
+            ReaderCommand.Bookmark -> model.bookmark()
+            ReaderCommand.Panel -> {
+                if (paneAvailable) { sideVisible = !sideVisible; annotations = false }
+                else { annotations = !annotations; sideVisible = true }
+                finding = false
+            }
+            ReaderCommand.Toolbar -> toolbar = !toolbar
+            ReaderCommand.Help -> help = true
+            ReaderCommand.Close -> { model.stop(); back() }
+            ReaderCommand.Escape -> escape()
+            else -> Unit
+        }
+    }
+    CompositionLocalProvider(LocalReaderScroll provides scrollKeys) {
+    AdaptivePanes(sideVisible = sideVisible || finding, side = {
+        if (finding) {
+            if (state.loading) CircularProgressIndicator()
+            else FindPanel(findState, model::find, model::searchHit) { finding = false; model.select(null) }
+        }
+        else AnnotationPanel(state.annotations, {}, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+    }) { wide ->
+    SideEffect { paneAvailable = wide }
     Column(Modifier.fillMaxSize().testTag("reader")) {
         if (toolbar) TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { IconButton(onClick = { model.stop(); back() }) { Icon(AppIcons.Back, "Back to library") } },
             actions = {
                 IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.location.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
-                IconButton(onClick = { annotations = true }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
+                IconButton(onClick = { annotations = true; finding = false; sideVisible = true }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
                 IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } })
         if (toolbar && !state.loading && state.info != null) FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
             Text("PDF", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
             ReadAloudControls(book.fingerprint, model::readAloud, enabled = state.info?.canCopy == true)
             if (bookMode != null) TextButton(onClick = bookMode, enabled = state.info?.canCopy == true) { Text("Book") }
             TextButton(onClick = model::fit) { Text("Fit width") }
+            TextButton(onClick = { finding = true }, enabled = state.info?.canCopy == true) { Text("Find in book") }
+            TextButton(onClick = quickSwitch) { Text("Switch book") }
             TextButton(onClick = model::selectAll, enabled = !state.text?.glyphs.isNullOrEmpty()) { Text("Select page text") }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -158,15 +210,27 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
             TextButton(onClick = { model.turn(1) }, enabled = state.location.page < state.info!!.pages.size.toUInt()) { Text("Next") }
         }
     }
-    if (annotations) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+    if (annotations && !wide) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+    if (finding && !wide) ModalBottomSheet(onDismissRequest = { finding = false; model.select(null) }) {
+        if (state.loading) CircularProgressIndicator()
+        else FindPanel(findState, model::find, model::searchHit) { finding = false; model.select(null) }
+    }
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
     if (jump) {
         var value by rememberSaveable { mutableStateOf("") }
         AlertDialog(onDismissRequest = { jump = false }, title = { Text("Go to page") },
-            text = { OutlinedTextField(value, { value = it }, singleLine = true, label = { Text("Page number") }, modifier = Modifier.testTag("jumpPage")) },
+            text = {
+                val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+                LaunchedEffect(Unit) { focus.requestFocus() }
+                OutlinedTextField(value, { value = it }, singleLine = true, label = { Text("Page number") }, modifier = Modifier.testTag("jumpPage").focusRequester(focus),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Go),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { if (model.jump(value)) jump = false }))
+            },
             confirmButton = { TextButton(onClick = { if (model.jump(value)) jump = false }, enabled = value.isNotBlank()) { Text("Go") } },
             dismissButton = { TextButton(onClick = { jump = false }) { Text("Cancel") } })
     }
+    } }
+    if (help) KeyboardHelp { help = false }
     if (state.error != null && state.info != null) AlertDialog(onDismissRequest = model::dismissError, title = { Text("PDF reader") },
         text = { Text(state.error!!) }, confirmButton = { TextButton(onClick = model::dismissError) { Text("OK") } })
 }
@@ -175,6 +239,9 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
 private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit, dictionary: () -> Unit, editMark: (ULong) -> Unit) {
     val density = LocalDensity.current.density
     val vertical = rememberScrollState(); val horizontal = rememberScrollState()
+    val scrollKeys = LocalReaderScroll.current
+    var viewportHeight by remember { mutableIntStateOf(0) }
+    LaunchedEffect(scrollKeys) { if (scrollKeys != null) for (delta in scrollKeys) vertical.animateScrollBy(viewportHeight * .8f * delta) }
     val location = state.location
     val pageSize = state.info!!.pages[location.page.toInt() - 1]
     val toggleNow by rememberUpdatedState(toggle)
@@ -195,6 +262,7 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
             }
         }) {
         val fitScale = constraints.maxWidth / density / pageSize.width / (4f / 3f)
+        SideEffect { viewportHeight = constraints.maxHeight; model.viewportScale(fitScale) }
         val zoom = if (location.fitWidth) 1f else location.zoom / fitScale
         val width = constraints.maxWidth * zoom
         val height = width * pageSize.height / pageSize.width

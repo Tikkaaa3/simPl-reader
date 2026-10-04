@@ -72,16 +72,22 @@ class LibraryUiTest {
         ui.onNodeWithTag("book:${book.fingerprint}").assertExists()
         // Both the selected shelf and query survive Activity recreation.
         ui.onNodeWithTag("search").performTextInput("Journey")
+        // Finish Compose's text-edit delivery before immediately destroying the Activity.
+        ui.onNodeWithTag("search").assertTextContains("Journey")
         ui.activityRule.scenario.recreate()
         ui.onNodeWithTag("search").assertTextContains("Journey")
         ui.onNodeWithTag("book:${book.fingerprint}").assertExists()
         ui.onNodeWithContentDescription("Settings").performClick()
+        ui.onNodeWithTag("settingsList").performScrollToNode(hasContentDescription("Manage M3 Shelf"))
         ui.onNodeWithContentDescription("Manage M3 Shelf").performClick()
         ui.onNodeWithText("Rename shelf").performClick()
         ui.onNodeWithTag("shelfName").performTextClearance()
         ui.onNodeWithTag("shelfName").performTextInput("M3 Renamed")
         ui.onNodeWithText("Save").performClick()
-        ui.waitUntil(10_000) { loadLibrary().shelves.any { it.name == "M3 Renamed" } }
+        // Disk writes precede the asynchronous refresh that publishes the new UI name.
+        val libraryState = ui.runOnIdle { ViewModelProvider(ui.activity)[LibraryViewModel::class.java].state }
+        ui.waitUntil(10_000) { libraryState.value.shelves.any { it.name == "M3 Renamed" } }
+        ui.onNodeWithTag("settingsList").performScrollToNode(hasContentDescription("Manage M3 Renamed"))
         ui.onNodeWithContentDescription("Manage M3 Renamed").performClick()
         ui.onNodeWithText("Delete shelf").performClick()
         ui.onNodeWithText("Cancel").performClick()

@@ -130,18 +130,18 @@ pub struct PageContent {
     pub rows: Vec<BookRow>,
 }
 
-struct Job<T> {
-    cancel: AtomicBool,
+pub(crate) struct Job<T> {
+    pub(crate) cancel: AtomicBool,
     result: Mutex<Option<Result<Option<T>, CoreError>>>,
 }
 impl<T: Clone> Job<T> {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             cancel: AtomicBool::new(false),
             result: Mutex::new(None),
         })
     }
-    fn status(&self) -> LayoutStatus {
+    pub(crate) fn status(&self) -> LayoutStatus {
         match self.result.lock().expect("layout result").as_ref() {
             Some(Ok(Some(_))) => LayoutStatus::Complete,
             Some(Ok(None)) => LayoutStatus::Cancelled,
@@ -149,14 +149,14 @@ impl<T: Clone> Job<T> {
             None => LayoutStatus::Running,
         }
     }
-    fn result(&self) -> Result<Option<T>, CoreError> {
+    pub(crate) fn result(&self) -> Result<Option<T>, CoreError> {
         self.result
             .lock()
             .expect("layout result")
             .clone()
             .unwrap_or(Ok(None))
     }
-    fn run(
+    pub(crate) fn run(
         self: &Arc<Self>,
         work: impl FnOnce(&AtomicBool) -> Result<Option<T>, CoreError> + Send + 'static,
     ) -> Result<(), CoreError>

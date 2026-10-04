@@ -2327,6 +2327,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "unicode-normalization",
+ "unicode-segmentation",
  "windows-sys 0.61.2",
  "zip",
 ]

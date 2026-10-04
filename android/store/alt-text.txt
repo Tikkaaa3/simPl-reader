@@ -1,0 +1,2 @@
+icon.png: An open book with four short lines on a dark background.
+feature-graphic.png: A paper page beside the words Your next quiet chapter and Read. Listen. Remember.

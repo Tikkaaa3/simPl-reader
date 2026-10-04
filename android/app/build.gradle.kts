@@ -144,6 +144,8 @@ rustAndroid {
 }
 
 dependencies {
+    implementation(libs.androidx.window)
+    androidTestImplementation(libs.androidx.window.testing)
     implementation(libs.androidx.work)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.splashscreen)

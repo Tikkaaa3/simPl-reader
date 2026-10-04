@@ -17,8 +17,11 @@ profileinstaller = "1.4.1"
 splashscreen = "1.2.0"
 media3 = "1.11.1"
 work = "2.12.0"
+window = "1.5.1"
 
 [libraries]
+androidx-window = { module = "androidx.window:window", version.ref = "window" }
+androidx-window-testing = { module = "androidx.window:window-testing", version.ref = "window" }
 androidx-work = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }

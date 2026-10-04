@@ -19,6 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.*
@@ -46,9 +47,18 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
     val activity = requireNotNull(LocalActivity.current)
     var toolbar by rememberSaveable { mutableStateOf(true) }
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
+    var previousZoom by rememberSaveable { mutableFloatStateOf(1.5f) }
+    var sideVisible by rememberSaveable { mutableStateOf(true) }
+    var paneAvailable by remember { mutableStateOf(false) }
+    var help by rememberSaveable { mutableStateOf(false) }
+    val scrollKeys = remember { kotlinx.coroutines.channels.Channel<Int>(kotlinx.coroutines.channels.Channel.CONFLATED) }
+    val context = LocalContext.current
+    val selectionMeasurer = rememberTextMeasurer()
+    val quickSwitch = LocalQuickSwitch.current
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
     LaunchedEffect(state.selection) { if (state.selection != null) toolbar = true }
     var panel by rememberSaveable { mutableStateOf<String?>(null) }
+    val findState = rememberFindState()
     var dictionary by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.selection) { if (state.selection == null) dictionary = false }
     val theme = state.themes.firstOrNull { it.id == state.theme }
@@ -73,21 +83,73 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
         controller.isAppearanceLightNavigationBars = !dark
         onDispose { controller.show(WindowInsetsCompat.Type.systemBars()); controller.isAppearanceLightStatusBars = !appDark; controller.isAppearanceLightNavigationBars = !appDark }
     }
-    BackHandler {
+    fun escape() {
         when { state.selection != null -> model.select(null); state.note != null -> model.dismissNote(); panel != null -> panel = null;
             state.canReturn -> model.returnFromLink(); !toolbar -> toolbar = true; else -> { model.stop(); back() } }
     }
+    BackHandler { escape() }
+    ReaderKeys(!state.loading && !state.adapting) { command ->
+        when (command) {
+            ReaderCommand.Previous -> model.turn(-1)
+            ReaderCommand.Next -> model.turn(1)
+            ReaderCommand.ScrollUp -> scrollKeys.trySend(-1)
+            ReaderCommand.ScrollDown -> scrollKeys.trySend(1)
+            ReaderCommand.First -> model.jump("1") {}
+            ReaderCommand.Last -> model.jump(state.total.toString()) {}
+            ReaderCommand.Find -> { panel = "find"; toolbar = true }
+            ReaderCommand.Jump -> panel = "jump"
+            ReaderCommand.ZoomIn -> zoom = (zoom * 1.1f).coerceAtMost(3f)
+            ReaderCommand.ZoomOut -> zoom = (zoom / 1.1f).coerceAtLeast(1f)
+            ReaderCommand.ResetZoom -> zoom = 1f
+            ReaderCommand.Fit -> { val old = zoom; zoom = if (zoom == 1f) previousZoom else 1f; if (old != 1f) previousZoom = old }
+            ReaderCommand.Contents -> { panel = "contents"; sideVisible = true }
+            ReaderCommand.PreviousChapter -> if (book.format == DocumentFormat.EPUB) model.chapter(-1)
+            ReaderCommand.NextChapter -> if (book.format == DocumentFormat.EPUB) model.chapter(1)
+            ReaderCommand.Return -> model.returnFromLink()
+            ReaderCommand.Copy -> model.copy { (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Book text", it)) }
+            ReaderCommand.SelectAll -> {
+                val rows = measurePage(state.pages, state.options, selectionMeasurer, text, accent).filter { it.text != null && it.lastLine > it.firstLine }
+                val first = rows.firstOrNull(); val last = rows.lastOrNull()
+                if (first != null && last != null) model.select(ReflowSelection(
+                    SourcePoint(first.section, first.row.index, sourceByte(first.row.text.orEmpty(), first.text!!.getLineStart(first.firstLine))),
+                    SourcePoint(last.section, last.row.index, sourceByte(last.row.text.orEmpty(), last.text!!.getLineEnd(last.lastLine - 1)))))
+            }
+            ReaderCommand.Speech -> if (ReadAloud.state.value.active) ReadAloud.stop() else model.readAloud()
+            ReaderCommand.Highlight -> model.highlight(AnnotationColor.YELLOW, null)
+            ReaderCommand.Bookmark -> model.bookmark()
+            ReaderCommand.Panel -> {
+                if (paneAvailable) { sideVisible = !sideVisible; panel = null }
+                else { panel = if (panel == "annotations") null else "annotations"; sideVisible = true }
+            }
+            ReaderCommand.Toolbar -> toolbar = !toolbar
+            ReaderCommand.Help -> help = true
+            ReaderCommand.Close -> { model.stop(); back() }
+            ReaderCommand.Escape -> escape()
+        }
+    }
+    CompositionLocalProvider(LocalReaderScroll provides scrollKeys) {
+    AdaptivePanes(sideVisible = sideVisible || panel == "find" || panel == "contents", side = {
+        if (panel == "find") {
+            if (state.loading || state.adapting) CircularProgressIndicator()
+            else FindPanel(findState, model::find, model::searchHit) { panel = null; model.select(null) }
+        }
+        else if (panel == "contents") ReaderContentsPanel(state, { model.go(it) })
+        else AnnotationPanel(state.annotations, {}, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+    }) { wide ->
+    SideEffect { paneAvailable = wide }
     Column(Modifier.fillMaxSize().background(desk).testTag("reader")) {
         if (toolbar) TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { IconButton(onClick = { model.stop(); back() }) { Icon(AppIcons.Back, "Back to library") } },
             actions = {
                 if (document != null) TextButton(onClick = document) { Text("Document") }
                 IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
-                IconButton(onClick = { panel = "annotations" }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
+                IconButton(onClick = { panel = "annotations"; sideVisible = true }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
                 IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = paper, titleContentColor = text, navigationIconContentColor = text, actionIconContentColor = text))
         if (toolbar && !state.loading) FlowRow(Modifier.fillMaxWidth().background(paper).padding(horizontal = 8.dp)) {
-            TextButton(onClick = { panel = "contents" }) { Text("Contents") }
+            TextButton(onClick = { panel = "contents"; sideVisible = true }) { Text("Contents") }
+            TextButton(onClick = { panel = "find" }) { Text("Find in book") }
+            TextButton(onClick = quickSwitch) { Text("Switch book") }
             ReadAloudControls(book.fingerprint, model::readAloud)
             TextButton(onClick = { panel = "options" }) { Text("Reading options") }
             TextButton(onClick = { zoom = 1f }) { Text("Fit width") }
@@ -125,22 +187,19 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
             TextButton(onClick = { model.turn(1) }, enabled = state.page < state.total && !state.adapting) { Text("Next") }
         }
     }
-    if (panel == "annotations") AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+    if (panel == "annotations" && !wide) AnnotationSheet(state.annotations, { panel = null }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+    if (panel == "find" && !wide) ModalBottomSheet(onDismissRequest = { panel = null; model.select(null) }) {
+        if (state.loading || state.adapting) CircularProgressIndicator()
+        else FindPanel(findState, model::find, model::searchHit) { panel = null; model.select(null) }
+    }
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
-    if (panel == "contents") ModalBottomSheet(onDismissRequest = { panel = null }) {
-        Text("Contents", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
-            if (state.contents.isEmpty()) item { Text("No contents entries in this book", Modifier.padding(20.dp)) }
-            items(state.contents) { entry ->
-                TextButton(onClick = { model.go(entry.location); panel = null }, modifier = Modifier.fillMaxWidth().padding(start = (entry.depth.toInt().coerceAtMost(8) * 12).dp)) {
-                    Text(entry.label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
-                    Text(entry.location.page.toString())
-                }
-            }
-        }
+    if (panel == "contents" && !wide) ModalBottomSheet(onDismissRequest = { panel = null }) {
+        ReaderContentsPanel(state) { model.go(it); panel = null }
     }
     if (panel == "options") ModalBottomSheet(onDismissRequest = { panel = null }) { ReadingOptions(state, model) }
     if (panel == "jump") JumpDialog(state, model) { panel = null }
+    } }
+    if (help) KeyboardHelp { help = false }
     state.note?.let { note ->
         val measurer = rememberTextMeasurer()
         val rows = remember(note, state.options, text, accent) { measureRows(note.section, note.noteRows, state.options, measurer, text, accent) }
@@ -157,6 +216,20 @@ internal fun ReaderScreen(book: LibraryBook, model: ReaderViewModel, back: () ->
     }
     if (state.error != null && state.pages.isNotEmpty()) AlertDialog(onDismissRequest = model::dismissError,
         title = { Text("Reader") }, text = { Text(state.error!!) }, confirmButton = { TextButton(onClick = model::dismissError) { Text("OK") } })
+}
+
+@Composable
+private fun ReaderContentsPanel(state: ReaderState, go: (ReaderLocation) -> Unit) {
+    Column(Modifier.fillMaxWidth().testTag("contentsPanel")) {
+        Text("Contents", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
+            if (state.contents.isEmpty()) item { Text("No contents entries in this book", Modifier.padding(20.dp)) }
+            items(state.contents) { entry -> TextButton(onClick = { go(entry.location) }, modifier = Modifier.fillMaxWidth().padding(start = (entry.depth.toInt().coerceAtMost(8) * 12).dp)) {
+                Text(entry.label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
+                Text(entry.location.page.toString())
+            } }
+        }
+    }
 }
 
 @Composable
@@ -181,6 +254,9 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
     val currentToggle by rememberUpdatedState(toggle)
     val currentZoom by rememberUpdatedState(zoom)
     val currentZoomTo by rememberUpdatedState(zoomTo)
+    val scrollKeys = LocalReaderScroll.current
+    var viewportHeight by remember { mutableIntStateOf(0) }
+    LaunchedEffect(scrollKeys) { if (scrollKeys != null) for (delta in scrollKeys) vertical.animateScrollBy(viewportHeight * .8f * delta) }
     BoxWithConstraints(Modifier.fillMaxSize().testTag("paperViewport").semantics { stateDescription = "Zoom $zoom; page ${state.page}" }
         .pointerInput(state.page, zoom <= 1.01f, state.selection != null) {
             if (zoom <= 1.01f && state.selection == null) {
@@ -205,6 +281,7 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
             }
         }) {
         val scale = constraints.maxWidth / 720f * zoom
+        SideEffect { viewportHeight = constraints.maxHeight }
         val viewportWidth = constraints.maxWidth
         val paperWidth = (720 * scale / density).dp
         val heights = remember(measured) {
@@ -298,6 +375,17 @@ private fun ReaderViewport(state: ReaderState, model: ReaderViewModel, zoom: Flo
                 vertical.scrollTo((top - constraints.maxHeight * .25f).roundToInt().coerceAtLeast(0))
             }
         }
+        LaunchedEffect(state.searchPoint, measured, scale, state.revision) {
+            val point = state.searchPoint ?: return@LaunchedEffect
+            val index = measured.indexOfFirst { it.section == point.section && it.row.index == point.row }
+            val row = measured.getOrNull(index) ?: return@LaunchedEffect
+            val layout = row.text ?: return@LaunchedEffect
+            val line = layout.getLineForOffset(byteIndex(row.row.text.orEmpty(), point.byte))
+            if (line !in row.firstLine until row.lastLine) return@LaunchedEffect
+            withFrameNanos { }
+            val top = (heights[index] + row.top - row.textTop + layout.getLineTop(line)) * scale
+            vertical.scrollTo((top - constraints.maxHeight * .25f).roundToInt().coerceAtLeast(0))
+        }
         val tap: (Offset) -> Unit = { point ->
             // Row offsets are within the text column; margins count as edge zones too.
             val x = point.x + state.options.margin.toInt() * scale - horizontal.value
@@ -369,7 +457,11 @@ private fun OptionStepper(title: String, value: String, label: String, decrease:
 private fun JumpDialog(state: ReaderState, model: ReaderViewModel, dismiss: () -> Unit) {
     var value by rememberSaveable { mutableStateOf("") }
     AlertDialog(onDismissRequest = dismiss, title = { Text("Go to page") }, text = {
-        OutlinedTextField(value, { value = it }, label = { Text("Page number or label") }, singleLine = true, modifier = Modifier.testTag("jumpPage"),
+        val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+        LaunchedEffect(Unit) { focus.requestFocus() }
+        OutlinedTextField(value, { value = it }, label = { Text("Page number or label") }, singleLine = true, modifier = Modifier.testTag("jumpPage").then(Modifier.focusRequester(focus)),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Go),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { model.jump(value, dismiss) }),
             supportingText = { Text("${state.total} pages") })
     }, confirmButton = { TextButton(onClick = { model.jump(value, dismiss) }, enabled = value.isNotBlank()) { Text("Go") } }, dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } })
 }

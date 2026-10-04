@@ -346,10 +346,18 @@ fn mapped_item(book: &Book, item: &Item) -> Result<crate::text::MappedParagraph,
 /// Canonical vertical source position, using the same shaping as the page atlas.
 /// The midpoint of the source line avoids choosing the preceding page at a cut.
 pub fn source_y(book: &Book, row: usize, byte: usize) -> Result<f32, String> {
+    Ok(source_ys(book, row, &[byte])?[0])
+}
+
+/// Shape a paragraph once when locating many search matches in the same row.
+pub fn source_ys(book: &Book, row: usize, bytes: &[usize]) -> Result<Vec<f32>, String> {
     fonts::load();
     let item = book.items.get(row).ok_or("Source row is unavailable")?;
     let logical = item.text().ok_or("Source row has no text")?;
-    if byte > logical.len() || !logical.is_char_boundary(byte) {
+    if bytes
+        .iter()
+        .any(|&byte| byte > logical.len() || !logical.is_char_boundary(byte))
+    {
         return Err("Source byte is invalid".into());
     }
     let theme = themes::default_theme();
@@ -357,7 +365,7 @@ pub fn source_y(book: &Book, row: usize, byte: usize) -> Result<f32, String> {
     let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
     let family = themes::effective_family(theme, book.pdf_source.is_some(), options);
     let mapped = mapped_item(book, item)?;
-    let byte = byte + mapped.text.len() - logical.len();
+    let prefix = mapped.text.len() - logical.len();
     let size = styled_item_size(&style, book, row, item, MINIMAL.default_size);
     let padding = style.block_padding(
         item,
@@ -386,9 +394,9 @@ pub fn source_y(book: &Book, row: usize, byte: usize) -> Result<f32, String> {
         offsets.push(offset);
         offset += line.len();
     }
-    let mut y = 0.0;
+    let mut lines = Vec::new();
     for run in shaped.buffer().layout_runs() {
-        y = run.line_top + run.line_height * 0.5;
+        let y = run.line_top + run.line_height * 0.5;
         let start = offsets.get(run.line_i).copied().unwrap_or(offset);
         let end = run
             .glyphs
@@ -396,9 +404,16 @@ pub fn source_y(book: &Book, row: usize, byte: usize) -> Result<f32, String> {
             .map(|g| start + g.end)
             .max()
             .unwrap_or(start);
-        if byte < end {
-            break;
-        }
+        lines.push((end, padding.top + y));
     }
-    Ok(padding.top + y)
+    Ok(bytes
+        .iter()
+        .map(|&byte| {
+            let index = lines.partition_point(|(end, _)| *end <= byte + prefix);
+            lines
+                .get(index)
+                .or_else(|| lines.last())
+                .map_or(padding.top, |(_, y)| *y)
+        })
+        .collect())
 }

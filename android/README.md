@@ -15,6 +15,46 @@ its build, scripts and release workflow do not use anything in this folder.
 | `build-logic/` | Gradle plugin `simpl.rust-android`: cargo-ndk build and Kotlin binding generation per variant |
 | `app/` | Compose application (`io.github.tikkaaa3.simpl`) |
 
+## Adaptive layout and reading controls (P5)
+
+At 840 dp, the library shows shelves beside the book grid. Readers keep an
+annotations panel beside the page, with contents and search in the same space.
+Separating folds use WindowManager's window-coordinate bounds to place content
+on either side of a vertical hinge or above/below a horizontal hinge. A narrow
+pane yields to the larger unobstructed area. Resizing preserves source positions
+and canonical page numbers.
+
+**Find in book** / **Ctrl+F** searches on a cancellable Rust worker using the
+desktop's Unicode/grapheme and whitespace rules. Queries are limited to 256 UTF-8
+bytes, results to 1,000. Results highlight exact source ranges and move to their
+canonical reflow page or physical PDF page. PDFs that disallow copying cannot be
+searched. The query and selected result survive recreation and movement between
+a bottom sheet and a persistent side panel.
+
+**Switch book** / **Ctrl+K** filters title and author with up to 100 results,
+most recently opened first. **Ctrl+R** limits the switcher to opened books. Missing
+files lead to Locate. Changing books saves the previous reader's position and
+stops its speech session. **Ctrl+O** imports, **Ctrl+W** returns to the library,
+and Space resumes the library's Continue book when no control has focus.
+
+Reader keyboard commands match the desktop: Left/Right turn pages; Up/Down and
+Page Up/Down scroll; Ctrl+Home/End go to the first/last page; Ctrl+L jumps;
+Ctrl+T opens contents; Ctrl+Page Up/Down changes EPUB chapters; Alt+Left returns
+from a link. Ctrl+Plus/Minus/0 and Ctrl+mouse wheel zoom, Ctrl+Shift+F toggles fit
+width/previous zoom, Ctrl+A/C selects page text/copies, Ctrl+H highlights,
+Ctrl+D bookmarks, Ctrl+B opens/toggles annotations and Ctrl+Shift+U starts/stops
+speech. F8/F11 hide/show controls and system bars; F1 opens help. Text fields
+retain their normal editing keys and Tab traversal.
+
+Settings offers **Volume keys turn pages** (up: previous, down: next) and
+**Keep screen on while reading**. Both default off and remain Android-specific
+preferences. Key handling and the screen-on flag are scoped to a resumed reader;
+settings, the library and background activities keep normal behavior.
+
+[Play Store preparation](store/README.md) includes English listing copy,
+reproducible artwork, a privacy policy and signed AAB generation. Store submission
+is a separate decision; the APK release workflow remains available.
+
 ## Backup and note export (P3)
 
 **Settings → Backup and export** creates a ZIP with positions, notes, shelves,

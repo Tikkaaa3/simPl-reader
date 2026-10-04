@@ -205,7 +205,7 @@ fn boundary(text: &str, byte: usize) -> bool {
 }
 
 impl OpenBook {
-    fn source_location(
+    pub(crate) fn source_location(
         &self,
         section: usize,
         row: usize,

@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 data class ReaderState(
+    val searchPoint: SourcePoint? = null,
     val preparation: BookPreparation? = null,
     val openMs: Long = 0,
     val spoken: SpeechRange? = null,
@@ -213,6 +214,12 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
         mutable.value = mutable.value.copy(selectionEdge = null)
     }
     fun go(location: ReaderLocation) = show(location.page, location)
+    fun find(query: String): FindTask = checkNotNull(source).find(query)
+    fun searchHit(hit: SearchHit) { hit.location?.let { select(hit.reflow); mutable.value = mutable.value.copy(searchPoint = hit.reflow?.from); go(it) } }
+    fun chapter(delta: Int) = launch {
+        val section = mutable.value.location?.section ?: mutable.value.pages.firstOrNull()?.section ?: 0u
+        go(withContext(Dispatchers.IO) { source!!.adjacentChapter(section, delta) })
+    }
     fun jump(value: String, done: () -> Unit) = launch {
         val page = withContext(Dispatchers.IO) { source!!.jump(value) }
         show(page); done()
@@ -254,7 +261,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     }
     fun select(selection: ReflowSelection?) {
         selectionJob?.cancel()
-        mutable.value = mutable.value.copy(selection = selection)
+        mutable.value = mutable.value.copy(selection = selection, searchPoint = null)
         saved["selection"] = selection?.let { longArrayOf(it.from.section.toLong(), it.from.row.toLong(), it.from.byte.toLong(), it.to.section.toLong(), it.to.row.toLong(), it.to.byte.toLong()) }
     }
     fun selectWord(point: SourcePoint, done: () -> Unit = {}) {

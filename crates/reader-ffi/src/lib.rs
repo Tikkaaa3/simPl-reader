@@ -24,6 +24,8 @@ mod dictionary;
 pub use dictionary::*;
 mod backup;
 pub use backup::*;
+mod find;
+pub use find::*;
 
 uniffi::setup_scaffolding!();
 

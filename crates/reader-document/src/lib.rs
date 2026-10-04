@@ -196,3 +196,4 @@ pub fn resolve_html_link(path: &std::path::Path, href: &str) -> Result<Option<St
     }
     Ok(fragment)
 }
+pub mod find;

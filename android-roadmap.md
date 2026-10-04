@@ -535,11 +535,51 @@ warnings. No dependencies or storage/cache schema versions changed.
 
 ### P5 — Polish
 
-- [ ] Tablet/foldable layout (two-column library, persistent side panel), hardware
+- [x] Tablet/foldable layout (two-column library, persistent side panel), hardware
       keyboard shortcuts (the desktop shortcuts).
-- [ ] In-book search, Ctrl+K-style quick book switching.
-- [ ] Page turns with the volume keys (optional), keep-screen-on setting.
-- [ ] Play Store preparation (separate decision).
+- [x] In-book search, Ctrl+K-style quick book switching.
+- [x] Page turns with the volume keys (optional), keep-screen-on setting.
+- [x] Play Store preparation (publication remains a separate decision).
+
+**P5 implementation (2026-10-04):** Windows and Android share the existing
+case-insensitive, whitespace-aware Unicode search engine in `reader-document`.
+Android exposes cancellable background searches, a 256-byte query bound and a
+1,000-result cap. Reflow hits use canonical source-line positions and exact
+grapheme selections; Document hits use physical pages and PDF glyph ordinals.
+Copy-restricted PDFs expose no search. Search state survives recreation and
+movement between a phone sheet and a wide-screen side panel. Quick switching
+filters title/author and preserves the previous reader checkpoint.
+
+At 840 dp, the library shows shelves beside its book grid and readers show a
+persistent annotations/contents/search panel. WindowManager 1.5.1 supplies
+separating hinge bounds: vertical folds split columns, horizontal folds split
+rows, and an unsuitable narrow pane yields to the larger unobstructed pane.
+Canonical pagination does not change with window size. Desktop-style keyboard
+commands, opt-in volume page turns and foreground-reader screen-on settings
+follow the navigation lifecycle. English help and the privacy policy are
+available from Settings.
+
+Store copy, reproducible icon/feature artwork and the privacy document live in
+`android/store` and `docs/privacy.md`. `android-release.ps1 -Bundle` prepares and
+verifies a signed AAB after the APK build, with ABI splitting disabled for the
+bundle. Account, audience, signing enrollment, policy declarations and actual
+Play submission remain publisher decisions; no store upload is performed.
+
+**P5 acceptance (2026-10-04):** The Windows workspace check passes with 432
+tests and 37 existing ignored cases. Shared Android Rust checks pass with 150
+tests, three ignored cases (including doc-tests) and three host-fixture skips.
+The accepted API 36 x86_64 emulator passes all 65 instrumentation tests without
+failures or skips; the seven P5 cases also pass separately. They cover Unicode
+and long-paragraph search, PDF Document/Book targets, recreation and pane changes,
+quick-switch checkpoints, editing-aware keys, EPUB chapters, zoom, annotations,
+volume controls, screen-on ownership and vertical/horizontal hinges. Reviewed
+screenshots are retained in `target/p5-visual`. Existing library tests now wait
+for text-edit delivery and shelf-state publication; the PDF speech test pauses
+the real audio clock before checking its page. Debug/release lint pass with zero
+errors and the ten existing warnings. Signed ARM64 and universal APKs and a signed
+AAB build successfully; signatures, native libraries, licenses and APK 16 KB
+alignment are verified. Store-candidate and physical-device validation remain
+separate from this accepted emulator scope.
 
 ## Risks and mitigations
 

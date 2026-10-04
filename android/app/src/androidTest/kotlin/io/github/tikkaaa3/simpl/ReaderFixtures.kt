@@ -32,7 +32,7 @@ internal fun readerIllustration(folder: java.io.File) {
     image.recycle()
 }
 
-internal fun readerEpub(): ByteArray {
+internal fun readerEpub(identity: String = ""): ByteArray {
     val files = linkedMapOf(
         "META-INF/container.xml" to """<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>""",
         "OPS/book.opf" to """<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>M4 Source Pages</dc:title></metadata><manifest><item id="main" href="main.xhtml" media-type="application/xhtml+xml"/><item id="next" href="next.xhtml" media-type="application/xhtml+xml"/><item id="notes" href="notes.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="main"/><itemref idref="next"/></spine></package>""",
@@ -41,6 +41,7 @@ internal fun readerEpub(): ByteArray {
         "OPS/next.xhtml" to """<h1 id="dawn">Dawn</h1><p>The boats returned in the morning.</p>""",
         "OPS/notes.xhtml" to """<aside id="note" role="doc-footnote"><h2>Harbour note</h2><p>A supplementary note outside the reading order. <a role="doc-backlink" href="main.xhtml#origin">Return to the opening</a>.</p></aside><aside id="other" role="doc-footnote"><p>This second note is separate.</p></aside>""",
     )
+    if (identity.isNotEmpty()) files["OPS/book.opf"] = files.getValue("OPS/book.opf").replace("M4 Source Pages", "M4 Source Pages $identity")
     val bytes = ByteArrayOutputStream()
     ZipOutputStream(bytes).use { zip ->
         val mime = "application/epub+zip".toByteArray()

@@ -227,7 +227,11 @@ class ReadAloudTest {
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("speechStart").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("speechStart").performClick()
         await("PDF page two") { ReadAloud.state.value.range?.let { it.pdfPage == 2u && it.from.byte > 10u } == true && !ReadAloud.state.value.preparing }
-        ui.onNodeWithTag("speechPause").performClick()
+        // Freeze the real audio clock immediately; a Compose idle wait can let
+        // this short fixture reach page three before the pause click is delivered.
+        // The shared pause button is exercised by the platform TTS test above.
+        ui.runOnUiThread { ReadAloud.pause() }
+        assertEquals(2u, ReadAloud.state.value.range?.pdfPage)
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any {
             it.config[SemanticsProperties.StateDescription] == "Reading aloud"
         } }

@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [switch]$Offline,
-    [switch]$Universal
+    [switch]$Universal,
+    # Prepare a signed Play upload artifact without publishing it.
+    [switch]$Bundle
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -65,4 +67,30 @@ foreach ($architecture in $architectures) {
     [IO.File]::WriteAllText("$output.sha256", "$hash  $name`n", (New-Object Text.UTF8Encoding($false)))
 }
 Copy-Item -LiteralPath $notes -Destination (Join-Path $destination 'release-notes.md') -Force
+if ($Bundle) {
+    # AGP cannot shrink ABI-split APK resources and an App Bundle in one build.
+    # Copy/verify APKs first, then rebuild the bundle with APK splitting disabled.
+    $bundleArguments = @('-p', (Join-Path $root 'android'), ':app:bundleRelease', "-PsimplVersion=$Version", '-PsimplSplitApks=false')
+    if ($Offline) { $bundleArguments += '--offline' }
+    & (Join-Path $root 'android\gradlew.bat') @bundleArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Android App Bundle build failed.' }
+    $bundleSource = Join-Path $root 'android\app\build\outputs\bundle\release\app-release.aab'
+    if (-not (Test-Path -LiteralPath $bundleSource -PathType Leaf)) { throw 'Missing release App Bundle.' }
+    $jarsigner = Join-Path $env:JAVA_HOME 'bin\jarsigner.exe'
+    $verification = & $jarsigner -verify $bundleSource 2>&1
+    if ($LASTEXITCODE -ne 0 -or ($verification -join ' ') -notmatch 'jar verified') { throw 'App Bundle signature verification failed.' }
+    $zip = [IO.Compression.ZipFile]::OpenRead($bundleSource)
+    try {
+        foreach ($required in @('base/manifest/AndroidManifest.xml', 'base/assets/licenses/index.json',
+            'base/lib/arm64-v8a/libreader_ffi.so', 'base/lib/arm64-v8a/libpdfium.so',
+            'base/lib/x86_64/libreader_ffi.so', 'base/lib/x86_64/libpdfium.so')) {
+            if (-not $zip.GetEntry($required)) { throw "App Bundle is missing $required" }
+        }
+    } finally { $zip.Dispose() }
+    $name = "simPl-$Version-android.aab"
+    $output = Join-Path $destination $name
+    Copy-Item -LiteralPath $bundleSource -Destination $output -Force
+    $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText("$output.sha256", "$hash  $name`n", (New-Object Text.UTF8Encoding($false)))
+}
 Write-Host "Verified signed Android artifacts: $destination"
