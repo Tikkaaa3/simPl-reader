@@ -51,12 +51,17 @@ class ReaderUiTest {
     }
     private fun open() { ui.onNodeWithTag("open:${entry.fingerprint}").performClick(); page(1u) }
     private fun page(number: UInt) {
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Page ${native!!.page(number).first().layout.label} of $total").fetchSemanticsNodes().isNotEmpty() }
+        try {
+            ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page ${native!!.page(number).first().layout.label} of $total")).fetchSemanticsNodes().isNotEmpty() }
+        } catch (error: ComposeTimeoutException) {
+            ui.onRoot(useUnmergedTree = true).printToLog("ReaderNavigation")
+            throw error
+        }
         ui.waitForIdle()
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("layoutProgress").fetchSemanticsNodes().isEmpty() }
     }
     private fun jump(value: String) {
-        ui.onNodeWithTag("pageLabel").performClick(); ui.onNodeWithTag("jumpPage").performTextInput(value); ui.onNodeWithText("Go").performClick()
+        ui.readerJump(value)
     }
     private fun follow(label: String) {
         val node = ui.onNode(hasText(label, substring = true) and SemanticsMatcher.keyIsDefined(SemanticsActions.CustomActions), useUnmergedTree = true)
@@ -66,7 +71,7 @@ class ReaderUiTest {
 
     @Test fun turnsJumpScrollZoomImmersiveAndStopRestoreTheSameCanonicalPage() {
         open(); screenshot("default-light")
-        ui.onNodeWithText("Next").performClick(); page(2u)
+        ui.onNodeWithContentDescription("Next").performClick(); page(2u)
         ui.onNodeWithTag("paperViewport").performTouchInput { swipeLeft() }; page(3u)
         ui.onNodeWithTag("paperViewport").performTouchInput { click(Offset(width * 0.05f, height * 0.2f)) }; page(2u)
         jump("4"); page(4u)
@@ -74,16 +79,17 @@ class ReaderUiTest {
         ui.onNodeWithTag("paperViewport").assert(SemanticsMatcher("zoom increased") { it.config[SemanticsProperties.StateDescription].substringAfter("Zoom ").substringBefore(';').toFloat() > 1.2f })
         page(4u)
         ui.onNodeWithTag("paperViewport").performTouchInput { swipeUp() }
+        ui.waitForIdle()
         ui.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         val stored = native!!.readerInfo().restored!!
         assertEquals(4u, stored.page); assertTrue(stored.within > 0f)
         ui.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-        ui.onNodeWithText("Fit width").performClick()
+        ui.readerTool("Fit width")
         ui.onNodeWithTag("paperViewport").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Zoom 1.0; page 4"))
         ui.onNodeWithTag("paperViewport").performTouchInput { click(center) }
         // A text tap first excludes a dictionary double tap.
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Next").fetchSemanticsNodes().isEmpty() }
-        ui.onNodeWithText("Next").assertDoesNotExist()
+        ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("Next").fetchSemanticsNodes().isEmpty() }
+        ui.onNodeWithContentDescription("Next").assertDoesNotExist()
         screenshot("immersive")
         ui.onNodeWithTag("paperViewport").performTouchInput { click(center) }
         page(4u)
@@ -103,16 +109,18 @@ class ReaderUiTest {
         page(far)
         screenshot("structure-rtl")
         ui.onNodeWithContentDescription("Return from link").performClick(); page(1u)
-        ui.onNodeWithText("Contents").performClick(); ui.onNodeWithText("A later passage").performClick(); page(far)
-        ui.onNodeWithText("Reading options").performClick()
+        ui.onNodeWithContentDescription("Contents").performClick(); ui.onNodeWithText("A later passage").performClick(); page(far)
+        ui.readerTool("Reading options")
         for (theme in listOf("Soft", "Clear", "Compact", "Default")) {
+            // Theme cards scroll sideways on a phone.
+            ui.onNodeWithTag("themePicker").performScrollToNode(hasText(theme))
             ui.onNodeWithText(theme).performClick()
             ui.waitUntil(30_000) { ui.onAllNodesWithTag("layoutProgress").fetchSemanticsNodes().isEmpty() }
             ui.onNodeWithText("Light paper").performClick()
             dismissSheet(); screenshot("${theme.lowercase()}-light-structure")
-            ui.onNodeWithText("Reading options").performClick(); ui.onNodeWithText("Dark paper").performClick()
+            ui.readerTool("Reading options"); ui.onNodeWithText("Dark paper").performClick()
             dismissSheet(); screenshot("${theme.lowercase()}-dark-structure")
-            ui.onNodeWithText("Reading options").performClick()
+            ui.readerTool("Reading options")
         }
         ui.onNodeWithContentDescription("Increase font size").performClick()
         ui.waitUntil(10_000) { native!!.readerInfo().options.size == 22.toUShort() }
@@ -123,7 +131,7 @@ class ReaderUiTest {
         ui.onNodeWithContentDescription("Back to library").performClick()
         ui.onNodeWithTag("open:${entry.fingerprint}").performClick(); page(far)
         assertEquals(22.toUShort(), native!!.readerInfo().options.size)
-        ui.onNodeWithText("Reading options").performClick(); ui.onNodeWithText("Reset typography").performClick()
+        ui.readerTool("Reading options"); ui.onNodeWithText("Reset typography").performClick()
         ui.waitUntil(10_000) { native!!.readerInfo().options.size == 20.toUShort() }
         dismissSheet()
     }
@@ -133,7 +141,7 @@ class ReaderUiTest {
         val source = importLibraryBook(file.absolutePath)
         try {
             ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(source) }
-            ui.waitUntil(30_000) { ui.onAllNodesWithText("Page iv · 1 of 2").fetchSemanticsNodes().isNotEmpty() }
+            ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page iv · 1 of 2")).fetchSemanticsNodes().isNotEmpty() }
             follow("the harbour note")
             ui.onNodeWithText("Note").assertExists()
             ui.onNode(hasText("A supplementary note outside", substring = true), useUnmergedTree = true).assertExists()
@@ -141,15 +149,15 @@ class ReaderUiTest {
             screenshot("auxiliary-note")
             ui.onNodeWithText("Return to reading").performClick()
             follow("Follow the dawn")
-            ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 42 · 2 of 2").fetchSemanticsNodes().isNotEmpty() }
+            ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 42 · 2 of 2")).fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithContentDescription("Return from link").performClick()
-            ui.waitUntil(10_000) { ui.onAllNodesWithText("Page iv · 1 of 2").fetchSemanticsNodes().isNotEmpty() }
+            ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page iv · 1 of 2")).fetchSemanticsNodes().isNotEmpty() }
             jump("missing-label")
             ui.waitUntil(10_000) { ui.onAllNodesWithText("Enter a page number or a printed page label from this book").fetchSemanticsNodes().isNotEmpty() }
-            ui.onNodeWithText("OK").performClick(); ui.onNodeWithText("Cancel").performClick()
-            ui.onNodeWithText("Page iv · 1 of 2").assertExists()
+            ui.onNodeWithText("OK").performClick(); cancelReaderJump()
+            ui.onNode(readerPageMatcher("Page iv · 1 of 2")).assertExists()
             jump("42")
-            ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 42 · 2 of 2").fetchSemanticsNodes().isNotEmpty() }
+            ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 42 · 2 of 2")).fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithContentDescription("Back to library").performClick()
         } finally { if (source.fingerprint !in baseline) removeLibraryBook(source.fingerprint) }
     }

@@ -42,11 +42,14 @@ class AnnotationUiTest {
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].apply { query(""); filter("all"); reload(); appearance(Appearance.Light) } }
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("open:${book.fingerprint}").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("open:${book.fingerprint}").performClick()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Next").fetchSemanticsNodes().isNotEmpty() }
-        if (pdf) ui.waitUntil(30_000) { ui.onAllNodesWithText("Select page text").fetchSemanticsNodes().any { !it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled) } }
+        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Next").fetchSemanticsNodes().isNotEmpty() }
+        if (pdf) pdfTextReady()
         else ui.waitUntil(30_000) { ui.onAllNodesWithTag("row:0:0", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         ui.waitForIdle()
     }
+    private fun pdfTextReady() = ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any {
+        it.config.getOrElse(androidx.compose.ui.semantics.SemanticsActions.CustomActions) { emptyList() }.any { action -> action.label == "Select page text" }
+    } }
     private fun waitCount(highlights: Int, bookmarks: Int = 0) = ui.waitUntil(10_000) {
         loadAnnotations(book.fingerprint).let { it.highlights.size == highlights && it.bookmarks.size == bookmarks }
     }
@@ -70,8 +73,8 @@ class AnnotationUiTest {
     @Test fun reflowHandlesNotesBookmarksEditDeleteAndRecreationPersist() {
         open(); selectReaderWord()
         ui.onNodeWithTag("selectionEnd", useUnmergedTree = true).performTouchInput { swipe(center, center + Offset(170f, 0f), 600) }
-        ui.onNodeWithText("Copy").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Copied").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithContentDescription("Copy").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("Copied").fetchSemanticsNodes().isNotEmpty() }
         ui.runOnIdle {
             val copied = (ui.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip!!.getItemAt(0).text.toString()
             assertTrue(copied, copied.startsWith("Harbour")); assertTrue(copied, copied.contains("lighthouse")); assertFalse(copied, copied.contains("Café"))
@@ -86,18 +89,18 @@ class AnnotationUiTest {
         }
         instrumentation.addMonitor(monitor)
         try {
-            ui.onNodeWithText("Share").performClick()
+            ui.onNodeWithContentDescription("More selection actions").performClick(); ui.onNodeWithText("Share").performClick()
             ui.waitUntil(10_000) { shared.get() != null }
             val sent = androidx.core.content.IntentCompat.getParcelableExtra(shared.get(), Intent.EXTRA_INTENT, Intent::class.java)!!
             assertEquals("text/plain", sent.type); assertTrue(sent.getStringExtra(Intent.EXTRA_TEXT)!!.startsWith("Harbour"))
         } finally { instrumentation.removeMonitor(monitor) }
-        ui.onNodeWithText("Add note").performClick(); ui.onNodeWithTag("annotationNote").performTextInput("The first harbour note"); ui.onNodeWithText("Save").performClick()
+        ui.onNodeWithContentDescription("Add note").performClick(); ui.onNodeWithTag("annotationNote").performTextInput("The first harbour note"); ui.onNodeWithText("Save").performClick()
         waitCount(1)
-        ui.onNodeWithContentDescription("Bookmark page").performClick(); waitCount(1, 1)
+        ui.readerTool("Bookmark page"); waitCount(1, 1)
         screenshot("reflow-highlight")
         ui.activityRule.scenario.recreate()
-        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Annotations").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithContentDescription("Annotations").performClick(); ui.onNodeWithText("Notes", substring = false).performClick()
+        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Reader tools").fetchSemanticsNodes().isNotEmpty() }
+        ui.readerTool("Annotations"); ui.onNodeWithText("Notes", substring = false).performClick()
         ui.onNodeWithText("The first harbour note").assertExists(); screenshot("notes-sheet")
         ui.onNodeWithText("Edit").performClick(); ui.onNodeWithTag("annotationNote").performTextReplacement("Edited harbour note")
         ui.onNodeWithContentDescription("Highlight blue").performClick(); ui.onNodeWithText("Save").performClick()
@@ -112,16 +115,16 @@ class AnnotationUiTest {
         ui.onNodeWithTag("annotationDeleteConfirm").performClick(); waitCount(0, 1)
         ui.onNodeWithText("Bookmarks", substring = false).performClick(); ui.onNodeWithText("Page 1", substring = false).performClick()
         ui.onNodeWithTag("annotationList").assertDoesNotExist()
-        ui.onNodeWithContentDescription("Bookmark page").performClick(); waitCount(0)
+        ui.readerTool("Bookmark page"); waitCount(0)
     }
 
     @Test fun reflowSelectionSurvivesPageEdgesAndUsesSourceBytes() {
         open(); selectReaderWord()
-        ui.onNodeWithText("Next").performClick()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Page 2", substring = true).fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithTag("paperViewport").performTouchInput { click(Offset(width * .3f, height * .15f)) }
-        ui.onNodeWithText("Copy").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Copied").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithContentDescription("Next").performClick()
+        ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page 2", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("row:0:1", useUnmergedTree = true).performTouchInput { click(Offset(width * .3f, 12f)) }
+        ui.onNodeWithContentDescription("Copy").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("Copied").fetchSemanticsNodes().isNotEmpty() }
         ui.runOnIdle {
             val text = (ui.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip!!.getItemAt(0).text.toString()
             assertTrue(text.startsWith("Harbour")); assertTrue(text.contains("Passage")); assertTrue(text.contains("👩‍👩‍👧‍👦"))
@@ -143,37 +146,37 @@ class AnnotationUiTest {
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("pdfSelection").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("selectionEnd", useUnmergedTree = true).performTouchInput { swipe(center, center + Offset(120f, 0f), 600) }
         ui.onNodeWithContentDescription("Highlight green").performClick(); waitCount(1)
-        ui.onNodeWithText("Select page text").performClick(); ui.onNodeWithText("Next").performClick()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Select page text").fetchSemanticsNodes().any { !it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled) } }
+        ui.readerTool("Select page text"); ui.onNodeWithContentDescription("Next").performClick()
+        pdfTextReady()
         ui.onNodeWithTag("pdfPage").performTouchInput { click(Offset(width * .2f, height * .1f)) }
-        ui.onNodeWithText("Add note").performClick(); ui.onNodeWithTag("annotationNote").performTextInput("Across PDF pages"); ui.onNodeWithText("Save").performClick(); waitCount(2)
+        ui.onNodeWithContentDescription("Add note").performClick(); ui.onNodeWithTag("annotationNote").performTextInput("Across PDF pages"); ui.onNodeWithText("Save").performClick(); waitCount(2)
         val entry = loadAnnotations(book.fingerprint).highlights.first { it.note != null }
         openPdfDocument(book.path).use { native ->
             val mark = native.pdfMarks().first { it.id == entry.id }
             assertEquals(1u, mark.from.page); assertEquals(2u, mark.to.page)
         }
-        ui.onNodeWithContentDescription("Bookmark page").performClick(); waitCount(2, 1); screenshot("pdf-highlight")
+        ui.readerTool("Bookmark page"); waitCount(2, 1); screenshot("pdf-highlight")
         ui.activityRule.scenario.recreate()
-        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Annotations").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithContentDescription("Annotations").performClick(); ui.onNodeWithText("Notes", substring = false).performClick()
+        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Reader tools").fetchSemanticsNodes().isNotEmpty() }
+        ui.readerTool("Annotations"); ui.onNodeWithText("Notes", substring = false).performClick()
         ui.onNodeWithText("Across PDF pages").performClick()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Page 1 of 3").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page 1 of 3")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("pdfSelection").assertExists()
-        ui.onNodeWithText("Clear").performClick()
-        ui.onNodeWithContentDescription("Annotations").performClick(); ui.onNodeWithText("Bookmarks", substring = false).performClick()
+        ui.onNodeWithContentDescription("Clear selection").performClick()
+        ui.readerTool("Annotations"); ui.onNodeWithText("Bookmarks", substring = false).performClick()
         ui.onNodeWithText("Page 2", substring = false).performClick()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Page 2 of 3").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page 2 of 3")).fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test fun heldPdfHandleScrollsAndTurnsAcrossThePageEdge() {
-        open(pdf = true); ui.onNodeWithText("Select page text").performClick()
+        open(pdf = true); ui.readerTool("Select page text")
         // The last glyph of this short PDF is visible; the viewport keeps the
         // pointer capture when its page Canvas is replaced.
         val handle = ui.onNodeWithTag("selectionEnd", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.center
         val viewport = ui.onNodeWithTag("pdfViewport").fetchSemanticsNode().boundsInRoot
         ui.onNodeWithTag("pdfViewport").performTouchInput { down(handle - viewport.topLeft); moveTo(Offset(width * .5f, height - 8f)) }
         try {
-            ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2 of 3").fetchSemanticsNodes().isNotEmpty() }
+            ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2 of 3")).fetchSemanticsNodes().isNotEmpty() }
         } finally { ui.onNodeWithTag("pdfViewport").performTouchInput { up() } }
         ui.onNodeWithContentDescription("Highlight blue").performClick(); waitCount(1)
         openPdfDocument(book.path).use { native ->
@@ -188,7 +191,7 @@ class AnnotationUiTest {
         val viewport = ui.onNodeWithTag("paperViewport").fetchSemanticsNode().boundsInRoot
         ui.onNodeWithTag("paperViewport").performTouchInput { down(handle - viewport.topLeft); moveTo(Offset(width * .5f, height - 8f)) }
         try {
-            ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         } finally { ui.onNodeWithTag("paperViewport").performTouchInput { up() } }
         ui.onNodeWithContentDescription("Highlight green").performClick(); waitCount(1)
         val quote = loadAnnotations(book.fingerprint).highlights.single().quote

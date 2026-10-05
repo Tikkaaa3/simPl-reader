@@ -62,8 +62,13 @@ class ReadAloudTest {
             opening.result()!!.use { it.saveLocation(ReaderLocation(1u, 0u, 0u, 0f), it.readerInfo().options.size) }
         } finally { opening.close() }
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].apply { query(""); filter("all"); reload(); open(entry) } }
-        ui.waitUntil(30_000) { ui.onAllNodesWithTag("speechStart").fetchSemanticsNodes().isNotEmpty() }
+        readerReady()
         return entry
+    }
+    private fun readerReady() {
+        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Reader tools").fetchSemanticsNodes().any {
+            !it.config.contains(SemanticsProperties.Disabled)
+        } && ui.onAllNodesWithTag("pdfRendering").fetchSemanticsNodes().isEmpty() && ui.onAllNodesWithTag("layoutProgress").fetchSemanticsNodes().isEmpty() }
     }
     private fun await(message: String, timeout: Long = 30_000, condition: () -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + timeout
@@ -76,7 +81,7 @@ class ReadAloudTest {
 
     @Test fun platformTtsHighlightsUnicodePausesResumesAndChangesVoiceAndSpeed() {
         book("<p>${"Café 😀 İstanbul and the boats returned before dawn. ".repeat(1000)}</p>")
-        ui.onNodeWithTag("speechStart").performClick()
+        ui.startReaderSpeech()
         await("word timings") { ReadAloud.state.value.range?.from?.byte?.let { it > 30u } == true && !ReadAloud.state.value.preparing }
         ui.onNodeWithTag("speechPause").performClick()
         val paused = ReadAloud.state.value.range
@@ -106,21 +111,21 @@ class ReadAloudTest {
 
     @Test fun continuesAcrossCanonicalSheetsAndEpubSections() {
         book("", "epub")
-        ui.onNodeWithTag("speechStart").performClick()
+        ui.startReaderSpeech()
         await("EPUB next section") { ReadAloud.state.value.chunk?.source?.section == 1u }
         await("end of book") { !ReadAloud.state.value.active }
         ui.onNodeWithContentDescription("Back to library").performClick()
         book("<p>${"A quiet boat came home. ".repeat(1200)}</p>")
-        ui.onNodeWithTag("speechStart").performClick()
+        ui.startReaderSpeech()
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pageLabel").fetchSemanticsNodes().any {
-            it.config[SemanticsProperties.Text].any { label -> !label.text.startsWith("Page 1 of") }
+            !it.config.getOrElse(SemanticsProperties.StateDescription) { "" }.startsWith("Page 1 of")
         } }
         assertTrue(ReadAloud.state.value.active)
     }
 
     @Test fun sessionTransportAudioFocusAndScreenOffPlaybackUseTheRealService() {
         book("<p>${"The words continue while the screen sleeps. ".repeat(1000)}</p>")
-        ui.onNodeWithTag("speechStart").performClick()
+        ui.startReaderSpeech()
         await("engine ready") { ReadAloud.state.value.range != null && !ReadAloud.state.value.preparing }
         val before = ReadAloud.state.value.range!!.from.byte
         shell("input keyevent KEYCODE_SLEEP")
@@ -155,14 +160,14 @@ class ReadAloudTest {
 
     @Test fun passageDoesNotTurnPagesAndRestartRejectsOldEngineCallbacks() {
         val entry = book("<p>${"A long first passage for reading. ".repeat(800)}</p>")
-        ui.onNodeWithTag("speechStart").performClick()
+        ui.startReaderSpeech()
         await("first session") { !ReadAloud.state.value.preparing && ReadAloud.state.value.range != null }
         val passage = speechPassage("A selected 😀 passage with several words.")
         ui.runOnUiThread { ReadAloud.start(ui.activity, entry.fingerprint, entry.title, passage, passage = true) }
         await("new passage") { ReadAloud.state.value.chunk?.text?.startsWith("A selected") == true }
         await("passage finishes") { !ReadAloud.state.value.active }
         assertNull(ReadAloud.state.value.range)
-        ui.onNodeWithTag("pageLabel").assertTextContains("Page 1 of", substring = true)
+        ui.onNodeWithTag("pageLabel").assert(readerPageMatcher("Page 1 of", substring = true))
     }
 
     @Test fun nativePlansRetainTheirDocumentAndSkipTextlessPdfPages() {
@@ -205,13 +210,13 @@ class ReadAloudTest {
     @Test fun selectionAndHighlightActionsReadOnlyTheirPassage() {
         val entry = book("<p>${"The harbour has boats and quiet lights. ".repeat(200)}</p>")
         ui.onNodeWithTag("row:0:0", useUnmergedTree = true).performTouchInput { longClick(androidx.compose.ui.geometry.Offset(24f, 12f)) }
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Read selection").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithText("Read selection").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("More selection actions").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithContentDescription("More selection actions").performClick(); ui.onNodeWithText("Read selection").performClick()
         await("selection starts") { ReadAloud.state.value.passage && ReadAloud.state.value.chunk?.text == "The" }
         ui.runOnUiThread { ReadAloud.stop() }
         ui.onNodeWithContentDescription("Highlight yellow").performClick()
         ui.waitUntil(10_000) { loadAnnotations(entry.fingerprint).highlights.any { it.quote == "The" } }
-        ui.onNodeWithContentDescription("Annotations").performClick()
+        ui.readerTool("Annotations")
         ui.onNodeWithText("Highlights").performClick()
         val readHighlight = hasText("Read aloud") and hasAnyAncestor(hasTestTag("annotationList"))
         ui.waitUntil(10_000) { ui.onAllNodes(readHighlight).fetchSemanticsNodes().isNotEmpty() }
@@ -224,8 +229,8 @@ class ReadAloudTest {
         val entry = importLibraryBook(file.absolutePath); entries += entry
         openPdfDocument(entry.path).use { it.saveLocation(PdfLocation(1u, 0f, 0f, 1f, true)) }
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(entry) }
-        ui.waitUntil(30_000) { ui.onAllNodesWithTag("speechStart").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithTag("speechStart").performClick()
+        readerReady()
+        ui.startReaderSpeech()
         await("PDF page two") { ReadAloud.state.value.range?.let { it.pdfPage == 2u && it.from.byte > 10u } == true && !ReadAloud.state.value.preparing }
         // Freeze the real audio clock immediately; a Compose idle wait can let
         // this short fixture reach page three before the pause click is delivered.
@@ -235,13 +240,13 @@ class ReadAloudTest {
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any {
             it.config[SemanticsProperties.StateDescription] == "Reading aloud"
         } }
-        ui.onNodeWithTag("pageLabel").assertTextContains("Page 2 of 3", substring = true)
+        ui.onNodeWithTag("pageLabel").assert(readerPageMatcher("Page 2 of 3", substring = true))
         screenshot("pdf-word")
         ui.onNodeWithTag("speechStop").performClick()
-        ui.onNodeWithText("Select page text").performClick()
-        ui.onNodeWithText("Read selection").performClick()
+        ui.readerTool("Select page text")
+        ui.onNodeWithContentDescription("More selection actions").performClick(); ui.onNodeWithText("Read selection").performClick()
         await("PDF passage") { ReadAloud.state.value.passage && ReadAloud.state.value.chunk?.text?.contains("page 2") == true }
-        ui.onNodeWithTag("pageLabel").assertTextContains("Page 2 of 3", substring = true)
+        ui.onNodeWithTag("pageLabel").assert(readerPageMatcher("Page 2 of 3", substring = true))
     }
 
     @Test fun installedPlatformEngineAlsoSynthesizesPlayableAudio() {
@@ -251,7 +256,7 @@ class ReadAloudTest {
         val selected = originalEngine.takeIf { it in engines } ?: engines.first()
         shell("settings put secure tts_default_synth $selected")
         book("<p>${"The boats returned to the quiet harbour before dawn. ".repeat(200)}</p>")
-        ui.onNodeWithTag("speechStart").performClick()
+        ui.startReaderSpeech()
         await("installed engine audio output", 60_000) { ReadAloud.state.value.range != null && !ReadAloud.state.value.preparing }
         shell("input keyevent KEYCODE_MEDIA_PAUSE")
         await("installed engine headset pause") { !ReadAloud.state.value.playing }

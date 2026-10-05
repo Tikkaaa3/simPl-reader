@@ -48,13 +48,14 @@ class LibraryUiTest {
     @Test fun searchFavoritesShelvesAndDeleteConfirmation() {
         openLibraryBook(book.fingerprint)
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].reload() }
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("CONTINUE").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodesWithText("Continue reading").fetchSemanticsNodes().isNotEmpty() }
         // Removing Continue must not replace the focused text field after its first letter.
         ui.onNodeWithTag("search").performTextInput("T")
         ui.onNodeWithTag("search").assertIsFocused()
         ui.onNodeWithTag("search").performTextInput("est Author")
         ui.onNodeWithTag("book:${book.fingerprint}").assertExists()
-        ui.onNodeWithContentDescription("Favorite ${book.title}").performClick()
+        ui.onNodeWithContentDescription("More options for ${book.title}").performScrollTo().performClick()
+        ui.onNodeWithText("Add to favorites").performClick()
         ui.waitUntil(10_000) { loadLibrary().books.first { it.fingerprint == book.fingerprint }.favourite }
         ui.onNodeWithText("Favorites").performClick()
         ui.onNodeWithTag("search").performTextClearance()
@@ -112,14 +113,15 @@ class LibraryUiTest {
     @Test fun readerSettingsNavigationAndThemeSurviveRecreation() {
         screenshot("library-light")
         ui.onNodeWithTag("open:${book.fingerprint}").performClick()
-        ui.onNodeWithTag("reader").assertExists()
-        ui.onNodeWithContentDescription("Settings").performClick()
-        ui.onNodeWithText("Dark theme").performClick()
+        ui.waitUntil(30_000) { ui.onAllNodesWithContentDescription("Reader tools").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("reader", useUnmergedTree = true).assertExists()
+        ui.readerTool("Settings")
+        ui.onNodeWithText("Dark").performClick()
         screenshot("settings-dark")
         ui.activityRule.scenario.recreate()
         ui.onNodeWithTag("settings").assertExists()
         ui.onNodeWithContentDescription("Back").performClick()
-        ui.onNodeWithTag("reader").assertExists()
+        ui.onNodeWithTag("reader", useUnmergedTree = true).assertExists()
         ui.onNodeWithContentDescription("Back to library").performClick()
         // Opening the one-page fixture now records real reading progress.
         ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 1 of 1 · 100%").fetchSemanticsNodes().isNotEmpty() }
@@ -137,7 +139,7 @@ class LibraryUiTest {
                 .setDataAndType(notes, "text/plain")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
         }
-        ui.waitUntil(20_000) { ui.onAllNodesWithTag("reader").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(20_000) { ui.onAllNodesWithTag("reader", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         added += loadLibrary().books.first { it.format == DocumentFormat.TEXT }.fingerprint
         ui.onNodeWithContentDescription("Back to library").performClick()
         val guide = DocumentsContract.buildDocumentUri(authority, "Guide.md")
@@ -159,9 +161,27 @@ class LibraryUiTest {
                 putExtra(Intent.EXTRA_STREAM, epub); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             })
         }
-        ui.waitUntil(20_000) { ui.onAllNodesWithTag("reader").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(20_000) { ui.onAllNodes(SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.PaneTitle, "Harbour Lights"), useUnmergedTree = true)
+            .fetchSemanticsNodes().isNotEmpty() && ui.onAllNodesWithText("M3 provider EPUB.", useUnmergedTree = true)
+            .fetchSemanticsNodes().isNotEmpty() && ui.onAllNodesWithContentDescription("Reader tools").fetchSemanticsNodes().any {
+                !it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled)
+            } }
         added += loadLibrary().books.first { it.format == DocumentFormat.EPUB }.fingerprint
-        ui.onAllNodesWithText("Harbour Lights")[0].assertExists()
+        val toolbarTop = ui.onNodeWithTag("readerToolbar").fetchSemanticsNode().boundsInRoot.top
+        ui.onAllNodes(hasText("imported", substring = true)).fetchSemanticsNodes().forEach {
+            assertTrue("Import messages must not cover the reader controls", it.boundsInRoot.bottom <= toolbarTop)
+        }
+        ui.openReaderTools()
+        try {
+            ui.waitUntil(10_000) {
+                ui.onAllNodesWithText("Harbour Lights", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+            }
+        } catch (error: ComposeTimeoutException) {
+            ui.onRoot(useUnmergedTree = true).printToLog("LibraryShare")
+            throw error
+        }
+        ui.onNodeWithText("Harbour Lights", useUnmergedTree = true).assertExists()
         } finally {
             // ActivityScenario identifies its activity by the original intent.
             ui.runOnUiThread { activity.intent = launchIntent }

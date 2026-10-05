@@ -156,7 +156,7 @@ class BackupTest {
         }
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].restored(); ViewModelProvider(it)[LibraryViewModel::class.java].open(book) }
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pageLabel").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithContentDescription("Annotations").performClick()
+        ui.readerTool("Annotations")
         screenshot("notes-export.png")
         monitor(Intent.ACTION_CREATE_DOCUMENT, uri("p3-notes.md")) {
             ui.onNodeWithText("Export notes").performClick()

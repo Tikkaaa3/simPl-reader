@@ -32,29 +32,45 @@ private fun awaitPage(): String {
     val deadline = android.os.SystemClock.elapsedRealtime() + 30_000
     while (android.os.SystemClock.elapsedRealtime() < deadline) {
         // Open-with navigation can replace a page between finding and reading it.
-        val page = device.wait(Until.findObject(By.textStartsWith("Page ")),
+        val ready = device.wait(Until.findObject(By.desc("Reader tools").enabled(true)),
             (deadline - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(1)) ?: break
-        try { return page.text } catch (_: androidx.test.uiautomator.StaleObjectException) { }
+        try {
+            val page = device.findObject(By.clazz("android.widget.EditText"))
+            if (ready.isEnabled && page != null) return page.text
+        } catch (_: androidx.test.uiautomator.StaleObjectException) { }
     }
     error("Reader did not finish loading")
 }
 
 private fun nextPage() {
     val before = awaitPage()
-    device().findObject(By.text("Next")).click()
-    check(device().wait(Until.gone(By.text(before)), 10_000)) { "Page did not turn" }
+    device().findObject(By.desc("Next")).click()
+    check(device().wait(Until.gone(By.clazz("android.widget.EditText").text(before)), 10_000)) { "Page did not turn" }
     awaitPage()
     device().waitForIdle()
 }
 
 private fun resetPage() {
     val label = awaitPage()
-    if (label.startsWith("Page 1 of ")) return
-    device().findObject(By.text(label)).click()
+    if (label == "1") return
+    device().findObject(By.clazz("android.widget.EditText")).click()
     check(device().wait(Until.hasObject(By.clazz("android.widget.EditText")), 5_000))
     device().findObject(By.clazz("android.widget.EditText")).text = "1"
-    device().findObject(By.text("Go")).click()
-    check(device().wait(Until.hasObject(By.textStartsWith("Page 1 of ")), 10_000))
+    device().findObject(By.desc("Go")).click()
+    // The field already contains "1" before submission; focus clears only after
+    // the native jump completes, so the next page turn cannot race that jump.
+    check(device().wait(Until.hasObject(By.clazz("android.widget.EditText").text("1").focused(false)), 10_000))
+}
+
+private fun readerTool(label: String) {
+    // A dismissed sheet keeps its own accessibility window during the exit animation.
+    val menu = device().wait(Until.findObject(By.desc("Reader tools").enabled(true)), 10_000)
+        ?: error("Reader controls did not return after closing the sheet")
+    menu.click()
+    val action = device().wait(Until.findObject(By.text(label)), 5_000)
+        ?: error("Missing reader tool: $label")
+    action.click()
+    check(device().wait(Until.gone(By.desc("Close reader tools")), 10_000))
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -71,11 +87,11 @@ class BaselineProfileGenerator {
         startActivityAndWait(bookIntent())
         resetPage()
         repeat(3) { nextPage() }
-        device().findObject(By.desc("Bookmark page")).click()
-        device().findObject(By.desc("Annotations")).click()
+        readerTool("Bookmark page")
+        readerTool("Annotations")
         check(device().wait(Until.hasObject(By.text("Bookmarks")), 10_000))
         device().pressBack()
-        device().findObject(By.desc("Settings")).click()
+        readerTool("Settings")
         check(device().wait(Until.hasObject(By.text("Appearance")), 10_000))
         device().pressBack()
     }

@@ -22,8 +22,10 @@ internal fun ReadAloudControls(fingerprint: String, start: () -> Unit, enabled: 
     if (active) {
         TextButton(onClick = { if (state.playing) ReadAloud.pause() else ReadAloud.resume() }, modifier = Modifier.testTag("speechPause")) { Text(if (state.playing) "Pause" else "Resume") }
         TextButton(onClick = ReadAloud::stop, modifier = Modifier.testTag("speechStop")) { Text("Stop reading") }
-    } else TextButton(onClick = start, enabled = enabled, modifier = Modifier.testTag("speechStart")) { Text("Read aloud") }
-    TextButton(onClick = { ReadAloud.connect(context); options = true }) { Text("Voice & speed") }
+    } else FilledTonalButton(onClick = start, enabled = enabled, shape = ControlShape, modifier = Modifier.padding(end = 8.dp).testTag("speechStart")) {
+        Icon(AppIcons.Speak, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Read aloud")
+    }
+    TextButton(onClick = { ReadAloud.connect(context); options = true }, colors = quietButtonColors(), shape = ControlShape) { Text("Voice & speed") }
     if (options) ModalBottomSheet(onDismissRequest = { options = false }) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
             Text("Read aloud", style = MaterialTheme.typography.headlineSmall)
@@ -41,6 +43,11 @@ internal fun ReadAloudControls(fingerprint: String, start: () -> Unit, enabled: 
             if (state.voices.isEmpty()) item { Text("No voices available yet. Check Android text-to-speech settings.", Modifier.padding(20.dp)) }
         }
     }
+}
+
+@Composable
+internal fun ReadAloudError() {
+    val state by ReadAloud.state.collectAsStateWithLifecycle()
     state.error?.let { error -> AlertDialog(onDismissRequest = ReadAloud::dismissError, title = { Text("Read aloud") },
         text = { Text(error) }, confirmButton = { TextButton(onClick = ReadAloud::dismissError) { Text("OK") } }) }
 }

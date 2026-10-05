@@ -97,19 +97,19 @@ class PolishTest {
     @Test fun pdfSearchUsesPhysicalPagesAndGlyphSelections() {
         val pdf = importLibraryBook(File(ui.activity.cacheDir, "P5-${UUID.randomUUID()}.pdf").apply { writeBytes(pdfFixture()) }.absolutePath)
         books += pdf; open(pdf)
-        ui.onNodeWithText("Find in book").performClick()
+        ui.readerTool("Find in book")
         ui.onNodeWithTag("findQuery").performTextInput("keeper page 3"); count("1 of 1 matches")
         ui.onNodeWithTag("findHit:0").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 3 of 3").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 3 of 3")).fetchSemanticsNodes().isNotEmpty() }
         screenshot("pdf-search")
         ui.onNodeWithText("Close search").performClick()
-        ui.onNodeWithText("Book").performClick()
+        ui.readerTool("Book")
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("paperViewport").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithText("Find in book").performClick()
+        ui.readerTool("Find in book")
         // Book conversion removes the repeated running heading; search body text.
         ui.onNodeWithTag("findQuery").performTextInput("Passage 2, line 10"); count("1 of 1 matches")
         ui.onNodeWithTag("findHit:0").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2 of 3").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2 of 3")).fetchSemanticsNodes().isNotEmpty() }
         screenshot("pdf-book-search")
         ui.onNodeWithText("Close search").performClick()
     }
@@ -118,7 +118,7 @@ class PolishTest {
         books += other; open()
         ui.runOnIdle { ReadingControls.update(ui.activity, keepScreenOn = true) }
         key(KeyEvent.KEYCODE_DPAD_RIGHT)
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2 of", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2 of", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         key(KeyEvent.KEYCODE_K, KeyEvent.META_CTRL_ON)
         ui.onNodeWithTag("quickQuery").performTextInput(other.title)
         screenshot("quick-switch")
@@ -128,7 +128,7 @@ class PolishTest {
         key(KeyEvent.KEYCODE_K, KeyEvent.META_CTRL_ON)
         ui.onNodeWithTag("quickQuery").performTextInput(html.title)
         ui.onNodeWithTag("quick:${html.fingerprint}").performClick()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Page 2 of", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page 2 of", substring = true)).fetchSemanticsNodes().isNotEmpty() }
     }
     @Test fun keysRespectEditingAndVolumeOptInAndScreenFlagEndsWithTheReader() {
         open()
@@ -138,22 +138,28 @@ class PolishTest {
         ui.waitForIdle()
         assertTrue(ui.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0)
         key(KeyEvent.KEYCODE_VOLUME_DOWN)
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2 of", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2 of", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         key(KeyEvent.KEYCODE_L, KeyEvent.META_CTRL_ON)
-        ui.onNodeWithTag("jumpPage").performTextInput("3")
+        ui.onNodeWithTag("jumpPage").performTextReplacement("3")
         key(KeyEvent.KEYCODE_DPAD_LEFT)
-        ui.onNodeWithText("Cancel").performClick()
-        ui.onNodeWithText("Page 2 of", substring = true).assertExists()
+        key(KeyEvent.KEYCODE_ESCAPE)
+        ui.onNodeWithTag("jumpPage").assertIsNotFocused()
+        // Android releases the text input connection after Compose clears focus.
+        ui.waitUntil(10_000) {
+            !ui.activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java).isAcceptingText
+        }
+        ui.onNode(readerPageMatcher("Page 2 of", substring = true)).assertExists()
         key(KeyEvent.KEYCODE_W, KeyEvent.META_CTRL_ON)
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("library").fetchSemanticsNodes().isNotEmpty() }
         assertEquals(0, ui.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         ReadingControls.initialize(ui.activity); assertTrue(ReadingControls.state.value.volumeTurns)
     }
-    @Test fun tabletPanelsRemainVisibleAndHingesDoNotCoverTheReader() {
+    @Test fun tabletPanelsOpenOnDemandAndHingesDoNotCoverTheReader() {
         ui.activityRule.scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
         ui.waitUntil(15_000) { ui.onAllNodesWithTag("librarySidePanel").fetchSemanticsNodes().isNotEmpty() }
         screenshot("tablet-library")
-        open(); ui.onNodeWithTag("readerSidePanel").assertExists()
+        open(); ui.onNodeWithTag("readerSidePanel").assertDoesNotExist()
+        ui.readerTool("Annotations"); ui.onNodeWithTag("readerSidePanel").assertExists()
         screenshot("tablet-reader")
         val width = ui.activity.window.decorView.width; val height = ui.activity.window.decorView.height
         val hinge = object : FoldingFeature {
@@ -165,7 +171,7 @@ class PolishTest {
         }
         windows.overrideWindowLayoutInfo(WindowLayoutInfo(listOf(hinge)))
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("annotationsPanel").fetchSemanticsNodes().isNotEmpty() }
-        val reader = ui.onNodeWithTag("reader").fetchSemanticsNode().boundsInRoot
+        val reader = ui.onNodeWithTag("reader", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val panel = ui.onNodeWithTag("annotationsPanel").fetchSemanticsNode().boundsInRoot
         assertTrue(reader.right <= width / 2 - 12 + 1)
         assertTrue(panel.left >= width / 2 + 12 - 1)
@@ -174,7 +180,8 @@ class PolishTest {
     }
     @Test fun tabletopAndUnfoldingKeepTheCanonicalPage() {
         open(); key(KeyEvent.KEYCODE_DPAD_RIGHT)
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2 of", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2 of", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        key(KeyEvent.KEYCODE_B, KeyEvent.META_CTRL_ON)
         val width = ui.activity.window.decorView.width; val height = ui.activity.window.decorView.height
         val hinge = object : FoldingFeature {
             override val bounds = Rect(0, height / 2 - 12, width, height / 2 + 12)
@@ -185,20 +192,20 @@ class PolishTest {
         }
         windows.overrideWindowLayoutInfo(WindowLayoutInfo(listOf(hinge)))
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("annotationsPanel").fetchSemanticsNodes().isNotEmpty() }
-        val reader = ui.onNodeWithTag("reader").fetchSemanticsNode().boundsInRoot
+        val reader = ui.onNodeWithTag("reader", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val panel = ui.onNodeWithTag("annotationsPanel").fetchSemanticsNode().boundsInRoot
         assertTrue(reader.bottom <= height / 2 - 12 + 1); assertTrue(panel.top >= height / 2 + 12 - 1)
-        ui.onNodeWithText("Page 2 of", substring = true).assertExists(); screenshot("tabletop")
+        ui.onNode(readerPageMatcher("Page 2 of", substring = true)).assertExists(); screenshot("tabletop")
         windows.overrideWindowLayoutInfo(WindowLayoutInfo(emptyList()))
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("adaptivePanes").fetchSemanticsNodes().isEmpty() }
-        ui.onNodeWithText("Page 2 of", substring = true).assertExists()
+        ui.onNode(readerPageMatcher("Page 2 of", substring = true)).assertExists()
     }
     @Test fun desktopKeysNavigateChaptersAndKeepZoomAndAnnotations() {
         ui.activityRule.scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
         val epub = importLibraryBook(File(ui.activity.cacheDir, "P5-keys.epub").apply { writeBytes(readerEpub(UUID.randomUUID().toString())) }.absolutePath)
         books += epub; open(epub)
         key(KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.META_CTRL_ON)
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 42 · 2 of 2").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 42 · 2 of 2")).fetchSemanticsNodes().isNotEmpty() }
         key(KeyEvent.KEYCODE_A, KeyEvent.META_CTRL_ON)
         ui.onNodeWithTag("readerSelection").assertExists()
         key(KeyEvent.KEYCODE_H, KeyEvent.META_CTRL_ON)
@@ -212,7 +219,7 @@ class PolishTest {
         key(KeyEvent.KEYCODE_F, KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON)
         ui.onNodeWithTag("paperViewport").assert(androidx.compose.ui.test.SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Zoom 1.1; page 2"))
         key(KeyEvent.KEYCODE_PAGE_UP, KeyEvent.META_CTRL_ON)
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Page iv · 1 of 2").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page iv · 1 of 2")).fetchSemanticsNodes().isNotEmpty() }
         key(KeyEvent.KEYCODE_B, KeyEvent.META_CTRL_ON)
         ui.onNodeWithTag("annotationsPanel").assertExists()
         ui.activityRule.scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }

@@ -15,6 +15,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.clickable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -141,7 +143,7 @@ private fun JobStatus(info: WorkInfo) {
         val total = info.progress.getLong("total", 0)
         val bytes = info.progress.getLong("bytes", 0)
         Text(info.progress.getString("message") ?: "Waiting for connection or download slot")
-        if (total > 0) LinearProgressIndicator(progress = { (bytes.toFloat() / total).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+        if (total > 0) ThinProgress(bytes.toFloat() / total, Modifier.fillMaxWidth())
         else LinearProgressIndicator(Modifier.fillMaxWidth())
         TextButton(onClick = { WorkManager.getInstance(context).cancelWorkById(info.id) }) { Text(if ("dictionary-import-job" in info.tags) "Cancel import" else "Cancel download") }
     } else if (info.state == WorkInfo.State.FAILED) Text(info.outputData.getString("message") ?: "Dictionary installation failed.", color = MaterialTheme.colorScheme.error)
@@ -152,7 +154,7 @@ private fun JobStatus(info: WorkInfo) {
 /** The request is scoped to this selection; replies to a dismissed selection are discarded. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DictionarySelection(copy: ((String) -> Unit) -> Unit, identity: Any, expanded: Boolean, dismiss: () -> Unit) {
+internal fun DictionarySelection(copy: ((String) -> Unit) -> Unit, identity: Any, expanded: Boolean, expand: (() -> Unit)? = null, dismiss: () -> Unit) {
     val context = LocalContext.current
     val options by OfflineDictionary.options.collectAsStateWithLifecycle()
     val work by remember(context) { WorkManager.getInstance(context).getWorkInfosByTagFlow(DictionaryJobs.TAG) }.collectAsStateWithLifecycle(emptyList())
@@ -196,5 +198,17 @@ internal fun DictionarySelection(copy: ((String) -> Unit) -> Unit, identity: Any
     }
     if (expanded) ModalBottomSheet(onDismissRequest = dismiss) {
         Column(Modifier.heightIn(max = 600.dp).verticalScroll(rememberScrollState())) { Content() }
-    } else if (options.automatic && result != null) Content()
+    } else if (options.automatic && result?.meanings?.isNotEmpty() == true) {
+        // Automatic lookups stay a quiet one-line hint; missing packages are offered only on request.
+        val value = result!!
+        HorizontalDivider()
+        Column(Modifier.fillMaxWidth().clickable { expand?.invoke() }.padding(horizontal = 16.dp, vertical = 8.dp).testTag("dictionaryCard")) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(value.headword ?: query, style = MaterialTheme.typography.titleSmall)
+                Text(value.meanings.first(), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            value.provider?.let { Text("$it · Offline", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
 }

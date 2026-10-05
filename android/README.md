@@ -97,7 +97,7 @@ root. Shared Rust tests restore both source platforms on Windows and Android.
 
 ## PDF Book reader (P4)
 
-The PDF toolbar offers **Book** beside the original **Document** view. Book
+The PDF reader's bottom **Reader tools** menu offers **Book** beside the original **Document** view. Book
 uses `reader-pdf::book` and the shared canonical atlas, retaining physical PDF
 page numbers under different reading options. **Document** returns to the same
 physical page. Mode choice and the separate PDF/Book source checkpoints use
@@ -295,12 +295,25 @@ logical order and uses Android's bidirectional shaper and script fallback.
 Lists, quotations, code, captions, formula alternatives, table text rows and
 footnotes retain the shared document semantics; publisher CSS is not applied.
 
-Use Previous/Next, a horizontal swipe or the outer page edges to turn; tap the
-page field to enter an ordinal number or printed label. The label is shown
-alongside the ordinal when they differ. Scroll vertically within a tall page.
-Pinch to zoom up to 3×, pan the enlarged paper and select Fit width to reset.
-Zoom changes display scale only. Tap the center to toggle controls and Android
-system bars. Contents and internal links resolve through the native anchors;
+The reader uses one 56 dp bottom toolbar with 48 dp touch targets. It contains
+Back, Previous, an editable canonical page / total, Next, Contents and Reader tools.
+On narrow phones Contents moves into Reader tools to preserve the page input.
+Enter an ordinal number or an EPUB printed label and submit with the keyboard's
+Go action; wider phones also show a Go button while editing. The accessible page
+description includes both the printed label and ordinal when they differ.
+
+Book opens with the complete page centered and fitted to the available width
+and height, including tall converted PDF pages and typography changes. Fullscreen
+and rotation recalculate the fit. Reader tools offers Fit page and Fit width,
+zoom, contents, search, annotations, typography, bookmarks, book switching,
+settings and speech controls. Annotations panels open only on request.
+
+Use Previous/Next, a horizontal swipe or the outer page edges to turn at the
+default zoom. Pinch to zoom from 0.5× to 3× and drag the enlarged paper; subtle
+scroll indicators show any content outside the viewport. Zoom buttons preserve
+the viewport's source center; pinch preserves the source point between the
+fingers. Zoom changes display scale only. Tap the center to toggle controls and
+Android system bars. Contents and internal links resolve through the native anchors;
 Return from link restores the source-row position. Auxiliary EPUB notes appear
 in a sheet outside canonical page order, with a return action and backlinks.
 Missing and external targets report an error without leaving the document.
@@ -410,8 +423,8 @@ clipboard; Share opens the system chooser with plain text. Four highlight colors
 and Add note create persisted annotations. Tap a painted highlight to edit its
 color/note. Notes have an underline.
 
-The star in the toolbar toggles a bookmark for the current canonical/source page.
-Annotations opens a bottom sheet with Bookmarks, Highlights and Notes tabs. Tap
+**Bookmark page** in Reader tools toggles a bookmark for the current canonical/source page.
+**Annotations** opens a bottom sheet with Bookmarks, Highlights and Notes tabs. Tap
 an entry to go to its passage; highlights restore their selection. Edit changes a
 color or note, a blank note removes it, and Delete requires confirmation. Records
 are reloaded after mutations and survive recreation and reopening the book.

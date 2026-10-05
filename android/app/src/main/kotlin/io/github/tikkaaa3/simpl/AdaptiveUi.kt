@@ -2,7 +2,9 @@ package io.github.tikkaaa3.simpl
 
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -30,6 +32,8 @@ internal fun FoldAware(content: @Composable () -> Unit) {
 /** Hinge bounds are in window coordinates. Neither pane is drawn through them. */
 @Composable
 internal fun AdaptivePanes(modifier: Modifier = Modifier, sideAtStart: Boolean = false, sideVisible: Boolean = true,
+    /** Fills the pane beside a hinge while [side] is hidden, so half the screen is never blank. */
+    idle: (@Composable () -> Unit)? = null,
     side: @Composable () -> Unit, content: @Composable (Boolean) -> Unit) {
     val fold = LocalFold.current
     val density = LocalDensity.current.density
@@ -45,8 +49,10 @@ internal fun AdaptivePanes(modifier: Modifier = Modifier, sideAtStart: Boolean =
         val split = crosses && start >= minimum && extent - end >= minimum
         val wide = !crosses && maxWidth >= 840.dp
         if (split) {
-            val first: @Composable () -> Unit = { if (sideAtStart) side() else content(true) }
-            val second: @Composable () -> Unit = { if (sideAtStart) content(true) else if (sideVisible) side() }
+            val panel: @Composable () -> Unit = { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainer) { side() } }
+            val first: @Composable () -> Unit = { if (sideAtStart) panel() else content(true) }
+            val second: @Composable () -> Unit = { if (sideAtStart) content(true) else if (sideVisible) panel()
+                else if (idle != null) Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainer) { idle() } }
             if (vertical) Row(Modifier.fillMaxSize().testTag("adaptivePanes")) {
                 Box(Modifier.width((start / density).dp).fillMaxHeight()) { first() }
                 Spacer(Modifier.width(((end - start) / density).dp))
@@ -64,10 +70,11 @@ internal fun AdaptivePanes(modifier: Modifier = Modifier, sideAtStart: Boolean =
             Box(if (vertical) Modifier.offset(x = (offset / density).dp).width((length / density).dp).fillMaxHeight()
                 else Modifier.offset(y = (offset / density).dp).height((length / density).dp).fillMaxWidth()) { content(false) }
         } else if (wide && sideVisible) {
+            // Desktop's docked panel: one tonal step from the canvas, a hairline edge, no shadow.
             Row(Modifier.fillMaxSize().testTag("adaptivePanes")) {
-                if (sideAtStart) Surface(Modifier.width(240.dp).fillMaxHeight().testTag("librarySidePanel"), tonalElevation = 1.dp) { side() }
+                if (sideAtStart) { Surface(Modifier.width(240.dp).fillMaxHeight().testTag("librarySidePanel"), color = MaterialTheme.colorScheme.surfaceContainer) { side() }; VerticalDivider() }
                 Box(Modifier.weight(1f).fillMaxHeight()) { content(true) }
-                if (!sideAtStart) Surface(Modifier.width(340.dp).fillMaxHeight().testTag("readerSidePanel"), tonalElevation = 1.dp) { side() }
+                if (!sideAtStart) { VerticalDivider(); Surface(Modifier.width(340.dp).fillMaxHeight().testTag("readerSidePanel"), color = MaterialTheme.colorScheme.surfaceContainer) { side() } }
             }
         } else content(wide)
     }

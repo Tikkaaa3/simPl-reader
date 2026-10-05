@@ -80,7 +80,9 @@ class DictionaryTest {
         val book = importLibraryBook(source.absolutePath); imported += book.fingerprint; source.delete()
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(book) }
         ui.waitUntil(30_000) { ui.onAllNodesWithTag(if (pdf) "pdfPage" else "row:0:0", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
-        if (pdf) ui.waitUntil(30_000) { ui.onAllNodesWithText("Select page text").fetchSemanticsNodes().any { !it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled) } }
+        if (pdf) ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any {
+            it.config.getOrElse(androidx.compose.ui.semantics.SemanticsActions.CustomActions) { emptyList() }.any { action -> action.label == "Select page text" }
+        } }
         ui.waitForIdle()
     }
     @Test fun everyPinnedPackageImportsAndQueriesOfflineWithBoundedUnicodeRules() {
@@ -190,9 +192,9 @@ class DictionaryTest {
         ui.onNodeWithText("WikDict · Offline").assertExists()
         screenshot("reflow-card")
         ui.onNodeWithText("Close dictionary").performClick()
-        ui.onNodeWithText("Clear").performClick()
+        ui.onNodeWithContentDescription("Clear selection").performClick()
         ui.onNodeWithTag("row:0:0", useUnmergedTree = true).performTouchInput { longClick(Offset(24f, 12f)) }
-        ui.onNodeWithText("Dictionary", substring = false).performClick()
+        ui.onNodeWithContentDescription("Dictionary").performClick()
         ui.waitUntil(10_000) { ui.onAllNodesWithText("Close dictionary").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("dictionaryFrom").performClick(); ui.onNodeWithTag("language:ko").performClick()
         assertEquals("en", OfflineDictionary.options.value.target)
@@ -219,6 +221,6 @@ class DictionaryTest {
         ui.waitUntil(10_000) { ui.onAllNodesWithText("Close dictionary").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithText("WikDict · Offline").assertExists()
         screenshot("pdf-card")
-        ui.onNodeWithTag("pageLabel").assertTextContains("Page 1", substring = true)
+        ui.onNodeWithTag("pageLabel").assert(readerPageMatcher("Page 1", substring = true))
     }
 }

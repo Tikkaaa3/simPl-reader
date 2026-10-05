@@ -27,29 +27,33 @@ class PdfBookTest {
     private fun open(book: LibraryBook) {
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(book) }
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().isNotEmpty() }
+        ui.openReaderTools()
         ui.waitUntil(30_000) { ui.onAllNodesWithText("Book").fetchSemanticsNodes().any { !it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled) } }
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
     }
     private fun ready(page: UInt, bookView: Boolean) {
         ui.waitUntil(120_000) { ui.onAllNodesWithTag("pageLabel").fetchSemanticsNodes().any { node ->
-            node.config[androidx.compose.ui.semantics.SemanticsProperties.Text].any { it.text.startsWith("Page $page of") }
+            node.config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.StateDescription) { "" }.startsWith("Page $page of")
         } && ui.onAllNodesWithTag(if (bookView) "bookPreparation" else "pdfRendering").fetchSemanticsNodes().isEmpty() }
     }
     @Test fun modeSwitchKeepsPhysicalPageAndBookChoiceSurvivesRecreationAndReopen() {
         val book = book(); open(book)
-        ui.onNodeWithText("Next").performClick(); ready(2u, false)
-        ui.onNodeWithText("Book").performClick(); ready(2u, true)
+        ui.onNodeWithContentDescription("Next").performClick(); ready(2u, false)
+        ui.readerTool("Book"); ready(2u, true)
+        ui.openReaderTools()
         ui.onNodeWithText("Reading options").assertExists(); ui.onNodeWithText("Document").assertExists()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
         val bytes = java.io.ByteArrayOutputStream()
         ui.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bytes)
         saveP34Artifact(ui.activity, "pdf-book.png", "image/png", bytes.toByteArray())
-        ui.onNodeWithText("Next").performClick(); ready(3u, true)
+        ui.onNodeWithContentDescription("Next").performClick(); ready(3u, true)
         ui.activityRule.scenario.recreate(); ready(3u, true)
-        ui.onNodeWithText("Document").performClick(); ready(3u, false)
-        ui.onNodeWithText("Book").performClick(); ready(3u, true)
+        ui.readerTool("Document"); ready(3u, false)
+        ui.readerTool("Book"); ready(3u, true)
         ui.onNodeWithContentDescription("Back to library").performClick()
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(book) }
         ready(3u, true); assertTrue(pdfBookMode(book.path, book.fingerprint))
-        ui.onNodeWithText("Document").performClick(); ready(3u, false)
+        ui.readerTool("Document"); ready(3u, false)
         assertFalse(pdfBookMode(book.path, book.fingerprint))
     }
     @Test fun conversionCacheIsReusableAndCorruptCacheIsRebuiltWithoutTruncation() {
@@ -92,10 +96,10 @@ class PdfBookTest {
         } finally { task.close() }
         val cache = File(ui.activity.cacheDir, "simPl/pdf-books").listFiles().orEmpty().filter { it.name.contains(book.fingerprint) }
         assertTrue(cache.isEmpty())
-        open(book); ui.onNodeWithText("Book").performClick()
+        open(book); ui.readerTool("Book")
         ui.waitUntil(10_000) { ui.onAllNodesWithText("Cancel preparation").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithText("Cancel preparation").performClick()
-        ready(1u, false); ui.onNodeWithText("Book").performClick(); ready(1u, true)
+        ready(1u, false); ui.readerTool("Book"); ready(1u, true)
         ui.onNodeWithContentDescription("Back to library").performClick()
         val file = File(ui.activity.cacheDir, "p4-restricted.pdf").apply {
             InstrumentationRegistry.getInstrumentation().context.assets.open("copy-restricted.pdf").use { input -> outputStream().use(input::copyTo) }
@@ -103,6 +107,7 @@ class PdfBookTest {
         val restricted = importLibraryBook(file.absolutePath); imported += restricted.fingerprint
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(restricted) }
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().isNotEmpty() }
+        ui.openReaderTools()
         ui.onNodeWithText("Book").assertIsNotEnabled()
         val forbidden = openBook(restricted.path)
         try {

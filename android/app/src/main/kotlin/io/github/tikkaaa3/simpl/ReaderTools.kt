@@ -182,8 +182,8 @@ internal fun FindPanel(state: FindState, start: suspend (String) -> FindTask, go
     }
     Column(Modifier.fillMaxWidth().testTag("findPanel")) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Find in book", Modifier.padding(12.dp), style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = dismiss) { Text("Close search") }
+            Text("Find in book", Modifier.padding(12.dp), style = MaterialTheme.typography.headlineSmall)
+            TextButton(onClick = dismiss, colors = quietButtonColors(), shape = ControlShape) { Text("Close search") }
         }
         OutlinedTextField(query, { state.query = it }, singleLine = true, label = { Text("Search text") },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).focusRequester(focus).testTag("findQuery"),
@@ -193,12 +193,16 @@ internal fun FindPanel(state: FindState, start: suspend (String) -> FindTask, go
         results?.let { found ->
             Text(if (found.hits.isEmpty()) "No matches" else "${state.selected + 1} of ${found.hits.size}${if (found.limited) "+" else ""} matches", Modifier.padding(12.dp).testTag("findCount"))
             Row {
-                TextButton(onClick = { choose(state.selected - 1) }, enabled = found.hits.isNotEmpty()) { Text("Previous match") }
-                TextButton(onClick = { choose(state.selected + 1) }, enabled = found.hits.isNotEmpty()) { Text("Next match") }
+                TextButton(onClick = { choose(state.selected - 1) }, enabled = found.hits.isNotEmpty(), colors = quietButtonColors(), shape = ControlShape) { Text("Previous match") }
+                TextButton(onClick = { choose(state.selected + 1) }, enabled = found.hits.isNotEmpty(), colors = quietButtonColors(), shape = ControlShape) { Text("Next match") }
             }
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp).testTag("findResults")) {
-                itemsIndexed(found.hits) { index, hit -> TextButton(onClick = { choose(index) }, modifier = Modifier.fillMaxWidth().testTag("findHit:$index")) {
-                    Column { Text("Page ${hit.page}", style = MaterialTheme.typography.labelLarge); Text(hit.excerpt, maxLines = 3) }
+                itemsIndexed(found.hits) { index, hit -> TextButton(onClick = { choose(index) }, modifier = Modifier.fillMaxWidth().testTag("findHit:$index"),
+                    colors = quietButtonColors(), shape = ControlShape) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text("Page ${hit.page}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(hit.excerpt, maxLines = 3, style = MaterialTheme.typography.bodyMedium)
+                    }
                 } }
             }
         }

@@ -64,8 +64,13 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     private var speechSheetsKey: Triple<UInt, UInt, UInt>? = null
     private var speechSheets: List<SpeechSheet> = emptyList()
     private var title = ""
+    private var requestedTheme: String? = null
 
     init {
+        // A theme chosen in Settings while this book stays open re-themes it on return.
+        viewModelScope.launch {
+            ReadingThemes.selected.collect { id -> if (id != requestedTheme && id != mutable.value.theme && source != null) change(theme = id) }
+        }
         viewModelScope.launch {
             ReadAloud.state.collect { speech ->
                 val range = speech.range.takeIf { speech.active && !speech.passage && speech.fingerprint == fingerprint }
@@ -157,6 +162,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
     }
 
     fun change(options: LayoutOptions = mutable.value.options, theme: String = mutable.value.theme) {
+        requestedTheme = theme
         settingsJob?.cancel()
         adaptation?.cancel()
         mutable.value = mutable.value.copy(adapting = true)
@@ -164,7 +170,7 @@ class ReaderViewModel(application: Application, private val saved: SavedStateHan
             try {
                 // Serialize persistence with the forced onStop position write.
                 val valid = withContext(Dispatchers.IO) { writes.withLock { source!!.saveOptions(options) } }
-                preferences.edit().putString("theme", theme).apply()
+                ReadingThemes.select(getApplication(), theme)
                 adapt(valid, theme, current)
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { fail(error, FailureAction.Save) }

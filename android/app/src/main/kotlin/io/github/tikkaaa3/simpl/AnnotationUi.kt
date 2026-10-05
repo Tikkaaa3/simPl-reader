@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.*
@@ -59,36 +60,55 @@ internal fun coloredRanges(ranges: List<Pair<IntRange, AnnotationColor>>): List<
     return merged.sortedBy { it.order }.map { it.range to it.color }
 }
 
+/** Floating bar over the page, like desktop's selection popover; kept compact so the text stays visible. */
+@Composable
+internal fun SelectionSurface(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Surface(modifier.padding(horizontal = 12.dp, vertical = 10.dp).widthIn(max = 560.dp), shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 6.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) { Column(content = content) }
+}
+
 @Composable
 internal fun SelectionMenu(tag: String, copy: ((String) -> Unit) -> Unit, highlight: (AnnotationColor, String?) -> Unit, read: (() -> Unit)? = null, dictionary: (() -> Unit)? = null, clear: () -> Unit) {
     val context = LocalContext.current
     var copied by remember(tag) { mutableStateOf(false) }
     var note by rememberSaveable { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().testTag(tag)) {
-        FlowRow(Modifier.fillMaxWidth()) {
-            Text("Text selected", Modifier.padding(start = 12.dp, top = 14.dp), style = MaterialTheme.typography.labelLarge)
-            TextButton(onClick = { copy { text ->
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Book text", text)); copied = true
-            } }) { Text(if (copied) "Copied" else "Copy") }
-            TextButton(onClick = { copy { text -> context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
-            }, "Share text")) } }) { Text("Share") }
-            if (read != null) TextButton(onClick = read) { Text("Read selection") }
-            if (dictionary != null) TextButton(onClick = dictionary) { Text("Dictionary") }
-            TextButton(onClick = clear) { Text("Clear") }
+    var more by remember { mutableStateOf(false) }
+    Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp).height(52.dp).testTag(tag), verticalAlignment = Alignment.CenterVertically) {
+        AnnotationColor.entries.forEach { color -> ColorButton(color, false, Modifier.size(38.dp, 48.dp)) { highlight(color, null) } }
+        VerticalDivider(Modifier.height(24.dp).padding(horizontal = 4.dp))
+        SelectionAction(AppIcons.Note, "Add note") { note = true }
+        SelectionAction(if (copied) AppIcons.Check else AppIcons.Copy, if (copied) "Copied" else "Copy") {
+            copy { text -> (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Book text", text)); copied = true }
         }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            AnnotationColor.entries.forEach { color -> ColorButton(color, false) { highlight(color, null) } }
-            TextButton(onClick = { note = true }) { Text("Add note") }
+        if (dictionary != null) SelectionAction(AppIcons.Dictionary, "Dictionary", dictionary)
+        Box {
+            SelectionAction(AppIcons.More, "More selection actions") { more = true }
+            DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                if (read != null) DropdownMenuItem(text = { Text("Read selection") }, leadingIcon = { Icon(AppIcons.Speak, null) }, onClick = { more = false; read() })
+                DropdownMenuItem(text = { Text("Share") }, leadingIcon = { Icon(AppIcons.Share, null) }, onClick = {
+                    more = false
+                    copy { text -> context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
+                    }, "Share text")) }
+                })
+            }
         }
+        SelectionAction(AppIcons.Close, "Clear selection", clear)
     }
     if (note) NoteEditor(null, { note = false }, { color, text -> highlight(color, text); note = false })
 }
 
 @Composable
-private fun ColorButton(color: AnnotationColor, selected: Boolean, click: () -> Unit) {
-    IconButton(onClick = click, modifier = Modifier.semantics { contentDescription = "Highlight ${color.label().lowercase()}"; this.selected = selected }) {
-        Box(Modifier.size(if (selected) 30.dp else 24.dp).background(color.tint().copy(alpha = 1f), CircleShape))
+private fun SelectionAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, click: () -> Unit) {
+    IconButton(onClick = click, modifier = Modifier.size(44.dp, 48.dp)) { Icon(icon, label, Modifier.size(22.dp)) }
+}
+
+@Composable
+private fun ColorButton(color: AnnotationColor, selected: Boolean, modifier: Modifier = Modifier, click: () -> Unit) {
+    IconButton(onClick = click, modifier = modifier.semantics { contentDescription = "Highlight ${color.label().lowercase()}"; this.selected = selected }) {
+        Box(Modifier.size(if (selected) 30.dp else 24.dp).background(color.tint().copy(alpha = 1f), CircleShape)
+            .then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier))
     }
 }
 
@@ -119,7 +139,10 @@ internal fun AnnotationPanel(data: AnnotationCollection, dismiss: () -> Unit, go
     var editing by remember { mutableStateOf<AnnotationEntry?>(null) }
     var deleting by remember { mutableStateOf<Pair<AnnotationEntry, Boolean>?>(null) }
     Column(Modifier.fillMaxWidth().testTag("annotationsPanel")) {
-        Text("Annotations", Modifier.padding(horizontal = 20.dp, vertical = 12.dp), style = MaterialTheme.typography.headlineSmall)
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Annotations", Modifier.weight(1f).padding(vertical = 12.dp), style = MaterialTheme.typography.headlineSmall)
+            IconButton(onClick = dismiss, modifier = Modifier.size(48.dp)) { Icon(AppIcons.Close, "Close annotations") }
+        }
         if (book != null) NotesExport(book)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             listOf("Bookmarks", "Highlights", "Notes").forEachIndexed { index, title -> FilterChip(tab == index, onClick = { tab = index }, label = { Text(title) }) }
@@ -129,7 +152,7 @@ internal fun AnnotationPanel(data: AnnotationCollection, dismiss: () -> Unit, go
             if (entries.isEmpty()) item { Text("No ${listOf("bookmarks", "highlights", "notes")[tab]} yet", Modifier.padding(20.dp)) }
             items(entries, key = { it.id.toString() }) { entry ->
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("annotation:${entry.id}")) {
-                    TextButton(onClick = { go(entry.id, tab == 0); dismiss() }, modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = { go(entry.id, tab == 0); dismiss() }, modifier = Modifier.fillMaxWidth(), shape = ControlShape, colors = quietButtonColors()) {
                         Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
                             Text("Page ${entry.page}", style = MaterialTheme.typography.labelLarge)
                             Text(entry.quote.ifBlank { "Bookmark" }, maxLines = 3, color = MaterialTheme.colorScheme.onSurface)
@@ -138,9 +161,10 @@ internal fun AnnotationPanel(data: AnnotationCollection, dismiss: () -> Unit, go
                         entry.color?.let { Box(Modifier.padding(start = 8.dp).size(16.dp).background(it.tint().copy(alpha = 1f), CircleShape)) }
                     }
                     Row(Modifier.align(Alignment.End)) {
-                        if (tab != 0 && read != null) TextButton(onClick = { read(entry.quote); dismiss() }) { Text("Read aloud") }
-                        if (tab != 0) TextButton(onClick = { editing = entry }) { Text("Edit") }
-                        TextButton(onClick = { deleting = entry to (tab == 0) }) { Text("Delete") }
+                        if (tab != 0 && read != null) TextButton(onClick = { read(entry.quote); dismiss() }, colors = quietButtonColors(), shape = ControlShape) { Text("Read aloud") }
+                        if (tab != 0) TextButton(onClick = { editing = entry }, colors = quietButtonColors(), shape = ControlShape) { Text("Edit") }
+                        TextButton(onClick = { deleting = entry to (tab == 0) }, shape = ControlShape,
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
                     }
                     HorizontalDivider()
                 }

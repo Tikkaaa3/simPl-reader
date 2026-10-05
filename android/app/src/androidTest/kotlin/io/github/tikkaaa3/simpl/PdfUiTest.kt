@@ -68,24 +68,27 @@ class PdfUiTest {
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].appearance(Appearance.System) }
     }
     private fun ready(page: UInt, total: Int = 3) {
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Page $page of $total").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(30_000) { ui.onAllNodes(readerPageMatcher("Page $page of $total")).fetchSemanticsNodes().isNotEmpty() }
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any { it.config[SemanticsProperties.StateDescription] == "Page ready" } }
         ui.waitForIdle()
     }
     private fun open() { ui.onNodeWithTag("open:${book.fingerprint}").performClick(); ready(1u) }
     private fun jump(value: String) {
-        ui.onNodeWithTag("pageLabel").performClick(); ui.onNodeWithTag("jumpPage").performTextInput(value); ui.onNodeWithText("Go").performClick()
+        ui.readerJump(value)
     }
     @Test fun physicalPagesZoomFitSwipeEdgeJumpAndStopCheckpoint() {
         open(); screenshot("document-fit")
-        ui.onNodeWithText("Previous").assertIsNotEnabled()
-        ui.onNodeWithText("Next").performClick(); ready(2u)
+        ui.onNodeWithContentDescription("Previous").assertIsNotEnabled()
+        ui.onNodeWithContentDescription("Next").performClick(); ready(2u)
         ui.onNodeWithTag("pdfViewport").performTouchInput { swipeLeft() }; ready(3u)
-        ui.onNodeWithText("Next").assertIsNotEnabled()
+        ui.onNodeWithContentDescription("Next").assertIsNotEnabled()
         ui.onNodeWithTag("pdfViewport").performTouchInput { click(Offset(width * .05f, height * .2f)) }; ready(2u)
         ui.onNodeWithTag("pdfViewport").performTouchInput { pinch(Offset(width * .4f, height * .4f), Offset(width * .6f, height * .6f), Offset(width * .15f, height * .2f), Offset(width * .85f, height * .8f)) }
         ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfRendering").fetchSemanticsNodes().isEmpty() }
         ui.onNodeWithTag("pdfViewport").performTouchInput { swipeUp() }
+        // Finish the fling on Compose's test clock before ActivityScenario waits
+        // for the Android looper, which cannot advance that clock itself.
+        ui.waitForIdle()
         ui.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         openPdfDocument(book.path).use { native ->
             val location = native.info().restored
@@ -94,10 +97,10 @@ class PdfUiTest {
         ui.activityRule.scenario.moveToState(Lifecycle.State.RESUMED); ready(2u)
         screenshot("document-zoom")
         ui.activityRule.scenario.recreate(); ready(2u)
-        ui.onNodeWithText("Fit width").performClick()
+        ui.readerTool("Fit width")
         openPdfDocument(book.path).use { native -> ui.waitUntil(10_000) { native.info().restored.fitWidth } }
         jump("99"); ui.onNodeWithText("Enter a page number from 1 to 3").assertExists()
-        ui.onNodeWithText("OK").performClick(); ui.onNodeWithText("Cancel").performClick()
+        ui.onNodeWithText("OK").performClick(); cancelReaderJump()
         jump("1"); ready(1u)
         ui.onNodeWithContentDescription("Back to library").performClick()
         ui.waitUntil(10_000) { ui.onAllNodesWithTag("open:${book.fingerprint}").fetchSemanticsNodes().isNotEmpty() }
@@ -105,7 +108,9 @@ class PdfUiTest {
     }
     @Test fun glyphLongPressDragAndClipboardCopyRespectPermissions() {
         open()
-        ui.waitUntil(30_000) { ui.onAllNodesWithText("Select page text").fetchSemanticsNodes().any { it.config.contains(SemanticsProperties.Disabled).not() } }
+        ui.waitUntil(30_000) { ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any {
+            it.config.getOrElse(androidx.compose.ui.semantics.SemanticsActions.CustomActions) { emptyList() }.any { action -> action.label == "Select page text" }
+        } }
         val layer = openPdfDocument(book.path).use { it.text(1u, 1080u) }
         val first = layer.glyphs[0].bounds!!
         val last = layer.glyphs[9].bounds!!
@@ -114,16 +119,16 @@ class PdfUiTest {
             val end = Offset((last.left + last.right) / 2 * width, (last.top + last.bottom) / 2 * height)
             down(start); advanceEventTime(800); moveTo(end); up()
         }
-        ui.onNodeWithTag("pdfSelection").assertExists(); ui.onNodeWithText("Next").assertExists(); screenshot("document-selection")
-        ui.onNodeWithText("Copy").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Copied").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("pdfSelection").assertExists(); ui.onNodeWithContentDescription("Next").assertExists(); screenshot("document-selection")
+        ui.onNodeWithContentDescription("Copy").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("Copied").fetchSemanticsNodes().isNotEmpty() }
         ui.runOnIdle {
             val clipboard = ui.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             assertEquals("Lighthouse", clipboard.primaryClip!!.getItemAt(0).text.toString())
         }
-        ui.onNodeWithText("Clear").performClick(); ui.onNodeWithText("Select page text").performClick()
-        ui.onNodeWithText("Copy").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodesWithText("Copied").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithContentDescription("Clear selection").performClick(); ui.readerTool("Select page text")
+        ui.onNodeWithContentDescription("Copy").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodesWithContentDescription("Copied").fetchSemanticsNodes().isNotEmpty() }
         ui.runOnIdle {
             val clipboard = ui.activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             assertTrue(clipboard.primaryClip!!.getItemAt(0).text.toString().contains("Passage 1, line 23"))
@@ -134,7 +139,9 @@ class PdfUiTest {
         }
         val restricted = importLibraryBook(file.absolutePath); imported += restricted.fingerprint
         ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(restricted) }
-        ready(1u, 1); ui.onNodeWithText("Select page text").assertIsNotEnabled()
+        ready(1u, 1); ui.openReaderTools()
+        ui.onNodeWithText("Select page text").assertIsNotEnabled()
+        ui.onNodeWithContentDescription("Close reader tools").performClick()
         ui.onNodeWithTag("pdfPage").performTouchInput { longClick(center) }
         ui.onNodeWithTag("pdfSelection").assertDoesNotExist(); screenshot("document-copy-restricted")
     }

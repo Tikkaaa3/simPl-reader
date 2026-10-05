@@ -44,11 +44,12 @@ class ReleaseReadinessTest {
                     }
                     ui.waitUntil(30_000) { ui.onAllNodesWithTag("pageLabel").fetchSemanticsNodes().isNotEmpty() }
                     if (book.format == DocumentFormat.PDF) ui.waitUntil(30_000) {
-                        ui.onAllNodesWithText("Select page text").fetchSemanticsNodes().any {
-                            !it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.Disabled)
+                        ui.onAllNodesWithTag("pdfPage").fetchSemanticsNodes().any {
+                            it.config.getOrElse(androidx.compose.ui.semantics.SemanticsActions.CustomActions) { emptyList() }
+                                .any { action -> action.label == "Select page text" }
                         }
                     }
-                    ui.onNodeWithTag("pageLabel").assertTextContains("Page 1", substring = true)
+                    ui.onNodeWithTag("pageLabel").assert(readerPageMatcher("Page 1", substring = true))
                     ui.onNodeWithContentDescription("Back to library").performClick()
                 }
                 assertTrue(loadLibrary().books.first { it.fingerprint == book.fingerprint }.total > 0u)
@@ -95,11 +96,13 @@ class ReleaseReadinessTest {
             largeFonts()
             ui.activityRule.scenario.onActivity { ViewModelProvider(it)[LibraryViewModel::class.java].open(book) }
             ui.waitUntil(30_000) { ui.onAllNodesWithTag("pageLabel").fetchSemanticsNodes().isNotEmpty() }
-            ui.onNodeWithText("Contents").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Contents").assertIsDisplayed()
+            ui.openReaderTools()
             ui.onNodeWithText("Reading options").assertIsDisplayed()
             ui.onNodeWithText("Fit width").assertIsDisplayed()
-            ui.onNodeWithText("Next").assertIsDisplayed().performClick()
-            ui.waitUntil(10_000) { ui.onAllNodesWithText("Page 2", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            ui.onNodeWithContentDescription("Next").assertIsDisplayed().performClick()
+            ui.waitUntil(10_000) { ui.onAllNodes(readerPageMatcher("Page 2", substring = true)).fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithTag("pageLabel").assertIsDisplayed()
             screenshot("reader-large-font")
             ui.onNodeWithContentDescription("Back to library").performClick()
@@ -168,13 +171,13 @@ class ReleaseReadinessTest {
             ui.waitUntil(30_000) { ui.onAllNodesWithTag("pageLabel").fetchSemanticsNodes().isNotEmpty() }
             path.parentFile!!.mkdirs()
             assertTrue(path.mkdir())
-            ui.onNodeWithContentDescription("Bookmark page").performClick()
+            ui.readerTool("Bookmark page")
             ui.waitUntil(10_000) { ui.onAllNodesWithText("Could not save your changes.", substring = true).fetchSemanticsNodes().isNotEmpty() }
             assertTrue(path.isDirectory)
             ui.onNodeWithText("OK").performClick()
             assertTrue(path.delete())
             assertTrue(loadAnnotations(book.fingerprint).bookmarks.isEmpty())
-            ui.onNodeWithContentDescription("Bookmark page").performClick()
+            ui.readerTool("Bookmark page")
             ui.waitUntil(10_000) { loadAnnotations(book.fingerprint).bookmarks.size == 1 }
             ui.onNodeWithContentDescription("Back to library").performClick()
         } finally {

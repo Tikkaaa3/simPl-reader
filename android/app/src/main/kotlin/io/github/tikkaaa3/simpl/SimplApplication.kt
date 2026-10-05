@@ -12,6 +12,7 @@ class SimplApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         ReadingControls.initialize(this)
+        ReadingThemes.initialize(this)
         // Library and reading state live in private files; conversions are disposable.
         coreFailure =
             try {

@@ -19,12 +19,16 @@ import org.json.JSONObject
 
 enum class Appearance { System, Light, Dark }
 
+/** Library order, as on desktop; Recent keeps the core's recently-opened order. */
+enum class LibrarySort(val label: String) { Recent("Recently opened"), Title("Title"), Author("Author"), Format("Format") }
+
 data class LibraryState(
     val books: List<LibraryBook> = emptyList(),
     val shelves: List<LibraryShelf> = emptyList(),
     val query: String = "",
     val filter: String = "all",
     val appearance: Appearance = Appearance.System,
+    val sort: LibrarySort = LibrarySort.Recent,
     val loading: Boolean = true,
     val importing: Int = 0,
     val error: String? = null,
@@ -40,6 +44,7 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
     private val mutable = MutableStateFlow(LibraryState(
         query = saved["query"] ?: "", filter = saved["filter"] ?: "all",
         appearance = runCatching { Appearance.valueOf(preferences.getString("appearance", "System")!!) }.getOrDefault(Appearance.System),
+        sort = runCatching { LibrarySort.valueOf(preferences.getString("sort", "Recent")!!) }.getOrDefault(LibrarySort.Recent),
         openRequest = saved["openRequest"],
     ))
     val state = mutable.asStateFlow()
@@ -58,6 +63,10 @@ class LibraryViewModel(application: Application, private val saved: SavedStateHa
     fun appearance(value: Appearance) {
         preferences.edit().putString("appearance", value.name).apply()
         mutable.value = mutable.value.copy(appearance = value)
+    }
+    fun sort(value: LibrarySort) {
+        preferences.edit().putString("sort", value.name).apply()
+        mutable.value = mutable.value.copy(sort = value)
     }
     fun dismissMessage() { mutable.value = mutable.value.copy(error = null, notice = null) }
     fun navigated() { saved["openRequest"] = null; mutable.value = mutable.value.copy(openRequest = null) }

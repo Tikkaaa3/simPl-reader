@@ -29,15 +29,15 @@ import io.github.tikkaaa3.simpl.core.*
 import io.github.tikkaaa3.simpl.core.TextStyle as RunStyle
 import kotlin.math.roundToInt
 
-private val literata = FontFamily(
+internal val literata = FontFamily(
     Font(R.font.literata_regular), Font(R.font.literata_medium, FontWeight.Medium),
     Font(R.font.literata_bold, FontWeight.Bold), Font(R.font.literata_italic, style = FontStyle.Italic),
     Font(R.font.literata_bolditalic, FontWeight.Bold, FontStyle.Italic))
-private val spectral = FontFamily(
+internal val spectral = FontFamily(
     Font(R.font.spectral_regular), Font(R.font.spectral_medium, FontWeight.Medium),
     Font(R.font.spectral_bold, FontWeight.Bold), Font(R.font.spectral_italic, style = FontStyle.Italic),
     Font(R.font.spectral_bolditalic, FontWeight.Bold, FontStyle.Italic))
-private val fira = FontFamily(
+internal val fira = FontFamily(
     Font(R.font.firasans_regular), Font(R.font.firasans_medium, FontWeight.Medium),
     Font(R.font.firasans_bold, FontWeight.Bold), Font(R.font.firasans_italic, style = FontStyle.Italic),
     Font(R.font.firasans_bolditalic, FontWeight.Bold, FontStyle.Italic))

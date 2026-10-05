@@ -234,14 +234,20 @@ pub struct ReaderImage {
 pub struct ReaderPalette {
     pub paper: u32,
     pub background: u32,
+    /// Panels and menus raised above the paper.
+    pub raised: u32,
+    pub border: u32,
     pub text: u32,
+    pub secondary: u32,
     pub muted: u32,
     pub accent: u32,
+    pub danger: u32,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct ReaderTheme {
     pub id: String,
     pub name: String,
+    pub summary: String,
     pub light: ReaderPalette,
     pub dark: ReaderPalette,
 }
@@ -255,9 +261,13 @@ pub fn reader_themes() -> Vec<ReaderTheme> {
         ReaderPalette {
             paper: rgba(p.surface.into_rgba8()),
             background: rgba(p.background.into_rgba8()),
+            raised: rgba(p.raised.into_rgba8()),
+            border: rgba(p.border.into_rgba8()),
             text: rgba(p.text.into_rgba8()),
+            secondary: rgba(p.secondary.into_rgba8()),
             muted: rgba(p.muted.into_rgba8()),
             accent: rgba(p.accent.into_rgba8()),
+            danger: rgba(p.danger.into_rgba8()),
         }
     }
     themes::THEMES
@@ -265,6 +275,7 @@ pub fn reader_themes() -> Vec<ReaderTheme> {
         .map(|t| ReaderTheme {
             id: t.id.into(),
             name: t.name.into(),
+            summary: t.summary.into(),
             light: palette(t.light),
             dark: palette(t.dark),
         })

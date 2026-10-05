@@ -20,7 +20,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -30,7 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -99,10 +97,14 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
     LaunchedEffect(book.path) { model.open(book) }
     var toolbar by rememberSaveable { mutableStateOf(true) }
     var jump by rememberSaveable { mutableStateOf(false) }
+    var tools by rememberSaveable { mutableStateOf(false) }
+    var pageEditing by remember { mutableStateOf(false) }
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     var annotations by rememberSaveable { mutableStateOf(false) }
     var finding by rememberSaveable { mutableStateOf(false) }
     val findState = rememberFindState()
-    var sideVisible by rememberSaveable { mutableStateOf(true) }
+    var sideVisible by rememberSaveable { mutableStateOf(false) }
     var paneAvailable by remember { mutableStateOf(false) }
     var help by rememberSaveable { mutableStateOf(false) }
     var previousZoom by rememberSaveable { mutableFloatStateOf(1.5f) }
@@ -131,7 +133,8 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         onDispose { controller.show(WindowInsetsCompat.Type.systemBars()) }
     }
     fun escape() {
-        when { finding -> { finding = false; model.select(null) }; annotations -> annotations = false; state.selection != null -> model.select(null); jump -> jump = false;
+        when { pageEditing -> { focusManager.clearFocus(); keyboard?.hide(); jump = false }
+            tools -> tools = false; finding -> { finding = false; model.select(null) }; annotations -> annotations = false; state.selection != null -> model.select(null); jump -> jump = false;
             !toolbar -> toolbar = true; else -> { model.stop(); back() } }
     }
     BackHandler { escape() }
@@ -144,7 +147,7 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
             ReaderCommand.First -> model.jump("1")
             ReaderCommand.Last -> model.jump(state.info!!.pages.size.toString())
             ReaderCommand.Find -> if (state.info?.canCopy == true) { finding = true; toolbar = true }
-            ReaderCommand.Jump -> jump = true
+            ReaderCommand.Jump -> { toolbar = true; jump = true }
             ReaderCommand.ZoomIn -> model.stepZoom(1.1f)
             ReaderCommand.ZoomOut -> model.stepZoom(1 / 1.1f)
             ReaderCommand.ResetZoom -> model.zoom(1f)
@@ -167,47 +170,36 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         }
     }
     CompositionLocalProvider(LocalReaderScroll provides scrollKeys) {
-    AdaptivePanes(sideVisible = sideVisible || finding, side = {
+    AdaptivePanes(modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainer).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)),
+        sideVisible = (toolbar && sideVisible) || finding, side = {
         if (finding) {
             if (state.loading) CircularProgressIndicator()
             else FindPanel(findState, model::find, model::searchHit) { finding = false; model.select(null) }
         }
-        else AnnotationPanel(state.annotations, {}, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
+        else AnnotationPanel(state.annotations, { annotations = false; sideVisible = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
     }) { wide ->
     SideEffect { paneAvailable = wide }
-    Column(Modifier.fillMaxSize().testTag("reader")) {
-        if (toolbar) TopAppBar(title = { Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            navigationIcon = { IconButton(onClick = { model.stop(); back() }) { Icon(AppIcons.Back, "Back to library") } },
-            actions = {
-                IconButton(onClick = model::bookmark, enabled = !state.loading) { Text(if (state.annotations.bookmarks.any { it.pageNumber == state.location.page }) "★" else "☆", Modifier.semantics { contentDescription = "Bookmark page" }) }
-                IconButton(onClick = { annotations = true; finding = false; sideVisible = true }) { Text("☰", Modifier.semantics { contentDescription = "Annotations" }) }
-                IconButton(onClick = settings) { Icon(AppIcons.Settings, "Settings") } })
-        if (toolbar && !state.loading && state.info != null) FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-            Text("PDF", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
-            ReadAloudControls(book.fingerprint, model::readAloud, enabled = state.info?.canCopy == true)
-            if (bookMode != null) TextButton(onClick = bookMode, enabled = state.info?.canCopy == true) { Text("Book") }
-            TextButton(onClick = model::fit) { Text("Fit width") }
-            TextButton(onClick = { finding = true }, enabled = state.info?.canCopy == true) { Text("Find in book") }
-            TextButton(onClick = quickSwitch) { Text("Switch book") }
-            TextButton(onClick = model::selectAll, enabled = !state.text?.glyphs.isNullOrEmpty()) { Text("Select page text") }
-        }
+    Column(Modifier.fillMaxSize().testTag("reader").semantics { paneTitle = book.title }) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
             else if (state.info != null) PdfViewport(state, model, { toolbar = !toolbar; copied = false }, dictionary = { dictionary = true }) { id -> editing = state.annotations.highlights.firstOrNull { it.id == id } }
             else Column(Modifier.padding(24.dp)) { Text(state.error ?: "Could not open this PDF"); TextButton(onClick = back) { Text("Return to library") } }
-            state.selection?.let { selection -> Surface(Modifier.align(Alignment.BottomCenter), tonalElevation = 3.dp) {
+            state.selection?.let { selection -> SelectionSurface(Modifier.align(Alignment.BottomCenter)) {
                 key(selection) { Column {
                     SelectionMenu("pdfSelection", model::copy, model::highlight, read = { model.readSelection() }, dictionary = if (state.info?.canCopy == true) ({ dictionary = true }) else null) { model.select(null) }
-                    if (state.info?.canCopy == true) DictionarySelection(model::copy, selection, dictionary) { dictionary = false }
+                    if (state.info?.canCopy == true) DictionarySelection(model::copy, selection, dictionary, expand = { dictionary = true }) { dictionary = false }
                 } }
             } }
             if (state.rendering) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("pdfRendering"))
         }
-        if (toolbar && state.info != null) Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { model.turn(-1) }, enabled = state.location.page > 1u) { Text("Previous") }
-            TextButton(onClick = { jump = true }, modifier = Modifier.weight(1f).testTag("pageLabel")) { Text("Page ${state.location.page} of ${state.info!!.pages.size}", maxLines = 2, overflow = TextOverflow.Ellipsis) }
-            TextButton(onClick = { model.turn(1) }, enabled = state.location.page < state.info!!.pages.size.toUInt()) { Text("Next") }
+        if (toolbar) {
+            if (!tools) ReaderSpeechBar(book.fingerprint)
+            ReaderBottomBar(state.location.page, state.info?.pages?.size?.toUInt() ?: 0u,
+                enabled = !state.loading && state.info != null, color = MaterialTheme.colorScheme.surface,
+                text = MaterialTheme.colorScheme.onSurface, loading = state.loading, requestPageFocus = jump, pageFocusHandled = { jump = false },
+                editingChanged = { pageEditing = it },
+                back = { model.stop(); back() }, previous = { model.turn(-1) }, next = { model.turn(1) },
+                jump = { value, done -> if (model.jump(value)) done() }, tools = { tools = true })
         }
     }
     if (annotations && !wide) AnnotationSheet(state.annotations, { annotations = false }, model::annotation, model::edit, model::remove, read = { model.readPassage(it) }, book = book)
@@ -216,21 +208,21 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
         else FindPanel(findState, model::find, model::searchHit) { finding = false; model.select(null) }
     }
     editing?.let { entry -> NoteEditor(entry, { editing = null }) { color, note -> model.edit(entry.id, color, note); editing = null } }
-    if (jump) {
-        var value by rememberSaveable { mutableStateOf("") }
-        AlertDialog(onDismissRequest = { jump = false }, title = { Text("Go to page") },
-            text = {
-                val focus = remember { androidx.compose.ui.focus.FocusRequester() }
-                LaunchedEffect(Unit) { focus.requestFocus() }
-                OutlinedTextField(value, { value = it }, singleLine = true, label = { Text("Page number") }, modifier = Modifier.testTag("jumpPage").focusRequester(focus),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Go),
-                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { if (model.jump(value)) jump = false }))
-            },
-            confirmButton = { TextButton(onClick = { if (model.jump(value)) jump = false }, enabled = value.isNotBlank()) { Text("Go") } },
-            dismissButton = { TextButton(onClick = { jump = false }) { Text("Cancel") } })
-    }
+    if (tools) ReaderToolsSheet(book.title, book.fingerprint, state.location.zoom, buildList {
+        if (bookMode != null) add(ReaderTool("Book", AppIcons.Contents, bookMode, state.info?.canCopy == true))
+        add(ReaderTool("Find in book", AppIcons.Search, { finding = true }, state.info?.canCopy == true))
+        add(ReaderTool("Annotations", AppIcons.Notes, { annotations = true; finding = false; sideVisible = true }))
+        val bookmarked = state.annotations.bookmarks.any { it.pageNumber == state.location.page }
+        add(ReaderTool("Bookmark page", if (bookmarked) AppIcons.Bookmark else AppIcons.BookmarkOutline, model::bookmark, selected = bookmarked))
+        add(ReaderTool("Switch book", AppIcons.Switch, quickSwitch))
+        add(ReaderTool("Settings", AppIcons.Settings, settings))
+        add(ReaderTool("Select page text", AppIcons.Notes, model::selectAll, !state.text?.glyphs.isNullOrEmpty()))
+        add(ReaderTool("Hide controls", AppIcons.Hide, { toolbar = false }))
+    }, dismiss = { tools = false }, zoomOut = { model.stepZoom(1 / 1.2f) }, zoomIn = { model.stepZoom(1.2f) },
+        fitWidth = model::fit, read = model::readAloud, canRead = state.info?.canCopy == true)
     } }
     if (help) KeyboardHelp { help = false }
+    ReadAloudError()
     if (state.error != null && state.info != null) AlertDialog(onDismissRequest = model::dismissError, title = { Text("PDF reader") },
         text = { Text(state.error!!) }, confirmButton = { TextButton(onClick = model::dismissError) { Text("OK") } })
 }
@@ -239,6 +231,8 @@ internal fun PdfScreen(book: LibraryBook, model: PdfViewModel, back: () -> Unit,
 private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit, dictionary: () -> Unit, editMark: (ULong) -> Unit) {
     val density = LocalDensity.current.density
     val vertical = rememberScrollState(); val horizontal = rememberScrollState()
+    val placement = remember { PagePlacement() }
+    var gestureRevision by remember { mutableIntStateOf(0) }
     val scrollKeys = LocalReaderScroll.current
     var viewportHeight by remember { mutableIntStateOf(0) }
     LaunchedEffect(scrollKeys) { if (scrollKeys != null) for (delta in scrollKeys) vertical.animateScrollBy(viewportHeight * .8f * delta) }
@@ -266,11 +260,13 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
         val zoom = if (location.fitWidth) 1f else location.zoom / fitScale
         val width = constraints.maxWidth * zoom
         val height = width * pageSize.height / pageSize.width
-        fun hit(point: Offset): Int? = geometry?.closest(Offset(point.x + horizontal.value, point.y + vertical.value), width, height)
+        val pageGeometry = PageGeometry(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat(), pageSize.width, pageSize.height, width / pageSize.width)
+        TrackPageScroll(placement, pageGeometry, state.revision, horizontal, vertical)
+        fun hit(point: Offset): Int? = geometry?.closest(point + Offset(horizontal.value.toFloat(), vertical.value.toFloat()) - pageGeometry.inset, width, height)
         fun handle(point: PdfSelectionPoint?, end: Boolean): Offset? {
             if (point?.page != location.page) return null
             val r = state.text?.glyphs?.getOrNull(point.index.toInt())?.bounds ?: return null
-            return Offset((if (end) r.right else r.left) * width - horizontal.value, r.bottom * height - vertical.value)
+            return (Offset((if (end) r.right else r.left) * width - horizontal.value, r.bottom * height - vertical.value) + pageGeometry.inset)
                 .takeIf { it.y in 0f..constraints.maxHeight.toFloat() }
         }
         val handles = handle(state.selection?.from, false) to handle(state.selection?.to, true)
@@ -279,34 +275,47 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
         var dragging by remember { mutableStateOf<Offset?>(null) }
         var draggingStart by remember { mutableStateOf(false) }
         val gestures = selectionGesture(handles, { point ->
-            val index = geometry?.closest(Offset(point.x + horizontal.value, point.y + vertical.value), width, height, 24 * density)
+            val index = geometry?.closest(point + Offset(horizontal.value.toFloat(), vertical.value.toFloat()) - pageGeometry.inset, width, height, 24 * density)
             if (index != null) { model.select(geometry.word(index)); true } else false
         }, { point, start -> draggingStart = start; hit(point)?.let { model.extend(it, start) } }, { dragging = it }, lift(state.selection?.from) to lift(state.selection?.to))
         SelectionEdgeDrag(dragging, constraints.maxHeight.toFloat(), { vertical.scrollBy(it) }, { model.selectionTurn(it, draggingStart) }) { point -> hit(point)?.let { model.extend(it, draggingStart) } }
         LaunchedEffect(state.spoken, state.text, height) {
             val word = state.spoken?.takeIf { it.pdfPage == location.page } ?: return@LaunchedEffect
             val bounds = state.text?.glyphs?.firstOrNull { it.end > word.from.byte && it.start < word.to.byte }?.bounds ?: return@LaunchedEffect
-            val top = bounds.top * height; val bottom = bounds.bottom * height
+            val top = bounds.top * height + pageGeometry.inset.y; val bottom = bounds.bottom * height + pageGeometry.inset.y
             if (top < vertical.value || bottom > vertical.value + constraints.maxHeight) vertical.scrollTo((top - constraints.maxHeight * .25f).roundToInt().coerceAtLeast(0))
         }
     val zoomNow by rememberUpdatedState(zoom)
         val dictionaryNow by rememberUpdatedState(dictionary)
         LaunchedEffect(location.page, width) { model.render(width) }
         var ready by remember(state.revision) { mutableStateOf(false) }
-        LaunchedEffect(state.revision, width, height) {
+        LaunchedEffect(state.revision, pageGeometry, gestureRevision) {
             ready = false
+            val target = if (placement.revision == state.revision) placement.resized(pageGeometry) else
+                pageGeometry.clamp(Offset(locationNow.horizontal * pageGeometry.maximum.x, locationNow.within * height + pageGeometry.inset.y))
             withFrameNanos { }
-            vertical.scrollTo((locationNow.within * height).roundToInt())
-            horizontal.scrollTo((locationNow.horizontal * horizontal.maxValue).roundToInt())
+            vertical.scrollTo(target.y.roundToInt())
+            horizontal.scrollTo(target.x.roundToInt())
+            placement.geometry = pageGeometry; placement.revision = state.revision
+            placement.scroll = Offset(horizontal.value.toFloat(), vertical.value.toFloat()); placement.pending = null
             ready = true
         }
-        LaunchedEffect(state.revision, width, height) {
+        LaunchedEffect(state.revision, pageGeometry) {
             snapshotFlow { vertical.value to horizontal.value }.distinctUntilChanged().collect { (y, x) ->
-                if (ready) model.record(locationNow.copy(within = (y / height).coerceIn(0f, 1f),
+                if (ready) model.record(locationNow.copy(within = ((y - pageGeometry.inset.y) / height).coerceIn(0f, 1f),
                     horizontal = if (horizontal.maxValue > 0) (x.toFloat() / horizontal.maxValue).coerceIn(0f, 1f) else 0f))
             }
         }
-        Box(Modifier.fillMaxSize().then(gestures)) {
+        Box(Modifier.fillMaxSize().then(gestures).pointerInput(location.page, pageGeometry.viewportWidth, pageGeometry.viewportHeight) {
+            detectTapGestures { point ->
+                when {
+                    selectionNow != null -> model.select(null)
+                    locationNow.fitWidth && point.x < pageGeometry.viewportWidth * .18f -> model.turn(-1)
+                    locationNow.fitWidth && point.x > pageGeometry.viewportWidth * .82f -> model.turn(1)
+                    else -> toggleNow()
+                }
+            }
+        }) {
           Box(Modifier.fillMaxSize().semantics { stateDescription = "Zoom $zoom; page ${location.page}" }
             .pointerInput(fitScale) {
                 awaitEachGesture {
@@ -315,15 +324,19 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                     do {
                         val event = awaitPointerEvent()
                         if (event.changes.count { it.pressed } >= 2) {
+                            val focus = event.calculateCentroid()
+                            placement.zoomAt(if (event.changes.count { it.previousPressed } >= 2) event.calculateCentroid(useCurrent = false) else focus, focus)
                             scale = (scale * event.calculateZoom()).coerceIn(.5f, 4f)
                             model.zoom(scale * fitScale)
+                            gestureRevision++
                             event.changes.forEach { it.consume() }
                         }
                     } while (event.changes.any { it.pressed })
                 }
             }.verticalScroll(vertical, enabled = dragging == null).horizontalScroll(horizontal, enabled = !location.fitWidth && dragging == null)) {
             val image = remember(state.raster) { state.raster?.asImageBitmap() }
-            Canvas(Modifier.requiredWidth((width / density).dp).requiredHeight((height / density).dp).background(Color.White).testTag("pdfPage")
+            Box(Modifier.width((max(width, pageGeometry.viewportWidth) / density).dp).height((max(height, pageGeometry.viewportHeight) / density).dp)) {
+            Canvas(Modifier.align(Alignment.Center).requiredWidth((width / density).dp).requiredHeight((height / density).dp).background(Color.White).testTag("pdfPage")
                 .semantics {
                     contentDescription = "PDF page ${location.page}"
                     stateDescription = if (image == null) "Loading page" else if (state.spoken?.pdfPage == location.page) "Reading aloud" else "Page ready"
@@ -371,7 +384,9 @@ private fun PdfViewport(state: PdfState, model: PdfViewModel, toggle: () -> Unit
                 }
                 state.selection?.range(location.page, count)?.let { paint(it, Color(0x6657a8ef)) }
             }
+            }
         }
+          PageScrollIndicator(pageGeometry, { Offset(horizontal.value.toFloat(), vertical.value.toFloat()) }, MaterialTheme.colorScheme.primary)
           SelectionHandle(handles.first, true)
           SelectionHandle(handles.second, false)
         }

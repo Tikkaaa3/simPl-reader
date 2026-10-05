@@ -550,8 +550,8 @@ Copy-restricted PDFs expose no search. Search state survives recreation and
 movement between a phone sheet and a wide-screen side panel. Quick switching
 filters title/author and preserves the previous reader checkpoint.
 
-At 840 dp, the library shows shelves beside its book grid and readers show a
-persistent annotations/contents/search panel. WindowManager 1.5.1 supplies
+At 840 dp, the library shows shelves beside its book grid and readers can show an
+annotations/contents/search panel on request. WindowManager 1.5.1 supplies
 separating hinge bounds: vertical folds split columns, horizontal folds split
 rows, and an unsuitable narrow pane yields to the larger unobstructed pane.
 Canonical pagination does not change with window size. Desktop-style keyboard
@@ -580,6 +580,44 @@ errors and the ten existing warnings. Signed ARM64 and universal APKs and a sign
 AAB build successfully; signatures, native libraries, licenses and APK 16 KB
 alignment are verified. Store-candidate and physical-device validation remain
 separate from this accepted emulator scope.
+
+### Mobile reader refinement — Android 0.1.2
+
+Book and PDF Document readers use one 56 dp bottom toolbar with 48 dp icon
+targets. Its current page is editable in place; Go or the keyboard submits the
+jump. The field shows the canonical ordinal, while EPUB printed labels remain
+accepted input and accessible page metadata. Contents has a direct button when
+space allows and remains available in Reader tools on narrow phones.
+
+Book mode fits the complete measured page into the available viewport, including
+tall PDF Book pages, and centers the paper. Fullscreen, rotation and typography
+changes update that fit. Fit width remains an explicit option. Button zoom
+preserves the source point at the viewport center, and pinch preserves its
+centroid while allowing two-finger panning. Overflow has visible scroll
+indicators. Panels open on request, with explicit close controls; active speech
+uses a small pause/stop row.
+
+**Reader acceptance (2026-10-05):** The accepted API 36 x86_64 emulator validates
+all 74 instrumentation cases across the full run and the three-case library
+rerun after fixing import-message overlap. The nine new cases cover full-page
+fit, fullscreen, rotation, typography, direct and invalid page input, centered
+and off-center zoom, panned reading points, narrow phones and page geometry.
+Existing selection, links, notes, search, dictionary, speech, PDF modes, saved
+positions and fold layouts remain covered. Import messages sit above the bottom
+controls; fitted pages leave horizontal swipes to page turning.
+After moving scroll tracking out of composition and indicator updates into
+drawing, all 18 mobile/reader/PDF/annotation cases pass again. Debug/release lint
+pass with zero errors and the ten existing warnings; this refinement adds no
+lint warnings.
+The startup and reader/settings baseline-profile journeys both pass with the
+updated controls, and the generated profiles are included in the release APKs.
+Signed ARM64 and universal Android 0.1.2 APKs build successfully. Their existing
+distribution certificate, version, ABI contents, 756 license notices, bundled
+profiles and 16 KB native/ZIP alignment are independently verified.
+Updating the emulator's signed 0.1.1 installation to 0.1.2 with `adb install -r`
+preserves its application UID, existing book and Page 1 bookmark. The signed
+build's toolbar, tools, annotations, contents and fullscreen are also verified;
+reviewed screenshots are retained in `target/mobile-reader-release-smoke`.
 
 ## Risks and mitigations
 
