@@ -187,6 +187,8 @@ try {
     Start-Sleep -Milliseconds 700
     $process.Refresh(); $window = $process.MainWindowHandle
     if ($window -eq [IntPtr]::Zero) { throw 'Reader did not create a window.' }
+    # Windows refuses SetForegroundWindow from a background process unless a key was just pressed.
+    [ReleaseSmokeNative]::keybd_event(0x12,0,0,[UIntPtr]::Zero); [ReleaseSmokeNative]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
     [void][ReleaseSmokeNative]::SetForegroundWindow($window)
     Start-Sleep -Milliseconds 200
     Size 900 640
