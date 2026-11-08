@@ -6,7 +6,7 @@
 use super::*;
 use iced::Animation;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, overlay, renderer, widget};
-use iced::widget::{Space, column, mouse_area};
+use iced::widget::{Space, column, mouse_area, opaque};
 use iced::{Point, Rectangle, Vector};
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,10 @@ pub(super) struct Bar {
     now: Instant,
     /// The open document, so a new one shows the bar once.
     document: Option<PathBuf>,
+    /// The book page field has keyboard focus.
+    book_field: bool,
+    /// Keyboard modifiers, for the wheel over the bar.
+    modifiers: keyboard::Modifiers,
 }
 
 impl Default for Bar {
@@ -66,6 +70,8 @@ impl Default for Bar {
             held: false,
             now: Instant::now(),
             document: None,
+            book_field: false,
+            modifiers: keyboard::Modifiers::default(),
         }
     }
 }
@@ -209,15 +215,34 @@ impl Bar {
     }
 }
 
-/// The pointer change carried by `message`, if any: a new position, or `None`
-/// when the pointer left the window.
-pub(super) fn pointer_change(message: &Message) -> Option<Option<Point>> {
-    match message {
-        Message::Event(iced::Event::Mouse(mouse::Event::CursorMoved { position }), _) => {
-            Some(Some(*position))
+/// What one message tells the bar about the pointer and the keyboard.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Input {
+    /// A new pointer position, or `Some(None)` when it left the window.
+    pub(super) pointer: Option<Option<Point>>,
+    pub(super) modifiers: Option<keyboard::Modifiers>,
+}
+
+impl Input {
+    pub(super) fn of(message: &Message) -> Self {
+        match message {
+            Message::Event(iced::Event::Mouse(mouse::Event::CursorMoved { position }), _) => Self {
+                pointer: Some(Some(*position)),
+                ..Self::default()
+            },
+            Message::Event(iced::Event::Mouse(mouse::Event::CursorLeft), _) => Self {
+                pointer: Some(None),
+                ..Self::default()
+            },
+            Message::Event(
+                iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)),
+                _,
+            ) => Self {
+                modifiers: Some(*modifiers),
+                ..Self::default()
+            },
+            _ => Self::default(),
         }
-        Message::Event(iced::Event::Mouse(mouse::Event::CursorLeft), _) => Some(None),
-        _ => None,
     }
 }
 
@@ -255,7 +280,11 @@ impl Reader {
     /// so a slow first layout never stretches the 2 s shown after opening.
     pub(super) fn bar_held(&self) -> bool {
         self.focused.is_some_and(is_bar_control)
-            || self.page_input.is_some()
+            || self.bar.book_field
+            || self
+                .pdf
+                .as_ref()
+                .is_some_and(pdf_reader::Reader::page_focused)
             || self.show_settings
             || self.show_search
             || self.has_held_panels()
@@ -280,6 +309,15 @@ impl Reader {
             || self.saving
     }
 
+    /// The book page field gained or lost keyboard focus. Leaving it without
+    /// Enter abandons the draft, so the field shows the current page again.
+    pub(super) fn book_page_focus(&mut self, focused: bool) {
+        self.bar.book_field = focused;
+        if !focused {
+            self.page_input = None;
+        }
+    }
+
     /// Header tooltips stay quiet while a modal covers the header.
     pub(super) fn chrome_tooltips(&self) -> bool {
         !self.show_settings
@@ -290,7 +328,10 @@ impl Reader {
 
     /// Applies what one message changed: an opened or closed document, the
     /// pointer, and whatever holds the bar.
-    pub(super) fn sync_bar(&mut self, now: Instant, pointer: Option<Option<Point>>) {
+    pub(super) fn sync_bar(&mut self, now: Instant, input: Input) {
+        if let Some(modifiers) = input.modifiers {
+            self.bar.modifiers = modifiers;
+        }
         if self.document_path() != self.bar.document.as_deref() {
             self.bar.document = self.document_path().map(Path::to_path_buf);
             if self.bar.document.is_some() {
@@ -304,7 +345,9 @@ impl Reader {
         } else {
             REVEAL_ZONE
         };
-        let hovered = pointer.map(|pointer| pointer.is_some_and(|point| point.y < zone));
+        let hovered = input
+            .pointer
+            .map(|pointer| pointer.is_some_and(|point| point.y < zone));
         let held = self.bar_held();
         if self.bar.document.is_none() {
             // The Library header is static: only remember the inputs for the
@@ -369,16 +412,20 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
     } else {
         GROUP_GAP
     };
-    let tools = container(chrome::tools(focused, hints, reader.appearance).map(Message::Chrome))
-        .padding(iced::Padding {
-            left: chrome::TOOLS_EDGE,
-            right: gap,
-            ..iced::Padding::ZERO
-        });
+    // Controls and labels are never a drag surface, even when disabled; only
+    // the bar's empty background moves the window.
+    let tools = container(opaque(
+        chrome::tools(focused, hints, reader.appearance).map(Message::Chrome),
+    ))
+    .padding(iced::Padding {
+        left: chrome::TOOLS_EDGE,
+        right: gap,
+        ..iced::Padding::ZERO
+    });
     let captions: Element<'_, Message> = if reader.fullscreen {
         Space::new().width(GROUP_GAP).into()
     } else {
-        container(
+        container(opaque(
             chrome::captions(
                 focused,
                 chrome::Controls {
@@ -387,7 +434,7 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
                 },
             )
             .map(Message::Chrome),
-        )
+        ))
         .padding(iced::Padding {
             left: gap,
             ..iced::Padding::ZERO
@@ -398,6 +445,11 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
         pdf_groups(reader, active)
     } else {
         book_groups(reader, active)
+    };
+    let groups = Groups {
+        left: opaque(groups.left),
+        middle: opaque(groups.middle),
+        right: opaque(groups.right),
     };
     let fill = || Space::new().width(Length::Fill);
     let rows: Element<'_, Message> = if one_row(reader) {
@@ -435,23 +487,72 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
     ])
     .width(Length::Fill)
     .style(ui::header);
-    // Wheel over the bar scrolls the document under it.
+    // Fullscreen has no window to drag, maximize or open a system menu for;
+    // the bar still keeps presses away from the page under it.
+    let content = if reader.fullscreen {
+        opaque(bar)
+    } else {
+        chrome::drag_region(bar.into(), Message::Chrome)
+    };
+    // The wheel over the bar acts on the document under it.
     mouse_area(Element::new(Fade {
-        content: chrome::drag_region(bar.into(), Message::Chrome),
+        content,
         alpha: reader.bar.alpha(),
     }))
     .on_scroll(Message::BarWheel)
     .into()
 }
 
-/// Scrolls the open document by a wheel `delta` received over the bar, by the
-/// same distance its scrollable moves for that delta.
-pub(super) fn forward_wheel(reader: &Reader, delta: mouse::ScrollDelta) -> Task<Message> {
+/// The wheel over the bar behaves as it does over the page: Ctrl+wheel and
+/// touchpad pinch zoom through the same path, anything else scrolls.
+pub(super) fn wheel(reader: &mut Reader, delta: mouse::ScrollDelta) -> Task<Message> {
+    let modifiers = reader.bar.modifiers;
+    if !crate::document_scroll::control_pressed(modifiers) {
+        return forward_wheel(reader, delta, modifiers);
+    }
+    let notches = crate::document_scroll::zoom_notches(delta);
+    if notches == 0.0 {
+        Task::none()
+    } else if let Some(pdf) = &reader.pdf {
+        let document = pdf.document().id;
+        update_inner(
+            reader,
+            Message::Pdf {
+                document,
+                message: pdf_reader::Message::ZoomBy(notches),
+            },
+        )
+    } else if reader.book.is_some() {
+        update_inner(reader, Message::ZoomBy(notches))
+    } else {
+        Task::none()
+    }
+}
+
+/// How far an iced scrollable moves for a wheel `delta`: 60 px per line, with
+/// Shift turning line scrolling sideways, and pixel deltas as they come.
+pub(super) fn wheel_offset(
+    delta: mouse::ScrollDelta,
+    shift: bool,
+) -> iced::widget::scrollable::AbsoluteOffset {
     let (x, y) = match delta {
-        mouse::ScrollDelta::Lines { x, y } => (-x * WHEEL_LINE, -y * WHEEL_LINE),
+        mouse::ScrollDelta::Lines { x, y } => {
+            let (x, y) = if shift { (y, x) } else { (x, y) };
+            (-x * WHEEL_LINE, -y * WHEEL_LINE)
+        }
         mouse::ScrollDelta::Pixels { x, y } => (-x, -y),
     };
-    let offset = iced::widget::scrollable::AbsoluteOffset { x, y };
+    iced::widget::scrollable::AbsoluteOffset { x, y }
+}
+
+/// Scrolls the open document by a wheel `delta` received over the bar, by the
+/// same distance its scrollable moves for that delta.
+pub(super) fn forward_wheel(
+    reader: &Reader,
+    delta: mouse::ScrollDelta,
+    modifiers: keyboard::Modifiers,
+) -> Task<Message> {
+    let offset = wheel_offset(delta, crate::document_scroll::shift_pressed(modifiers));
     if reader.pdf.is_some() {
         iced::widget::operation::scroll_by(pdf_reader::scroll_id(), offset)
     } else if reader.book.is_some() {
@@ -556,16 +657,19 @@ fn book_groups(reader: &Reader, active: bool) -> Groups<'_> {
             "Previous page (Left arrow)",
             (active && reader.can_turn(false)).then_some(Message::BookPage(false))
         ),
-        iced::widget::text_input(
-            if current.is_empty() { "—" } else { "Page" },
-            reader.page_input.as_deref().unwrap_or(&current),
-        )
-        .id(iced::advanced::widget::Id::new("book-page"))
-        .on_input(Message::PageInput)
-        .on_submit(Message::PageSubmit)
-        .width(64)
-        .size(13)
-        .style(ui::input_style),
+        ui::watch_focus(
+            iced::widget::text_input(
+                if current.is_empty() { "—" } else { "Page" },
+                reader.page_input.as_deref().unwrap_or(&current),
+            )
+            .id(iced::advanced::widget::Id::new("book-page"))
+            .on_input(Message::PageInput)
+            .on_submit(Message::PageSubmit)
+            .width(64)
+            .size(13)
+            .style(ui::input_style),
+            Message::BookPageFocus,
+        ),
         text(format!("/ {}", reader.page_total()))
             .size(12)
             .style(ui::muted_text),
@@ -754,6 +858,13 @@ mod tests {
         Duration::from_secs_f32(value)
     }
 
+    fn pointer_at(y: f32) -> Input {
+        Input {
+            pointer: Some(Some(Point::new(200.0, y))),
+            ..Input::default()
+        }
+    }
+
     #[test]
     fn opened_then_idle_hides_after_two_seconds() {
         let mut bar = Bar::default();
@@ -797,7 +908,7 @@ mod tests {
             book: Some(super::super::tests::book("bar-focus")),
             ..Reader::default()
         };
-        reader.sync_bar(opened, None);
+        reader.sync_bar(opened, Input::default());
         reader.bar.tick(opened + seconds(2.5));
         assert_eq!(reader.bar.state(), BarState::Hidden);
         assert!(
@@ -805,7 +916,7 @@ mod tests {
             "bar controls stay in the focus order while hidden"
         );
         reader.focused = Some(Control::Find);
-        reader.sync_bar(opened + seconds(3.0), None);
+        reader.sync_bar(opened + seconds(3.0), Input::default());
         reader.bar.tick(opened + seconds(9.0));
         assert_eq!(reader.bar.state(), BarState::Shown { hide_at: None });
     }
@@ -847,22 +958,22 @@ mod tests {
     fn the_library_never_starts_bar_frames() {
         let mut reader = Reader::default();
         let now = Instant::now();
-        reader.sync_bar(now, Some(Some(Point::new(200.0, 10.0))));
-        reader.sync_bar(now, Some(Some(Point::new(200.0, 300.0))));
+        reader.sync_bar(now, pointer_at(10.0));
+        reader.sync_bar(now, pointer_at(300.0));
         reader.show_settings = true;
-        reader.sync_bar(now, None);
+        reader.sync_bar(now, Input::default());
         reader.show_settings = false;
-        reader.sync_bar(now, None);
+        reader.sync_bar(now, Input::default());
         assert!(!reader.bar.needs_frames());
 
         reader.book = Some(super::super::tests::book("bar-library"));
-        reader.sync_bar(now, None);
+        reader.sync_bar(now, Input::default());
         assert!(
             reader.bar.needs_frames(),
             "opening a book starts the open delay"
         );
         reader.book = None;
-        reader.sync_bar(now + seconds(0.5), None);
+        reader.sync_bar(now + seconds(0.5), Input::default());
         assert!(!reader.bar.needs_frames(), "closing it stops the frames");
     }
 
@@ -874,7 +985,7 @@ mod tests {
             ..Reader::default()
         };
         let opened = Instant::now();
-        reader.sync_bar(opened, None);
+        reader.sync_bar(opened, Input::default());
         assert!(reader.has_panels(), "the loading line shows below the bar");
         reader.bar.tick(opened + seconds(2.1));
         assert_eq!(reader.bar.state(), BarState::Hidden);

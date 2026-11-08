@@ -868,8 +868,12 @@ fn wheel_over_the_bar_scrolls_the_page_under_it() {
                 continue;
             };
             block_on(async {
-                let mut stream = into_stream(reading_chrome::forward_wheel(reader, *delta))
-                    .expect("a forwarded scroll");
+                let mut stream = into_stream(reading_chrome::forward_wheel(
+                    reader,
+                    *delta,
+                    keyboard::Modifiers::default(),
+                ))
+                .expect("a forwarded scroll");
                 while let Some(action) = stream.next().await {
                     if let RuntimeAction::Widget(mut operation) = action {
                         element.as_widget_mut().operate(
@@ -908,6 +912,457 @@ fn wheel_over_the_bar_scrolls_the_page_under_it() {
         forwarded, 60.0,
         "the bar forwards one wheel line to the page"
     );
+}
+
+/// Drives the real widget tree with synthetic input, keeping widget state
+/// between events and applying every published message through `update`.
+struct Harness {
+    tree: Tree,
+    renderer: iced::Renderer,
+}
+
+impl Harness {
+    fn new() -> Self {
+        ui::load_test_fonts();
+        Self {
+            tree: Tree::empty(),
+            renderer: iced::Renderer::new(ui::SANS, iced::Pixels(13.0)),
+        }
+    }
+
+    fn send(&mut self, reader: &mut Reader, event: iced::Event, at: Point) -> Vec<Message> {
+        self.send_all(reader, &[event], at)
+    }
+
+    /// Delivers `events` to one widget tree back to back, as input arrives
+    /// between two frames, then applies what they published.
+    fn send_all(&mut self, reader: &mut Reader, events: &[iced::Event], at: Point) -> Vec<Message> {
+        let size = reader.window_size;
+        let mut element = view(reader);
+        self.tree.diff(element.as_widget());
+        let node = element.as_widget_mut().layout(
+            &mut self.tree,
+            &self.renderer,
+            &layout::Limits::new(size, size),
+        );
+        let mut messages = Vec::new();
+        for event in events {
+            element.as_widget_mut().update(
+                &mut self.tree,
+                event,
+                Layout::new(&node),
+                mouse::Cursor::Available(at),
+                &self.renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut iced::advanced::Shell::new(&mut messages),
+                &Rectangle::with_size(size),
+            );
+        }
+        drop(element);
+        for message in messages.clone() {
+            let _ = update(reader, message);
+        }
+        messages
+    }
+
+    fn press(&mut self, reader: &mut Reader, at: Point) -> Vec<Message> {
+        self.send(
+            reader,
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            at,
+        )
+    }
+
+    fn release(&mut self, reader: &mut Reader, at: Point) -> Vec<Message> {
+        self.send(
+            reader,
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            at,
+        )
+    }
+
+    /// Two quick presses on the same point.
+    fn double_press(&mut self, reader: &mut Reader, at: Point) -> Vec<Message> {
+        let press = iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let release = iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        self.send_all(
+            reader,
+            &[press.clone(), release.clone(), press, release],
+            at,
+        )
+    }
+
+    /// A click as the runtime delivers it: the press reaches the widgets, then
+    /// the app's own press handling runs before the release.
+    fn click(&mut self, reader: &mut Reader, at: Point) -> Vec<Message> {
+        let mut messages = self.press(reader, at);
+        let _ = update(
+            reader,
+            Message::Event(
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                window::Id::unique(),
+            ),
+        );
+        messages.extend(self.release(reader, at));
+        messages
+    }
+
+    fn type_text(&mut self, reader: &mut Reader, value: &str, at: Point) -> Vec<Message> {
+        let mut messages = Vec::new();
+        for character in value.chars() {
+            let key = Key::Character(character.to_string().into());
+            messages.extend(self.send(
+                reader,
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: Some(character.to_string().into()),
+                    repeat: false,
+                }),
+                at,
+            ));
+        }
+        messages
+    }
+}
+
+/// The bounds of the text input with `id`.
+fn input_bounds(reader: &Reader, id: iced::advanced::widget::Id) -> Rectangle {
+    struct Find(iced::advanced::widget::Id, Option<Rectangle>);
+    impl iced::advanced::widget::Operation for Find {
+        fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+            visit(self);
+        }
+        fn text_input(
+            &mut self,
+            id: Option<&iced::advanced::widget::Id>,
+            bounds: Rectangle,
+            _: &mut dyn iced::advanced::widget::operation::TextInput,
+        ) {
+            if id == Some(&self.0) {
+                self.1 = Some(bounds);
+            }
+        }
+    }
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(reader.window_size, reader.window_size),
+    );
+    let mut find = Find(id, None);
+    element
+        .as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut find);
+    find.1.expect("the text input is on screen")
+}
+
+fn bounds_of(reader: &mut Reader, control: Control) -> Rectangle {
+    let previous = reader.focused.replace(control);
+    let bounds = focused_bounds(reader).expect("the control is on screen");
+    reader.focused = previous;
+    bounds
+}
+
+fn reading_bar_book(width: f32) -> Reader {
+    let mut reader = Reader {
+        book: Some(super::tests::book("bar-input")),
+        window_size: Size::new(width, 700.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    reader
+}
+
+fn bar_test_pdf(width: f32) -> Option<Reader> {
+    use crate::pdf_reader::tests::{complete, tall_pdf};
+    let dll = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("pdfium.dll");
+    if !dll.exists() {
+        assert!(
+            std::env::var_os("SIMPL_REQUIRE_PDFIUM").is_none(),
+            "SIMPL_REQUIRE_PDFIUM is set but pdfium.dll is not beside the test executable"
+        );
+        println!("SKIPPED the PDF half: pdfium.dll is not beside the test executable");
+        return None;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "simpl-bar-input-{}-{width}.pdf",
+        std::process::id()
+    ));
+    std::fs::write(&path, tall_pdf()).unwrap();
+    let document = complete(reader_pdf::open(path.clone())).unwrap();
+    let _ = std::fs::remove_file(path);
+    let (pdf, _) = pdf_reader::Reader::new(document, None, Size::new(width, 700.0), 1.0);
+    Some(Reader {
+        pdf: Some(pdf),
+        window_size: Size::new(width, 700.0),
+        ..Reader::default()
+    })
+}
+
+/// Clicks into a page field, types, waits past the leave delay with the
+/// pointer below the bar, then clicks the page and checks the bar hides.
+fn assert_typing_holds_the_bar(
+    reader: &mut Reader,
+    field: iced::advanced::widget::Id,
+    focused: fn(&Reader) -> bool,
+) {
+    use reading_chrome::BarState;
+    let mut ui = Harness::new();
+    let field = input_bounds(reader, field).center();
+    let page = Point::new(reader.window_size.width / 2.0, 400.0);
+    ui.click(reader, field);
+    assert!(focused(reader), "a click focuses the page field");
+    assert!(
+        reader.focused.is_none(),
+        "the click is not a keyboard focus"
+    );
+    ui.type_text(reader, "2", field);
+    let _ = update(
+        reader,
+        Message::Event(
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: page }),
+            window::Id::unique(),
+        ),
+    );
+    reader
+        .bar
+        .tick(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    assert_eq!(
+        reader.bar.state(),
+        BarState::Shown { hide_at: None },
+        "typing in the page field holds the bar"
+    );
+    ui.click(reader, page);
+    assert!(!focused(reader), "a click on the page leaves the field");
+    let BarState::Shown { hide_at: Some(at) } = reader.bar.state() else {
+        panic!("leaving the field starts the leave delay");
+    };
+    reader.bar.tick(at);
+    assert_eq!(reader.bar.state(), BarState::Hidden);
+}
+
+#[test]
+fn clicking_into_the_book_page_field_holds_the_bar_while_typing() {
+    let mut reader = reading_bar_book(1280.0);
+    assert_typing_holds_the_bar(
+        &mut reader,
+        iced::advanced::widget::Id::new("book-page"),
+        |reader| reader.bar_held(),
+    );
+    assert!(
+        reader.page_input.is_none(),
+        "leaving the field without Enter drops the draft"
+    );
+}
+
+#[test]
+fn clicking_into_the_pdf_page_field_holds_the_bar_while_typing() {
+    let Some(mut reader) = bar_test_pdf(1280.0) else {
+        return;
+    };
+    assert_typing_holds_the_bar(&mut reader, pdf_reader::page_input_id(), |reader| {
+        reader
+            .pdf
+            .as_ref()
+            .is_some_and(pdf_reader::Reader::page_focused)
+    });
+}
+
+fn chrome_actions(messages: &[Message]) -> Vec<chrome::Action> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Chrome(action) => Some(*action),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn only_the_bar_background_drags_the_window() {
+    let mut reader = reading_bar_book(1280.0);
+    assert!(
+        !reader.can_turn(false),
+        "the first page has no previous page"
+    );
+    let mut ui = Harness::new();
+    let previous = bounds_of(&mut reader, Control::PreviousBookPage).center();
+    let next = bounds_of(&mut reader, Control::NextBookPage);
+    let field = input_bounds(&reader, iced::advanced::widget::Id::new("book-page"));
+    let total = Point::new((field.x + field.width + next.x) / 2.0, next.center_y());
+    for at in [previous, total] {
+        let messages = ui.double_press(&mut reader, at);
+        assert!(
+            chrome_actions(&messages).is_empty(),
+            "a press at {at:?} on a control or label never drags or maximizes"
+        );
+    }
+    let library = bounds_of(&mut reader, Control::Close);
+    let background = Point::new(library.x + library.width + 40.0, library.center_y());
+    assert_eq!(
+        chrome_actions(&ui.double_press(&mut reader, background)),
+        [chrome::Action::Drag, chrome::Action::Maximize],
+        "a press on the background drags, and a double click maximizes"
+    );
+
+    reader.fullscreen = true;
+    let mut messages = ui.double_press(&mut reader, background);
+    messages.extend(ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+        background,
+    ));
+    assert!(
+        chrome_actions(&messages).is_empty(),
+        "fullscreen offers no drag, maximize or system menu"
+    );
+}
+
+#[test]
+fn a_click_on_a_focused_bar_button_still_activates_it() {
+    let mut reader = reading_bar_book(1280.0);
+    assert!(reader.can_turn(true));
+    let mut ui = Harness::new();
+    reader.focused = Some(Control::NextBookPage);
+    let next = focused_bounds(&reader).unwrap().center();
+    let messages = ui.click(&mut reader, next);
+    assert_eq!(reader.focused, None, "the press takes keyboard focus away");
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::BookPage(true))),
+        "the focused Next button turns the page"
+    );
+
+    let Some(mut reader) = bar_test_pdf(1280.0) else {
+        return;
+    };
+    let mut ui = Harness::new();
+    reader.focused = Some(Control::Pdf(pdf_reader::FocusControl::ZoomIn));
+    let zoom_in = focused_bounds(&reader).unwrap().center();
+    let messages = ui.click(&mut reader, zoom_in);
+    assert!(
+        messages.iter().any(|message| matches!(
+            message,
+            Message::Pdf {
+                message: pdf_reader::Message::ZoomIn,
+                ..
+            }
+        )),
+        "the focused PDF zoom button zooms"
+    );
+}
+
+#[test]
+fn ctrl_wheel_over_the_bar_zooms_and_shift_wheel_scrolls_sideways() {
+    let mut reader = reading_bar_book(1280.0);
+    let before = reader.zoom;
+    let _ = update(
+        &mut reader,
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(keyboard::Modifiers::CTRL)),
+            window::Id::unique(),
+        ),
+    );
+    let _ = update(
+        &mut reader,
+        Message::BarWheel(mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 }),
+    );
+    assert!(reader.zoom > before, "Ctrl+wheel up over the bar zooms in");
+    let zoomed = reader.zoom;
+    let _ = update(
+        &mut reader,
+        Message::BarWheel(mouse::ScrollDelta::Pixels { x: 0.0, y: -50.0 }),
+    );
+    assert!(reader.zoom < zoomed, "a pinch out over the bar zooms out");
+
+    let line = mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 };
+    let down = reading_chrome::wheel_offset(line, false);
+    assert_eq!((down.x, down.y), (0.0, 60.0));
+    let sideways = reading_chrome::wheel_offset(line, true);
+    assert_eq!((sideways.x, sideways.y), (60.0, 0.0));
+    let pixels = reading_chrome::wheel_offset(mouse::ScrollDelta::Pixels { x: 3.0, y: -7.0 }, true);
+    assert_eq!((pixels.x, pixels.y), (-3.0, 7.0));
+}
+
+#[test]
+fn escape_hides_the_idle_bar_and_still_clears_the_selection() {
+    use reading_chrome::BarState;
+    let mut reader = reading_bar_book(1280.0);
+    // The book opens: the bar shows with its deadline pending.
+    reader.sync_bar(std::time::Instant::now(), reading_chrome::Input::default());
+    assert!(matches!(
+        reader.bar.state(),
+        BarState::Shown { hide_at: Some(_) }
+    ));
+    let book = reader.book.clone().unwrap();
+    let first = &book.items[0];
+    reader.selection.begin(Endpoint {
+        item_id: first.id().to_owned(),
+        byte_offset: 0,
+    });
+    reader.selection.extend(Endpoint {
+        item_id: first.id().to_owned(),
+        byte_offset: 10,
+    });
+    reader.selection.end_drag();
+    assert!(reader.selection.bounds(&book.items).is_some());
+    let _ = update(
+        &mut reader,
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Named(key::Named::Escape),
+                modified_key: Key::Named(key::Named::Escape),
+                physical_key: key::Physical::Code(key::Code::Escape),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            }),
+            window::Id::unique(),
+        ),
+    );
+    assert_eq!(reader.bar.state(), BarState::Hidden);
+    assert!(
+        reader.selection.bounds(&book.items).is_none(),
+        "the same Escape clears the selection"
+    );
+}
+
+#[test]
+fn the_notes_sidebar_starts_below_the_bar() {
+    for width in [1280.0, 600.0] {
+        let mut reader = reading_bar_book(width);
+        reader.notes.list = Some(crate::notes::ListTab::Bookmarks);
+        let tab = Control::Notes(crate::notes::Focus::Tab(crate::notes::ListTab::Bookmarks));
+        let shown = bounds_of(&mut reader, tab);
+        assert!(
+            shown.y >= reading_chrome::height(&reader),
+            "the bar ({}px at {width}) covers the sidebar tabs at y={}",
+            reading_chrome::height(&reader),
+            shown.y
+        );
+        reader.bar = reading_chrome::Bar::hidden();
+        assert_eq!(
+            bounds_of(&mut reader, tab).y,
+            shown.y,
+            "the sidebar never moves"
+        );
+    }
 }
 
 #[test]

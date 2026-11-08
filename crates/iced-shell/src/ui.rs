@@ -23,6 +23,150 @@ pub fn palette(theme: &Theme) -> Palette {
     }
 }
 
+/// Wraps a text input and reports each time it gains or loses keyboard focus,
+/// however that happens: a click, Tab, Escape or a focus operation.
+pub fn watch_focus<'a, M: 'a>(
+    input: impl Into<iced::Element<'a, M>>,
+    on_change: impl Fn(bool) -> M + 'a,
+) -> iced::Element<'a, M> {
+    iced::Element::new(FocusWatch {
+        content: input.into(),
+        on_change: Box::new(on_change),
+    })
+}
+
+type InputState = text_input::State<<iced::Renderer as iced::advanced::text::Renderer>::Paragraph>;
+
+struct FocusWatch<'a, M> {
+    content: iced::Element<'a, M>,
+    on_change: Box<dyn Fn(bool) -> M + 'a>,
+}
+
+/// The focus last reported.
+#[derive(Default)]
+struct Watched(bool);
+
+impl<M> iced::advanced::Widget<M, Theme, iced::Renderer> for FocusWatch<'_, M> {
+    fn tag(&self) -> iced::advanced::widget::tree::Tag {
+        iced::advanced::widget::tree::Tag::of::<Watched>()
+    }
+    fn state(&self) -> iced::advanced::widget::tree::State {
+        iced::advanced::widget::tree::State::new(Watched::default())
+    }
+    fn children(&self) -> Vec<iced::advanced::widget::Tree> {
+        vec![iced::advanced::widget::Tree::new(&self.content)]
+    }
+    fn diff(&self, tree: &mut iced::advanced::widget::Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+    fn size(&self) -> iced::Size<iced::Length> {
+        self.content.as_widget().size()
+    }
+    fn layout(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) -> iced::advanced::layout::Node {
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+    fn operate(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(&mut tree.children[0], layout, renderer, operation);
+    }
+    fn update(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+        let input = &tree.children[0];
+        let focused = input.tag == iced::advanced::widget::tree::Tag::of::<InputState>()
+            && input.state.downcast_ref::<InputState>().is_focused();
+        let watched = tree.state.downcast_mut::<Watched>();
+        if watched.0 != focused {
+            watched.0 = focused;
+            shell.publish((self.on_change)(focused));
+        }
+    }
+    fn mouse_interaction(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> iced::mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+    fn draw(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, M, Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
 thread_local! {
     static FADE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
 }

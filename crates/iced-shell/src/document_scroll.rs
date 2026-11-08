@@ -55,10 +55,25 @@ struct DocumentScroll<'a, Message> {
 
 /// Whether Ctrl is held. Precision touchpads report pinch as wheel input with a
 /// synthetic Ctrl that is not always delivered as a keyboard event.
-fn control_pressed(modifiers: iced::keyboard::Modifiers) -> bool {
+pub(crate) fn control_pressed(modifiers: iced::keyboard::Modifiers) -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
     // SAFETY: GetKeyState reads this thread's keyboard state; it has no preconditions.
     modifiers.control() || unsafe { GetKeyState(i32::from(VK_CONTROL)) } < 0
+}
+
+/// Whether Shift is held, which turns line scrolling sideways.
+pub(crate) fn shift_pressed(modifiers: iced::keyboard::Modifiers) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
+    // SAFETY: GetKeyState reads this thread's keyboard state; it has no preconditions.
+    modifiers.shift() || unsafe { GetKeyState(i32::from(VK_SHIFT)) } < 0
+}
+
+/// A Ctrl+wheel or pinch `delta` in zoom notches, positive zooming in.
+pub(crate) fn zoom_notches(delta: mouse::ScrollDelta) -> f32 {
+    match delta {
+        mouse::ScrollDelta::Lines { y, .. } => y,
+        mouse::ScrollDelta::Pixels { y, .. } => y / PIXELS_PER_NOTCH,
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -273,10 +288,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
             && cursor.is_over(layout.bounds())
             && control_pressed(state.modifiers)
         {
-            let notches = match delta {
-                mouse::ScrollDelta::Lines { y, .. } => *y,
-                mouse::ScrollDelta::Pixels { y, .. } => *y / PIXELS_PER_NOTCH,
-            };
+            let notches = zoom_notches(*delta);
             if notches != 0.0 {
                 shell.publish((self.zoom)(notches));
             }

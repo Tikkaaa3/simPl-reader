@@ -124,6 +124,8 @@ pub enum Message {
         result: Result<Arc<TextLayer>, String>,
     },
     PageInput(String),
+    /// The page field gained or lost keyboard focus.
+    PageFocus(bool),
     PageSubmit,
     Previous,
     Next,
@@ -188,6 +190,7 @@ pub struct Reader {
     error: Option<String>,
     page_input: String,
     editing_page: bool,
+    page_focused: bool,
     selection: Option<Selection>,
     word_selection: Option<Selection>,
     selection_ready: bool,
@@ -254,6 +257,7 @@ impl Reader {
             error: None,
             page_input: "1".into(),
             editing_page: false,
+            page_focused: false,
             selection: None,
             word_selection: None,
             selection_ready: false,
@@ -289,6 +293,11 @@ impl Reader {
 
     pub fn document(&self) -> &Arc<Document> {
         &self.document
+    }
+
+    /// The page field has keyboard focus.
+    pub fn page_focused(&self) -> bool {
+        self.page_focused
     }
 
     pub fn page_index(&self) -> usize {
@@ -1071,6 +1080,15 @@ impl Reader {
                 self.editing_page = true;
                 Task::none()
             }
+            Message::PageFocus(focused) => {
+                self.page_focused = focused;
+                // Leaving the field without Enter abandons the draft.
+                if !focused {
+                    self.editing_page = false;
+                    self.page_input = (self.anchor().page + 1).to_string();
+                }
+                Task::none()
+            }
             Message::PageSubmit => match self.page_input.trim().parse::<usize>() {
                 Ok(page) if page > 0 && page <= self.document.pages.len() => self.jump(page - 1),
                 _ => {
@@ -1263,21 +1281,24 @@ impl Reader {
                 false,
                 compact,
             ),
-            text_input("Page", &self.page_input)
-                .id(page_input_id())
-                .on_input(Message::PageInput)
-                .on_submit(Message::PageSubmit)
-                .size(13)
-                .padding([6, 8])
-                .width(65)
-                .style(move |theme, status| {
-                    let mut style = ui::input_style(theme, status);
-                    if focused == Some(FocusControl::Page) {
-                        style.border.color = ui::palette(theme).accent;
-                        style.border.width = 2.0;
-                    }
-                    style
-                }),
+            ui::watch_focus(
+                text_input("Page", &self.page_input)
+                    .id(page_input_id())
+                    .on_input(Message::PageInput)
+                    .on_submit(Message::PageSubmit)
+                    .size(13)
+                    .padding([6, 8])
+                    .width(65)
+                    .style(move |theme, status| {
+                        let mut style = ui::input_style(theme, status);
+                        if focused == Some(FocusControl::Page) {
+                            style.border.color = ui::palette(theme).accent;
+                            style.border.width = 2.0;
+                        }
+                        style
+                    }),
+                Message::PageFocus,
+            ),
             text(format!("of {}", self.document.pages.len()))
                 .size(13)
                 .style(ui::muted_text),

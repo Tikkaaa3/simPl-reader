@@ -1136,8 +1136,10 @@ enum Message {
     /// The pointer entered the band that reveals the hidden reading bar.
     RevealBar,
     BarFrame(std::time::Instant),
-    /// The wheel turned over the reading bar; it scrolls the document under it.
+    /// The wheel turned over the reading bar; it acts on the document under it.
     BarWheel(mouse::ScrollDelta),
+    /// The book page field gained or lost keyboard focus.
+    BookPageFocus(bool),
     ToggleHelp,
     FocusReady(u64),
     OpenRecent(usize),
@@ -3215,14 +3217,14 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     let previous_focus = reader.focused;
     let previous_panels = (reader.show_recent, reader.show_help, reader.show_contents);
     let previous_bar = reader.bar.visible();
-    let pointer = reading_chrome::pointer_change(&message);
+    let input = reading_chrome::Input::of(&message);
     let resized = matches!(
         &message,
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
     let task = Task::batch([task, reader.drain_inbox()]);
-    reader.sync_bar(std::time::Instant::now(), pointer);
+    reader.sync_bar(std::time::Instant::now(), input);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
             || previous_pdf_page
@@ -3775,7 +3777,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.bar.tick(at);
             Task::none()
         }
-        Message::BarWheel(delta) => reading_chrome::forward_wheel(reader, delta),
+        Message::BarWheel(delta) => reading_chrome::wheel(reader, delta),
+        Message::BookPageFocus(focused) => {
+            reader.book_page_focus(focused);
+            Task::none()
+        }
         Message::ToggleRecent if reader.interactive() => {
             reader.show_settings = false;
             reader.show_search = false;
@@ -4687,12 +4693,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         if reader.fullscreen {
                             return reader.toggle_fullscreen();
                         }
-                        if (reader.book.is_some() || reader.pdf.is_some())
-                            && reader
-                                .bar
-                                .dismiss(std::time::Instant::now(), reader.bar_held())
-                        {
-                            return Task::none();
+                        // Hiding an idle bar does not consume Escape: the
+                        // selection is still cleared below.
+                        if reader.book.is_some() || reader.pdf.is_some() {
+                            let held = reader.bar_held();
+                            reader.bar.dismiss(std::time::Instant::now(), held);
                         }
                     }
                     Key::Character(value)
@@ -6425,7 +6430,12 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         // they show or hide.
         let reading = row![
             container(content).width(Length::Fill).height(Length::Fill),
-            notes_ui::sidebar(reader, active),
+            // The sidebar starts below the bar's height whether or not the bar
+            // shows, so the bar never covers its tabs and it never moves.
+            container(notes_ui::sidebar(reader, active)).padding(iced::Padding {
+                top: reading_chrome::height(reader),
+                ..iced::Padding::ZERO
+            }),
         ]
         .width(Length::Fill)
         .height(Length::Fill);
@@ -7385,7 +7395,11 @@ mod tests {
             .unwrap()
             .join("pdfium.dll");
         if !dll.exists() {
-            eprintln!("skipped the PDF bar: pdfium.dll is not beside the test executable");
+            assert!(
+                std::env::var_os("SIMPL_REQUIRE_PDFIUM").is_none(),
+                "SIMPL_REQUIRE_PDFIUM is set but pdfium.dll is not beside the test executable"
+            );
+            println!("SKIPPED the PDF bar: pdfium.dll is not beside the test executable");
             return;
         }
         let path =
@@ -7393,7 +7407,9 @@ mod tests {
         std::fs::write(&path, tall_pdf()).unwrap();
         let document = complete(reader_pdf::open(path.clone())).unwrap();
         let _ = std::fs::remove_file(path);
-        let (pdf, _) = pdf_reader::Reader::new(document, None, Size::new(1280.0, 800.0), 1.0);
+        let (pdf, _) =
+            pdf_reader::Reader::new(document.clone(), None, Size::new(1280.0, 800.0), 1.0);
+        let original_position = pdf.position();
         let mut reader = Reader {
             pdf: Some(pdf),
             ..Reader::default()
@@ -7404,6 +7420,43 @@ mod tests {
         );
         reader.window_size.width = 688.0;
         assert_eq!(reading_chrome::height(&reader), 44.0, "one row at 688");
+
+        // A PDF read in Book mode adds the Document button.
+        let mut source = Arc::try_unwrap(book("bar-layout-pdf-book")).unwrap();
+        source.pdf_source = Some(reader_layout::book::PdfBook {
+            document,
+            conversion: reader_pdf::book::Conversion {
+                blocks: Vec::new(),
+                page_labels: HashMap::new(),
+                fallback_pages: std::collections::HashSet::new(),
+                illustrations: HashMap::new(),
+                placements: HashMap::new(),
+                warnings: Vec::new(),
+            },
+            original_position,
+            illustration_pages: std::collections::HashSet::new(),
+        });
+        let mut reader = Reader {
+            book: Some(Arc::new(source)),
+            ..Reader::default()
+        };
+        reader.returns.push(ReturnLocation {
+            chapter: None,
+            item_id: "paragraph-2".into(),
+            within: 0.0,
+        });
+        assert!(
+            reader
+                .controls()
+                .any(|control| control == Control::DocumentMode)
+        );
+        assert_bar_fits(&mut reader, &[540.0, 771.0, 772.0, 860.0, 1280.0]);
+        reader.window_size.width = 772.0;
+        assert_eq!(
+            reading_chrome::height(&reader),
+            44.0,
+            "one row at the narrowest Book-mode width"
+        );
     }
 
     fn assert_bar_fits(reader: &mut Reader, widths: &[f32]) {
