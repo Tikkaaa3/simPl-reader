@@ -174,73 +174,103 @@ Status: implemented on `feat/lf2-open-with`.
 
 ## Phase LF-3: Library location setting
 
-Scope: the **library location** holds imported copies only (`documents\`). Settings, positions, history, notes, covers and caches stay in `%LOCALAPPDATA%\simPl`.
-- This keeps the setting's pointer in a fixed place.
-- Small state stays on the local disk.
-- Large book files can live on another drive.
+Status: implemented on `feat/lf3-library-location`.
 
-### Storage
+The library folder holds imported copies only. Settings, positions, history, notes, covers and caches stay in `%LOCALAPPDATA%\simPl`. Books opened in place are never moved.
 
-- `preferences.json` gets `library_location: Option<PathBuf>`. `None` means the default `%LOCALAPPDATA%\simPl\documents`.
-- `managed::root()` reads the configured location. It's resolved once at startup and after a successful move, and cached in a `RwLock`, not re-read per call.
-- The chosen folder gets a subfolder `simPl Library\` with a `.simpl-library` marker file. simPl never writes to, or deletes, the user's chosen folder itself.
-  Choosing a folder that already contains a `simPl Library` with a marker means "use the existing library", for example after a reinstall.
-- The app mirrors the path to `HKCU\Software\simPl\Reader\LibraryLocation`, so the uninstaller can find it (Inno can't parse JSON easily).
+### The setting
 
-### Settings UI (`app.rs:5687`, Library & data)
+`crates/reader-document/src/library_location.rs` owns everything below. Its record is `%LOCALAPPDATA%\simPl\library-location.json`:
 
-- Shows the current path, with **Change…**, **Open folder** and **Reset to default**.
-- Shows the size and the number of imported books.
-- Available only with no book open (same rule as Backup).
+- `root` is `Default` (`<profile>\documents`, never stored as a path) or `Folder(<canonical …\simPl Library>)`.
+- `moving` is the move journal: `None`, `Copying { to }` or `Cleaning { from, positions_copied }`.
+- Every write is atomic (temp file plus `MoveFileExW`). The record is not in `backup::allowed()`, so a backup never carries another PC's path.
 
-### Move procedure
+Only a missing file means the default folder. A file that can't be read or parsed fails closed: `managed::root()` returns an error, imports and removals refuse with "Library settings could not be read: …", and `source_kind` returns `None`.
 
-1. Validate the target:
-   - It's a local or mapped folder and writable.
-   - It isn't inside the current library, and the current library isn't inside it.
-   - It isn't inside the install folder or the profile's other folders.
-   - There's enough free space (sum of `documents\` plus a margin).
-   - It's not a link or junction.
-2. Write a journal, `%LOCALAPPDATA%\simPl\library-move.json`, with `{from, to, state}`.
-3. Transfer:
-   - On the same volume, `fs::rename` of each `<sha256>` folder.
-   - Across volumes, copy each folder to `to\.incoming\<id>`, verify size and SHA-256, then rename into place.
-   - Show progress with Cancel, which rolls back.
-4. Rewrite paths in `library.json`, `recent.json` and `shelves.json` by prefix (`from\` → `to\`), using the same normalisation as `backup::remap_paths`.
-   Move the position records with `transfer_saved_position`, because the path key changes. Write everything atomically: temp file plus rename, as the existing `save_at` functions do.
-5. Save `library_location` and the registry value.
-6. Only then delete the old folders. Use the `owned_folder` and `check_tree` checks, never a blind recursive delete.
-7. Delete the journal.
+`managed::root()` is now `Result<PathBuf, String>` and reads the record on every call, like `storage_base()`. `managed::import` refuses a custom folder that went missing ("Library folder not found: …") instead of recreating it. `library::load` reads the root once and passes it to the source-format backfill; `load_at`, used by backup validation and the move, does no backfill.
 
-At startup, if a journal exists, either finish the move (the copy is verified and paths were rewritten) or roll back. Do this before the library loads, and tell the user what happened.
+Android has no record and keeps the default folder.
 
-### Unavailable location (unplugged USB drive, offline network share)
+### Validation (`plan`)
 
-- Don't silently reset to the default.
-- Show imported entries as missing, with a banner: **Library folder not found** → Retry / Choose folder… / Reset to default.
-- Recent entries for files opened in place keep working.
+Change… uses `<picked>\simPl Library`. Nothing else is written into the picked folder. `plan` refuses:
 
-### Other code that assumes the default location
+- a missing folder, a file, a link or a junction;
+- a network folder (`\\?\UNC\…` or `GetDriveTypeW == DRIVE_REMOTE`), because the HTML, TXT, MD and EPUB loaders reject UNC paths;
+- a target that already holds a simPl copy (an owned `<64-hex id>` folder). Other files in it are allowed and left alone;
+- the current folder, a folder inside it or around it;
+- simPl's data folder or its install folder, or a folder around either;
+- an unavailable current folder, a pending journal, and a drive without the bytes to copy plus max(64 MiB, 2 %).
 
-- `book_map.rs` checks `managed::root()`.
-- `managed::source_kind`.
-- `backup.rs`:
-  - "Include book files" must read from the configured location.
-  - The manifest records `library_root` alongside `source_root`; bump the manifest version, keep reading v1.
-  - Restore writes book files into the current library location.
-- The uninstaller, `simPl.iss:151` `ProfilePath`: also offer to delete the library location from the registry value. Delete only the `simPl Library` folder that has the marker.
+Paths are compared by component, case-insensitively, with and without the `\\?\` prefix.
 
-### Tests
+### The move (`run_move`)
 
-- Moves on the same volume and across volumes (use two temp roots; across volumes, force the copy path).
-- Cancel and failure at each step roll back.
-- A journal with each `state` resumes or rolls back correctly.
-- Paths and position records are rewritten.
-- Recent entries outside the library are untouched.
-- An existing marked library is adopted.
-- Refuses nested or invalid targets.
-- Backup and restore round-trip with a non-default location.
-- Uninstall QA in `scripts/test-installer.ps1`.
+The move holds an exclusive `library-location.lock` handle; recovery takes the same lock.
+
+1. Create `to`, check it holds no copies, and write `Copying { to }`.
+2. For each owned folder in the current root, copy every file into `to\.incoming\<id>` with `create_new`, hashing as it goes. `.simpl-owned` is copied last. Each file is synced, read back and compared by size and SHA-256. Then `.incoming\<id>` is renamed to `to\<id>`. Cancel is checked between 64 KiB chunks and once more before the commit.
+3. Write `{ root: to, moving: Cleaning { from, positions_copied: false } }`. This write is the only commit point. Before it, cancel, failure and a crash all end in `rollback(to)`: delete the copies and `.incoming` in `to`, and remove `to` only when it is empty.
+4. `finish`:
+   - Copy every position record of library and Recent paths under `from` to the new key, replacing what is there. Then write `positions_copied: true`, so a rerun never overwrites a newer position.
+   - Rewrite `library.json` and `recent.json`, dropping an entry that duplicates an earlier one.
+   - Re-read both files. Delete a source copy only when `to` owns the same id and no entry still points at it.
+   - Clear the journal.
+
+`run_move` returns `Moved`, `Cancelled { kept }`, or `Committed { to, error }` when `finish` failed after the commit. A failure before the commit is an `Err`.
+
+`recover()` runs in `main` after `instance::claim` and before the window opens. It undoes `Copying`, reruns `finish` for `Cleaning`, and returns the one notice the app shows. It never overwrites an unreadable record, and it skips this start when another process holds the lock.
+
+### Unavailable folder
+
+The banner and Settings say "Library folder not found: …" with Retry. Settings adds:
+
+- **Find it…** (`relink`). It accepts the picked `simPl Library`, or a folder holding one, when it has an owned copy for every library and Recent path under the old folder. It writes `Cleaning` with the old folder as `from` and runs `finish`, which copies positions and rewrites paths but deletes nothing. Nothing is copied.
+- **Stop using this folder…** (`forget`). It switches to the default folder without moving or deleting anything. It also works mid-cleanup when the new folder is gone, which is the only way out of a lost drive.
+
+### Backup and restore
+
+- **Backup.** With a custom folder, "Include book files" reads the owned copies from it and stores them as `documents/<id>/…`. `library.json` and `recent.json` are archived from memory with their paths rewritten to `<source_root>\documents\<id>\…`, and the position records follow the rewritten keys. The archive is an ordinary v1 backup that Android and older builds restore. Including books with the folder unplugged fails with "The library folder … isn't connected. Connect it or turn off Include book files."
+- **Restore.** The setting never changes on restore: the current record is copied into the stage. With a custom folder, each owned book in the archive goes through the same copy-verify-rename routine (`placed_id`, `place_book`). A folder with an identical tree is reused, and a differing one gets a fresh id (SHA-256 of the archive id and the tree digest). Nothing in the folder is deleted. Paths under the archive's `documents\<id>` map to the placed copy. A backup without books maps them to the copies already in the folder. A books archive is refused while the folder is unplugged.
+- Backup and restore are refused while a journal is pending.
+
+### App (`crates/iced-shell`)
+
+- `platform::pick_folder` is `IFileOpenDialog` with `FOS_PICKFOLDERS`, on its own thread with its own COM apartment. `platform::open_in_explorer` runs `explorer <path>`.
+- `library_ui.rs` has the Settings section above Library backup, the banner, and the move job. The job copies `word_translation::start_package_job`: a named thread, a bounded channel, an abortable task and a generation guard.
+- A move sets `profile.busy`, so `interactive`, `can_open`, `exit_ready` and `picker_open` hold everything else, and forwarded opens wait in the inbox. Cancel is always clickable. Closing the window sets the cancel flag and `pending_exit`.
+- `profile_ready()` is false while a journal is pending, so Change, Use default folder, backup and restore show "Finish the library move first." Retry and Stop using this folder use `profile_settled()`, the same rule without the journal check.
+- A finished move, Retry, Find it and Stop using all reload Recent and the library through `reload_profile()`, the helper a restore uses.
+
+### Checks
+
+- `library_location.rs` tests run in a child test process with a temporary `LOCALAPPDATA`:
+  - the default folder without a record;
+  - a missing custom folder that is never recreated;
+  - an unreadable record that fails closed;
+  - `plan` refusals, including a junction;
+  - a move with literal paths, progress and positions;
+  - a round trip that keeps the latest position;
+  - cancel before the first file, mid-book and after the last book;
+  - recovery of `Copying` and `Cleaning`, including an unreachable target twice and then Stop using;
+  - Find it;
+  - backup to a default-layout archive and its restore on a default profile;
+  - an unplugged folder with "Include book files";
+  - restore into a custom folder.
+- Fault injection (`every_interrupted_step_converges`) fails, then crashes, every step of `run_move` and `finish` in both directions. After each one, `recover()` runs twice. Every card and Recent entry must open, every book's bytes must be in the current folder, positions must resolve, and the other folder must hold no copies.
+- `isolated.rs`: a missing folder refuses Add document and can be forgotten. A move through the app messages holds a forwarded open until it ends, then opens it, and the card opens from the new folder.
+- `settings_profile.rs` renders the new section and still expects one damage region.
+- `release-smoke.ps1` scrolls Settings to the library folder and checks that showing it wrote no setting.
+
+### Accepted for now
+
+- A crash between restore's two renames (an existing gap) now also loses the setting, so the next start uses the default folder. Books in the custom folder are untouched, and the previous profile is still in `.simPl-before-restore-*`.
+- Two simPl processes on one profile (only after an LF-2 forward fails) can overwrite each other's library edits, as they already can. The lock only keeps two moves, or a move and a recovery, apart.
+- `recover()` runs before the window opens. After a crash mid-move, rolling back or finishing a large library delays the first window.
+- A restore that fails after placing books in a custom folder leaves those copies there without cards. A later move copies them too.
+- Every move copies, even on the same drive, so it needs twice the space while it runs.
+- A card whose path can't be rewritten (its copy is missing from the new folder) keeps reading the old copy, which stays in the old folder.
 
 ## Phase LF-4: Docs and release
 

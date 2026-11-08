@@ -227,7 +227,11 @@ try {
     Start-Sleep -Milliseconds 500; Capture '14-settings-top'
     [void][ReleaseSmokeNative]::SetCursorPos($point.X+[int](300*$scale),$point.Y+[int](340*$scale))
     for ($i=0;$i -lt 16;$i++) { Assert-Target; [ReleaseSmokeNative]::Wheel(-120); Start-Sleep -Milliseconds 80 }
-    Capture '15-settings-dictionaries'; Key 0x1b
+    Capture '15-settings-dictionaries'
+    for ($i=0;$i -lt 12;$i++) { Assert-Target; [ReleaseSmokeNative]::Wheel(-120); Start-Sleep -Milliseconds 80 }
+    Capture '15b-settings-library-folder'
+    if (Test-Path -LiteralPath (Join-Path $profile 'simPl/library-location.json')) { throw 'Showing the library folder must not write its setting.' }
+    Key 0x1b
     Key 0x57 -Ctrl; Capture '16-populated-library'
     if ($RepeatCycles -gt 0) {
         Size 900 640
