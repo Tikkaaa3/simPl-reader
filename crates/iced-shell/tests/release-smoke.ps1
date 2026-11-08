@@ -133,11 +133,11 @@ function Wait-Title([string]$Expected) {
     throw "Expected '$Expected'; title is '$([ReleaseSmokeNative]::Title($window))'."
 }
 function Add([string]$Path,[string]$Title) {
-    Key 0x4f -Ctrl -Shift
+    Key 0x49 -Ctrl
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     while ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
     Assert-Target
-    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+Shift+O did not open the native file picker.' }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+I did not open the native file picker.' }
     Text ([IO.Path]::GetFullPath($Path))
     Key 0x0d
     Wait-Title $Title
@@ -256,10 +256,10 @@ try {
     [void][ReleaseSmokeNative]::ShowWindow($window, 6)
     Launch-Second ''
     Wait-Front
-    Key 0x4f -Ctrl -Shift
+    Key 0x49 -Ctrl
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     while ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
-    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+Shift+O did not open the native file picker.' }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+I did not open the native file picker.' }
     Launch-Second $txt
     Start-Sleep -Milliseconds 700
     if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'A forward raised the reader over its open file picker.' }

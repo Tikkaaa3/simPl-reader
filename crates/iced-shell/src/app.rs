@@ -4751,7 +4751,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let global_shortcut = matches!(&event,
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: Key::Character(value), modifiers, ..
-                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l") || value.eq_ignore_ascii_case("k")));
+                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("i") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l") || value.eq_ignore_ascii_case("k")));
             if pdf_input && !global_shortcut && !reader.show_search && !reader.show_settings {
                 let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
                 if let Some(pdf) = &mut reader.pdf {
@@ -4850,9 +4850,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     match key.as_ref() {
                         Key::Character(value) if modifiers.control() => {
                             match value.to_ascii_lowercase().as_str() {
-                                "o" if modifiers.shift() => {
-                                    update_inner(reader, Message::ChooseFile(Storage::Import))
-                                }
+                                "i" => update_inner(reader, Message::ChooseFile(Storage::Import)),
                                 "o" => update_inner(reader, Message::ChooseFile(Storage::InPlace)),
                                 "w" => reader.close(CloseAction::Document),
                                 "c" => update_inner(reader, Message::Copy),
@@ -6539,7 +6537,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center),
             text("Tab / Shift+Tab  ·  Controls    Enter / Space  ·  Activate    Escape  ·  Dismiss    F1  ·  Help")
                 .size(12).style(ui::muted_text),
-            text("Ctrl+O  Open    Ctrl+Shift+O  Add to library    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
+            text("Ctrl+O  Open    Ctrl+I  Add to library    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
                 .size(12).style(ui::muted_text),
             text("Page Up / Down  Read    Ctrl+Home / End  Ends    Ctrl+plus / minus / 0  Zoom")
                 .size(12).style(ui::muted_text),
@@ -6746,6 +6744,7 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                 ..
             } if !matches!(&key, Key::Character(value)
                 if modifiers.control() && (value.eq_ignore_ascii_case("o")
+                    || value.eq_ignore_ascii_case("i")
                     || value.eq_ignore_ascii_case("w")
                     || value.eq_ignore_ascii_case("r")
                     || value.eq_ignore_ascii_case("l")
@@ -8298,14 +8297,14 @@ mod tests {
         Message::Event(iced::Event::Window(event), window::Id::unique())
     }
 
-    fn ctrl_key_o(value: &str, modifiers: keyboard::Modifiers) -> Message {
+    fn ctrl_key(value: &str, code: key::Code) -> Message {
         Message::Event(
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key: Key::Character(value.into()),
                 modified_key: Key::Character(value.into()),
-                physical_key: key::Physical::Code(key::Code::KeyO),
+                physical_key: key::Physical::Code(code),
                 location: keyboard::Location::Standard,
-                modifiers,
+                modifiers: keyboard::Modifiers::CTRL,
                 text: None,
                 repeat: false,
             }),
@@ -8314,11 +8313,11 @@ mod tests {
     }
 
     fn ctrl_o() -> Message {
-        ctrl_key_o("o", keyboard::Modifiers::CTRL)
+        ctrl_key("o", key::Code::KeyO)
     }
 
-    fn ctrl_shift_o() -> Message {
-        ctrl_key_o("O", keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT)
+    fn ctrl_i() -> Message {
+        ctrl_key("i", key::Code::KeyI)
     }
 
     #[test]
@@ -8378,10 +8377,7 @@ mod tests {
             Some((Storage::InPlace, None))
         );
         assert_eq!(dialog_mode(vec![ctrl_o()]), Some((Storage::InPlace, None)));
-        assert_eq!(
-            dialog_mode(vec![ctrl_shift_o()]),
-            Some((Storage::Import, None))
-        );
+        assert_eq!(dialog_mode(vec![ctrl_i()]), Some((Storage::Import, None)));
         assert_eq!(
             dialog_mode(vec![activate(shelf::Control::Add)]),
             Some((Storage::Import, None))
