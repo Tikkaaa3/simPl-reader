@@ -323,15 +323,22 @@ pub fn plan(target: Target) -> Result<Plan, String> {
     })
 }
 
+/// Rollback and staging delete what simPl put in `to`, so it must start
+/// with nothing simPl would treat as its own.
 fn refuse_existing_copies(to: &Path) -> Result<(), String> {
-    if crate::managed::owned_copies(to)?.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    if !crate::managed::owned_copies(to)?.is_empty() {
+        return Err(format!(
             "{} already has simPl books in it. Choose another folder.",
             display_path(to)
-        ))
+        ));
     }
+    if fs::symlink_metadata(to.join(STAGING)).is_ok() {
+        return Err(format!(
+            "{} already has a {STAGING} folder. Choose another folder.",
+            display_path(to)
+        ));
+    }
+    Ok(())
 }
 
 fn picked_library(picked: &Path) -> Result<PathBuf, String> {
@@ -1070,7 +1077,11 @@ pub fn relink(picked: &Path) -> Result<usize, String> {
     }
     let missing = books
         .iter()
-        .filter(|book| !crate::managed::is_owned_at(&new, &new.join(book)))
+        .filter(|book| {
+            let copy = new.join(book);
+            !(crate::managed::is_owned_at(&new, &copy)
+                && crate::managed::regular(&copy).is_ok_and(|file| file.is_file()))
+        })
         .count();
     if missing > 0 {
         return Err(format!(
@@ -1384,6 +1395,19 @@ pub(crate) mod tests {
             refused(Target::Folder(file.clone())),
             format!("{} is not a folder.", file.display())
         );
+
+        let staged = scratch.join("staged");
+        let notes = staged.join(FOLDER).join(STAGING).join("notes.txt");
+        fs::create_dir_all(notes.parent().unwrap()).unwrap();
+        fs::write(&notes, b"mine").unwrap();
+        assert_eq!(
+            refused(Target::Folder(staged.clone())),
+            format!(
+                "{} already has a .incoming folder. Choose another folder.",
+                display_path(&fs::canonicalize(staged.join(FOLDER)).unwrap())
+            )
+        );
+        assert_eq!(fs::read(&notes).unwrap(), b"mine");
 
         let used = scratch.join("used");
         let copy = import(&scratch, "three.pdf", b"%PDF three");
@@ -2041,6 +2065,21 @@ pub(crate) mod tests {
             )
         );
         fs::rename(&aside, renamed.join(FOLDER).join(&id)).unwrap();
+
+        let book = renamed
+            .join(FOLDER)
+            .join(&id)
+            .join(story.file_name().unwrap());
+        let kept = scratch.join("kept");
+        fs::rename(&book, &kept).unwrap();
+        assert_eq!(
+            relink(&renamed).unwrap_err(),
+            format!(
+                "1 of 3 books are not in {}. Choose the folder that holds your simPl Library.",
+                display_path(&fs::canonicalize(renamed.join(FOLDER)).unwrap())
+            )
+        );
+        fs::rename(&kept, &book).unwrap();
 
         assert_eq!(relink(&renamed).unwrap(), 3);
 
