@@ -12,6 +12,7 @@ mod chrome;
 mod dictionary_download;
 mod document_scroll;
 mod find;
+mod instance;
 mod notes;
 mod pdf_reader;
 mod platform;
@@ -1469,7 +1470,16 @@ fn main() {
     let bidi_diagnostic_mode = reader::bidi_diagnostic_requested(&arguments);
     let shell_mode = arguments.iter().any(|argument| argument == "--shell-poc");
     if !reader_mode && !reader_large && !bidi_diagnostic_mode && !shell_mode {
-        let (path, error) = match normal_launch(&arguments) {
+        let launch = normal_launch(&arguments);
+        let path = launch.as_ref().ok().and_then(Option::as_deref);
+        if instance::claim(path) == instance::Claim::Forwarded {
+            if let Err(error) = &launch {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+            return;
+        }
+        let (path, error) = match launch {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
         };

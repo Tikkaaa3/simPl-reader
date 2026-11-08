@@ -331,3 +331,48 @@ isolated!(add_to_library_while_reading_carries_the_live_position);
 fn add_to_library_while_reading_carries_the_live_position() {
     add_to_library_keeps_the_position(false);
 }
+
+isolated!(second_launch_forwards_into_the_running_reader);
+fn second_launch_forwards_into_the_running_reader() {
+    use iced_futures::futures::{StreamExt, executor::block_on};
+    use instance::{Claim, Request};
+
+    let (profile, books) = store();
+    let source = books.join("Forwarded.md");
+    fs::write(&source, "# Forwarded\n\nText.\n").unwrap();
+
+    assert_eq!(instance::claim(None), Claim::Primary);
+    assert_eq!(instance::claim(Some(&source)), Claim::Forwarded);
+    std::env::set_current_dir(&books).unwrap();
+    assert_eq!(
+        instance::claim(Some(Path::new("Forwarded.md"))),
+        Claim::Forwarded
+    );
+    assert_eq!(instance::claim(None), Claim::Forwarded);
+    assert_eq!(
+        block_on(instance::forwarded().take(3).collect::<Vec<_>>()),
+        [
+            Request::Open(source.clone()),
+            Request::Open(books.join("Forwarded.md")),
+            Request::Raise
+        ]
+    );
+
+    let mut reader = boot();
+    send(
+        &mut reader,
+        Message::Forwarded(Request::Open(source.clone())),
+    );
+
+    assert_eq!(reader.error, None);
+    assert_eq!(reader.book.as_ref().unwrap().title, "Forwarded");
+    assert_eq!(recent_paths(&reader), [fs::canonicalize(&source).unwrap()]);
+    assert_eq!(reader.shelf.entries.len(), 0);
+    assert!(!profile.join("simPl").join("documents").exists());
+
+    let other = profile.parent().unwrap().join("other");
+    // SAFETY: the isolated child runs this one test on one thread, and the
+    // server thread never reads the environment.
+    unsafe { std::env::set_var("LOCALAPPDATA", &other) };
+    assert_eq!(instance::claim(None), Claim::Primary);
+}

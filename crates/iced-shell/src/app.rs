@@ -10,7 +10,7 @@ use std::sync::{
 use crate::{
     book_pages,
     book_style::{self, BookStyle, MINIMAL},
-    chrome, find, notes, pdf_reader, shelf, themes, ui,
+    chrome, find, instance, notes, pdf_reader, shelf, themes, ui,
 };
 use iced::keyboard::{self, Key, key};
 use iced::widget::{column, container, image, row, scrollable, text};
@@ -1111,6 +1111,7 @@ enum Message {
         result: Result<reader_document::backup::Summary, String>,
     },
     ProfileReply(Result<profile_ui::Reply, String>),
+    Forwarded(instance::Request),
     PdfBookRaster {
         document: u64,
         page: u32,
@@ -3305,6 +3306,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ToggleFullscreen => reader.toggle_fullscreen(),
         Message::Profile(action) => reader.profile_action(action),
         Message::ProfileReply(result) => reader.profile_reply(result),
+        Message::Forwarded(request) => {
+            reader.inbox.raise = true;
+            if let instance::Request::Open(path) = request {
+                reader.inbox.open = Some(path);
+            }
+            reader.drain_inbox()
+        }
         Message::BackupEstimate { generation, result } => {
             reader.profile_estimated(generation, result);
             Task::none()
@@ -6782,6 +6790,8 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
     if reader.read_aloud.ticking() {
         subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
     }
+    // Unconditional: dropping it would drop the receiver and stop the server thread.
+    subscriptions.push(Subscription::run(instance::forwarded).map(Message::Forwarded));
     Subscription::batch(subscriptions)
 }
 
@@ -8394,16 +8404,19 @@ mod tests {
         window_event(window::Event::FileDropped(PathBuf::from(path)))
     }
 
+    fn forwarded_at(path: &str) -> Message {
+        Message::Forwarded(instance::Request::Open(PathBuf::from(path)))
+    }
+
     #[test]
     fn external_opens_wait_for_every_blocker() {
         let waiting = PathBuf::from(r"C:\Nowhere\waiting.pdf");
-        let card_path = PathBuf::from(r"C:\Books\Card.pdf");
-        type Blocker = (&'static str, fn(&mut Reader), Message);
+        type Blocker = (&'static str, fn(&mut Reader), fn() -> Message);
         let blockers: [Blocker; 6] = [
             (
                 "saving",
                 |reader| reader.saving = true,
-                Message::Saved {
+                || Message::Saved {
                     action: CloseAction::Document,
                     result: Ok(()),
                 },
@@ -8413,18 +8426,18 @@ mod tests {
                 |reader| {
                     let _ = update(reader, Message::ChooseFile(Storage::Import));
                 },
-                Message::DialogChosen(Ok(None)),
+                || Message::DialogChosen(Ok(None)),
             ),
             (
                 "failed_close",
                 |reader| reader.failed_close = Some(CloseAction::Document),
-                Message::DismissError,
+                || Message::DismissError,
             ),
             (
                 "removing",
                 |reader| reader.removing = Some(PathBuf::from(r"C:\Books\Card.pdf")),
-                Message::RemovedLibrary {
-                    path: card_path,
+                || Message::RemovedLibrary {
+                    path: PathBuf::from(r"C:\Books\Card.pdf"),
                     result: Ok(()),
                 },
             ),
@@ -8433,45 +8446,54 @@ mod tests {
                 |reader| {
                     let _ = update(reader, Message::RemoveLibrary(0));
                 },
-                Message::DismissOverlay,
+                || Message::DismissOverlay,
             ),
             (
                 "profile.busy",
                 |reader| reader.profile.busy = true,
-                Message::ProfileReply(Ok(profile_ui::Reply::Cancelled)),
+                || Message::ProfileReply(Ok(profile_ui::Reply::Cancelled)),
             ),
         ];
+        type External = (&'static str, fn(&str) -> Message);
+        let entries: [External; 2] = [("drop", dropped_at), ("forward", forwarded_at)];
         for (blocker, block, done) in blockers {
-            let mut reader = reader_with(vec![card(r"C:\Books\Card.pdf")], Vec::new());
-            block(&mut reader);
-            assert!(!reader.can_open(), "{blocker}");
-            let _ = update(
-                &mut reader,
-                window_event(window::Event::FileHovered(waiting.clone())),
-            );
-            let _ = update(&mut reader, dropped_at(r"C:\Nowhere\waiting.pdf"));
-            assert_eq!(reader.dropping, None, "{blocker}");
-            assert_eq!(reader.opening, None, "{blocker}");
-            assert_eq!(mode(&reader.pending_open), None, "{blocker}");
-            assert_eq!(reader.inbox.open.as_ref(), Some(&waiting), "{blocker}");
+            for (entry, external) in entries {
+                let case = format!("{entry} behind {blocker}");
+                let mut reader = reader_with(vec![card(r"C:\Books\Card.pdf")], Vec::new());
+                block(&mut reader);
+                assert!(!reader.can_open(), "{case}");
+                let _ = update(&mut reader, external(r"C:\Nowhere\waiting.pdf"));
+                assert_eq!(reader.opening, None, "{case}");
+                assert_eq!(mode(&reader.pending_open), None, "{case}");
+                assert_eq!(reader.inbox.open.as_ref(), Some(&waiting), "{case}");
 
-            let _ = update(&mut reader, done);
+                let _ = update(&mut reader, done());
 
-            assert_eq!(reader.opening.as_ref(), Some(&waiting), "{blocker}");
-            assert_eq!(
-                mode(&reader.pending_open),
-                Some((Storage::InPlace, None)),
-                "{blocker}"
-            );
-            assert_eq!(reader.inbox.open, None, "{blocker}");
+                assert_eq!(reader.opening.as_ref(), Some(&waiting), "{case}");
+                assert_eq!(
+                    mode(&reader.pending_open),
+                    Some((Storage::InPlace, None)),
+                    "{case}"
+                );
+                assert_eq!(reader.inbox.open, None, "{case}");
+            }
         }
     }
 
     #[test]
     fn the_dialog_choice_replaces_a_waiting_drop() {
+        let dropped = PathBuf::from(r"C:\Nowhere\dropped.pdf");
         let mut reader = reader_with(Vec::new(), Vec::new());
         let _ = update(&mut reader, Message::ChooseFile(Storage::Import));
-        let _ = update(&mut reader, dropped_at(r"C:\Nowhere\dropped.pdf"));
+        let _ = update(
+            &mut reader,
+            window_event(window::Event::FileHovered(dropped.clone())),
+        );
+        let _ = update(
+            &mut reader,
+            window_event(window::Event::FileDropped(dropped)),
+        );
+        assert_eq!(reader.dropping, None);
         let _ = update(&mut reader, chosen(r"C:\Books\Chosen.pdf"));
         let request = reader.request;
         let _ = update(&mut reader, Message::DismissError);
@@ -8480,6 +8502,95 @@ mod tests {
         assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
         assert_eq!(reader.request, request);
         assert_eq!(reader.inbox.open, None);
+    }
+
+    #[test]
+    fn forwarded_paths_open_like_external_ones() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, forwarded_at(r"C:\Nowhere\f.pdf"));
+        assert_eq!(reader.opening, Some(PathBuf::from(r"C:\Nowhere\f.pdf")));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::InPlace, None)));
+
+        let folder = std::env::temp_dir();
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, forwarded_at(folder.to_str().unwrap()));
+        assert_eq!(reader.opening, Some(folder));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
+    }
+
+    /// The restore and focus actions a task asks of the window, in order.
+    fn raises(task: Task<Message>) -> Vec<(window::Id, &'static str)> {
+        use iced_futures::futures::{StreamExt, executor::block_on};
+        use iced_runtime::{Action, window::Action as WindowAction};
+        let mut actions = Vec::new();
+        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+            block_on(async {
+                while let Some(action) = stream.next().await {
+                    match action {
+                        Action::Window(WindowAction::Minimize(id, false)) => {
+                            actions.push((id, "restore"));
+                        }
+                        Action::Window(WindowAction::GainFocus(id)) => actions.push((id, "focus")),
+                        _ => {}
+                    }
+                }
+            });
+        }
+        actions
+    }
+
+    fn opened(id: window::Id) -> Message {
+        Message::Event(
+            iced::Event::Window(window::Event::Opened {
+                position: None,
+                size: Size::new(1280.0, 800.0),
+            }),
+            id,
+        )
+    }
+
+    #[test]
+    fn raise_waits_for_the_window_and_runs_once() {
+        let id = window::Id::unique();
+        let mut fresh = reader_with(Vec::new(), Vec::new());
+        assert_eq!(raises(update(&mut fresh, opened(id))), []);
+
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let forward = Message::Forwarded(instance::Request::Raise);
+        assert_eq!(raises(update(&mut reader, forward)), []);
+        assert_eq!(
+            raises(update(&mut reader, opened(id))),
+            [(id, "restore"), (id, "focus")]
+        );
+        assert_eq!(
+            raises(update(&mut reader, window_event(window::Event::Focused))),
+            []
+        );
+    }
+
+    #[test]
+    fn raise_waits_for_an_open_picker() {
+        let id = window::Id::unique();
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, opened(id));
+        let _ = update(&mut reader, Message::ChooseFile(Storage::Import));
+        let forward = Message::Forwarded(instance::Request::Raise);
+        assert_eq!(raises(update(&mut reader, forward)), []);
+        assert_eq!(
+            raises(update(&mut reader, Message::DialogChosen(Ok(None)))),
+            [(id, "focus"), (id, "restore"), (id, "focus")]
+        );
+
+        reader.profile.busy = true;
+        let forward = Message::Forwarded(instance::Request::Raise);
+        assert_eq!(raises(update(&mut reader, forward)), []);
+        assert_eq!(
+            raises(update(
+                &mut reader,
+                Message::ProfileReply(Ok(profile_ui::Reply::Cancelled))
+            )),
+            [(id, "restore"), (id, "focus")]
+        );
     }
 
     #[test]
