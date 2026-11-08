@@ -2021,6 +2021,23 @@ impl Reader {
             })
     }
 
+    /// Adding a file that already has a card (an older card that points at the
+    /// original) moves that card to the new copy, with its reading position,
+    /// instead of leaving two cards for one book. Cards hold canonical paths.
+    fn import_over_card(&self, path: &Path, how: OpenAs) -> OpenAs {
+        let OpenAs::New(Storage::Import) = how else {
+            return how;
+        };
+        match path
+            .canonicalize()
+            .ok()
+            .and_then(|path| self.shelf.card(&path))
+        {
+            Some(card) => OpenAs::Relocate(Relocation::Library(card.document.clone())),
+            None => how,
+        }
+    }
+
     /// Shows the native file picker; the chosen file is opened as `how`.
     fn choose(&mut self, how: OpenAs) -> Task<Message> {
         self.show_search = false;
@@ -3851,7 +3868,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::DialogChosen(result) => {
             let how = reader.dialog.take();
             let task = match (result, how) {
-                (Ok(Some(path)), Some(how)) => reader.open(path, how),
+                (Ok(Some(path)), Some(how)) => {
+                    let how = reader.import_over_card(&path, how);
+                    reader.open(path, how)
+                }
                 (Ok(_), _) => Task::none(),
                 (Err(error), _) => {
                     reader.error = Some(error);
@@ -8329,6 +8349,30 @@ mod tests {
             }),
             window::Id::unique(),
         )
+    }
+
+    #[test]
+    fn adding_a_file_that_has_a_card_moves_the_card_to_the_copy() {
+        let dir = std::env::temp_dir().join(format!("simpl-add-carded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Carded.pdf");
+        std::fs::write(&file, b"%PDF").unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        let mut reader = reader_with(vec![card(canonical.to_str().unwrap())], Vec::new());
+        let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+        let _ = update_inner(&mut reader, Message::DialogChosen(Ok(Some(file))));
+        assert_eq!(
+            mode(&reader.pending_open),
+            Some((Storage::Import, Some(canonical)))
+        );
+        let mut reader = reader_with(vec![card(r"C:\Books\Card.pdf")], Vec::new());
+        let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+        let _ = update_inner(
+            &mut reader,
+            Message::DialogChosen(Ok(Some(dir.join("Carded.pdf")))),
+        );
+        assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
