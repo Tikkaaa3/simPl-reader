@@ -187,8 +187,7 @@ fn open_file_dialog(title: &str, dictionary: bool) -> Result<Option<PathBuf>, St
     Ok(Some(OsString::from_wide(&filename[..end]).into()))
 }
 
-/// The native folder picker. It runs on its own thread, which owns a COM
-/// apartment for the dialog. Cancellation is not an error.
+/// Runs on its own thread so the dialog gets a COM apartment of its own.
 #[cfg(windows)]
 pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf>, String> {
     use std::os::windows::ffi::OsStringExt;
@@ -201,7 +200,6 @@ pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf
         IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
     };
     use windows::core::HSTRING;
-    // HRESULT_FROM_WIN32(ERROR_CANCELLED)
     const CANCELLED: i32 = 0x8007_04C7_u32 as i32;
 
     let title = HSTRING::from(title);
@@ -257,7 +255,6 @@ pub fn pick_folder(_title: &str, _initial: Option<&Path>) -> Result<Option<PathB
     Err("the native folder picker requires Windows".into())
 }
 
-/// Shows `folder` in Explorer.
 pub fn open_in_explorer(folder: &Path) -> Result<(), String> {
     std::process::Command::new("explorer")
         .arg(reader_document::library_location::display_path(folder))

@@ -162,7 +162,6 @@ fn save_epub_record(path: &Path, position: &EpubReadingPosition) -> Result<(), S
     write_record(path, position)
 }
 
-/// The typed records kept for one document, as suffixes of its key.
 pub(crate) const SUFFIXES: [&str; 5] = [
     "json",
     "epub.json",
@@ -171,8 +170,6 @@ pub(crate) const SUFFIXES: [&str; 5] = [
     "pdf-mode.json",
 ];
 
-/// Copies every record saved for `old` to the key of `new`, replacing what is
-/// there. The old records stay.
 pub(crate) fn copy_saved_records(old: &Path, new: &Path) -> Result<(), String> {
     let from = saved_record_path(old);
     let to = record_path(new)?;

@@ -240,7 +240,6 @@ pub(crate) fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     copied
 }
 
-/// Every simPl copy directly under `root`, as `<root>\<id>\<name>`.
 pub(crate) fn owned_copies(root: &Path) -> Result<Vec<PathBuf>, String> {
     if !root.exists() {
         return Ok(Vec::new());

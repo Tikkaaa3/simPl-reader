@@ -14,7 +14,6 @@ use std::{
 
 pub(crate) const FILE: &str = "library-location.json";
 const LOCK: &str = "library-location.lock";
-/// One copy in flight: `<to>\.incoming\<id>`.
 const STAGING: &str = ".incoming";
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 64 * 1024;
@@ -41,13 +40,10 @@ impl Root {
     }
 }
 
-/// The move journal. One record write moves between states.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Move {
-    /// `root` is still the source; verified copies are being placed in `to`.
     Copying { to: Root },
-    /// `root` is already the target; paths are rewritten, then `from`'s copies deleted.
     Cleaning { from: Root, positions_copied: bool },
 }
 
@@ -138,12 +134,9 @@ fn write(record: &Record) -> Result<(), String> {
     )
 }
 
-/// Held while a move or recovery changes the library, so two simPl processes
-/// never run one at the same time.
 struct Lock(#[allow(dead_code)] fs::File);
 
 impl Lock {
-    /// `None` when another process holds it.
     fn take() -> Result<Option<Self>, String> {
         fs::create_dir_all(profile()).map_err(|error| error.to_string())?;
         let mut options = fs::OpenOptions::new();
@@ -155,19 +148,16 @@ impl Lock {
         }
         match options.open(profile().join(LOCK)) {
             Ok(file) => Ok(Some(Self(file))),
-            // ERROR_SHARING_VIOLATION
             Err(error) if error.raw_os_error() == Some(32) => Ok(None),
             Err(error) => Err(format!("Cannot lock the library settings: {error}")),
         }
     }
 }
 
-/// What `managed::root()` returns.
 pub(crate) fn current_root() -> Result<PathBuf, String> {
     Ok(read()?.root.path())
 }
 
-/// Imports never recreate a custom folder that went missing.
 pub(crate) fn import_root() -> Result<PathBuf, String> {
     let record = read()?;
     let root = record.root.path();
@@ -336,7 +326,6 @@ pub fn plan(target: Target) -> Result<Plan, String> {
     })
 }
 
-/// `<picked>\simPl Library`, canonical, on a local drive.
 fn picked_library(picked: &Path) -> Result<PathBuf, String> {
     let shown = display_path(picked);
     let metadata =
@@ -425,7 +414,6 @@ fn check_free_space(_target: &Path, _bytes: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// `path` with its longest existing ancestor canonicalized.
 fn resolved(path: &Path) -> PathBuf {
     let mut missing = Vec::new();
     let mut current = path;
@@ -465,7 +453,6 @@ fn parts(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Whether `path` is `base` or inside it.
 fn within(path: &Path, base: &Path) -> bool {
     let (path, base) = (parts(path), parts(base));
     base.len() <= path.len()
@@ -504,7 +491,6 @@ pub enum Outcome {
     },
 }
 
-/// Why copying stopped before the commit.
 enum Stop {
     Cancelled,
     Failed(String),
@@ -520,7 +506,6 @@ fn io(error: std::io::Error) -> String {
     error.to_string()
 }
 
-/// Progress and cancellation for one copy run.
 pub(crate) struct Job<'a> {
     progress: Progress,
     report: &'a mut dyn FnMut(Progress),
@@ -567,7 +552,6 @@ pub fn run_move(
         cancel,
     };
     (job.report)(job.progress);
-    // Rollback deletes every copy in `to`, so it must start without any.
     if !crate::managed::owned_copies(to)?.is_empty() {
         return Err(format!(
             "{} already has simPl books in it. Choose another folder.",
@@ -620,8 +604,6 @@ pub fn run_move(
     })
 }
 
-/// The id a restored book folder gets in `library`: its own when that slot
-/// is free or holds the identical tree, else one derived from its content.
 pub(crate) fn placed_id(staged: &Path, library: &Path) -> Result<String, String> {
     let id = staged
         .file_name()
@@ -644,7 +626,6 @@ pub(crate) fn placed_id(staged: &Path, library: &Path) -> Result<String, String>
     ))
 }
 
-/// Places `staged` as `library\<id>` unless that identical copy is there.
 pub(crate) fn place_book(staged: &Path, library: &Path, id: &str) -> Result<(), String> {
     if library.join(id).exists() {
         return Ok(());
@@ -652,7 +633,6 @@ pub(crate) fn place_book(staged: &Path, library: &Path, id: &str) -> Result<(), 
     place_quietly(staged, library, id).map(drop)
 }
 
-/// SHA-256 over every file's relative path and content.
 fn tree_digest(folder: &Path) -> Result<String, String> {
     fn visit(folder: &Path, prefix: &str, digest: &mut Sha256) -> Result<(), String> {
         let mut entries = fs::read_dir(folder)
@@ -683,7 +663,6 @@ fn tree_digest(folder: &Path) -> Result<String, String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-/// A copy run that never reports progress and is never cancelled.
 pub(crate) fn place_quietly(source: &Path, root: &Path, id: &str) -> Result<PathBuf, String> {
     let cancel = AtomicBool::new(false);
     let mut report = |_| {};
@@ -708,9 +687,6 @@ fn place(source: &Path, root: &Path, job: &mut Job) -> Result<PathBuf, Stop> {
     place_as(source, root, id, job)
 }
 
-/// Copies the id folder `source` to `root\.incoming\<id>`, verifies every
-/// file, then renames it to `root\<id>`. The ownership marker is copied last,
-/// so a partial copy is never mistaken for a book.
 fn place_as(source: &Path, root: &Path, id: &str, job: &mut Job) -> Result<PathBuf, Stop> {
     crate::managed::check_tree(source)?;
     let incoming = root.join(STAGING).join(id);
@@ -828,8 +804,6 @@ fn remove_staging(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Undoes an unfinished copy: `to` held no simPl copies before the move, so
-/// every copy in it is ours. Other files there are left alone.
 fn rollback(to: &Path) -> Result<(), String> {
     let undo = || -> Result<(), String> {
         if !to.exists() {
@@ -847,13 +821,11 @@ fn rollback(to: &Path) -> Result<(), String> {
     undo().map_err(|error| format!("Some copies may be left in {}: {error}", display_path(to)))
 }
 
-/// `<to>\<id>\<name>` for a path under `<from>\<id>`, if that copy exists.
 fn moved(path: &Path, from: &[Vec<String>], to: &Path) -> Option<PathBuf> {
     let id = id_under(path, from)?;
     fs::canonicalize(to.join(id).join(path.file_name()?)).ok()
 }
 
-/// The id folder name of a path `<from>\<id>\<name>`.
 fn id_under<'a>(path: &'a Path, from: &[Vec<String>]) -> Option<&'a str> {
     let folder = path.parent()?;
     let id = folder.file_name()?.to_str()?;
@@ -869,7 +841,6 @@ fn id_under<'a>(path: &'a Path, from: &[Vec<String>]) -> Option<&'a str> {
         .then_some(id)
 }
 
-/// `<library>\<id>\<name>` as `<to>\<id>\<name>`, without touching either.
 pub(crate) fn rebase(path: &Path, library: &Path, to: &Path) -> Option<PathBuf> {
     let id = id_under(path, &root_keys(library))?;
     Some(to.join(id).join(path.file_name()?))
@@ -879,7 +850,6 @@ fn root_keys(root: &Path) -> Vec<Vec<String>> {
     vec![parts(root), parts(&resolved(root))]
 }
 
-/// Keeps the first entry for each path.
 fn dedupe<T>(entries: &mut Vec<T>, path: impl Fn(&T) -> &Path) {
     let mut kept: Vec<PathBuf> = Vec::new();
     entries.retain(|entry| {
@@ -892,7 +862,6 @@ fn dedupe<T>(entries: &mut Vec<T>, path: impl Fn(&T) -> &Path) {
     });
 }
 
-/// Finishes a committed move; safe to run again after any interruption.
 fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> {
     let from_path = from.path();
     let to_path = to.path();
@@ -969,7 +938,6 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
                 .iter()
                 .filter(|path| id_under(path, &from_keys) == Some(id));
             if let Some(path) = still_used.next() {
-                // A card that can't be rewritten keeps reading this copy.
                 in_use |= moved(path, &from_keys, &to_path).is_some();
                 continue;
             }
@@ -1121,7 +1089,6 @@ pub fn relink(picked: &Path) -> Result<usize, String> {
     Ok(books.len())
 }
 
-/// A test hook: each step of a move may be made to fail or crash.
 fn fault() -> Result<(), String> {
     #[cfg(test)]
     tests::fault()?;
@@ -1148,8 +1115,6 @@ pub(crate) mod tests {
     const STORE: &str = "SIMPL_LIBRARY_LOCATION_STORE";
     const PREFIX: &str = "simpl-location-";
 
-    /// Runs `name` in a child test process whose `LOCALAPPDATA` is a fresh
-    /// temp folder, so nothing here can reach the real profile.
     fn run_isolated(name: &str) {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1183,7 +1148,6 @@ pub(crate) mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The isolated store: `(profile base, scratch folder for books and targets)`.
     pub(crate) fn store() -> (PathBuf, PathBuf) {
         let root = PathBuf::from(std::env::var_os(STORE).expect("run through run_isolated"));
         assert!(
@@ -1314,7 +1278,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Imports `name` with `bytes` into the current library and returns the copy.
     pub(crate) fn import(scratch: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let source = scratch.join("sources").join(name);
         fs::create_dir_all(source.parent().unwrap()).unwrap();
@@ -1525,7 +1488,6 @@ pub(crate) mod tests {
         ARMED.set(Some((step, mode)));
     }
 
-    /// Whether the armed fault fired since `arm`.
     fn disarm() -> bool {
         ARMED.set(None);
         FIRED.get()
@@ -1534,7 +1496,6 @@ pub(crate) mod tests {
     const FINGERPRINT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     struct Seeded {
-        /// Title and bytes of each imported book.
         books: Vec<(&'static str, Vec<u8>)>,
         legacy: PathBuf,
         in_place: PathBuf,
@@ -1573,8 +1534,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Three imported books with cards, Recent entries and positions, a legacy
-    /// card outside the library and a book opened in place.
     fn seed(scratch: &Path) -> Seeded {
         let story = b"<title>Story</title><p>Once upon a time.</p>".to_vec();
         let novel = b"PK novel bytes".to_vec();
@@ -1649,8 +1608,6 @@ pub(crate) mod tests {
             .path
     }
 
-    /// Every card and Recent entry opens, every book's bytes are in the
-    /// current library, positions resolve, and `other` holds no copies.
     fn assert_converged(seeded: &Seeded, other: &Path, story_item: &str) {
         let location = location().unwrap();
         assert!(!location.moving);
@@ -2109,7 +2066,6 @@ pub(crate) mod tests {
         names
     }
 
-    /// Seeds a profile and moves its library to `<scratch>\E\simPl Library`.
     fn custom_library(scratch: &Path) -> (Seeded, PathBuf) {
         let seeded = seed(scratch);
         let picked = scratch.join("E");

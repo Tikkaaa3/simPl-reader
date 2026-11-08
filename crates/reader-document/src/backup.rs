@@ -201,7 +201,6 @@ fn inventory(root: &Path, options: Options) -> Result<Vec<(String, u64)>, String
     Ok(files)
 }
 
-/// Where an archived file's bytes come from.
 enum Origin {
     File(PathBuf),
     Bytes(Vec<u8>),
@@ -213,8 +212,6 @@ struct Content {
     origin: Origin,
 }
 
-/// A custom library folder, which backups read the books from. `None` is
-/// the profile's own `documents\`.
 fn custom_library() -> Result<Option<PathBuf>, String> {
     let location = crate::library_location::location()?;
     if location.moving {
@@ -223,10 +220,6 @@ fn custom_library() -> Result<Option<PathBuf>, String> {
     Ok(location.custom.then_some(location.root))
 }
 
-/// The archive's files. With a custom library the archive still looks like a
-/// default one: books are stored as `documents/<id>/…` and library, Recent
-/// and position keys name `<source_root>\documents\<id>\…`, so any simPl
-/// can restore it.
 fn contents(root: &Path, library: Option<&Path>, options: Options) -> Result<Vec<Content>, String> {
     let from_profile = |options| -> Result<Vec<Content>, String> {
         Ok(inventory(root, options)?
@@ -338,8 +331,6 @@ fn book_files(
     Ok(())
 }
 
-/// Rewrites every `path` under `library` to the same `<id>\<name>` under
-/// `documents`, recording each `(old, new)` pair.
 fn rebase_paths(
     value: &mut serde_json::Value,
     library: &Path,
@@ -614,13 +605,9 @@ pub fn inspect(path: &Path) -> Result<Summary, String> {
     })
 }
 
-/// Where restored `documents\<id>\…` paths point.
 enum Books<'a> {
-    /// The profile's own `documents\`.
     Profile,
-    /// A custom library folder that kept its books (a backup without books).
     Kept(&'a Path),
-    /// A custom library folder the archive's books were placed in, by archive id.
     Placed(&'a Path, &'a HashMap<String, String>),
 }
 

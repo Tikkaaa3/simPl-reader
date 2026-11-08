@@ -36,7 +36,6 @@ pub(super) struct State {
     pub notice: Option<String>,
     pub options: Options,
     pub estimate: Option<Summary>,
-    /// The last failed estimate, cleared from `notice` once one succeeds.
     estimate_error: Option<String>,
     pub pending: Option<(PathBuf, Summary)>,
     pub format: ExportFormat,
@@ -62,14 +61,10 @@ impl Default for State {
 }
 
 impl Reader {
-    /// Backup, restore and library changes may run: nothing is open or
-    /// saving, and no library move is waiting for recovery.
     pub(super) fn profile_ready(&self) -> bool {
         self.profile_settled() && !self.library.pending()
     }
 
-    /// Like [`Self::profile_ready`], but allows a pending library move, which
-    /// only Retry and "Stop using this folder" may act on.
     pub(super) fn profile_settled(&self) -> bool {
         self.book.is_none()
             && self.pdf.is_none()
@@ -228,8 +223,6 @@ impl Reader {
         }
     }
 
-    /// Drops everything read from the profile and loads it again, after a
-    /// restore or a library move changed it on disk.
     pub(super) fn reload_profile(&mut self) -> Vec<Task<Message>> {
         self.profile.epoch = self.profile.epoch.wrapping_add(1);
         let mut tasks = Vec::new();

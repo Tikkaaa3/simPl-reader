@@ -1,6 +1,3 @@
-//! Settings → Library folder: where imported copies live, moving them, and
-//! the banner for an unavailable folder or an unfinished move. Disk work runs
-//! in tasks; the move runs on its own thread and holds `profile.busy`.
 use super::*;
 use iced::widget::column;
 use reader_document::library_location::{
@@ -40,8 +37,6 @@ pub(super) enum Reply {
         generation: u64,
         result: Result<Outcome, String>,
     },
-    /// Recovery, "Find it…" or "Stop using this folder" finished; the text is
-    /// the notice to show.
     Changed(Result<Option<String>, String>),
     Opened(Result<(), String>),
 }
@@ -89,7 +84,6 @@ pub(super) struct State {
 }
 
 impl State {
-    /// A move journal is waiting for recovery.
     pub(super) fn pending(&self) -> bool {
         matches!(&self.location, Some(Ok(location)) if location.moving)
     }
@@ -108,8 +102,6 @@ impl State {
         }
     }
 
-    /// Closing the window cancels a move; the app exits once it has rolled
-    /// back, or finished if it was already past the commit.
     pub(super) fn cancel_move(&self) {
         if let Some(job) = &self.job {
             job.cancel.store(true, Ordering::Relaxed);
@@ -429,7 +421,6 @@ impl Reader {
         }
     }
 
-    /// Paths in Recent and the library may have changed on disk.
     fn reload_library_paths(&mut self) -> Task<Message> {
         if self.pending_exit && self.exit_ready() {
             return iced::exit();
@@ -463,7 +454,6 @@ impl Reader {
     }
 }
 
-/// Which library buttons are enabled, shared by the view and keyboard focus.
 fn enabled(reader: &Reader) -> Vec<Focus> {
     let state = &reader.library;
     let ready = reader.profile_ready();
@@ -704,7 +694,6 @@ fn banner_visible(reader: &Reader) -> bool {
         || matches!(state.location, Some(Err(_)))
 }
 
-/// The main-view banner, or `None` when the library needs no attention.
 pub(super) fn banner(reader: &Reader) -> Option<Element<'_, Message>> {
     let state = &reader.library;
     if !banner_visible(reader) {

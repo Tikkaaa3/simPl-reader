@@ -175,7 +175,6 @@ fn bootstrap(recent: Vec<recent::Entry>, root: &Path) -> Result<Vec<Entry>, Stri
     Ok(entries)
 }
 
-/// The stored entries as they are, without filling in source formats.
 pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -185,7 +184,6 @@ pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
     load_file(file, path, None)
 }
 
-/// `root` fills in the source format of entries saved without one.
 fn load_file(file: File, path: &Path, root: Option<&Path>) -> Result<Vec<Entry>, String> {
     let mut bytes = Vec::new();
     file.take(MAX_LIBRARY_BYTES + 1)

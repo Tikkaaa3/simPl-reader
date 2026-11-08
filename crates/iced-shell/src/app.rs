@@ -6621,7 +6621,6 @@ fn loading_frames() -> impl iced_futures::futures::Stream<Item = u8> {
     )
 }
 
-/// `notice` reports a library move that startup recovery finished or undid.
 pub fn run(path: Option<PathBuf>, error: Option<String>, notice: Option<String>) -> iced::Result {
     let mut application = iced::application(
         move || {
