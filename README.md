@@ -203,16 +203,34 @@ plugins remain future work. [Data sources and license](assets/dictionaries/READM
 **Open file** (Ctrl+O), file drops, and double-clicking a file or using **Open with**
 read the document where it is. Nothing is copied, and the book appears in **Recent**.
 **Add Document** (Ctrl+I) and **Add to library** on a Recent row copy the document into
-`%LOCALAPPDATA%\simPl\documents\` and add it to the library. A dropped HTML book
-folder is always copied, because simPl packages it as an EPUB.
+the library folder and add it to the library. A dropped HTML book folder is always
+copied, because simPl packages it as an EPUB.
+
+The library folder is `%LOCALAPPDATA%\simPl\documents\` until you change it in
+**Settings → Library & data → Library folder**. **Change…** asks for a folder on this
+PC; simPl keeps its books in a `simPl Library` folder inside it and never writes
+anything else there. simPl copies every imported book, checks each copy, and only
+then switches to the new folder and removes the old copies. **Cancel**, a full disk,
+an unplugged drive or a crash before that point leave the library where it was; a
+move that was interrupted after it is finished the next time simPl starts. Books you
+opened in place are never moved. **Use default folder** moves the library back.
+Close the book first; network folders are not supported.
+
+If the library folder is missing, for example on an unplugged USB drive, simPl says
+so and never creates an empty one. Connect the drive and choose **Retry**. **Find it…**
+accepts the same `simPl Library` under a new drive letter or parent folder, and **Stop
+using this folder…** switches back to the default folder without moving or deleting
+anything. Uninstalling simPl keeps a library folder outside `%LOCALAPPDATA%\simPl`.
 
 simPl keeps one window. Opening another file from Explorer while simPl is running
-opens it in that window and brings it to the front. To open supported files with a
-double-click, choose **simPl Reader** in **Open with** and select **Always**.
+opens it in that window and brings it to the front. If that window runs as
+administrator or isn't responding, the new launch says so and exits instead of opening
+a second window. To open supported files with a double-click, choose **simPl Reader**
+in **Open with** and select **Always**.
 
-Reading positions, library metadata, preferences, cover thumbnails, bookmarks,
-highlights, notes and disposable conversion/page caches stay under
-`%LOCALAPPDATA%\simPl\`.
+Reading positions, library metadata, preferences, the library folder setting, cover
+thumbnails, bookmarks, highlights, notes and disposable conversion/page caches stay
+under `%LOCALAPPDATA%\simPl\`.
 
 Hover a library card to favourite or remove it. Favourites appear in their own
 section. Removal asks for confirmation and deletes the application's managed copy;
@@ -231,6 +249,8 @@ shelves, history, reading positions, per-book typography, covers and annotations
 page maps and conversion caches are rebuilt. Linked originals outside the simPl
 profile are not bundled, and omitted book files may need **Locate** on another PC.
 The displayed size is uncompressed; the saved file is a compressed ZIP.
+With a library folder on another drive, that drive must be connected to include book
+files; the backup has the same layout as one made with the default folder.
 
 Restore first verifies the archive, shows a review, and requires **Restore and
 replace**. It replaces library metadata and settings; directories omitted from
@@ -238,6 +258,8 @@ that backup retain their local book files or dictionary packs. Included book pat
 and their reading-position keys are remapped to the destination profile. The
 previous profile is kept beside the new one in a `.simPl-before-restore-*` recovery
 folder. Keep the application closed when manually recovering those folders.
+Restore never changes the library folder setting. With a custom library folder, the
+backup's books are added to it next to the books already there.
 Backup limits are 50,000 files, 512 MiB per file and 16 GiB total.
 
 With a book open, choose **Markdown**, **Text** or **JSON**, then **Export…**.

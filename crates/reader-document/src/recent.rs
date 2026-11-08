@@ -111,7 +111,7 @@ pub fn saved_epub_for_relocation(
         .filter(|saved| saved.fingerprint.eq_ignore_ascii_case(&old.fingerprint)))
 }
 
-fn history_path() -> PathBuf {
+pub(crate) fn history_path() -> PathBuf {
     position::storage_base().join("simPl").join("recent.json")
 }
 
@@ -148,7 +148,7 @@ pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
     Ok(history.entries)
 }
 
-fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
+pub(crate) fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
     validate_entries(entries)?;
     let bytes = serde_json::to_vec(&HistoryRef {
         version: VERSION,

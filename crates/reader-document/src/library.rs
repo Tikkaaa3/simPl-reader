@@ -79,7 +79,7 @@ struct LibraryRef<'a> {
     entries: &'a [Entry],
 }
 
-fn library_path() -> PathBuf {
+pub(crate) fn library_path() -> PathBuf {
     position::storage_base().join("simPl").join("library.json")
 }
 
@@ -146,9 +146,9 @@ fn validate(entries: &[Entry]) -> Result<(), String> {
 pub fn load() -> Result<Vec<Entry>, String> {
     let path = library_path();
     match File::open(&path) {
-        Ok(file) => load_file(file, &path),
+        Ok(file) => load_file(file, &path, crate::managed::root().ok().as_deref()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bootstrap(recent::load()?, &crate::managed::root())
+            bootstrap(recent::load()?, &crate::managed::root()?)
         }
         Err(error) => Err(format!("cannot open library {}: {error}", path.display())),
     }
@@ -181,10 +181,10 @@ pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("cannot open library {}: {error}", path.display())),
     };
-    load_file(file, path)
+    load_file(file, path, None)
 }
 
-fn load_file(file: File, path: &Path) -> Result<Vec<Entry>, String> {
+fn load_file(file: File, path: &Path, root: Option<&Path>) -> Result<Vec<Entry>, String> {
     let mut bytes = Vec::new();
     file.take(MAX_LIBRARY_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -198,9 +198,11 @@ fn load_file(file: File, path: &Path) -> Result<Vec<Entry>, String> {
         return Err(format!("unsupported library version {}", library.version));
     }
     validate(&library.entries)?;
-    for entry in &mut library.entries {
-        if entry.source_kind.is_none() {
-            entry.source_kind = crate::managed::source_kind(&entry.document.path);
+    if let Some(root) = root {
+        for entry in &mut library.entries {
+            if entry.source_kind.is_none() {
+                entry.source_kind = crate::managed::source_kind_at(root, &entry.document.path);
+            }
         }
     }
     Ok(library.entries)
@@ -211,7 +213,7 @@ pub fn save(entries: &[Entry]) -> Result<(), String> {
     save_at(&library_path(), entries)
 }
 
-fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
+pub(crate) fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
     validate(entries)?;
     let bytes = serde_json::to_vec(&LibraryRef {
         version: VERSION,

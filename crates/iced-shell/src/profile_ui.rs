@@ -36,6 +36,7 @@ pub(super) struct State {
     pub notice: Option<String>,
     pub options: Options,
     pub estimate: Option<Summary>,
+    estimate_error: Option<String>,
     pub pending: Option<(PathBuf, Summary)>,
     pub format: ExportFormat,
     generation: u64,
@@ -51,6 +52,7 @@ impl Default for State {
                 dictionaries: false,
             },
             estimate: None,
+            estimate_error: None,
             pending: None,
             format: ExportFormat::Markdown,
             generation: 0,
@@ -60,6 +62,10 @@ impl Default for State {
 
 impl Reader {
     pub(super) fn profile_ready(&self) -> bool {
+        self.profile_settled() && !self.library.pending()
+    }
+
+    pub(super) fn profile_settled(&self) -> bool {
         self.book.is_none()
             && self.pdf.is_none()
             && self.opening.is_none()
@@ -81,9 +87,15 @@ impl Reader {
     pub(super) fn profile_estimated(&mut self, generation: u64, result: Result<Summary, String>) {
         if generation == self.profile.generation {
             match result {
-                Ok(summary) => self.profile.estimate = Some(summary),
+                Ok(summary) => {
+                    self.profile.estimate = Some(summary);
+                    if self.profile.notice == self.profile.estimate_error.take() {
+                        self.profile.notice = None;
+                    }
+                }
                 Err(error) => {
                     self.profile.estimate = None;
+                    self.profile.estimate_error = Some(error.clone());
                     self.profile.notice = Some(error);
                 }
             }
@@ -192,7 +204,6 @@ impl Reader {
                 self.profile.pending = Some((path, summary));
             }
             Ok(Reply::Restored(previous)) => {
-                self.profile.epoch = self.profile.epoch.wrapping_add(1);
                 self.profile.notice = Some(if previous.as_os_str().is_empty() {
                     "Backup restored.".into()
                 } else {
@@ -201,27 +212,7 @@ impl Reader {
                         previous.display()
                     )
                 });
-                self.preferences_dirty = false;
-                self.preferences_writable = true;
-                self.preferences_loading = true;
-                self.history_corrupt = false;
-                self.recent_dirty = false;
-                self.recent_loading = true;
-                self.recent.clear();
-                self.shelf = shelf::Shelf::default();
-                self.notes = notes::Notes::default();
-                self.word_translation.reload_profile();
-                tasks.push(Task::perform(
-                    async { preferences::load() },
-                    Message::PreferencesLoaded,
-                ));
-                tasks.push(Task::perform(
-                    async { recent::load() },
-                    Message::RecentLoaded,
-                ));
-                tasks.push(shelf::Shelf::load().map(Message::Shelf));
-                tasks.push(self.refresh_dictionaries());
-                tasks.push(self.estimate_backup());
+                tasks = self.reload_profile();
             }
             Err(error) => self.profile.notice = Some(error),
         }
@@ -230,6 +221,33 @@ impl Reader {
         } else {
             Task::batch(tasks)
         }
+    }
+
+    pub(super) fn reload_profile(&mut self) -> Vec<Task<Message>> {
+        self.profile.epoch = self.profile.epoch.wrapping_add(1);
+        let mut tasks = Vec::new();
+        self.preferences_dirty = false;
+        self.preferences_writable = true;
+        self.preferences_loading = true;
+        self.history_corrupt = false;
+        self.recent_dirty = false;
+        self.recent_loading = true;
+        self.recent.clear();
+        self.shelf = shelf::Shelf::default();
+        self.notes = notes::Notes::default();
+        self.word_translation.reload_profile();
+        tasks.push(Task::perform(
+            async { preferences::load() },
+            Message::PreferencesLoaded,
+        ));
+        tasks.push(Task::perform(
+            async { recent::load() },
+            Message::RecentLoaded,
+        ));
+        tasks.push(shelf::Shelf::load().map(Message::Shelf));
+        tasks.push(self.refresh_dictionaries());
+        tasks.push(self.estimate_backup());
+        tasks
     }
 
     pub(super) fn profile_focus(&mut self, focus: Focus) -> Task<Message> {
@@ -331,6 +349,13 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
         ]
         .spacing(8),
     );
+    if reader.library.pending() {
+        content = content.push(
+            text("Finish the library move first.")
+                .size(12)
+                .style(ui::muted_text),
+        );
+    }
     content = content.push(text("Close the book before backup or restore. Settings, shelves, reading positions and annotations are included; temporary caches are rebuilt. Only library-managed book files are bundled. Linked originals and books omitted from a backup may need Locate on another computer.").size(12).style(ui::muted_text));
     if let Some((path, summary)) = &reader.profile.pending {
         content = content.push(text(format!("Restore {}?\n{} files · {:.1} MB · books: {} · dictionaries: {}\nThis replaces the current library and settings. The previous profile is retained in a recovery folder.",
@@ -414,6 +439,31 @@ mod tests {
         )));
         reader
     }
+    #[test]
+    fn a_successful_estimate_clears_only_its_own_earlier_error() {
+        let mut reader = ready();
+        let missing = "The library folder E:\\Books isn't connected.".to_string();
+        let summary = Summary {
+            files: 3,
+            bytes: 10,
+            documents: true,
+            dictionaries: false,
+        };
+        reader.profile_estimated(0, Err(missing.clone()));
+        assert_eq!(reader.profile.notice.as_deref(), Some(missing.as_str()));
+        reader.profile_estimated(0, Ok(summary.clone()));
+        assert_eq!(reader.profile.notice, None);
+        assert_eq!(reader.profile.estimate.as_ref().map(|s| s.files), Some(3));
+
+        reader.profile_estimated(0, Err(missing));
+        reader.profile.notice = Some("Saved to E:\\backup.zip".into());
+        reader.profile_estimated(0, Ok(summary));
+        assert_eq!(
+            reader.profile.notice.as_deref(),
+            Some("Saved to E:\\backup.zip")
+        );
+    }
+
     #[test]
     fn destructive_restore_waits_for_loads_writes_and_document_close() {
         let mut reader = ready();
@@ -582,6 +632,12 @@ mod tests {
         std::fs::create_dir_all(&output).unwrap();
         let mut reader = ready();
         reader.show_settings = true;
+        reader.library.location = Some(Ok(reader_document::library_location::Location {
+            root: PathBuf::from(r"E:\Books\simPl Library"),
+            custom: true,
+            available: false,
+            moving: false,
+        }));
         reader.profile.estimate = Some(Summary {
             files: 42,
             bytes: 4 * 1024 * 1024,

@@ -1461,6 +1461,22 @@ fn normal_launch(arguments: &[std::ffi::OsString]) -> Result<Option<std::path::P
     }
 }
 
+fn inform(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (text, title) = (wide(text), wide("simPl Reader"));
+    // SAFETY: both strings are NUL-terminated and outlive the call; a null
+    // owner makes the box stand alone.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        )
+    };
+}
+
 fn main() {
     platform::mark_reader_running();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -1471,18 +1487,47 @@ fn main() {
     if !reader_mode && !reader_large && !bidi_diagnostic_mode && !shell_mode {
         let launch = normal_launch(&arguments);
         let path = launch.as_ref().ok().and_then(Option::as_deref);
-        if instance::claim(path) == instance::Claim::Forwarded {
-            if let Err(error) = &launch {
-                eprintln!("{error}");
-                std::process::exit(2);
+        match instance::claim(path) {
+            instance::Claim::Primary => {}
+            instance::Claim::Forwarded => {
+                if let Err(error) = &launch {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+                return;
             }
-            return;
+            instance::Claim::Unreachable(reason) => {
+                inform(match reason {
+                    instance::Unreachable::Elevated => {
+                        "simPl is already running as administrator. Close it and try again."
+                    }
+                    instance::Unreachable::NotResponding => {
+                        "simPl is already running but isn't responding. Close it and try again."
+                    }
+                });
+                std::process::exit(1);
+            }
         }
         let (path, error) = match launch {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
         };
-        if let Err(error) = app::run(path, error) {
+        use reader_document::backup::RestoreRecovery;
+        let restored = match reader_document::backup::recover_restore() {
+            RestoreRecovery::Ready(notice) => notice,
+            RestoreRecovery::Blocked(error) => {
+                inform(&format!(
+                    "{error}
+
+Close any program that uses the simPl folder, then start simPl again."
+                ));
+                std::process::exit(1);
+            }
+        };
+        let notices = [restored, reader_document::library_location::recover()];
+        let notice = Some(notices.into_iter().flatten().collect::<Vec<_>>().join(" "))
+            .filter(|notice| !notice.is_empty());
+        if let Err(error) = app::run(path, error, notice) {
             eprintln!("failed to run simPl: {error}");
             std::process::exit(1);
         }

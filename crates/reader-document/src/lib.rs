@@ -11,6 +11,7 @@ pub mod dictionary;
 pub mod epub;
 mod html;
 pub mod library;
+pub mod library_location;
 pub mod managed;
 pub mod position;
 pub mod preferences;

@@ -9,6 +9,16 @@ fn scenario(with_book: bool, narrow: bool) -> Reader {
         show_settings: true,
         ..Default::default()
     };
+    reader.library.location = Some(Ok(reader_document::library_location::Location {
+        root: PathBuf::from(r"E:\Books\simPl Library"),
+        custom: true,
+        available: true,
+        moving: false,
+    }));
+    reader.library.summary = Some(reader_document::library_location::Summary {
+        books: 42,
+        bytes: 1_288_490_189,
+    });
     if narrow {
         reader.window_size = Size::new(640.0, 480.0);
         reader.appearance = reader_document::preferences::Appearance::Light;

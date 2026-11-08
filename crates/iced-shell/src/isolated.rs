@@ -58,7 +58,7 @@ fn store() -> (PathBuf, PathBuf) {
         Some(profile.clone())
     );
     assert_eq!(
-        reader_document::managed::root(),
+        reader_document::managed::root().unwrap(),
         profile.join("simPl").join("documents")
     );
     let books = root.join("books");
@@ -375,4 +375,115 @@ fn second_launch_forwards_into_the_running_reader() {
     // server thread never reads the environment.
     unsafe { std::env::set_var("LOCALAPPDATA", &other) };
     assert_eq!(instance::claim(None), Claim::Primary);
+}
+
+isolated!(a_missing_library_folder_refuses_imports_and_can_be_forgotten);
+fn a_missing_library_folder_refuses_imports_and_can_be_forgotten() {
+    use reader_document::library_location;
+    let (profile, books) = store();
+    let missing = books.join("unplugged").join(library_location::FOLDER);
+    fs::create_dir_all(profile.join("simPl")).unwrap();
+    fs::write(
+        profile.join("simPl").join("library-location.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "root": {"folder": missing},
+            "moving": null
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let source = books.join("a.html");
+    fs::write(&source, "<title>A</title><p>Alpha</p>").unwrap();
+
+    let mut reader = boot();
+    let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+    send(&mut reader, Message::DialogChosen(Ok(Some(source.clone()))));
+
+    let error = reader.error.clone().unwrap();
+    assert!(
+        error.contains(&format!("Library folder not found: {}", missing.display())),
+        "{error}"
+    );
+    assert_eq!(reader.shelf.entries.len(), 0);
+    assert!(!books.join("unplugged").exists());
+    assert!(!profile.join("simPl").join("documents").exists());
+    let location = library_location::location().unwrap();
+    assert_eq!(
+        (location.root, location.custom, location.available),
+        (missing, true, false)
+    );
+
+    library_location::forget().unwrap();
+    assert_eq!(
+        reader_document::managed::root().unwrap(),
+        profile.join("simPl").join("documents")
+    );
+    assert!(!library_location::location().unwrap().custom);
+}
+
+isolated!(a_library_move_through_the_app_holds_forwarded_opens_until_it_ends);
+fn a_library_move_through_the_app_holds_forwarded_opens_until_it_ends() {
+    use library_ui::{Action, Purpose, Reply};
+    use reader_document::library_location::{self, FOLDER};
+    let (profile, books) = store();
+    let a = books.join("a.html");
+    fs::write(&a, "<title>A</title><p>Alpha</p>").unwrap();
+    let forwarded = books.join("Forwarded.md");
+    fs::write(
+        &forwarded,
+        "# Forwarded
+
+Text.
+",
+    )
+    .unwrap();
+    let target = books.join("E");
+    fs::create_dir(&target).unwrap();
+    let mut reader = boot();
+    let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+    send(&mut reader, Message::DialogChosen(Ok(Some(a.clone()))));
+    let task = reader.close(CloseAction::Document);
+    super::release_audit::pump(&mut reader, task);
+    let task = reader.refresh_library();
+    super::release_audit::pump(&mut reader, task);
+    assert!(reader.profile_ready());
+
+    send(
+        &mut reader,
+        Message::LibraryReply(Reply::Picked(Purpose::Change, Ok(Some(target.clone())))),
+    );
+    let moving = update(&mut reader, Message::Library(Action::Move));
+    assert!(reader.profile.busy && !reader.can_open());
+    let waiting = update(
+        &mut reader,
+        Message::Forwarded(instance::Request::Open(forwarded.clone())),
+    );
+    assert!(reader.book.is_none() && reader.opening.is_none());
+    super::release_audit::pump(&mut reader, Task::batch([moving, waiting]));
+
+    let library = fs::canonicalize(&target).unwrap().join(FOLDER);
+    assert_eq!(reader.error, None);
+    assert_eq!(
+        reader.library.notice.as_deref(),
+        Some(
+            format!(
+                "Moved 1 book to {}.",
+                library_location::display_path(&library)
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(reader.book.as_ref().unwrap().title, "Forwarded");
+    assert_eq!(library_location::location().unwrap().root, library);
+    assert!(!profile.join("simPl").join("documents").exists());
+    let card = reader.shelf.entries[0].document.path.clone();
+    assert_eq!(card.parent().unwrap().parent().unwrap(), library);
+
+    let task = reader.close(CloseAction::Document);
+    super::release_audit::pump(&mut reader, task);
+    send(&mut reader, Message::OpenLibrary(0));
+    assert_eq!(reader.error, None);
+    assert_eq!(reader.book.as_ref().unwrap().path, card);
+    assert_eq!(item_texts(reader.book.as_ref().unwrap()), ["Alpha"]);
 }

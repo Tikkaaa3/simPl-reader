@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Let Setup/Uninstall ask for a normal close before replacing the reader or
 /// removing its profile. This is a lifetime marker, not a single-instance lock.
@@ -185,6 +185,85 @@ fn open_file_dialog(title: &str, dictionary: bool) -> Result<Option<PathBuf>, St
         return Err("native file dialog returned an empty path".into());
     }
     Ok(Some(OsString::from_wide(&filename[..end]).into()))
+}
+
+/// Runs on its own thread so the dialog gets a COM apartment of its own.
+#[cfg(windows)]
+pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
+        CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
+        IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    };
+    use windows::core::HSTRING;
+
+    let title = HSTRING::from(title);
+    let initial = initial.map(|path| {
+        use std::os::windows::ffi::OsStrExt;
+        HSTRING::from_wide(&path.as_os_str().encode_wide().collect::<Vec<_>>())
+    });
+    let picker = move || -> windows::core::Result<Option<PathBuf>> {
+        // SAFETY: every COM call below runs on this thread after a successful
+        // CoInitializeEx, and the strings they borrow outlive the calls.
+        unsafe {
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            dialog.SetOptions(
+                dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST,
+            )?;
+            dialog.SetTitle(&title)?;
+            if let Some(initial) = &initial
+                && let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(initial, None)
+            {
+                dialog.SetFolder(&folder)?;
+            }
+            match dialog.Show(None) {
+                Ok(()) => {}
+                Err(error)
+                    if error.code() == windows::Win32::Foundation::ERROR_CANCELLED.to_hresult() =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
+            let name = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let path = std::ffi::OsString::from_wide(name.as_wide());
+            CoTaskMemFree(Some(name.0.cast()));
+            Ok(Some(path.into()))
+        }
+    };
+    std::thread::Builder::new()
+        .name("folder-picker".into())
+        .spawn(move || {
+            // SAFETY: initializes this new thread's apartment once.
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
+                .ok()
+                .map_err(|error| format!("Cannot open the folder picker: {error}"))?;
+            let result = picker().map_err(|error| format!("Folder picker failed: {error}"));
+            // SAFETY: balances the successful CoInitializeEx above.
+            unsafe { CoUninitialize() };
+            result
+        })
+        .map_err(|error| format!("Cannot open the folder picker: {error}"))?
+        .join()
+        .map_err(|_| "The folder picker stopped unexpectedly.".to_string())?
+}
+
+#[cfg(not(windows))]
+pub fn pick_folder(_title: &str, _initial: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    Err("the native folder picker requires Windows".into())
+}
+
+pub fn open_in_explorer(folder: &Path) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(reader_document::library_location::display_path(folder))
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("Cannot open Explorer: {error}"))
 }
 
 #[cfg(not(windows))]

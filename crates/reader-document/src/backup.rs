@@ -201,11 +201,175 @@ fn inventory(root: &Path, options: Options) -> Result<Vec<(String, u64)>, String
     Ok(files)
 }
 
+enum Origin {
+    File(PathBuf),
+    Bytes(Vec<u8>),
+}
+
+struct Content {
+    name: String,
+    bytes: u64,
+    origin: Origin,
+}
+
+fn custom_library() -> Result<Option<PathBuf>, String> {
+    let location = crate::library_location::location()?;
+    if location.moving {
+        return Err("Finish the library move first.".into());
+    }
+    Ok(location.custom.then_some(location.root))
+}
+
+fn contents(root: &Path, library: Option<&Path>, options: Options) -> Result<Vec<Content>, String> {
+    let from_profile = |options| -> Result<Vec<Content>, String> {
+        Ok(inventory(root, options)?
+            .into_iter()
+            .map(|(name, bytes)| Content {
+                origin: Origin::File(root.join(&name)),
+                name,
+                bytes,
+            })
+            .collect())
+    };
+    let Some(library) = library else {
+        return from_profile(options);
+    };
+    let mut files = from_profile(Options {
+        documents: false,
+        ..options
+    })?;
+    if options.documents {
+        if !library.is_dir() {
+            return Err(format!(
+                "The library folder {} isn't connected. Connect it or turn off Include book files.",
+                crate::library_location::display_path(library)
+            ));
+        }
+        for copy in crate::managed::owned_copies(library)? {
+            let folder = copy.parent().ok_or("Invalid library folder")?;
+            let id = folder
+                .file_name()
+                .and_then(|id| id.to_str())
+                .ok_or("Invalid library folder")?;
+            book_files(folder, &format!("documents/{id}"), options, &mut files)?;
+        }
+    }
+    let documents = root.join("documents");
+    let mut moved = Vec::new();
+    for file in &mut files {
+        if matches!(file.name.as_str(), "library.json" | "recent.json") {
+            let mut data: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.join(&file.name)).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("Invalid {}: {e}", file.name))?;
+            rebase_paths(&mut data, library, &documents, &mut moved);
+            let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+            file.bytes = bytes.len() as u64;
+            file.origin = Origin::Bytes(bytes);
+        }
+    }
+    moved.sort();
+    moved.dedup();
+    for (old, new) in moved {
+        for suffix in crate::position::SUFFIXES {
+            let source = root
+                .join("positions")
+                .join(format!("{}.{suffix}", crate::position::path_key(&old)));
+            if !source.is_file() {
+                continue;
+            }
+            let name = format!("positions/{}.{suffix}", crate::position::path_key(&new));
+            let bytes = plain(&source)?.len();
+            files.retain(|file| file.name != name);
+            files.push(Content {
+                name,
+                bytes,
+                origin: Origin::File(source),
+            });
+        }
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    if files.len() > MAX_FILES {
+        return Err("Backup contains too many files".into());
+    }
+    if files.iter().map(|f| f.bytes).sum::<u64>() > MAX_TOTAL {
+        return Err("Backup exceeds the 16 GiB limit".into());
+    }
+    Ok(files)
+}
+
+fn book_files(
+    folder: &Path,
+    name: &str,
+    options: Options,
+    files: &mut Vec<Content>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Library filenames must be Unicode")?;
+        let name = format!("{name}/{file_name}");
+        let metadata = plain(&path)?;
+        if metadata.is_dir() {
+            book_files(&path, &name, options, files)?;
+        } else if metadata.is_file() {
+            checked_name(&name, options)?;
+            if metadata.len() > MAX_FILE {
+                return Err(format!("Backup file exceeds 512 MiB: {name}"));
+            }
+            files.push(Content {
+                name,
+                bytes: metadata.len(),
+                origin: Origin::File(path),
+            });
+        } else {
+            return Err("The library contains an unsupported file type".into());
+        }
+    }
+    Ok(())
+}
+
+fn rebase_paths(
+    value: &mut serde_json::Value,
+    library: &Path,
+    documents: &Path,
+    moved: &mut Vec<(PathBuf, PathBuf)>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if key == "path"
+                    && let serde_json::Value::String(text) = value
+                {
+                    if let Some(new) =
+                        crate::library_location::rebase(Path::new(text), library, documents)
+                    {
+                        moved.push((PathBuf::from(text.as_str()), new.clone()));
+                        *text = new.to_string_lossy().into_owned();
+                    }
+                } else {
+                    rebase_paths(value, library, documents, moved);
+                }
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for value in array {
+                rebase_paths(value, library, documents, moved);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn estimate(options: Options) -> Result<Summary, String> {
-    let files = inventory(&root(), options)?;
+    let root = root();
+    let root = root.canonicalize().unwrap_or(root);
+    let files = contents(&root, custom_library()?.as_deref(), options)?;
     Ok(Summary {
         files: files.len(),
-        bytes: files.iter().map(|f| f.1).sum(),
+        bytes: files.iter().map(|f| f.bytes).sum(),
         documents: options.documents,
         dictionaries: options.dictionaries,
     })
@@ -252,10 +416,15 @@ fn copy_hash(
 }
 
 pub fn create(destination: &Path, options: Options) -> Result<Summary, String> {
-    create_from(&root(), destination, options)
+    create_from(&root(), custom_library()?.as_deref(), destination, options)
 }
 
-fn create_from(root: &Path, destination: &Path, options: Options) -> Result<Summary, String> {
+fn create_from(
+    root: &Path,
+    library: Option<&Path>,
+    destination: &Path,
+    options: Options,
+) -> Result<Summary, String> {
     let parent = destination
         .parent()
         .ok_or("Backup destination needs a folder")?;
@@ -271,10 +440,10 @@ fn create_from(root: &Path, destination: &Path, options: Options) -> Result<Summ
     if parent.starts_with(&root) {
         return Err("Save the backup outside the simPl profile".into());
     }
-    let files = inventory(&root, options)?;
+    let files = contents(&root, library, options)?;
     let summary = Summary {
         files: files.len(),
-        bytes: files.iter().map(|f| f.1).sum(),
+        bytes: files.iter().map(|f| f.bytes).sum(),
         documents: options.documents,
         dictionaries: options.dictionaries,
     };
@@ -295,21 +464,33 @@ fn create_from(root: &Path, destination: &Path, options: Options) -> Result<Summ
             options,
             files: Vec::new(),
         };
-        for (name, bytes) in files {
-            let path = root.join(&name);
-            let before = plain(&path)?;
+        for Content {
+            name,
+            bytes,
+            origin,
+        } in files
+        {
             zip.start_file(&name, settings).map_err(|e| e.to_string())?;
-            let sha256 = copy_hash(
-                File::open(&path).map_err(|e| e.to_string())?,
-                &mut zip,
-                bytes,
-            )?;
-            let after = plain(&path)?;
-            if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-                return Err(format!(
-                    "Profile changed while backing up {name}; try again"
-                ));
-            }
+            let sha256 = match origin {
+                Origin::Bytes(data) => copy_hash(data.as_slice(), &mut zip, bytes)?,
+                Origin::File(path) => {
+                    let before = plain(&path)?;
+                    let sha256 = copy_hash(
+                        File::open(&path).map_err(|e| e.to_string())?,
+                        &mut zip,
+                        bytes,
+                    )?;
+                    let after = plain(&path)?;
+                    if before.len() != after.len()
+                        || before.modified().ok() != after.modified().ok()
+                    {
+                        return Err(format!(
+                            "Profile changed while backing up {name}; try again"
+                        ));
+                    }
+                    sha256
+                }
+            };
             manifest.files.push(Item {
                 path: name,
                 bytes,
@@ -424,11 +605,19 @@ pub fn inspect(path: &Path) -> Result<Summary, String> {
     })
 }
 
-pub fn restore(path: &Path) -> Result<PathBuf, String> {
-    restore_into(path, &root())
+enum Books<'a> {
+    Profile,
+    Kept(&'a Path),
+    Placed(&'a Path, &'a HashMap<String, String>),
 }
 
-fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
+/// The library folder setting never changes on restore. With a custom
+/// folder, the archive's books are added to it and the paths follow.
+pub fn restore(path: &Path) -> Result<PathBuf, String> {
+    restore_into(path, &root(), custom_library()?.as_deref())
+}
+
+fn restore_into(path: &Path, root: &Path, library: Option<&Path>) -> Result<PathBuf, String> {
     let parent = root.parent().ok_or("Profile needs a parent folder")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let parent = parent.canonicalize().map_err(|e| e.to_string())?;
@@ -437,6 +626,15 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
         plain(&root)?;
     }
     let record = validate_archive(path)?;
+    if let Some(library) = library
+        && record.options.documents
+        && !library.is_dir()
+    {
+        return Err(format!(
+            "The library folder {} isn't connected. Connect it before restoring a backup with book files.",
+            crate::library_location::display_path(library)
+        ));
+    }
     let stage = unique(&parent, "restore");
     fs::create_dir(&stage).map_err(|e| e.to_string())?;
     let result = (|| {
@@ -465,12 +663,46 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
             file.sync_all().map_err(|e| e.to_string())?;
         }
         drop(zip);
-        remap_paths(&stage, &record.source_root, &root)?;
+        let staged_books = stage.join("documents");
+        let mut placed = HashMap::new();
+        let books = match library {
+            None => Books::Profile,
+            Some(library) if !record.options.documents => Books::Kept(library),
+            Some(library) => {
+                for copy in crate::managed::owned_copies(&staged_books)? {
+                    let folder = copy.parent().ok_or("Invalid restored book folder")?;
+                    let id = folder
+                        .file_name()
+                        .and_then(|id| id.to_str())
+                        .ok_or("Invalid restored book folder")?;
+                    placed.insert(
+                        id.to_owned(),
+                        crate::library_location::placed_id(folder, library)?,
+                    );
+                }
+                Books::Placed(library, &placed)
+            }
+        };
+        remap_paths(&stage, &record.source_root, &root, &books)?;
         validate_profile(&stage)?;
+        if let Some(library) = library {
+            for (id, target) in &placed {
+                let folder = staged_books.join(id);
+                crate::library_location::place_book(&folder, library, target)?;
+                crate::managed::check_tree(&folder)?;
+                fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
+            }
+            let _ = fs::remove_dir(&staged_books);
+            let setting = root.join(crate::library_location::FILE);
+            if setting.exists() {
+                fs::copy(&setting, stage.join(crate::library_location::FILE))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         // A lightweight backup retains the current local document/dictionary
         // files. Included directories replace theirs as part of the snapshot.
         for (folder, included) in [
-            ("documents", record.options.documents),
+            ("documents", record.options.documents || library.is_some()),
             ("dictionaries", record.options.dictionaries),
         ] {
             if !included && root.join(folder).exists() {
@@ -479,9 +711,15 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
         }
         let previous = unique(&parent, "before-restore");
         let had_profile = root.exists();
+        let journal = parent.join(JOURNAL);
         if had_profile {
-            fs::rename(&root, &previous)
-                .map_err(|e| format!("Cannot retain the current profile: {e}"))?;
+            write_journal(&journal, &stage, &previous)?;
+            reached(Step::Journal);
+            if let Err(error) = fs::rename(&root, &previous) {
+                let _ = fs::remove_file(&journal);
+                return Err(format!("Cannot retain the current profile: {error}"));
+            }
+            reached(Step::Retained);
         }
         if let Err(error) = fs::rename(&stage, &root) {
             if had_profile && let Err(rollback) = fs::rename(&previous, &root) {
@@ -490,10 +728,13 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
                     previous.display()
                 ));
             }
+            let _ = fs::remove_file(&journal);
             return Err(format!(
                 "Restore failed; the current profile was preserved: {error}"
             ));
         }
+        reached(Step::Swapped);
+        let _ = fs::remove_file(&journal);
         Ok(if had_profile {
             previous
         } else {
@@ -504,6 +745,182 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
         let _ = fs::remove_dir_all(&stage);
     }
     result
+}
+
+/// Lives beside the profile, not in it, so it survives the swap it guards.
+const JOURNAL: &str = ".simPl-restore.json";
+const STAGE_PREFIX: &str = ".simPl-restore-";
+const PREVIOUS_PREFIX: &str = ".simPl-before-restore-";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Journal {
+    version: u32,
+    stage: String,
+    previous: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Journal,
+    Retained,
+    Swapped,
+}
+
+#[cfg(test)]
+thread_local!(static CRASH_AFTER: std::cell::Cell<Option<Step>> = const { std::cell::Cell::new(None) });
+
+fn reached(step: Step) {
+    #[cfg(test)]
+    if CRASH_AFTER.get() == Some(step) {
+        panic!("simulated crash after {step:?}");
+    }
+    let _ = step;
+}
+
+fn write_journal(journal: &Path, stage: &Path, previous: &Path) -> Result<(), String> {
+    let name = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .ok_or("Invalid restore folder name")
+    };
+    let record = Journal {
+        version: 1,
+        stage: name(stage)?,
+        previous: name(previous)?,
+    };
+    let bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
+    crate::position::atomic_write(
+        journal,
+        &bytes,
+        "restore record",
+        "profile",
+        ".simPl-journal",
+    )
+}
+
+/// The journal is external data: only a bare folder name with the expected
+/// prefix is ever joined to the profile's parent.
+fn read_journal(bytes: &[u8]) -> Result<(String, String), String> {
+    let record: Journal = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if record.version != 1 {
+        return Err(format!("unsupported version {}", record.version));
+    }
+    for (name, prefix) in [
+        (&record.stage, STAGE_PREFIX),
+        (&record.previous, PREVIOUS_PREFIX),
+    ] {
+        let mut parts = Path::new(name).components();
+        let bare = matches!(parts.next(), Some(Component::Normal(part)) if part == name.as_str())
+            && parts.next().is_none();
+        if !bare || !name.starts_with(prefix) || name.len() == prefix.len() {
+            return Err(format!("unexpected folder name {name:?}"));
+        }
+    }
+    Ok((record.stage, record.previous))
+}
+
+/// A profile, stage or previous folder: absent, or a real folder. Anything
+/// else (a file, a link) stops recovery before it touches anything.
+fn folder(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) if plain(path)?.is_dir() => Ok(true),
+        Ok(_) => Err(format!("{} is not a folder", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// What startup may do after looking for an interrupted restore.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RestoreRecovery {
+    /// The profile is usable. The text, if any, is a notice for the user.
+    Ready(Option<String>),
+    /// The profile is missing and the restore couldn't be finished. Nothing
+    /// may read or write the profile, or it would be recreated empty.
+    Blocked(String),
+}
+
+/// Finishes or undoes a restore a crash interrupted between writing its
+/// journal and swapping the profile. Called at startup, before anything
+/// reads the profile.
+pub fn recover_restore() -> RestoreRecovery {
+    recover_restore_at(&root())
+}
+
+fn recover_restore_at(root: &Path) -> RestoreRecovery {
+    let Some(parent) = root.parent() else {
+        return RestoreRecovery::Ready(None);
+    };
+    let journal = parent.join(JOURNAL);
+    let failed = |detail: String| {
+        let text = format!("A restore was interrupted and couldn't be finished: {detail}");
+        if root.is_dir() {
+            RestoreRecovery::Ready(Some(text))
+        } else {
+            RestoreRecovery::Blocked(text)
+        }
+    };
+    let bytes = match fs::read(&journal) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RestoreRecovery::Ready(None);
+        }
+        Err(error) => return failed(format!("{}: {error}", journal.display())),
+    };
+    let (stage, previous) = match read_journal(&bytes) {
+        Ok((stage, previous)) => (parent.join(stage), parent.join(previous)),
+        Err(error) => return failed(format!("{} is invalid: {error}", journal.display())),
+    };
+    let shown = |path: &Path| crate::library_location::display_path(path);
+    let state = (|| Ok::<_, String>((folder(root)?, folder(&stage)?, folder(&previous)?)))();
+    let notice = match state {
+        Err(error) => return failed(error),
+        Ok((true, true, false)) => {
+            if let Err(error) = crate::managed::check_tree(&stage)
+                .and_then(|()| fs::remove_dir_all(&stage).map_err(|e| e.to_string()))
+            {
+                return failed(format!("{}: {error}", stage.display()));
+            }
+            Some("A restore was interrupted before it started. Nothing changed.".to_owned())
+        }
+        // The first rename happened, so this profile was made afterwards;
+        // which of the three folders the user wants is not ours to guess.
+        Ok((true, true, true)) => {
+            return failed(format!(
+                "the restored profile is in {} and the previous one in {}. Nothing was changed.",
+                shown(&stage),
+                shown(&previous)
+            ));
+        }
+        Ok((true, false, _)) => None,
+        Ok((false, true, had_previous)) => {
+            if let Err(error) = fs::rename(&stage, root) {
+                return failed(format!("{}: {error}", stage.display()));
+            }
+            Some(if had_previous {
+                format!(
+                    "Finished restoring your backup. The previous profile is in {}.",
+                    shown(&previous)
+                )
+            } else {
+                "Finished restoring your backup.".to_owned()
+            })
+        }
+        Ok((false, false, true)) => {
+            if let Err(error) = fs::rename(&previous, root) {
+                return failed(format!("{}: {error}", previous.display()));
+            }
+            Some("A restore couldn't be finished, so your previous profile was put back.".to_owned())
+        }
+        Ok((false, false, false)) => Some(
+            "A restore was interrupted and its folders are gone. simPl starts with an empty profile."
+                .to_owned(),
+        ),
+    };
+    let _ = fs::remove_file(&journal);
+    RestoreRecovery::Ready(notice)
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
@@ -526,7 +943,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
+fn remap_paths(stage: &Path, from: &Path, to: &Path, books: &Books) -> Result<(), String> {
     let mut paths = Vec::new();
     let from = from.to_str().ok_or("Backup profile path is not Unicode")?;
     let windows = windows_path(from);
@@ -536,11 +953,37 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
         from.into()
     };
     let prefix = format!("{}/", prefix.trim_end_matches('/'));
+    fn under_profile(relative: &str, to: &Path, books: &Books) -> Result<PathBuf, String> {
+        let all = Options {
+            documents: true,
+            dictionaries: true,
+        };
+        let name = checked_name(relative, all)?;
+        let mut parts = relative.splitn(3, '/');
+        if let (Some("documents"), Some(id), Some(rest)) =
+            (parts.next(), parts.next(), parts.next())
+            && id.len() == 64
+            && id.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            let book = |folder: PathBuf| rest.split('/').fold(folder, |path, part| path.join(part));
+            match books {
+                Books::Kept(library) => return Ok(book(library.join(id))),
+                Books::Placed(library, placed) => {
+                    if let Some(placed) = placed.get(id) {
+                        return Ok(book(library.join(placed)));
+                    }
+                }
+                Books::Profile => {}
+            }
+        }
+        Ok(to.join(name))
+    }
     fn walk(
         value: &mut serde_json::Value,
         prefix: &str,
         windows: bool,
         to: &Path,
+        books: &Books,
         paths: &mut Vec<(String, PathBuf)>,
     ) -> Result<(), String> {
         match value {
@@ -555,13 +998,7 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
                 };
                 let relative = normalized.strip_prefix(prefix);
                 let new = if let Some(relative) = relative {
-                    to.join(checked_name(
-                        relative,
-                        Options {
-                            documents: true,
-                            dictionaries: true,
-                        },
-                    )?)
+                    under_profile(relative, to, books)?
                 } else if Path::new(text).is_absolute() && windows_path(text) == cfg!(windows) {
                     PathBuf::from(text.as_str())
                 } else {
@@ -580,13 +1017,13 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
             serde_json::Value::Object(map) => {
                 for (key, value) in map.iter_mut() {
                     if key == "path" || !value.is_string() {
-                        walk(value, prefix, windows, to, paths)?;
+                        walk(value, prefix, windows, to, books, paths)?;
                     }
                 }
             }
             serde_json::Value::Array(array) => {
                 for value in array {
-                    walk(value, prefix, windows, to, paths)?;
+                    walk(value, prefix, windows, to, books, paths)?;
                 }
             }
             _ => {}
@@ -604,7 +1041,7 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
         let mut data: serde_json::Value =
             serde_json::from_reader(File::open(&path).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("Invalid restored {name}: {e}"))?;
-        walk(&mut data, &prefix, windows, to, &mut paths)?;
+        walk(&mut data, &prefix, windows, to, books, &mut paths)?;
         fs::write(&path, serde_json::to_vec(&data).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     }
@@ -613,13 +1050,7 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
     for (old, new) in paths {
         let old_key = source_path_key(&old, windows);
         let new_key = crate::position::path_key(&new);
-        for suffix in [
-            "json",
-            "epub.json",
-            "pdf.json",
-            "pdf-book.json",
-            "pdf-mode.json",
-        ] {
+        for suffix in crate::position::SUFFIXES {
             let original = stage.join("positions").join(format!("{old_key}.{suffix}"));
             let target = stage.join("positions").join(format!("{new_key}.{suffix}"));
             if original.exists() && original != target {
@@ -778,7 +1209,7 @@ mod tests {
             let zip = dir.0.join("portable.zip");
             fs::write(&zip, bytes).unwrap();
             let root = dir.0.join("restored");
-            restore_into(&zip, &root).unwrap();
+            restore_into(&zip, &root, None).unwrap();
             let books = crate::library::load_at(&root.join("library.json")).unwrap();
             let document = &books[0].document;
             assert!(document.path.is_file());
@@ -818,7 +1249,13 @@ mod tests {
                 .unwrap(),
         );
         let root = dir.0.join("restored");
-        remap_paths(&dir.0.join("stage"), Path::new(source), &root).unwrap();
+        remap_paths(
+            &dir.0.join("stage"),
+            Path::new(source),
+            &root,
+            &Books::Profile,
+        )
+        .unwrap();
         let data: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.0.join("stage/library.json")).unwrap()).unwrap();
         let mapped = PathBuf::from(data["entries"][0]["document"]["path"].as_str().unwrap());
@@ -908,11 +1345,11 @@ mod tests {
             documents: true,
             dictionaries: true,
         };
-        let summary = create_from(&dir.0.join("source"), &backup, options).unwrap();
+        let summary = create_from(&dir.0.join("source"), None, &backup, options).unwrap();
         assert!(summary.files >= 11);
         assert_eq!(inspect(&backup).unwrap().files, summary.files);
         let destination = dir.0.join("destination");
-        let previous = restore_into(&backup, &destination).unwrap();
+        let previous = restore_into(&backup, &destination, None).unwrap();
         assert_eq!(
             fs::read(previous.join("preferences.json")).unwrap(),
             b"previous bytes"
@@ -1002,9 +1439,9 @@ mod tests {
         dir.write("destination/documents/local.html", b"local");
         dir.write("destination/dictionaries/local.bin", b"local pack");
         let backup = dir.0.join("snapshot.zip");
-        create_from(&dir.0.join("source"), &backup, Options::default()).unwrap();
+        create_from(&dir.0.join("source"), None, &backup, Options::default()).unwrap();
         let destination = dir.0.join("destination");
-        restore_into(&backup, &destination).unwrap();
+        restore_into(&backup, &destination, None).unwrap();
         assert_eq!(
             fs::read(destination.join("documents/local.html")).unwrap(),
             b"local"
@@ -1066,26 +1503,26 @@ mod tests {
             "documents/a.",
         ] {
             archive(&backup, &[(name, b"unsafe")], |_| {});
-            assert!(restore_into(&backup, &destination).is_err(), "{name}");
+            assert!(restore_into(&backup, &destination, None).is_err(), "{name}");
         }
         archive(
             &backup,
             &[("documents/a", b"one"), ("documents/A", b"two")],
             |_| {},
         );
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         archive(&backup, &[("documents/a", b"payload")], |record| {
             record.files[0].sha256 = "0".repeat(64)
         });
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         archive(
             &backup,
             &[("documents/a", b"one"), ("documents/b", b"two")],
             |record| record.files.iter_mut().for_each(|f| f.bytes = u64::MAX),
         );
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         archive(&backup, &[("preferences.json", b"{broken")], |_| {});
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         assert_eq!(
             fs::read(destination.join("preferences.json")).unwrap(),
             b"unchanged"
@@ -1098,15 +1535,216 @@ mod tests {
                 .starts_with(".simPl-restore-")
         }));
     }
+    fn leftovers(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(STAGE_PREFIX) || name == JOURNAL)
+            .collect()
+    }
+    #[test]
+    fn a_restore_interrupted_at_any_step_converges_on_the_next_start() {
+        let setting = br#"{"version":1,"root":{"Folder":"D:\\simPl Library"},"moving":null}"#;
+        for step in [Step::Journal, Step::Retained, Step::Swapped] {
+            let dir = TestDir::new();
+            record(&dir);
+            dir.write("destination/preferences.json", br#"{"version":1,"appearance":"dark","reading":{"font":"spectral","size":18,"spacing":180,"margin":64}}"#);
+            dir.write("destination/library-location.json", setting);
+            dir.write("library/readme.txt", b"user file");
+            let backup = dir.0.join("snapshot.zip");
+            create_from(&dir.0.join("source"), None, &backup, Options::default()).unwrap();
+            let destination = dir.0.join("destination");
+            let library = dir.0.join("library");
+            CRASH_AFTER.set(Some(step));
+            let crashed =
+                std::panic::catch_unwind(|| restore_into(&backup, &destination, Some(&library)));
+            CRASH_AFTER.set(None);
+            assert!(crashed.is_err(), "{step:?}");
+            let previous = fs::read_dir(&dir.0)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(PREVIOUS_PREFIX)
+                });
+            let expected = RestoreRecovery::Ready(match step {
+                Step::Journal => {
+                    Some("A restore was interrupted before it started. Nothing changed.".to_owned())
+                }
+                Step::Retained => Some(format!(
+                    "Finished restoring your backup. The previous profile is in {}.",
+                    crate::library_location::display_path(previous.as_ref().unwrap())
+                )),
+                Step::Swapped => None,
+            });
+            assert_eq!(recover_restore_at(&destination), expected, "{step:?}");
+            assert_eq!(
+                recover_restore_at(&destination),
+                RestoreRecovery::Ready(None),
+                "{step:?}"
+            );
+            let size = crate::preferences::load_from(&destination.join("preferences.json"))
+                .unwrap()
+                .reading
+                .size;
+            assert_eq!(
+                size,
+                if step == Step::Journal { 18 } else { 26 },
+                "{step:?}"
+            );
+            assert_eq!(
+                fs::read(destination.join("library-location.json")).unwrap(),
+                setting,
+                "{step:?}"
+            );
+            assert_eq!(leftovers(&dir.0), Vec::<String>::new(), "{step:?}");
+            assert_eq!(previous.is_some(), step != Step::Journal, "{step:?}");
+        }
+    }
+    #[test]
+    fn a_restore_journal_naming_another_folder_is_refused_and_touches_nothing() {
+        let dir = TestDir::new();
+        dir.write("victim/keep.txt", b"keep");
+        dir.write("home/.simPl-other-1/keep.txt", b"keep");
+        dir.write("home/.simPl-before-restore-1/preferences.json", b"previous");
+        let root = dir.0.join("home/simPl");
+        let journal = dir.0.join("home").join(JOURNAL);
+        let victim = dir.0.join("victim");
+        for (profile, stage) in [
+            (false, r"..\victim".to_owned()),
+            (true, r"..\victim".to_owned()),
+            (false, victim.to_string_lossy().into_owned()),
+            (true, ".simPl-restore-1/../../victim".to_owned()),
+            (false, ".simPl-other-1".to_owned()),
+            (false, ".simPl-restore-".to_owned()),
+        ] {
+            if profile {
+                dir.write("home/simPl/preferences.json", b"current");
+            }
+            let text = serde_json::to_vec(
+                &json!({"version":1,"stage":stage,"previous":".simPl-before-restore-1"}),
+            )
+            .unwrap();
+            fs::write(&journal, &text).unwrap();
+            let notice = match recover_restore_at(&root) {
+                RestoreRecovery::Ready(Some(notice)) if profile => notice,
+                RestoreRecovery::Blocked(notice) if !profile => notice,
+                other => panic!("{stage}: {other:?}"),
+            };
+            assert!(
+                notice.starts_with("A restore was interrupted and couldn't be finished: "),
+                "{notice}"
+            );
+            assert!(notice.contains("unexpected folder name"), "{notice}");
+            assert_eq!(fs::read(&journal).unwrap(), text);
+            assert_eq!(fs::read(victim.join("keep.txt")).unwrap(), b"keep");
+            assert_eq!(
+                fs::read(dir.0.join("home/.simPl-other-1/keep.txt")).unwrap(),
+                b"keep"
+            );
+            assert_eq!(root.exists(), profile, "{stage}");
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::write(&journal, b"{broken").unwrap();
+        assert!(
+            matches!(recover_restore_at(&root), RestoreRecovery::Blocked(text) if text.contains("is invalid"))
+        );
+        assert_eq!(fs::read(&journal).unwrap(), b"{broken");
+    }
+    #[test]
+    fn a_restore_that_cannot_be_finished_blocks_startup_and_loses_nothing() {
+        let dir = TestDir::new();
+        let root = dir.0.join("home/simPl");
+        let journal = dir.0.join("home").join(JOURNAL);
+        dir.write("home/.simPl-restore-1/preferences.json", b"restored");
+        dir.write("home/.simPl-before-restore-1/preferences.json", b"previous");
+        fs::write(
+            &journal,
+            br#"{"version":1,"stage":".simPl-restore-1","previous":".simPl-before-restore-1"}"#,
+        )
+        .unwrap();
+        let stage = dir.0.join("home/.simPl-restore-1");
+        let previous = dir.0.join("home/.simPl-before-restore-1");
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(stage.join("preferences.json"))
+                .unwrap()
+        };
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Blocked(text) if text.starts_with("A restore was interrupted and couldn't be finished: ")
+        ));
+        drop(held);
+        assert!(!root.exists());
+
+        dir.write("home/simPl/preferences.json", b"made later");
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Ready(Some(text)) if text.contains("Nothing was changed")
+        ));
+        assert_eq!(
+            fs::read(stage.join("preferences.json")).unwrap(),
+            b"restored"
+        );
+        assert_eq!(
+            fs::read(previous.join("preferences.json")).unwrap(),
+            b"previous"
+        );
+        assert!(journal.exists());
+    }
+    #[test]
+    fn restore_recovery_refuses_files_where_folders_belong() {
+        let dir = TestDir::new();
+        let root = dir.0.join("home/simPl");
+        let journal = dir.0.join("home").join(JOURNAL);
+        fs::create_dir_all(dir.0.join("home")).unwrap();
+        fs::write(
+            &journal,
+            br#"{"version":1,"stage":".simPl-restore-1","previous":".simPl-before-restore-1"}"#,
+        )
+        .unwrap();
+        dir.write("home/.simPl-before-restore-1/preferences.json", b"previous");
+        dir.write("home/.simPl-restore-1", b"not a folder");
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Blocked(text) if text.contains("is not a folder")
+        ));
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read(dir.0.join("home/.simPl-restore-1")).unwrap(),
+            b"not a folder"
+        );
+
+        fs::remove_file(dir.0.join("home/.simPl-restore-1")).unwrap();
+        fs::write(&root, b"a file").unwrap();
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Blocked(text) if text.contains("is not a folder")
+        ));
+        assert!(journal.exists());
+    }
     #[test]
     fn backup_must_be_outside_profile_and_can_atomically_replace_existing_zip() {
         let dir = TestDir::new();
         record(&dir);
         let source = dir.0.join("source");
-        assert!(create_from(&source, &source.join("snapshot.zip"), Options::default()).is_err());
+        assert!(
+            create_from(
+                &source,
+                None,
+                &source.join("snapshot.zip"),
+                Options::default()
+            )
+            .is_err()
+        );
         let backup = dir.0.join("snapshot.zip");
         fs::write(&backup, b"previous").unwrap();
-        create_from(&source, &backup, Options::default()).unwrap();
+        create_from(&source, None, &backup, Options::default()).unwrap();
         assert!(inspect(&backup).is_ok());
     }
     #[test]
