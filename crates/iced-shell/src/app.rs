@@ -922,6 +922,16 @@ struct Reader {
     failed_close: Option<CloseAction>,
     pending_notes_close: Option<CloseAction>,
     window: Option<window::Id>,
+    inbox: Inbox,
+}
+
+/// Requests from outside the window (the startup argument, a drop, another
+/// launch) that wait until the reader can act on them. One slot: the newest
+/// path wins.
+#[derive(Debug, Default)]
+struct Inbox {
+    open: Option<PathBuf>,
+    raise: bool,
 }
 
 impl Default for Reader {
@@ -1018,6 +1028,7 @@ impl Default for Reader {
             failed_close: None,
             pending_notes_close: None,
             window: None,
+            inbox: Inbox::default(),
         }
     }
 }
@@ -1846,15 +1857,23 @@ impl Reader {
         }
     }
 
-    fn open(&mut self, path: PathBuf, how: OpenAs) -> Task<Message> {
-        if self.saving
+    /// The one rule for when a document may replace what the reader shows.
+    /// `open` refuses otherwise; the inbox waits for it.
+    fn can_open(&self) -> bool {
+        !(self.saving
             || self.dialog.is_some()
             || self.failed_close.is_some()
             || self.removing.is_some()
             || self.confirm_remove.is_some()
-        {
+            || self.profile.busy)
+    }
+
+    fn open(&mut self, path: PathBuf, how: OpenAs) -> Task<Message> {
+        if !self.can_open() {
             return Task::none();
         }
+        // A choice made now replaces a waiting external one.
+        self.inbox.open = None;
         self.show_conversion = false;
         self.word_translation.reset();
         self.capture_progress();
@@ -1897,6 +1916,30 @@ impl Reader {
         .abortable();
         self.opening_task = Some(handle.abort_on_drop());
         Task::batch([task, library_task])
+    }
+
+    /// Acts on whatever the inbox holds that the reader can act on now. Safe
+    /// to call after every message: it takes what it uses.
+    fn drain_inbox(&mut self) -> Task<Message> {
+        let raise = match self.window {
+            // The native pickers have no owner, so a raised reader would hide them.
+            Some(id) if self.inbox.raise && self.dialog.is_none() && !self.profile.busy => {
+                self.inbox.raise = false;
+                window::minimize(id, false).chain(window::gain_focus(id))
+            }
+            _ => Task::none(),
+        };
+        let open = match self.inbox.open.take() {
+            Some(path) if self.can_open() => {
+                let how = OpenAs::external(&path);
+                self.open(path, how)
+            }
+            waiting => {
+                self.inbox.open = waiting;
+                Task::none()
+            }
+        };
+        Task::batch([raise, open])
     }
 
     fn persist_recent(&mut self) -> Task<Message> {
@@ -3187,6 +3230,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
+    let task = Task::batch([task, reader.drain_inbox()]);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
             || previous_pdf_page
@@ -4781,8 +4825,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Task::none()
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
-                    let how = OpenAs::external(&path);
-                    reader.open(path, how)
+                    reader.dropping = None;
+                    reader.inbox.open = Some(path);
+                    reader.drain_inbox()
                 }
                 iced::Event::Window(window::Event::Unfocused)
                 | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -6781,10 +6826,10 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 Task::perform(async { preferences::load() }, Message::PreferencesLoaded),
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),
-                path.clone().map_or_else(Task::none, |path| {
-                    let how = OpenAs::external(&path);
-                    reader.open(path, how)
-                }),
+                {
+                    reader.inbox.open = path.clone();
+                    reader.drain_inbox()
+                },
             ];
             (reader, Task::batch(tasks))
         },
@@ -8343,6 +8388,116 @@ mod tests {
             ))]),
             Some((Storage::Import, None))
         );
+    }
+
+    fn dropped_at(path: &str) -> Message {
+        window_event(window::Event::FileDropped(PathBuf::from(path)))
+    }
+
+    #[test]
+    fn external_opens_wait_for_every_blocker() {
+        let waiting = PathBuf::from(r"C:\Nowhere\waiting.pdf");
+        let card_path = PathBuf::from(r"C:\Books\Card.pdf");
+        type Blocker = (&'static str, fn(&mut Reader), Message);
+        let blockers: [Blocker; 6] = [
+            (
+                "saving",
+                |reader| reader.saving = true,
+                Message::Saved {
+                    action: CloseAction::Document,
+                    result: Ok(()),
+                },
+            ),
+            (
+                "dialog",
+                |reader| {
+                    let _ = update(reader, Message::ChooseFile(Storage::Import));
+                },
+                Message::DialogChosen(Ok(None)),
+            ),
+            (
+                "failed_close",
+                |reader| reader.failed_close = Some(CloseAction::Document),
+                Message::DismissError,
+            ),
+            (
+                "removing",
+                |reader| reader.removing = Some(PathBuf::from(r"C:\Books\Card.pdf")),
+                Message::RemovedLibrary {
+                    path: card_path,
+                    result: Ok(()),
+                },
+            ),
+            (
+                "confirm_remove",
+                |reader| {
+                    let _ = update(reader, Message::RemoveLibrary(0));
+                },
+                Message::DismissOverlay,
+            ),
+            (
+                "profile.busy",
+                |reader| reader.profile.busy = true,
+                Message::ProfileReply(Ok(profile_ui::Reply::Cancelled)),
+            ),
+        ];
+        for (blocker, block, done) in blockers {
+            let mut reader = reader_with(vec![card(r"C:\Books\Card.pdf")], Vec::new());
+            block(&mut reader);
+            assert!(!reader.can_open(), "{blocker}");
+            let _ = update(
+                &mut reader,
+                window_event(window::Event::FileHovered(waiting.clone())),
+            );
+            let _ = update(&mut reader, dropped_at(r"C:\Nowhere\waiting.pdf"));
+            assert_eq!(reader.dropping, None, "{blocker}");
+            assert_eq!(reader.opening, None, "{blocker}");
+            assert_eq!(mode(&reader.pending_open), None, "{blocker}");
+            assert_eq!(reader.inbox.open.as_ref(), Some(&waiting), "{blocker}");
+
+            let _ = update(&mut reader, done);
+
+            assert_eq!(reader.opening.as_ref(), Some(&waiting), "{blocker}");
+            assert_eq!(
+                mode(&reader.pending_open),
+                Some((Storage::InPlace, None)),
+                "{blocker}"
+            );
+            assert_eq!(reader.inbox.open, None, "{blocker}");
+        }
+    }
+
+    #[test]
+    fn the_dialog_choice_replaces_a_waiting_drop() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, Message::ChooseFile(Storage::Import));
+        let _ = update(&mut reader, dropped_at(r"C:\Nowhere\dropped.pdf"));
+        let _ = update(&mut reader, chosen(r"C:\Books\Chosen.pdf"));
+        let request = reader.request;
+        let _ = update(&mut reader, Message::DismissError);
+
+        assert_eq!(reader.opening, Some(PathBuf::from(r"C:\Books\Chosen.pdf")));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
+        assert_eq!(reader.request, request);
+        assert_eq!(reader.inbox.open, None);
+    }
+
+    #[test]
+    fn the_newest_external_open_wins_while_busy() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        reader.profile.busy = true;
+        let request = reader.request;
+        let _ = update(&mut reader, dropped_at(r"C:\Nowhere\a.pdf"));
+        let _ = update(&mut reader, dropped_at(r"C:\Nowhere\b.pdf"));
+        let _ = update(
+            &mut reader,
+            Message::ProfileReply(Ok(profile_ui::Reply::Cancelled)),
+        );
+        let _ = update(&mut reader, Message::DismissError);
+
+        assert_eq!(reader.opening, Some(PathBuf::from(r"C:\Nowhere\b.pdf")));
+        assert_eq!(reader.request, request.wrapping_add(1));
+        assert_eq!(reader.inbox.open, None);
     }
 
     fn failed(reader: &mut Reader) {
