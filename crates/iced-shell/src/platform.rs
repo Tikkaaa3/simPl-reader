@@ -200,7 +200,6 @@ pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf
         IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
     };
     use windows::core::HSTRING;
-    const CANCELLED: i32 = 0x8007_04C7_u32 as i32;
 
     let title = HSTRING::from(title);
     let initial = initial.map(|path| {
@@ -224,7 +223,11 @@ pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf
             }
             match dialog.Show(None) {
                 Ok(()) => {}
-                Err(error) if error.code().0 == CANCELLED => return Ok(None),
+                Err(error)
+                    if error.code() == windows::Win32::Foundation::ERROR_CANCELLED.to_hresult() =>
+                {
+                    return Ok(None);
+                }
                 Err(error) => return Err(error),
             }
             let name = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;

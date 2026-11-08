@@ -123,7 +123,7 @@ fn read() -> Result<Record, String> {
 }
 
 fn write(record: &Record) -> Result<(), String> {
-    fault()?;
+    injected_fault()?;
     let bytes = serde_json::to_vec(record).map_err(|error| error.to_string())?;
     crate::position::atomic_write(
         &profile().join(FILE),
@@ -134,9 +134,11 @@ fn write(record: &Record) -> Result<(), String> {
     )
 }
 
-struct Lock(#[allow(dead_code)] fs::File);
+const ERROR_SHARING_VIOLATION: i32 = 32;
 
-impl Lock {
+struct MoveLock(#[allow(dead_code)] fs::File);
+
+impl MoveLock {
     fn take() -> Result<Option<Self>, String> {
         fs::create_dir_all(profile()).map_err(|error| error.to_string())?;
         let mut options = fs::OpenOptions::new();
@@ -148,7 +150,7 @@ impl Lock {
         }
         match options.open(profile().join(LOCK)) {
             Ok(file) => Ok(Some(Self(file))),
-            Err(error) if error.raw_os_error() == Some(32) => Ok(None),
+            Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => Ok(None),
             Err(error) => Err(format!("Cannot lock the library settings: {error}")),
         }
     }
@@ -182,7 +184,7 @@ pub fn location() -> Result<Location, String> {
 /// "Stop using this folder": an unavailable custom folder is replaced by the
 /// default one. Nothing is moved or deleted.
 pub fn forget() -> Result<(), String> {
-    let _lock = Lock::take()?.ok_or(BUSY)?;
+    let _lock = MoveLock::take()?.ok_or(BUSY)?;
     let record = read()?;
     let Root::Folder(root) = &record.root else {
         return Err("The library already uses the default folder.".into());
@@ -309,12 +311,7 @@ pub fn plan(target: Target) -> Result<Plan, String> {
         if !crate::managed::regular(&to_path)?.is_dir() {
             return Err(format!("{} is not a folder.", display_path(&to_path)));
         }
-        if !crate::managed::owned_copies(&to_path)?.is_empty() {
-            return Err(format!(
-                "{} already has simPl books in it. Choose another folder.",
-                display_path(&to_path)
-            ));
-        }
+        refuse_existing_copies(&to_path)?;
     }
     let summary = count(&from_path)?;
     check_free_space(&to_resolved, summary.bytes)?;
@@ -324,6 +321,17 @@ pub fn plan(target: Target) -> Result<Plan, String> {
         to_path,
         summary,
     })
+}
+
+fn refuse_existing_copies(to: &Path) -> Result<(), String> {
+    if crate::managed::owned_copies(to)?.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} already has simPl books in it. Choose another folder.",
+            display_path(to)
+        ))
+    }
 }
 
 fn picked_library(picked: &Path) -> Result<PathBuf, String> {
@@ -530,7 +538,7 @@ pub fn run_move(
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<Outcome, String> {
-    let _lock = Lock::take()?.ok_or(BUSY)?;
+    let _lock = MoveLock::take()?.ok_or(BUSY)?;
     let record = read()?;
     if record.root != plan.from || record.moving.is_some() {
         return Err("The library changed since the move was prepared. Try again.".into());
@@ -552,12 +560,7 @@ pub fn run_move(
         cancel,
     };
     (job.report)(job.progress);
-    if !crate::managed::owned_copies(to)?.is_empty() {
-        return Err(format!(
-            "{} already has simPl books in it. Choose another folder.",
-            display_path(to)
-        ));
-    }
+    refuse_existing_copies(to)?;
     let copied = (|| -> Result<(), Stop> {
         remove_staging(to)?;
         write(&Record::new(
@@ -697,7 +700,7 @@ fn place_as(source: &Path, root: &Path, id: &str, job: &mut Job) -> Result<PathB
     }
     fs::create_dir(&incoming).map_err(io)?;
     copy_tree(source, &incoming, job)?;
-    fault()?;
+    injected_fault()?;
     let target = root.join(id);
     fs::rename(&incoming, &target)
         .map_err(|error| format!("Cannot place {}: {error}", display_path(&target)))?;
@@ -770,7 +773,7 @@ fn copy_file(source: &Path, target: &Path, len: u64, job: &mut Job) -> Result<()
     }
     output.sync_all().map_err(io)?;
     drop(output);
-    fault()?;
+    injected_fault()?;
     if hash_file(target)? != (len, digest.finalize().to_vec()) {
         return Err(Stop::Failed(format!(
             "The copy of {} doesn't match the original.",
@@ -810,7 +813,7 @@ fn rollback(to: &Path) -> Result<(), String> {
             return Ok(());
         }
         for folder in owned_folders(to)? {
-            fault()?;
+            injected_fault()?;
             crate::managed::check_tree(&folder)?;
             fs::remove_dir_all(&folder).map_err(io)?;
         }
@@ -883,7 +886,7 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
             .chain(recent.iter().map(|entry| &entry.path));
         for old in paths {
             if let Some(new) = moved(old, &from_keys, &to_path) {
-                fault()?;
+                injected_fault()?;
                 crate::position::copy_saved_records(old, &new)?;
             }
         }
@@ -904,7 +907,7 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
     }
     if changed {
         dedupe(&mut library, |entry| &entry.document.path);
-        fault()?;
+        injected_fault()?;
         crate::library::save_at(&library_file, &library)?;
     }
     changed = false;
@@ -916,7 +919,7 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
     }
     if changed {
         dedupe(&mut recent, |entry| &entry.path);
-        fault()?;
+        injected_fault()?;
         crate::recent::save_at(&recent_file, &recent)?;
     }
     let mut in_use = false;
@@ -944,7 +947,7 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
             if !crate::managed::is_owned_at(&to_path, &target) {
                 continue;
             }
-            fault()?;
+            injected_fault()?;
             crate::managed::check_tree(folder)?;
             fs::remove_dir_all(folder).map_err(io)?;
         }
@@ -967,7 +970,7 @@ pub fn recover() -> Option<String> {
         Ok(record) if record.moving.is_none() => return None,
         Ok(_) => {}
     }
-    let _lock = match Lock::take() {
+    let _lock = match MoveLock::take() {
         Ok(Some(lock)) => lock,
         Ok(None) => return None,
         Err(error) => return Some(error),
@@ -1010,7 +1013,7 @@ pub fn recover() -> Option<String> {
 /// drive letter, a renamed parent). Accepted only when it holds a copy for
 /// every card and Recent entry; nothing is copied.
 pub fn relink(picked: &Path) -> Result<usize, String> {
-    let _lock = Lock::take()?.ok_or(BUSY)?;
+    let _lock = MoveLock::take()?.ok_or(BUSY)?;
     let record = read()?;
     let Root::Folder(old) = &record.root else {
         return Err("The library uses the default folder.".into());
@@ -1089,7 +1092,7 @@ pub fn relink(picked: &Path) -> Result<usize, String> {
     Ok(books.len())
 }
 
-fn fault() -> Result<(), String> {
+fn injected_fault() -> Result<(), String> {
     #[cfg(test)]
     tests::fault()?;
     Ok(())

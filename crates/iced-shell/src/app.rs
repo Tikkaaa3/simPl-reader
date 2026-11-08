@@ -6621,7 +6621,11 @@ fn loading_frames() -> impl iced_futures::futures::Stream<Item = u8> {
     )
 }
 
-pub fn run(path: Option<PathBuf>, error: Option<String>, notice: Option<String>) -> iced::Result {
+pub fn run(
+    path: Option<PathBuf>,
+    error: Option<String>,
+    recovery_notice: Option<String>,
+) -> iced::Result {
     let mut application = iced::application(
         move || {
             let mut reader = Reader {
@@ -6629,7 +6633,7 @@ pub fn run(path: Option<PathBuf>, error: Option<String>, notice: Option<String>)
                 preferences_loading: true,
                 ..Reader::default()
             };
-            reader.library.notice = notice.clone();
+            reader.library.notice = recovery_notice.clone();
             let tasks = [
                 reader.refresh_library(),
                 Task::perform(async { preferences::load() }, Message::PreferencesLoaded),
