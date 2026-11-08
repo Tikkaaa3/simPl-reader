@@ -1159,14 +1159,6 @@ fn render_shelves() {
         .update(shelf::Message::NameInput("Okunacaklar".into()));
     let _ = reader.shelf.update(shelf::Message::NameSubmit);
     render(&mut reader, &output.join("shelves-name-error.png"));
-    reader.window_controls = WindowControls::Windows;
-    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
-        reader.appearance = appearance;
-        render(
-            &mut reader,
-            &output.join(format!("windows-controls-{name}.png")),
-        );
-    }
 }
 
 #[test]
@@ -1463,11 +1455,6 @@ fn render_pdf_book_previews() {
             let mut reader = Reader {
                 book: Some(book.clone()),
                 appearance,
-                window_controls: if std::env::var_os("SIMPL_PREVIEW_WINDOWS").is_some() {
-                    WindowControls::Windows
-                } else {
-                    WindowControls::Mac
-                },
                 zoom: font / DEFAULT_FONT_SIZE,
                 window_size: Size::new(width, 800.0),
                 focused: Some(Control::DocumentMode),

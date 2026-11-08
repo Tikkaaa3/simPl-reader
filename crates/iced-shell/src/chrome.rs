@@ -1,13 +1,12 @@
 //! Borderless native window chrome. The host owns the native window tasks.
 
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget};
-use iced::widget::{button, container, row, space, text, tooltip};
+use iced::widget::{button, container, row, text, tooltip};
 use iced::{
     Background, Border, Color, Element, Event, Length, Rectangle, Size, Theme, Vector, window,
 };
 
 use crate::ui;
-use reader_document::preferences::WindowControls;
 
 /// Requests for native window operations and the two header destinations.
 #[derive(Clone, Copy, Debug)]
@@ -47,14 +46,6 @@ const CAPTION_GAP: f32 = 4.0;
 const CAPTION_EDGE: f32 = 8.0;
 const EDGE: f32 = 4.0;
 const CORNER: f32 = 8.0;
-
-fn blend(theme: &Theme, foreground: Color, opacity: f32) -> Color {
-    Color::from_rgb(
-        foreground.r * opacity + ui::palette(theme).lowest.r * (1.0 - opacity),
-        foreground.g * opacity + ui::palette(theme).lowest.g * (1.0 - opacity),
-        foreground.b * opacity + ui::palette(theme).lowest.b * (1.0 - opacity),
-    )
-}
 
 fn button_style(theme: &Theme, status: button::Status, focused: bool) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
@@ -119,31 +110,6 @@ fn focus_marker(
     } else {
         control.into()
     }
-}
-
-fn dot(
-    action: Action,
-    color: impl Fn(&Theme) -> Color + 'static,
-    focused: Option<Action>,
-    hints: bool,
-    caption: &'static str,
-) -> Element<'static, Action> {
-    let selected = focused == Some(action);
-    let dot = container(space().width(12).height(12)).style(move |theme| container::Style {
-        background: Some(color(theme).into()),
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    });
-    let control = button(dot)
-        .on_press(action)
-        .width(20)
-        .height(30)
-        .padding([9, 4])
-        .style(move |theme, status| button_style(theme, status, selected));
-    hint(focus_marker(control, selected), caption, hints)
 }
 
 fn icon(
@@ -211,10 +177,9 @@ fn caption(
     hint(focus_marker(control, selected), tip, hints)
 }
 
-/// Native window button style and state shown in the header.
+/// Native window button state shown in the header.
 #[derive(Clone, Copy, Debug)]
 pub struct Controls {
-    pub style: WindowControls,
     pub maximized: bool,
     /// Suppress background hover overlays while a product modal is open.
     pub tooltips: bool,
@@ -230,30 +195,6 @@ pub fn view<'a>(
     appearance: Option<reader_document::preferences::Appearance>,
     toolbar: Option<bool>,
 ) -> Element<'a, Action> {
-    let dots = row![
-        dot(
-            Action::Close,
-            |theme| blend(theme, ui::palette(theme).danger, 0.8),
-            focused,
-            controls.tooltips,
-            "Close window"
-        ),
-        dot(
-            Action::Minimize,
-            |theme| blend(theme, ui::palette(theme).muted, 0.6),
-            focused,
-            controls.tooltips,
-            "Minimize window"
-        ),
-        dot(
-            Action::Maximize,
-            |theme| blend(theme, ui::palette(theme).border, 0.8),
-            focused,
-            controls.tooltips,
-            "Maximize or restore window"
-        ),
-    ]
-    .align_y(iced::Alignment::Center);
     let captions = row![
         caption(
             Action::Minimize,
@@ -289,26 +230,13 @@ pub fn view<'a>(
     ]
     .spacing(CAPTION_GAP)
     .align_y(iced::Alignment::Center);
-    // Mirror the complete tool order when window controls move to the right:
-    // Settings becomes the outside button on the Windows left edge.
-    let mut tools = row![];
-    if controls.style == WindowControls::Windows {
-        tools = tools.push(icon(
-            Action::Settings,
-            "\u{e8b8}",
-            focused,
-            controls.tooltips,
-            "Settings",
-        ));
-    } else {
-        tools = tools.push(icon(
-            Action::Search,
-            "\u{e8b6}",
-            focused,
-            controls.tooltips,
-            "Search or switch (Ctrl+K)",
-        ));
-    }
+    let mut tools = row![icon(
+        Action::Settings,
+        "\u{e8b8}",
+        focused,
+        controls.tooltips,
+        "Settings",
+    )];
     let appearance_icon = appearance.map(|appearance| {
         icon(
             Action::ToggleAppearance,
@@ -335,35 +263,19 @@ pub fn view<'a>(
             },
         )
     });
-    if controls.style == WindowControls::Windows {
-        if let Some(icon) = toolbar_icon {
-            tools = tools.push(icon);
-        }
-        if let Some(icon) = appearance_icon {
-            tools = tools.push(icon);
-        }
-        tools = tools.push(icon(
-            Action::Search,
-            "\u{e8b6}",
-            focused,
-            controls.tooltips,
-            "Search or switch (Ctrl+K)",
-        ));
-    } else {
-        if let Some(icon) = appearance_icon {
-            tools = tools.push(icon);
-        }
-        if let Some(icon) = toolbar_icon {
-            tools = tools.push(icon);
-        }
-        tools = tools.push(icon(
-            Action::Settings,
-            "\u{e8b8}",
-            focused,
-            controls.tooltips,
-            "Settings",
-        ));
+    if let Some(icon) = toolbar_icon {
+        tools = tools.push(icon);
     }
+    if let Some(icon) = appearance_icon {
+        tools = tools.push(icon);
+    }
+    tools = tools.push(icon(
+        Action::Search,
+        "\u{e8b6}",
+        focused,
+        controls.tooltips,
+        "Search or switch (Ctrl+K)",
+    ));
     let tools = tools.spacing(8).align_y(iced::Alignment::Center);
     let tool_count: f32 = 2.0 + f32::from(appearance.is_some()) + f32::from(toolbar.is_some());
     let tools_width = tool_count * 32.0 + (tool_count - 1.0) * 8.0;
@@ -394,29 +306,12 @@ pub fn view<'a>(
         .into()
     };
     // Both sides share one width so the title stays centred in the window.
-    let (left, right, side_width, right_padding): (Element<'a, Action>, Element<'a, Action>, _, _) =
-        match controls.style {
-            WindowControls::Mac => (dots.into(), tools.into(), tools_width + 40.0, 24.0),
-            // Caption buttons own the right edge, so the tools move to the left.
-            WindowControls::Windows => (
-                tools.into(),
-                captions.into(),
-                (tools_width + 48.0).max(3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE),
-                CAPTION_EDGE,
-            ),
-        };
+    let side_width = (tools_width + 48.0).max(3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE);
     let content = row![
-        container(left)
+        container(tools)
             .width(side_width)
             .height(HEIGHT)
-            .padding([
-                0,
-                if controls.style == WindowControls::Windows {
-                    24
-                } else {
-                    20
-                }
-            ])
+            .padding([0, 24])
             .align_y(iced::alignment::Vertical::Center),
         container(title)
             .width(Length::Fill)
@@ -424,11 +319,11 @@ pub fn view<'a>(
             .center_x(Length::Fill)
             .center_y(HEIGHT)
             .clip(true),
-        container(right)
+        container(captions)
             .width(side_width)
             .height(HEIGHT)
             .padding(iced::Padding {
-                right: right_padding,
+                right: CAPTION_EDGE,
                 ..iced::Padding::ZERO
             })
             .align_x(iced::alignment::Horizontal::Right)

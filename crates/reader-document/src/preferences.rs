@@ -33,21 +33,9 @@ impl Appearance {
     }
 }
 
-/// Placement and style of the minimize, maximize and close buttons.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowControls {
-    /// Round buttons at the left of the title bar.
-    #[default]
-    Mac,
-    /// Minimize, maximize and close glyphs at the right of the title bar.
-    Windows,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub appearance: Appearance,
-    pub window_controls: WindowControls,
     /// Id of the chosen reading theme; empty or unknown ids mean the default theme.
     pub theme: String,
     /// Read-aloud voice token id; empty means choose automatically.
@@ -63,8 +51,6 @@ struct Record {
     version: u32,
     #[serde(default)]
     appearance: Appearance,
-    #[serde(default)]
-    window_controls: WindowControls,
     #[serde(default)]
     theme: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -118,7 +104,6 @@ pub(crate) fn load_from(path: &Path) -> Result<Preferences, String> {
     }
     Ok(Preferences {
         appearance: record.appearance,
-        window_controls: record.window_controls,
         theme: record.theme.chars().take(64).collect(),
         voice: if record.voice.len() > 512 {
             String::new()
@@ -135,7 +120,6 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
     let bytes = serde_json::to_vec(&Record {
         version: VERSION,
         appearance: preferences.appearance,
-        window_controls: preferences.window_controls,
         theme: preferences.theme,
         voice: preferences.voice,
         speech_rate: preferences.speech_rate,
@@ -169,26 +153,27 @@ mod tests {
         let path = test_path();
         assert_eq!(load_from(&path).unwrap(), Preferences::default());
         for appearance in [Appearance::Dark, Appearance::Light] {
-            for window_controls in [WindowControls::Windows, WindowControls::Mac] {
-                let preferences = Preferences {
-                    appearance,
-                    window_controls,
-                    theme: "soft".into(),
-                    voice: r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\X".into(),
-                    speech_rate: -3,
-                    reading: crate::reading::Options {
-                        size: 26,
-                        ..Default::default()
-                    },
-                    dictionary: crate::dictionary::Settings {
-                        automatic: false,
-                        source: crate::dictionary::Language::Spanish,
-                        target: crate::dictionary::Language::English,
-                    },
-                };
-                save_to(&path, preferences.clone()).unwrap();
-                assert_eq!(load_from(&path).unwrap(), preferences);
-            }
+            let preferences = Preferences {
+                appearance,
+                theme: "soft".into(),
+                voice: r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\X".into(),
+                speech_rate: -3,
+                reading: crate::reading::Options {
+                    size: 26,
+                    ..Default::default()
+                },
+                dictionary: crate::dictionary::Settings {
+                    automatic: false,
+                    source: crate::dictionary::Language::Spanish,
+                    target: crate::dictionary::Language::English,
+                },
+            };
+            save_to(&path, preferences.clone()).unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["theme"], "soft");
+            assert!(saved.get("window_controls").is_none());
+            assert_eq!(load_from(&path).unwrap(), preferences);
         }
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -205,7 +190,6 @@ mod tests {
             load_from(&path).unwrap(),
             Preferences {
                 appearance: Appearance::Dark,
-                window_controls: WindowControls::Mac,
                 ..Preferences::default()
             }
         );
@@ -232,6 +216,30 @@ mod tests {
             fs::write(&path, &bytes).unwrap();
             assert!(load_from(&path).is_err());
             assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn legacy_mac_window_controls_key_still_loads() {
+        let path = test_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for controls in ["mac", "windows"] {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"version":1,"appearance":"dark","window_controls":"{controls}","theme":"soft"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                load_from(&path),
+                Ok(Preferences {
+                    appearance: Appearance::Dark,
+                    theme: "soft".into(),
+                    ..Preferences::default()
+                })
+            );
         }
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
