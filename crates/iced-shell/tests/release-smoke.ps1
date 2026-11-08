@@ -29,6 +29,8 @@ public static class ReleaseSmokeNative {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
@@ -130,17 +132,29 @@ function Wait-Title([string]$Expected) {
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Expected '$Expected'; title is '$([ReleaseSmokeNative]::Title($window))'."
 }
-function Open([string]$Path,[string]$Title) {
-    Key 0x4f -Ctrl
+function Add([string]$Path,[string]$Title) {
+    Key 0x49 -Ctrl
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     while ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
     Assert-Target
-    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+O did not open the native file picker.' }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+I did not open the native file picker.' }
     Text ([IO.Path]::GetFullPath($Path))
     Key 0x0d
     Wait-Title $Title
     Assert-Target
     if ([ReleaseSmokeNative]::GetForegroundWindow() -ne $window) { throw 'File picker did not return to the reader.' }
+}
+function Launch-Second([string]$Path) {
+    $start = @{ FilePath=$ExePath; WorkingDirectory=$env:TEMP; PassThru=$true }
+    if ($Path) { $start.ArgumentList = '"' + $Path + '"' }
+    $second = Start-Process @start
+    if (-not $second.WaitForExit(3000) -or $second.ExitCode -ne 0) { throw "Second launch '$Path' did not forward and exit." }
+}
+function Wait-Front {
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    while (([ReleaseSmokeNative]::IsIconic($window) -or [ReleaseSmokeNative]::GetForegroundWindow() -ne $window) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
+    if ([ReleaseSmokeNative]::IsIconic($window)) { throw 'Second launch did not restore the minimized reader.' }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -ne $window) { throw 'Second launch did not bring the reader to the front.' }
 }
 $resources = New-Object 'System.Collections.Generic.List[object]'
 function Sample-Resources([int]$Cycle) {
@@ -177,7 +191,7 @@ try {
     Start-Sleep -Milliseconds 200
     Size 900 640
     Capture '01-empty-library'
-    Open $txt 'Native reading notes'
+    Add $txt 'Native reading notes'
     Click 160 151 2; Capture '02a-missing-dictionary'
     Key 0x09; Key 0x09; Key 0x0d
     $catalog = Get-Content -Raw -LiteralPath (Join-Path $root 'assets/dictionaries/catalog.json') | ConvertFrom-Json
@@ -193,22 +207,22 @@ try {
     Key 0x77; Capture '04-toolbar-hidden'; Key 0x77
     Key 0x27; Capture '05-next-page'
     Key 0x57 -Ctrl; Wait-Title 'simPl'; Capture '06-library-after-txt'
-    Open $md 'A reading checklist'; Capture '07-markdown'
+    Add $md 'A reading checklist'; Capture '07-markdown'
     Key 0x4b -Ctrl; Text 'notes'; Capture '08-quick-switcher'; Key 0x1b
     Key 0x57 -Ctrl
-    Open (Join-Path $root 'fixtures/book-structure/structured.html') 'A quieter page'; Capture '09-html'
+    Add (Join-Path $root 'fixtures/book-structure/structured.html') 'A quieter page'; Capture '09-html'
     Key 0x57 -Ctrl
-    Open (Join-Path $root 'target/book-milestone2/structured.epub') 'A quieter page'
+    Add (Join-Path $root 'target/book-milestone2/structured.epub') 'A quieter page'
     Key 0x54 -Ctrl; Capture '10-epub-contents'; Key 0x1b
     Key 0x57 -Ctrl
-    Open (Join-Path $root 'target/book-milestone3/fixtures/prose.pdf') 'A quiet reading journey'
+    Add (Join-Path $root 'target/book-milestone3/fixtures/prose.pdf') 'A quiet reading journey'
     Capture '11-pdf-document'
     Key 0x4c -Ctrl; Key 0x41 -Ctrl; Text '2'; Key 0x0d; Capture '12-pdf-page-two'
     Size 540 640; Capture '13-narrow-pdf'
     $scale = [ReleaseSmokeNative]::GetDpiForWindow($window)/96.0
     $bounds = New-Object ReleaseSmokeNative+Rect; [void][ReleaseSmokeNative]::GetClientRect($window,[ref]$bounds)
     $point = New-Object ReleaseSmokeNative+Point; [void][ReleaseSmokeNative]::ClientToScreen($window,[ref]$point)
-    [void][ReleaseSmokeNative]::SetCursorPos($point.X+$bounds.Right-[int](40*$scale),$point.Y+[int](24*$scale))
+    [void][ReleaseSmokeNative]::SetCursorPos($point.X+[int](49*$scale),$point.Y+[int](28*$scale))
     Assert-Target; [ReleaseSmokeNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [ReleaseSmokeNative]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500; Capture '14-settings-top'
     [void][ReleaseSmokeNative]::SetCursorPos($point.X+[int](300*$scale),$point.Y+[int](340*$scale))
@@ -225,7 +239,7 @@ try {
                 @((Join-Path $root 'target/book-milestone2/structured.epub'),'A quieter page'),
                 @((Join-Path $root 'target/book-milestone3/fixtures/prose.pdf'),'A quiet reading journey')
             )) {
-                Open $document[0] $document[1]
+                Add $document[0] $document[1]
                 Key 0x27
                 Key 0x57 -Ctrl
                 Wait-Title 'simPl'
@@ -235,13 +249,33 @@ try {
         }
         Capture '17-library-after-repeat'
     }
+    Launch-Second $md
+    Wait-Title 'A reading checklist'
+    Wait-Front
+    Capture '18-forwarded-open'
+    [void][ReleaseSmokeNative]::ShowWindow($window, 6)
+    Launch-Second ''
+    Wait-Front
+    Key 0x49 -Ctrl
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+I did not open the native file picker.' }
+    Launch-Second $txt
+    Start-Sleep -Milliseconds 700
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'A forward raised the reader over its open file picker.' }
+    Key 0x1b
+    Wait-Title 'Native reading notes'
+    Wait-Front
+    Capture '19-forward-after-picker'
+    $readers = @(Get-Process | Where-Object { $_.Path -eq $ExePath })
+    if ($readers.Count -ne 1) { throw "Expected one reader process, found $($readers.Count)." }
     Key 0x73 -Alt
     if (-not $process.WaitForExit(8000) -or $process.ExitCode -ne 0) { throw 'Normal close did not exit cleanly.' }
     $library = Get-Content -Raw -LiteralPath (Join-Path $profile 'simPl/library.json') | ConvertFrom-Json
     if ($library.entries.Count -ne 5) { throw "Expected five imported formats, got $($library.entries.Count)." }
     $formats = @($library.entries | ForEach-Object { if ($_.PSObject.Properties['source_kind']) { $_.source_kind } else { $_.document.kind } })
     if (-not ($formats -contains 'Text') -or -not ($formats -contains 'Markdown')) { throw 'TXT/Markdown source labels were not retained.' }
-    $evidence = [ordered]@{ exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant(); dpi_scale=$scale; profile=$profile; formats=$formats; result='passed'; repeat_cycles=$RepeatCycles; resources=@($resources.ToArray()); assertions='native picker, keyboard navigation, persisted five imports/source labels, repeated opens without duplicate imports, clean exit; screenshots require visual review' }
+    $evidence = [ordered]@{ exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant(); dpi_scale=$scale; profile=$profile; formats=$formats; result='passed'; repeat_cycles=$RepeatCycles; resources=@($resources.ToArray()); assertions='native picker, keyboard navigation, persisted five imports/source labels, repeated opens without duplicate imports, second launches forward to one window, clean exit; screenshots require visual review' }
     $evidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $EvidenceDirectory 'result.json')
     Write-Host 'Normal-reader native smoke passed; inspect all screenshots.'
 } finally {

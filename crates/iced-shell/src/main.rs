@@ -12,6 +12,7 @@ mod chrome;
 mod dictionary_download;
 mod document_scroll;
 mod find;
+mod instance;
 mod notes;
 mod pdf_reader;
 mod platform;
@@ -1446,6 +1447,20 @@ fn application_style(_: &Shell, _: &Theme) -> iced::theme::Style {
     }
 }
 
+fn normal_launch(arguments: &[std::ffi::OsString]) -> Result<Option<std::path::PathBuf>, String> {
+    match arguments {
+        [] => Ok(None),
+        [path] if !path.to_string_lossy().starts_with("--") => {
+            Ok(Some(std::path::PathBuf::from(path)))
+        }
+        [separator, path] if separator == "--" => Ok(Some(std::path::PathBuf::from(path))),
+        _ => Err(
+            "Pass one local HTML, PDF, EPUB, text or Markdown path, or use Open to choose a file."
+                .to_owned(),
+        ),
+    }
+}
+
 fn main() {
     platform::mark_reader_running();
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -1454,19 +1469,18 @@ fn main() {
     let bidi_diagnostic_mode = reader::bidi_diagnostic_requested(&arguments);
     let shell_mode = arguments.iter().any(|argument| argument == "--shell-poc");
     if !reader_mode && !reader_large && !bidi_diagnostic_mode && !shell_mode {
-        let (path, error) = match arguments.as_slice() {
-            [] => (None, None),
-            [path] if !path.to_string_lossy().starts_with("--") => {
-                (Some(std::path::PathBuf::from(path)), None)
+        let launch = normal_launch(&arguments);
+        let path = launch.as_ref().ok().and_then(Option::as_deref);
+        if instance::claim(path) == instance::Claim::Forwarded {
+            if let Err(error) = &launch {
+                eprintln!("{error}");
+                std::process::exit(2);
             }
-            [separator, path] if separator == "--" => (Some(std::path::PathBuf::from(path)), None),
-            _ => (
-                None,
-                Some(
-                    "Pass one local HTML, PDF, EPUB, text or Markdown path, or use Open to choose a file."
-                        .to_owned(),
-                ),
-            ),
+            return;
+        }
+        let (path, error) = match launch {
+            Ok(path) => (path, None),
+            Err(error) => (None, Some(error)),
         };
         if let Err(error) = app::run(path, error) {
             eprintln!("failed to run simPl: {error}");
@@ -1752,5 +1766,35 @@ mod reader_allocation_tests {
         assert!(!shell.reader_selection_test_status);
         assert!(shell.reader_last_hit.is_none());
         assert!(shell.reader_last_pointer.is_none());
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::normal_launch;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn launch(arguments: &[&str]) -> Result<Option<PathBuf>, String> {
+        normal_launch(&arguments.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn normal_launch_accepts_a_path_or_a_separated_path() {
+        let refused = Err(
+            "Pass one local HTML, PDF, EPUB, text or Markdown path, or use Open to choose a file."
+                .to_owned(),
+        );
+        assert_eq!(launch(&[]), Ok(None));
+        assert_eq!(
+            launch(&[r"C:\My books\a b.pdf"]),
+            Ok(Some(PathBuf::from(r"C:\My books\a b.pdf")))
+        );
+        assert_eq!(
+            launch(&["--", "--odd.pdf"]),
+            Ok(Some(PathBuf::from("--odd.pdf")))
+        );
+        assert_eq!(launch(&["--help"]), refused);
+        assert_eq!(launch(&["a", "b"]), refused);
     }
 }

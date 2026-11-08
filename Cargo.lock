@@ -1074,6 +1074,7 @@ dependencies = [
  "reader-document",
  "reader-layout",
  "reader-pdf",
+ "reader-profile",
  "reader-workload",
  "serde",
  "serde_json",

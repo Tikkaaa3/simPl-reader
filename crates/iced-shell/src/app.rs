@@ -10,7 +10,7 @@ use std::sync::{
 use crate::{
     book_pages,
     book_style::{self, BookStyle, MINIMAL},
-    chrome, find, notes, pdf_reader, shelf, themes, ui,
+    chrome, find, instance, notes, pdf_reader, shelf, themes, ui,
 };
 use iced::keyboard::{self, Key, key};
 use iced::widget::{column, container, image, row, scrollable, text};
@@ -922,6 +922,13 @@ struct Reader {
     failed_close: Option<CloseAction>,
     pending_notes_close: Option<CloseAction>,
     window: Option<window::Id>,
+    inbox: Inbox,
+}
+
+#[derive(Debug, Default)]
+struct Inbox {
+    open: Option<PathBuf>,
+    raise: bool,
 }
 
 impl Default for Reader {
@@ -1018,6 +1025,7 @@ impl Default for Reader {
             failed_close: None,
             pending_notes_close: None,
             window: None,
+            inbox: Inbox::default(),
         }
     }
 }
@@ -1100,6 +1108,7 @@ enum Message {
         result: Result<reader_document::backup::Summary, String>,
     },
     ProfileReply(Result<profile_ui::Reply, String>),
+    Forwarded(instance::Request),
     PdfBookRaster {
         document: u64,
         page: u32,
@@ -1846,15 +1855,20 @@ impl Reader {
         }
     }
 
-    fn open(&mut self, path: PathBuf, how: OpenAs) -> Task<Message> {
-        if self.saving
+    fn can_open(&self) -> bool {
+        !(self.saving
             || self.dialog.is_some()
             || self.failed_close.is_some()
             || self.removing.is_some()
             || self.confirm_remove.is_some()
-        {
+            || self.profile.busy)
+    }
+
+    fn open(&mut self, path: PathBuf, how: OpenAs) -> Task<Message> {
+        if !self.can_open() {
             return Task::none();
         }
+        self.inbox.open = None;
         self.show_conversion = false;
         self.word_translation.reset();
         self.capture_progress();
@@ -1897,6 +1911,33 @@ impl Reader {
         .abortable();
         self.opening_task = Some(handle.abort_on_drop());
         Task::batch([task, library_task])
+    }
+
+    /// The native file and backup pickers have no owner window, so raising the
+    /// reader while one is open would hide it.
+    fn picker_open(&self) -> bool {
+        self.dialog.is_some() || self.profile.busy
+    }
+
+    fn drain_inbox(&mut self) -> Task<Message> {
+        let raise = match self.window {
+            Some(id) if self.inbox.raise && !self.picker_open() => {
+                self.inbox.raise = false;
+                window::minimize(id, false).chain(window::gain_focus(id))
+            }
+            _ => Task::none(),
+        };
+        let open = match self.inbox.open.take() {
+            Some(path) if self.can_open() => {
+                let how = OpenAs::external(&path);
+                self.open(path, how)
+            }
+            waiting => {
+                self.inbox.open = waiting;
+                Task::none()
+            }
+        };
+        Task::batch([raise, open])
     }
 
     fn persist_recent(&mut self) -> Task<Message> {
@@ -3187,6 +3228,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
+    let task = Task::batch([task, reader.drain_inbox()]);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
             || previous_pdf_page
@@ -3261,6 +3303,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ToggleFullscreen => reader.toggle_fullscreen(),
         Message::Profile(action) => reader.profile_action(action),
         Message::ProfileReply(result) => reader.profile_reply(result),
+        Message::Forwarded(request) => {
+            reader.inbox.raise = true;
+            if let instance::Request::Open(path) = request {
+                reader.inbox.open = Some(path);
+            }
+            reader.drain_inbox()
+        }
         Message::BackupEstimate { generation, result } => {
             reader.profile_estimated(generation, result);
             Task::none()
@@ -4699,7 +4748,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let global_shortcut = matches!(&event,
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: Key::Character(value), modifiers, ..
-                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l") || value.eq_ignore_ascii_case("k")));
+                }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("i") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l") || value.eq_ignore_ascii_case("k")));
             if pdf_input && !global_shortcut && !reader.show_search && !reader.show_settings {
                 let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
                 if let Some(pdf) = &mut reader.pdf {
@@ -4781,8 +4830,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Task::none()
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
-                    let how = OpenAs::external(&path);
-                    reader.open(path, how)
+                    reader.dropping = None;
+                    reader.inbox.open = Some(path);
+                    reader.drain_inbox()
                 }
                 iced::Event::Window(window::Event::Unfocused)
                 | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -4797,6 +4847,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     match key.as_ref() {
                         Key::Character(value) if modifiers.control() => {
                             match value.to_ascii_lowercase().as_str() {
+                                "i" => update_inner(reader, Message::ChooseFile(Storage::Import)),
                                 "o" => update_inner(reader, Message::ChooseFile(Storage::InPlace)),
                                 "w" => reader.close(CloseAction::Document),
                                 "c" => update_inner(reader, Message::Copy),
@@ -6483,7 +6534,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center),
             text("Tab / Shift+Tab  ·  Controls    Enter / Space  ·  Activate    Escape  ·  Dismiss    F1  ·  Help")
                 .size(12).style(ui::muted_text),
-            text("Ctrl+O  Open    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
+            text("Ctrl+O  Open    Ctrl+I  Add to library    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
                 .size(12).style(ui::muted_text),
             text("Page Up / Down  Read    Ctrl+Home / End  Ends    Ctrl+plus / minus / 0  Zoom")
                 .size(12).style(ui::muted_text),
@@ -6690,6 +6741,7 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
                 ..
             } if !matches!(&key, Key::Character(value)
                 if modifiers.control() && (value.eq_ignore_ascii_case("o")
+                    || value.eq_ignore_ascii_case("i")
                     || value.eq_ignore_ascii_case("w")
                     || value.eq_ignore_ascii_case("r")
                     || value.eq_ignore_ascii_case("l")
@@ -6734,6 +6786,7 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
     if reader.read_aloud.ticking() {
         subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
     }
+    subscriptions.push(Subscription::run(instance::forwarded).map(Message::Forwarded));
     Subscription::batch(subscriptions)
 }
 
@@ -6778,10 +6831,10 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 Task::perform(async { preferences::load() }, Message::PreferencesLoaded),
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),
-                path.clone().map_or_else(Task::none, |path| {
-                    let how = OpenAs::external(&path);
-                    reader.open(path, how)
-                }),
+                {
+                    reader.inbox.open = path.clone();
+                    reader.drain_inbox()
+                },
             ];
             (reader, Task::batch(tasks))
         },
@@ -8240,12 +8293,12 @@ mod tests {
         Message::Event(iced::Event::Window(event), window::Id::unique())
     }
 
-    fn ctrl_o() -> Message {
+    fn ctrl_key(value: &str, code: key::Code) -> Message {
         Message::Event(
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                key: Key::Character("o".into()),
-                modified_key: Key::Character("o".into()),
-                physical_key: key::Physical::Code(key::Code::KeyO),
+                key: Key::Character(value.into()),
+                modified_key: Key::Character(value.into()),
+                physical_key: key::Physical::Code(code),
                 location: keyboard::Location::Standard,
                 modifiers: keyboard::Modifiers::CTRL,
                 text: None,
@@ -8253,6 +8306,14 @@ mod tests {
             }),
             window::Id::unique(),
         )
+    }
+
+    fn ctrl_o() -> Message {
+        ctrl_key("o", key::Code::KeyO)
+    }
+
+    fn ctrl_i() -> Message {
+        ctrl_key("i", key::Code::KeyI)
     }
 
     #[test]
@@ -8312,6 +8373,7 @@ mod tests {
             Some((Storage::InPlace, None))
         );
         assert_eq!(dialog_mode(vec![ctrl_o()]), Some((Storage::InPlace, None)));
+        assert_eq!(dialog_mode(vec![ctrl_i()]), Some((Storage::Import, None)));
         assert_eq!(
             dialog_mode(vec![activate(shelf::Control::Add)]),
             Some((Storage::Import, None))
@@ -8328,6 +8390,216 @@ mod tests {
             ))]),
             Some((Storage::Import, None))
         );
+    }
+
+    fn dropped_at(path: &str) -> Message {
+        window_event(window::Event::FileDropped(PathBuf::from(path)))
+    }
+
+    fn forwarded_at(path: &str) -> Message {
+        Message::Forwarded(instance::Request::Open(PathBuf::from(path)))
+    }
+
+    #[test]
+    fn external_opens_wait_for_every_blocker() {
+        let waiting = PathBuf::from(r"C:\Nowhere\waiting.pdf");
+        type Blocker = (&'static str, fn(&mut Reader), fn() -> Message);
+        let blockers: [Blocker; 6] = [
+            (
+                "saving",
+                |reader| reader.saving = true,
+                || Message::Saved {
+                    action: CloseAction::Document,
+                    result: Ok(()),
+                },
+            ),
+            (
+                "dialog",
+                |reader| {
+                    let _ = update(reader, Message::ChooseFile(Storage::Import));
+                },
+                || Message::DialogChosen(Ok(None)),
+            ),
+            (
+                "failed_close",
+                |reader| reader.failed_close = Some(CloseAction::Document),
+                || Message::DismissError,
+            ),
+            (
+                "removing",
+                |reader| reader.removing = Some(PathBuf::from(r"C:\Books\Card.pdf")),
+                || Message::RemovedLibrary {
+                    path: PathBuf::from(r"C:\Books\Card.pdf"),
+                    result: Ok(()),
+                },
+            ),
+            (
+                "confirm_remove",
+                |reader| {
+                    let _ = update(reader, Message::RemoveLibrary(0));
+                },
+                || Message::DismissOverlay,
+            ),
+            (
+                "profile.busy",
+                |reader| reader.profile.busy = true,
+                || Message::ProfileReply(Ok(profile_ui::Reply::Cancelled)),
+            ),
+        ];
+        type External = (&'static str, fn(&str) -> Message);
+        let entries: [External; 2] = [("drop", dropped_at), ("forward", forwarded_at)];
+        for (blocker, block, done) in blockers {
+            for (entry, external) in entries {
+                let case = format!("{entry} behind {blocker}");
+                let mut reader = reader_with(vec![card(r"C:\Books\Card.pdf")], Vec::new());
+                block(&mut reader);
+                assert!(!reader.can_open(), "{case}");
+                let _ = update(&mut reader, external(r"C:\Nowhere\waiting.pdf"));
+                assert_eq!(reader.opening, None, "{case}");
+                assert_eq!(mode(&reader.pending_open), None, "{case}");
+                assert_eq!(reader.inbox.open.as_ref(), Some(&waiting), "{case}");
+
+                let _ = update(&mut reader, done());
+
+                assert_eq!(reader.opening.as_ref(), Some(&waiting), "{case}");
+                assert_eq!(
+                    mode(&reader.pending_open),
+                    Some((Storage::InPlace, None)),
+                    "{case}"
+                );
+                assert_eq!(reader.inbox.open, None, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_dialog_choice_replaces_a_waiting_drop() {
+        let dropped = PathBuf::from(r"C:\Nowhere\dropped.pdf");
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, Message::ChooseFile(Storage::Import));
+        let _ = update(
+            &mut reader,
+            window_event(window::Event::FileHovered(dropped.clone())),
+        );
+        let _ = update(
+            &mut reader,
+            window_event(window::Event::FileDropped(dropped)),
+        );
+        assert_eq!(reader.dropping, None);
+        let _ = update(&mut reader, chosen(r"C:\Books\Chosen.pdf"));
+        let request = reader.request;
+        let _ = update(&mut reader, Message::DismissError);
+
+        assert_eq!(reader.opening, Some(PathBuf::from(r"C:\Books\Chosen.pdf")));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
+        assert_eq!(reader.request, request);
+        assert_eq!(reader.inbox.open, None);
+    }
+
+    #[test]
+    fn forwarded_paths_open_like_external_ones() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, forwarded_at(r"C:\Nowhere\f.pdf"));
+        assert_eq!(reader.opening, Some(PathBuf::from(r"C:\Nowhere\f.pdf")));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::InPlace, None)));
+
+        let folder = std::env::temp_dir();
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, forwarded_at(folder.to_str().unwrap()));
+        assert_eq!(reader.opening, Some(folder));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
+    }
+
+    fn raises(task: Task<Message>) -> Vec<(window::Id, &'static str)> {
+        use iced_futures::futures::{StreamExt, executor::block_on};
+        use iced_runtime::{Action, window::Action as WindowAction};
+        let mut actions = Vec::new();
+        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+            block_on(async {
+                while let Some(action) = stream.next().await {
+                    match action {
+                        Action::Window(WindowAction::Minimize(id, false)) => {
+                            actions.push((id, "restore"));
+                        }
+                        Action::Window(WindowAction::GainFocus(id)) => actions.push((id, "focus")),
+                        _ => {}
+                    }
+                }
+            });
+        }
+        actions
+    }
+
+    fn opened(id: window::Id) -> Message {
+        Message::Event(
+            iced::Event::Window(window::Event::Opened {
+                position: None,
+                size: Size::new(1280.0, 800.0),
+            }),
+            id,
+        )
+    }
+
+    #[test]
+    fn raise_waits_for_the_window_and_runs_once() {
+        let id = window::Id::unique();
+        let mut fresh = reader_with(Vec::new(), Vec::new());
+        assert_eq!(raises(update(&mut fresh, opened(id))), []);
+
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let forward = Message::Forwarded(instance::Request::Raise);
+        assert_eq!(raises(update(&mut reader, forward)), []);
+        assert_eq!(
+            raises(update(&mut reader, opened(id))),
+            [(id, "restore"), (id, "focus")]
+        );
+        assert_eq!(
+            raises(update(&mut reader, window_event(window::Event::Focused))),
+            []
+        );
+    }
+
+    #[test]
+    fn raise_waits_for_an_open_picker() {
+        let id = window::Id::unique();
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update(&mut reader, opened(id));
+        let _ = update(&mut reader, Message::ChooseFile(Storage::Import));
+        let forward = Message::Forwarded(instance::Request::Raise);
+        assert_eq!(raises(update(&mut reader, forward)), []);
+        assert_eq!(
+            raises(update(&mut reader, Message::DialogChosen(Ok(None)))),
+            [(id, "focus"), (id, "restore"), (id, "focus")]
+        );
+
+        reader.profile.busy = true;
+        let forward = Message::Forwarded(instance::Request::Raise);
+        assert_eq!(raises(update(&mut reader, forward)), []);
+        assert_eq!(
+            raises(update(
+                &mut reader,
+                Message::ProfileReply(Ok(profile_ui::Reply::Cancelled))
+            )),
+            [(id, "restore"), (id, "focus")]
+        );
+    }
+
+    #[test]
+    fn the_newest_external_open_wins_while_busy() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        reader.profile.busy = true;
+        let request = reader.request;
+        let _ = update(&mut reader, dropped_at(r"C:\Nowhere\a.pdf"));
+        let _ = update(&mut reader, dropped_at(r"C:\Nowhere\b.pdf"));
+        let _ = update(
+            &mut reader,
+            Message::ProfileReply(Ok(profile_ui::Reply::Cancelled)),
+        );
+        let _ = update(&mut reader, Message::DismissError);
+
+        assert_eq!(reader.opening, Some(PathBuf::from(r"C:\Nowhere\b.pdf")));
+        assert_eq!(reader.request, request.wrapping_add(1));
+        assert_eq!(reader.inbox.open, None);
     }
 
     fn failed(reader: &mut Reader) {

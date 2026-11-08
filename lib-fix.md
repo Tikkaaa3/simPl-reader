@@ -128,22 +128,49 @@ A missing `library.json` is rebuilt from Recent, but only from simPl's own copie
 
 ## Phase LF-2: Explorer double-click and Open with
 
-1. In `app.rs:6745`, the startup path opens **in place**.
-2. Single instance: when simPl is already running, a second launch forwards the path to it and exits. The running window then opens the file and comes to the front.
-   - Use a per-user named pipe, `\\.\pipe\simPl-<user SID>`, created by the first instance. An iced subscription reads paths from it and sends `Message::OpenExternal(path)`.
-   - The second process connects, writes the path (UTF-16, length-prefixed, at most 32 KiB), and exits.
-     If it can't connect within about 500 ms, it starts normally. A crashed first instance must never block a launch.
-   - The diagnostic modes (`--reader-poc` and others) skip single-instance handling.
-   - If a book is open, use the normal close/save flow (`capture_progress`) before switching. If a modal is open (settings, a backup in progress, a remove confirmation), queue the path and open it once the modal closes.
-3. Installer, `installer/simPl.iss`:
-   - Also register `.htm`, `.xhtml` and `.markdown` (the README lists them as supported).
-   - Add `SupportedTypes` under `Software\Classes\Applications\simPl.exe`, so the portable exe also shows up properly in "Open with → Choose another app".
-   - Windows doesn't let an app make itself the default. Users choose "Always" in the Open with dialog. Document this in the README.
-4. Tests:
-   - Argument parsing still accepts `simPl.exe "<path>"` and `-- <path>`.
-   - Pipe protocol unit tests: framing, oversize payloads, invalid UTF-16.
-   - `scripts/test-installer.ps1` checks the new registry values.
-   - A native QA run: double-click a PDF while simPl is closed, then again while it's open.
+Status: implemented on `feat/lf2-open-with`.
+
+### One window per profile
+
+`crates/iced-shell/src/instance.rs` owns single-instance behaviour. `main()` calls `instance::claim(path)` in normal mode only, after mode detection and before iced starts. It returns `Claim::Primary` (run the reader) or `Claim::Forwarded` (exit 0). The diagnostic modes never create or contact the pipe.
+
+- **Key.** The pipe name is `\\.\pipe\simPl.Reader.<session>.<hash>`. The hash covers a version tag, the user's binary SID and the normalized profile folder (`reader_profile::storage_base()`). Scripts that set their own `LOCALAPPDATA` therefore get their own window and never reach yours.
+- **Election.** A launch first tries to create the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so Windows decides which of two simultaneous launches becomes the server. The loser forwards.
+- **Server.** A dedicated thread accepts one request per connection. It creates the next pipe instance before reading the current one, so a burst of launches waits briefly instead of finding no server. A client that wrote and closed before the server accepted still delivers: `ConnectNamedPipe` returns `ERROR_NO_DATA` and the bytes are readable.
+- **Client.** The second launch resolves the path against its own working directory, connects within 500 ms, lets the server take the foreground (`AllowSetForegroundWindow`) and writes one frame. Any failure, including an elevated first instance, means it starts normally.
+- **Wire.** A 4-byte length, then UTF-16 (at most 32 KiB). Zero length means "come to the front". `wire::decode` is the only place that checks incoming bytes.
+
+### In the running window
+
+`instance::forwarded` feeds an unconditional subscription that sends `Message::Forwarded(Request)`. The startup argument, file drops and forwards all go through one `Inbox { open, raise }`:
+
+- `Reader::can_open()` is the single rule for when a document may replace what is shown. It covers saving, a file dialog, a failed close, a removal, a remove confirmation and a backup or restore. `Reader::open` uses it, and the inbox waits for it.
+- The inbox holds one path, so the newest one wins. A file the user picks directly replaces a waiting one.
+- `update()` drains the inbox after every message. The window is restored if minimized, then focused. Raising waits while a file picker or the backup picker is open, because those pickers have no owner window.
+
+### Shortcut
+
+**Add document** is Ctrl+I. The plan said Ctrl+Shift+O, but another program on the development machine had registered it as a global hotkey (`RegisterHotKey` returns `ERROR_HOTKEY_ALREADY_REGISTERED`), so simPl never received it. Global hotkeys rarely use a single modifier.
+
+### Installer
+
+`.htm` and `.xhtml` use the existing `simPl.Reader.HTML` ProgID and `.markdown` uses `simPl.Reader.MD`. `scripts/test-installer.ps1` checks all eight extensions from one ordered map.
+
+`SupportedTypes` under `Software\Classes\Applications\simPl.exe` was dropped. The Installer QA and production setups both install `simPl.exe`, so they would share that key, and Windows can launch the installed copy when a user picks a portable `simPl.exe`. `OpenWithProgids` and `Capabilities\FileAssociations` already list simPl in Open with. Windows doesn't let an app make itself the default, so users choose **Always** in the Open with dialog.
+
+### Checks
+
+- `instance.rs` tests use throwaway pipe names: framing and rejection, write-before-accept, a burst of 16, the stuck-server deadline, and the first-instance flag. Child processes with a temporary `LOCALAPPDATA` test a simultaneous election, a crashed primary and a forward into a running reader.
+- `crates/iced-shell/tests/release-smoke.ps1` launches a second copy with a file, after minimizing, and while the file picker is open, then checks that one reader process remains.
+- `scripts/test-installer.ps1` passed with the eight extensions.
+- A manual check of the release build is not committed. It covered forwarding, a relative path, restore and front while minimized, a maximized window staying maximized, a launch with no file, a burst and two profiles.
+
+### Accepted for now
+
+- A client that connects and never writes stalls later forwards until they time out and start their own window. Only a hostile process of the same user can do this.
+- A forward that reaches a window while it is closing is lost; there is no acknowledgement.
+- Selecting several files in Explorer opens one of them.
+- A forwarded open while a note is being written does not save the draft first. Drops have the same gap.
 
 ## Phase LF-3: Library location setting
 

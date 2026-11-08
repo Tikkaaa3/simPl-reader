@@ -107,7 +107,8 @@ To create the portable application, follow [Build from source](#build-from-sourc
 If you already have a portable folder:
 
 1. Run `simPl.exe`. Keep `pdfium.dll` and the `third-party` folder beside it.
-2. Select **Add Document**, press **Ctrl+O**, or drop a supported file into the window.
+2. Select **Open file**, press **Ctrl+O**, or drop a supported file into the window to read it where it is.
+   Select **Add Document** or press **Ctrl+I** to copy it into your library.
 3. Read, then return to **Library**. Your position and reading preferences are saved.
 
 The portable executable needs no Rust installation. Move or copy the **whole
@@ -197,9 +198,18 @@ plugins remain future work. [Data sources and license](assets/dictionaries/READM
 
 ## Library and local data
 
-**Add Document** and file drops copy documents into
-`%LOCALAPPDATA%\simPl\documents\`. Reading positions, library metadata, preferences,
-cover thumbnails, bookmarks, highlights, notes and disposable conversion/page caches also stay under
+**Open file** (Ctrl+O), file drops, and double-clicking a file or using **Open with**
+read the document where it is. Nothing is copied, and the book appears in **Recent**.
+**Add Document** (Ctrl+I) and **Add to library** on a Recent row copy the document into
+`%LOCALAPPDATA%\simPl\documents\` and add it to the library. A dropped HTML book
+folder is always copied, because simPl packages it as an EPUB.
+
+simPl keeps one window. Opening another file from Explorer while simPl is running
+opens it in that window and brings it to the front. To open supported files with a
+double-click, choose **simPl Reader** in **Open with** and select **Always**.
+
+Reading positions, library metadata, preferences, cover thumbnails, bookmarks,
+highlights, notes and disposable conversion/page caches stay under
 `%LOCALAPPDATA%\simPl\`.
 
 Hover a library card to favourite or remove it. Favourites appear in their own
@@ -236,7 +246,8 @@ JSON also preserves their full anchors, IDs and timestamps.
 
 | Shortcut | Action |
 | --- | --- |
-| **Ctrl+O** | Add a document |
+| **Ctrl+O** | Open a file where it is |
+| **Ctrl+I** | Add a document to the library |
 | **Ctrl+K** | Search and switch books |
 | **Ctrl+W** | Save and return to Library |
 | **Space** in Library | Resume the most recent unfinished book when no control is focused |
