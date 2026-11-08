@@ -970,7 +970,8 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
 }
 
 /// Finishes or undoes a move a crash interrupted. Called once at startup,
-/// before the library loads, and by Retry. Returns a notice for the user.
+/// after `backup::recover_restore` and before the library loads, and by
+/// Retry. Returns a notice for the user.
 pub fn recover() -> Option<String> {
     match read() {
         Err(error) => return Some(error),

@@ -223,8 +223,10 @@ using this folder…** switches back to the default folder without moving or del
 anything. Uninstalling simPl keeps a library folder outside `%LOCALAPPDATA%\simPl`.
 
 simPl keeps one window. Opening another file from Explorer while simPl is running
-opens it in that window and brings it to the front. To open supported files with a
-double-click, choose **simPl Reader** in **Open with** and select **Always**.
+opens it in that window and brings it to the front. If that window runs as
+administrator or isn't responding, the new launch says so and exits instead of opening
+a second window. To open supported files with a double-click, choose **simPl Reader**
+in **Open with** and select **Always**.
 
 Reading positions, library metadata, preferences, the library folder setting, cover
 thumbnails, bookmarks, highlights, notes and disposable conversion/page caches stay

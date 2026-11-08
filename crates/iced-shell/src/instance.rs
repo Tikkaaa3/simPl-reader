@@ -28,47 +28,80 @@ pub enum Claim {
     Primary,
     /// The running window has the request; exit.
     Forwarded,
+    /// A window already runs on this profile but can't take the request.
+    /// Exit without opening a second one.
+    Unreachable(Unreachable),
 }
 
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unreachable {
+    /// Its pipe refuses this process, as one run as administrator does.
+    Elevated,
+    /// It holds the pipe but doesn't take requests in time.
+    NotResponding,
+}
+
+const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
+/// Each retry follows a window that exited mid-forward; a few cover a
+/// burst of launches racing to replace it.
+const ATTEMPTS: usize = 5;
 
 static INBOX: Mutex<Option<UnboundedReceiver<Request>>> = Mutex::new(None);
 
 /// Become the instance for this user, session and profile, or forward `path`
-/// (or a focus request when `None`) to the one that already is. Every failure
-/// along the way means "run normally": a launch is never blocked or lost.
+/// (or a focus request when `None`) to the one that already is.
 pub fn claim(path: Option<&Path>) -> Claim {
+    // No user SID or profile path means no name another launch could meet
+    // on, so there is nothing to defer to.
     let Some(name) = PipeName::current() else {
         return Claim::Primary;
     };
-    match listen(&name, true) {
-        Ok(first) => {
-            let (sender, receiver) = unbounded();
-            let served = std::thread::Builder::new()
-                .name("simPl single instance".into())
-                .spawn(move || serve(name, first, sender));
-            if served.is_ok() {
-                *INBOX.lock().unwrap_or_else(PoisonError::into_inner) = Some(receiver);
-            }
-            Claim::Primary
+    let request = path
+        .and_then(|path| std::path::absolute(path).ok())
+        .map_or(Request::Raise, Request::Open);
+    claim_on(name, &request, FORWARD_TIMEOUT)
+}
+
+fn claim_on(name: PipeName, request: &Request, timeout: Duration) -> Claim {
+    for _ in 0..ATTEMPTS {
+        if let Ok(first) = listen(&name, true) {
+            start_serving(name, first);
+            return Claim::Primary;
         }
-        Err(_) => {
-            let request = match path {
-                None => Some(Request::Raise),
-                Some(path) => std::path::absolute(path).ok().map(Request::Open),
-            };
-            match request {
-                Some(request) if forward(&name, &request, CONNECT_TIMEOUT).is_ok() => {
-                    Claim::Forwarded
-                }
-                _ => Claim::Primary,
+        match forward(&name, request, timeout) {
+            Ok(()) => return Claim::Forwarded,
+            Err(error) if win32::gone(&error) => {}
+            Err(error) if error.raw_os_error() == Some(win32::ACCESS_DENIED) => {
+                return Claim::Unreachable(Unreachable::Elevated);
             }
+            Err(_) => break,
         }
+    }
+    Claim::Unreachable(Unreachable::NotResponding)
+}
+
+fn start_serving(name: PipeName, first: File) {
+    let (sender, receiver) = unbounded();
+    let (hand_over, first_pipe) = std::sync::mpsc::channel();
+    let served = std::thread::Builder::new()
+        .name("simPl single instance".into())
+        .spawn(move || {
+            if let Ok(first) = first_pipe.recv() {
+                serve(name, first, sender);
+            }
+        });
+    if served.is_ok() {
+        let _ = hand_over.send(first);
+        *INBOX.lock().unwrap_or_else(PoisonError::into_inner) = Some(receiver);
+    } else {
+        // Holding the first instance keeps later launches from becoming a
+        // second window on this profile; they report it as not responding.
+        std::mem::forget(first);
     }
 }
 
 /// Requests from later launches, for `Subscription::run`. Empty when this
-/// process does not serve (an elevated instance holds the pipe, or setup failed).
+/// process does not serve (its serving thread couldn't start).
 pub fn forwarded() -> impl Stream<Item = Request> {
     let receiver = INBOX.lock().unwrap_or_else(PoisonError::into_inner).take();
     stream::iter(receiver).flatten()
@@ -178,7 +211,13 @@ fn forward(name: &PipeName, request: &Request, timeout: Duration) -> io::Result<
                 if left.is_zero() {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
-                win32::wait(name, left)?;
+                // Short waits notice a server that exits while this one waits.
+                match win32::wait(name, left.min(Duration::from_millis(100))) {
+                    Err(error) if error.raw_os_error() != Some(win32::SEM_TIMEOUT) => {
+                        return Err(error);
+                    }
+                    _ => {}
+                }
             }
             Err(error) => return Err(error),
         }
@@ -245,7 +284,8 @@ mod win32 {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::time::Duration;
     use windows_sys::Win32::Foundation::{
-        ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+        ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_NO_DATA,
+        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Security::{
         GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser,
@@ -263,6 +303,8 @@ mod win32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
     pub(super) const PIPE_BUSY: i32 = ERROR_PIPE_BUSY as i32;
+    pub(super) const ACCESS_DENIED: i32 = ERROR_ACCESS_DENIED as i32;
+    pub(super) const SEM_TIMEOUT: i32 = ERROR_SEM_TIMEOUT as i32;
     const IN_BUFFER: u32 = 64 * 1024;
     const _: () = assert!(IN_BUFFER as usize > super::wire::MAX_FRAME);
 
@@ -372,6 +414,15 @@ mod win32 {
             .access_mode(FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES)
             .security_qos_flags(SECURITY_IDENTIFICATION)
             .open(&name.text)
+    }
+
+    /// The pipe vanished, or its server closed it before the frame was written:
+    /// the window that held it is exiting.
+    pub(super) fn gone(error: &io::Error) -> bool {
+        matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_FILE_NOT_FOUND | ERROR_NO_DATA | ERROR_BROKEN_PIPE)
+        )
     }
 
     /// At least 1 ms, because 0 means the pipe default.
@@ -563,11 +614,11 @@ mod tests {
         let name = test_name();
         let receiver = serving(&name);
         assert_eq!(
-            forward(&name, &open(r"C:\a"), CONNECT_TIMEOUT).ok(),
+            forward(&name, &open(r"C:\a"), FORWARD_TIMEOUT).ok(),
             Some(())
         );
         assert_eq!(
-            forward(&name, &Request::Raise, CONNECT_TIMEOUT).ok(),
+            forward(&name, &Request::Raise, FORWARD_TIMEOUT).ok(),
             Some(())
         );
         assert_eq!(received(receiver, 2), vec![open(r"C:\a"), Request::Raise]);
@@ -582,7 +633,7 @@ mod tests {
             .iter()
             .map(|path| {
                 let (name, request) = (name.clone(), open(path));
-                std::thread::spawn(move || forward(&name, &request, CONNECT_TIMEOUT).ok())
+                std::thread::spawn(move || forward(&name, &request, FORWARD_TIMEOUT).ok())
             })
             .collect();
         for client in clients {
@@ -600,7 +651,7 @@ mod tests {
         let name = test_name();
         let first = listen(&name, true).unwrap();
         assert_eq!(
-            forward(&name, &open(r"C:\early.pdf"), CONNECT_TIMEOUT).ok(),
+            forward(&name, &open(r"C:\early.pdf"), FORWARD_TIMEOUT).ok(),
             Some(())
         );
         let (sender, receiver) = unbounded();
@@ -628,7 +679,7 @@ mod tests {
         raw.write_all(&[9, 0, 0, 0]).unwrap();
         drop(raw);
         assert_eq!(
-            forward(&name, &open(r"C:\b"), CONNECT_TIMEOUT).ok(),
+            forward(&name, &open(r"C:\b"), FORWARD_TIMEOUT).ok(),
             Some(())
         );
         assert_eq!(received(receiver, 1), vec![open(r"C:\b")]);
@@ -649,23 +700,46 @@ mod tests {
     #[test]
     fn forward_without_a_server_fails_at_once() {
         let started = Instant::now();
-        let result = forward(&test_name(), &Request::Raise, CONNECT_TIMEOUT);
+        let result = forward(&test_name(), &Request::Raise, FORWARD_TIMEOUT);
         assert_eq!(result.map_err(|error| error.raw_os_error()), Err(Some(2)));
         assert!(started.elapsed() < Duration::from_millis(100));
     }
 
     #[test]
-    fn forward_to_a_stuck_server_gives_up_at_the_deadline() {
+    fn a_stuck_server_is_reported_at_the_deadline_and_never_doubled() {
         let name = test_name();
         let _first = listen(&name, true).unwrap();
         let _holder = win32::connect(&name).unwrap();
         let started = Instant::now();
-        let result = forward(&name, &Request::Raise, Duration::from_millis(200));
+        let claim = claim_on(name, &Request::Raise, Duration::from_millis(200));
         let elapsed = started.elapsed();
-        assert!(result.is_err());
+        assert_eq!(claim, Claim::Unreachable(Unreachable::NotResponding));
         assert!(
             elapsed >= Duration::from_millis(190) && elapsed < Duration::from_millis(600),
             "{elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_launch_takes_over_when_the_running_one_exits_mid_forward() {
+        let name = test_name();
+        let first = listen(&name, true).unwrap();
+        let holder = win32::connect(&name).unwrap();
+        let second = {
+            let name = name.clone();
+            std::thread::spawn(move || claim_on(name, &Request::Raise, WAIT))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !second.is_finished(),
+            "the second launch waits for the busy pipe"
+        );
+        drop(holder);
+        drop(first);
+        assert_eq!(second.join().unwrap(), Claim::Primary);
+        assert_eq!(
+            forward(&name, &open(r"C:\after.md"), FORWARD_TIMEOUT).ok(),
+            Some(())
         );
     }
 
@@ -788,13 +862,13 @@ mod tests {
         let root = temp_root("election");
         let barrier = root.join("barrier");
         std::fs::create_dir(&barrier).unwrap();
-        let paths = [root.join("a.md"), root.join("b.md")];
+        let paths = [root.join("a.md"), root.join("b.md"), root.join("c.md")];
         let claimers = paths
             .each_ref()
             .map(|path| Claimer::start(&root, path, Some(&barrier)));
         let deadline = Instant::now() + WAIT;
-        while std::fs::read_dir(&barrier).unwrap().count() < 2 {
-            assert!(Instant::now() < deadline, "both claimers got ready");
+        while std::fs::read_dir(&barrier).unwrap().count() < 3 {
+            assert!(Instant::now() < deadline, "every claimer got ready");
             std::thread::sleep(Duration::from_millis(5));
         }
         std::fs::write(barrier.join("go"), "").unwrap();
@@ -802,12 +876,19 @@ mod tests {
         let claims = claimers.each_ref().map(|claimer| claimer.next("claim="));
         let mut sorted = claims.clone();
         sorted.sort();
-        assert_eq!(sorted, ["Forwarded", "Primary"]);
+        assert_eq!(sorted, ["Forwarded", "Forwarded", "Primary"]);
         let primary = claims.iter().position(|claim| claim == "Primary").unwrap();
-        assert_eq!(
+        let mut received = [
             claimers[primary].next("received="),
-            paths[1 - primary].display().to_string()
-        );
+            claimers[primary].next("received="),
+        ];
+        received.sort();
+        let mut forwarded: Vec<String> = (0..3)
+            .filter(|&index| index != primary)
+            .map(|index| paths[index].display().to_string())
+            .collect();
+        forwarded.sort();
+        assert_eq!(received.to_vec(), forwarded);
         for claimer in claimers {
             claimer.finish();
         }
@@ -830,6 +911,10 @@ mod tests {
         assert_eq!(third.next("claim="), "Primary");
         let elapsed: u64 = third.next("elapsed_ms=").parse().unwrap();
         assert!(elapsed < 500, "{elapsed} ms");
+        let fourth = Claimer::start(&root, Path::new(r"C:\fourth.md"), None);
+        assert_eq!(fourth.next("claim="), "Forwarded");
+        assert_eq!(third.next("received="), r"C:\fourth.md");
+        fourth.finish();
         third.finish();
         std::fs::remove_dir_all(root).unwrap();
     }
