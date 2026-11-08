@@ -821,42 +821,63 @@ fn read_journal(bytes: &[u8]) -> Result<(String, String), String> {
     Ok((record.stage, record.previous))
 }
 
-fn present(path: &Path) -> Result<bool, String> {
+/// A profile, stage or previous folder: absent, or a real folder. Anything
+/// else (a file, a link) stops recovery before it touches anything.
+fn folder(path: &Path) -> Result<bool, String> {
     match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
+        Ok(_) if plain(path)?.is_dir() => Ok(true),
+        Ok(_) => Err(format!("{} is not a folder", path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(format!("{}: {error}", path.display())),
     }
 }
 
+/// What startup may do after looking for an interrupted restore.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RestoreRecovery {
+    /// The profile is usable. The text, if any, is a notice for the user.
+    Ready(Option<String>),
+    /// The profile is missing and the restore couldn't be finished. Nothing
+    /// may read or write the profile, or it would be recreated empty.
+    Blocked(String),
+}
+
 /// Finishes or undoes a restore a crash interrupted between writing its
 /// journal and swapping the profile. Called at startup, before anything
 /// reads the profile.
-pub fn recover_restore() -> Option<String> {
+pub fn recover_restore() -> RestoreRecovery {
     recover_restore_at(&root())
 }
 
-fn recover_restore_at(root: &Path) -> Option<String> {
-    let parent = root.parent()?;
+fn recover_restore_at(root: &Path) -> RestoreRecovery {
+    let Some(parent) = root.parent() else {
+        return RestoreRecovery::Ready(None);
+    };
     let journal = parent.join(JOURNAL);
     let failed = |detail: String| {
-        Some(format!(
-            "A restore was interrupted and couldn't be finished: {detail}"
-        ))
+        let text = format!("A restore was interrupted and couldn't be finished: {detail}");
+        if root.is_dir() {
+            RestoreRecovery::Ready(Some(text))
+        } else {
+            RestoreRecovery::Blocked(text)
+        }
     };
     let bytes = match fs::read(&journal) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RestoreRecovery::Ready(None);
+        }
         Err(error) => return failed(format!("{}: {error}", journal.display())),
     };
     let (stage, previous) = match read_journal(&bytes) {
         Ok((stage, previous)) => (parent.join(stage), parent.join(previous)),
         Err(error) => return failed(format!("{} is invalid: {error}", journal.display())),
     };
-    let state = (|| Ok::<_, String>((present(root)?, present(&stage)?, present(&previous)?)))();
+    let shown = |path: &Path| crate::library_location::display_path(path);
+    let state = (|| Ok::<_, String>((folder(root)?, folder(&stage)?, folder(&previous)?)))();
     let notice = match state {
         Err(error) => return failed(error),
-        Ok((true, true, _)) => {
+        Ok((true, true, false)) => {
             if let Err(error) = crate::managed::check_tree(&stage)
                 .and_then(|()| fs::remove_dir_all(&stage).map_err(|e| e.to_string()))
             {
@@ -864,28 +885,42 @@ fn recover_restore_at(root: &Path) -> Option<String> {
             }
             Some("A restore was interrupted before it started. Nothing changed.".to_owned())
         }
-        Ok((false, true, true)) => {
-            if let Err(error) =
-                plain(&stage).and_then(|_| fs::rename(&stage, root).map_err(|e| e.to_string()))
-            {
-                return failed(error);
-            }
-            Some(format!(
-                "Finished restoring your backup. The previous profile is in {}.",
-                crate::library_location::display_path(&previous)
-            ))
-        }
-        Ok((true, false, _)) => None,
-        Ok((false, _, true)) => {
+        // The first rename happened, so this profile was made afterwards;
+        // which of the three folders the user wants is not ours to guess.
+        Ok((true, true, true)) => {
             return failed(format!(
-                "the profile is missing. The previous profile is in {}.",
-                crate::library_location::display_path(&previous)
+                "the restored profile is in {} and the previous one in {}. Nothing was changed.",
+                shown(&stage),
+                shown(&previous)
             ));
         }
-        Ok((false, _, false)) => return failed("the profile is missing.".to_owned()),
+        Ok((true, false, _)) => None,
+        Ok((false, true, had_previous)) => {
+            if let Err(error) = fs::rename(&stage, root) {
+                return failed(format!("{}: {error}", stage.display()));
+            }
+            Some(if had_previous {
+                format!(
+                    "Finished restoring your backup. The previous profile is in {}.",
+                    shown(&previous)
+                )
+            } else {
+                "Finished restoring your backup.".to_owned()
+            })
+        }
+        Ok((false, false, true)) => {
+            if let Err(error) = fs::rename(&previous, root) {
+                return failed(format!("{}: {error}", previous.display()));
+            }
+            Some("A restore couldn't be finished, so your previous profile was put back.".to_owned())
+        }
+        Ok((false, false, false)) => Some(
+            "A restore was interrupted and its folders are gone. simPl starts with an empty profile."
+                .to_owned(),
+        ),
     };
     let _ = fs::remove_file(&journal);
-    notice
+    RestoreRecovery::Ready(notice)
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
@@ -1534,7 +1569,7 @@ mod tests {
                         .to_string_lossy()
                         .starts_with(PREVIOUS_PREFIX)
                 });
-            let expected = match step {
+            let expected = RestoreRecovery::Ready(match step {
                 Step::Journal => {
                     Some("A restore was interrupted before it started. Nothing changed.".to_owned())
                 }
@@ -1543,9 +1578,13 @@ mod tests {
                     crate::library_location::display_path(previous.as_ref().unwrap())
                 )),
                 Step::Swapped => None,
-            };
+            });
             assert_eq!(recover_restore_at(&destination), expected, "{step:?}");
-            assert_eq!(recover_restore_at(&destination), None, "{step:?}");
+            assert_eq!(
+                recover_restore_at(&destination),
+                RestoreRecovery::Ready(None),
+                "{step:?}"
+            );
             let size = crate::preferences::load_from(&destination.join("preferences.json"))
                 .unwrap()
                 .reading
@@ -1589,7 +1628,11 @@ mod tests {
             )
             .unwrap();
             fs::write(&journal, &text).unwrap();
-            let notice = recover_restore_at(&root).unwrap();
+            let notice = match recover_restore_at(&root) {
+                RestoreRecovery::Ready(Some(notice)) if profile => notice,
+                RestoreRecovery::Blocked(notice) if !profile => notice,
+                other => panic!("{stage}: {other:?}"),
+            };
             assert!(
                 notice.starts_with("A restore was interrupted and couldn't be finished: "),
                 "{notice}"
@@ -1605,8 +1648,85 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
         }
         fs::write(&journal, b"{broken").unwrap();
-        assert!(recover_restore_at(&root).unwrap().contains("is invalid"));
+        assert!(
+            matches!(recover_restore_at(&root), RestoreRecovery::Blocked(text) if text.contains("is invalid"))
+        );
         assert_eq!(fs::read(&journal).unwrap(), b"{broken");
+    }
+    #[test]
+    fn a_restore_that_cannot_be_finished_blocks_startup_and_loses_nothing() {
+        let dir = TestDir::new();
+        let root = dir.0.join("home/simPl");
+        let journal = dir.0.join("home").join(JOURNAL);
+        dir.write("home/.simPl-restore-1/preferences.json", b"restored");
+        dir.write("home/.simPl-before-restore-1/preferences.json", b"previous");
+        fs::write(
+            &journal,
+            br#"{"version":1,"stage":".simPl-restore-1","previous":".simPl-before-restore-1"}"#,
+        )
+        .unwrap();
+        let stage = dir.0.join("home/.simPl-restore-1");
+        let previous = dir.0.join("home/.simPl-before-restore-1");
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(stage.join("preferences.json"))
+                .unwrap()
+        };
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Blocked(text) if text.starts_with("A restore was interrupted and couldn't be finished: ")
+        ));
+        drop(held);
+        assert!(!root.exists());
+
+        dir.write("home/simPl/preferences.json", b"made later");
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Ready(Some(text)) if text.contains("Nothing was changed")
+        ));
+        assert_eq!(
+            fs::read(stage.join("preferences.json")).unwrap(),
+            b"restored"
+        );
+        assert_eq!(
+            fs::read(previous.join("preferences.json")).unwrap(),
+            b"previous"
+        );
+        assert!(journal.exists());
+    }
+    #[test]
+    fn restore_recovery_refuses_files_where_folders_belong() {
+        let dir = TestDir::new();
+        let root = dir.0.join("home/simPl");
+        let journal = dir.0.join("home").join(JOURNAL);
+        fs::create_dir_all(dir.0.join("home")).unwrap();
+        fs::write(
+            &journal,
+            br#"{"version":1,"stage":".simPl-restore-1","previous":".simPl-before-restore-1"}"#,
+        )
+        .unwrap();
+        dir.write("home/.simPl-before-restore-1/preferences.json", b"previous");
+        dir.write("home/.simPl-restore-1", b"not a folder");
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Blocked(text) if text.contains("is not a folder")
+        ));
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read(dir.0.join("home/.simPl-restore-1")).unwrap(),
+            b"not a folder"
+        );
+
+        fs::remove_file(dir.0.join("home/.simPl-restore-1")).unwrap();
+        fs::write(&root, b"a file").unwrap();
+        assert!(matches!(
+            recover_restore_at(&root),
+            RestoreRecovery::Blocked(text) if text.contains("is not a folder")
+        ));
+        assert!(journal.exists());
     }
     #[test]
     fn backup_must_be_outside_profile_and_can_atomically_replace_existing_zip() {

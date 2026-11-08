@@ -1512,7 +1512,21 @@ fn main() {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
         };
-        let notice = reader_document::library_location::recover();
+        use reader_document::backup::RestoreRecovery;
+        let restored = match reader_document::backup::recover_restore() {
+            RestoreRecovery::Ready(notice) => notice,
+            RestoreRecovery::Blocked(error) => {
+                inform(&format!(
+                    "{error}
+
+Close any program that uses the simPl folder, then start simPl again."
+                ));
+                std::process::exit(1);
+            }
+        };
+        let notices = [restored, reader_document::library_location::recover()];
+        let notice = Some(notices.into_iter().flatten().collect::<Vec<_>>().join(" "))
+            .filter(|notice| !notice.is_empty());
         if let Err(error) = app::run(path, error, notice) {
             eprintln!("failed to run simPl: {error}");
             std::process::exit(1);
