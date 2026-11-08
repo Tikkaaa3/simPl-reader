@@ -138,6 +138,7 @@ A missing `library.json` is rebuilt from Recent, but only from simPl's own copie
 3. Installer, `installer/simPl.iss`:
    - Also register `.htm`, `.xhtml` and `.markdown` (the README lists them as supported).
    - Add `SupportedTypes` under `Software\Classes\Applications\simPl.exe`, so the portable exe also shows up properly in "Open with → Choose another app".
+     Dropped during LF-2: the Installer QA and production setups both install `simPl.exe`, so they would share that key, and Windows can launch the installed copy when a user picks a portable `simPl.exe`. `OpenWithProgids` and `Capabilities\FileAssociations` already list simPl in Open with.
    - Windows doesn't let an app make itself the default. Users choose "Always" in the Open with dialog. Document this in the README.
 4. Tests:
    - Argument parsing still accepts `simPl.exe "<path>"` and `-- <path>`.

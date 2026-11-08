@@ -24,9 +24,10 @@ New-Item -ItemType Directory -Path $sandbox,$testProfile,$original -Force | Out-
 
 $associationBase = 'simPl.Reader.InstallerQA'
 $capabilityKey = 'HKCU:\Software\simPl\InstallerQA\Capabilities'
+$associations = [ordered]@{ '.pdf'='PDF'; '.html'='HTML'; '.htm'='HTML'; '.xhtml'='HTML'; '.epub'='EPUB'; '.txt'='TXT'; '.md'='MD'; '.markdown'='MD' }
 function Existing-Associations {
     $snapshot = [ordered]@{}
-    foreach ($extension in @('.pdf', '.html', '.epub', '.txt', '.md')) {
+    foreach ($extension in $associations.Keys) {
         foreach ($kind in @('default', 'choice', 'candidates')) {
             $path = switch ($kind) {
                 'default' { "HKCU:\Software\Classes\$extension" }
@@ -85,24 +86,24 @@ function Install-QA([string]$Setup, [string]$Tasks, [string]$Log) {
     Assert-That (Test-Path -LiteralPath (Join-Path $app 'third-party\fonts\Geist-OFL.txt')) 'Font notices missing.'
     Assert-That ((Get-Item $registry).GetValue('Inno Setup: Language') -eq 'english') 'Installer language is not English.'
     Assert-That ((Get-Item 'HKCU:\Software\RegisteredApplications').GetValue('simPl Reader Installer QA') -eq 'Software\simPl\InstallerQA\Capabilities') 'Default-app capabilities registration missing.'
-    foreach ($extension in @('pdf', 'html', 'epub', 'txt', 'md')) {
-        $progId = $associationBase + '.' + $extension.ToUpperInvariant()
-        $candidates = Get-Item "HKCU:\Software\Classes\.$extension\OpenWithProgids"
+    foreach ($extension in $associations.Keys) {
+        $progId = $associationBase + '.' + $associations[$extension]
+        $candidates = Get-Item "HKCU:\Software\Classes\$extension\OpenWithProgids"
         Assert-That ($candidates.GetValueNames() -contains $progId) "Open with candidate missing for $extension."
-        Assert-That ((Get-Item "$capabilityKey\FileAssociations").GetValue(".$extension") -eq $progId) "Default-app capability missing for $extension."
+        Assert-That ((Get-Item "$capabilityKey\FileAssociations").GetValue($extension) -eq $progId) "Default-app capability missing for $extension."
         $command = (Get-Item "HKCU:\Software\Classes\$progId\shell\open\command").GetValue('')
         Assert-That ($command -eq ('"' + (Join-Path $app 'simPl.exe') + '" "%1"')) "Incorrect or unquoted open command for $extension."
         $expectedHandler = 'simPl Reader Installer QA|' + (Join-Path $app 'simPl.exe')
-        Assert-That ([InstallerAssociations]::Recommended(".$extension") -contains $expectedHandler) "Windows does not recommend simPl with its friendly name for $extension."
+        Assert-That ([InstallerAssociations]::Recommended($extension) -contains $expectedHandler) "Windows does not recommend simPl with its friendly name for $extension."
     }
     Assert-That ((Existing-Associations) -eq $existingAssociations) 'Install changed existing defaults or another application registration.'
 }
 function Assert-AssociationsRemoved {
     Assert-That (-not (Test-Path $capabilityKey)) 'Capabilities remain after uninstall.'
-    foreach ($extension in @('pdf', 'html', 'epub', 'txt', 'md')) {
-        $progId = $associationBase + '.' + $extension.ToUpperInvariant()
+    foreach ($extension in $associations.Keys) {
+        $progId = $associationBase + '.' + $associations[$extension]
         Assert-That (-not (Test-Path "HKCU:\Software\Classes\$progId")) "ProgID remains after uninstall: $progId"
-        $path = "HKCU:\Software\Classes\.$extension\OpenWithProgids"
+        $path = "HKCU:\Software\Classes\$extension\OpenWithProgids"
         if (Test-Path $path) {
             Assert-That (-not ((Get-Item $path).GetValueNames() -contains $progId)) "Open with entry remains for $extension."
         }

@@ -100,6 +100,10 @@ Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML\Application"; Valu
 Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.HTML\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.exe"" ""%1"""
 Root: HKCU; Subkey: "Software\Classes\.html\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.HTML"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".html"; ValueData: "{#AssociationBase}.HTML"
+Root: HKCU; Subkey: "Software\Classes\.htm\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.HTML"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".htm"; ValueData: "{#AssociationBase}.HTML"
+Root: HKCU; Subkey: "Software\Classes\.xhtml\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.HTML"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".xhtml"; ValueData: "{#AssociationBase}.HTML"
 Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB"; ValueType: string; ValueName: ""; ValueData: "EPUB book"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.ico"",0"
 Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.EPUB\Application"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#ProductName}"
@@ -121,6 +125,8 @@ Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.MD\Application"; ValueT
 Root: HKCU; Subkey: "Software\Classes\{#AssociationBase}.MD\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\simPl.exe"" ""%1"""
 Root: HKCU; Subkey: "Software\Classes\.md\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.MD"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".md"; ValueData: "{#AssociationBase}.MD"
+Root: HKCU; Subkey: "Software\Classes\.markdown\OpenWithProgids"; ValueType: string; ValueName: "{#AssociationBase}.MD"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "{#CapabilityKey}\FileAssociations"; ValueType: string; ValueName: ".markdown"; ValueData: "{#AssociationBase}.MD"
 
 [Icons]
 Name: "{userdesktop}\{#ProductName}"; Filename: "{app}\simPl.exe"; WorkingDir: "{app}"; IconFilename: "{app}\simPl.ico"; Tasks: desktopicon
