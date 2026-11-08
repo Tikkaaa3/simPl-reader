@@ -198,9 +198,18 @@ plugins remain future work. [Data sources and license](assets/dictionaries/READM
 
 ## Library and local data
 
-**Add Document** and file drops copy documents into
-`%LOCALAPPDATA%\simPl\documents\`. Reading positions, library metadata, preferences,
-cover thumbnails, bookmarks, highlights, notes and disposable conversion/page caches also stay under
+**Open file** (Ctrl+O), file drops, and double-clicking a file or using **Open with**
+read the document where it is. Nothing is copied, and the book appears in **Recent**.
+**Add Document** (Ctrl+I) and **Add to library** on a Recent row copy the document into
+`%LOCALAPPDATA%\simPl\documents\` and add it to the library. A dropped HTML book
+folder is always copied, because simPl packages it as an EPUB.
+
+simPl keeps one window. Opening another file from Explorer while simPl is running
+opens it in that window and brings it to the front. To open supported files with a
+double-click, choose **simPl Reader** in **Open with** and select **Always**.
+
+Reading positions, library metadata, preferences, cover thumbnails, bookmarks,
+highlights, notes and disposable conversion/page caches stay under
 `%LOCALAPPDATA%\simPl\`.
 
 Hover a library card to favourite or remove it. Favourites appear in their own
