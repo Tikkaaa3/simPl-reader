@@ -659,7 +659,7 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Build.**
 
-- [ ] Replace the hero block in `Shelf::view` (shelf.rs:893), the `LOCAL WORKSPACE` label (:911), the `simPl Reader` heading (:916), and the tagline with one row. The row holds **Library** in Literata with the book count in muted text, and an **Add** button at the right. Drop text into the window still works.
+- [ ] Replace the hero block in `Shelf::view` (shelf.rs:893), the `LOCAL WORKSPACE` label (:911), the `simPl Reader` heading (:916), and the tagline with one row. The row holds **Library** in Literata with the book count in muted text, and **Open** and **Add** buttons at the right. **Open** reads a file where it is without copying it, and **Add** imports a copy into the library (`lib-fix.md`, LF-1). Dropping a file into the window opens it in place, the same as **Open**, and highlights **Open**.
 - [ ] Delete the `N active` pill (:971), the `Press Space to resume current` hint (:978), and the `N items` pill (:1056-1066). Space still resumes the latest book (app.rs:4997). The README shortcut table lists it, and UX-10 adds it to the F1 help.
 - [ ] Show **Continue Reading** only when the library holds more than three books. With three or fewer, every book is already visible in the grid.
 - [ ] Move the format badge off the cover art (:1843) into the line under the cover.
@@ -676,14 +676,14 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Capture the library with eight books at 1280x800 at trunk and head. Save `ux9-regression.png`. Pass when the trunk hero takes about 250px and the head shows the first cover row starting above y=400.
-- [ ] Lane 2. Launch head with an empty profile. Save `ux9-empty.png`. Pass when the header, the **Add** button, and a drop hint show.
+- [ ] Lane 2. Launch head with an empty profile. Save `ux9-empty.png`. Pass when the header, the **Open** and **Add** buttons, and a drop hint show.
 - [ ] Lane 3. Import three books and open one, then import a fourth. Save `ux9-continue.png`. Pass when **Continue Reading** is absent with three books and present with four.
 - [ ] Lane 4. Capture the EPUB and PDF covers. Save `ux9-badge.png`. Pass when the format label sits under the cover and no label covers the art.
-- [ ] Lane 5. Click **Add**. Save `ux9-add.png`. Pass when the Windows file dialog opens. Close it with Escape.
+- [ ] Lane 5. Click **Add**, then **Open**. Save `ux9-add.png`. Pass when each opens the Windows file dialog. Close each with Escape.
 - [ ] Lane 6. With no control focused, press Space. Save `ux9-space.png`. Pass when the latest unfinished book opens.
 - [ ] Lane 7. Click each sort option. Save `ux9-sort.png`. Pass when the grid order changes for **Title** and **Format**.
 - [ ] Lane 8. Hover a card, click favourite, then click remove and cancel. Save `ux9-card.png`. Pass when the book moves to Favourites and the remove confirmation appears and cancels.
-- [ ] Lane 9. Switch to dark appearance. Save `ux9-dark.png`. Pass when the header text and **Add** are readable.
+- [ ] Lane 9. Switch to dark appearance. Save `ux9-dark.png`. Pass when the header text, **Open** and **Add** are readable.
 - [ ] Lane 10. Resize to 540x360. Save `ux9-narrow.png`. Pass when the header fits on one row and covers wrap.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
