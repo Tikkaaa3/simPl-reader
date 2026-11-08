@@ -326,20 +326,12 @@ impl SavedPosition {
 }
 
 fn document_kind(path: &Path) -> Result<DocumentKind, String> {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("html" | "htm" | "xhtml") => Ok(DocumentKind::Html),
-        Some("pdf") => Ok(DocumentKind::Pdf),
-        Some("epub") => Ok(DocumentKind::Epub),
-        _ => Err(format!(
+    DocumentKind::from_path(path).ok_or_else(|| {
+        format!(
             "Unsupported document format: {}. Open an HTML, XHTML, PDF, EPUB, text or Markdown file.",
             path.display()
-        )),
-    }
+        )
+    })
 }
 
 fn catalog_entry(document: Entry, author: Option<String>, cover: bool) -> library::Entry {

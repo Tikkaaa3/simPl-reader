@@ -1,6 +1,7 @@
 //! Plain-text and Markdown sources become one generated HTML page at import time, so the
 //! existing HTML reader (structure, images, links, find, positions) needs no second renderer.
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
+use std::io::Read;
 use std::path::Path;
 
 /// Text and Markdown share the HTML size limit; conversion may grow Markdown slightly.
@@ -12,6 +13,30 @@ pub(crate) fn is_text_extension(ext: &str) -> bool {
 
 fn is_markdown_extension(ext: &str) -> bool {
     matches!(ext, "md" | "markdown")
+}
+
+/// The generated page for the text or Markdown file at `source`, or `None` for
+/// any other extension. Reading in place and importing both use it, so they
+/// hash the same bytes and an imported copy keeps the original's fingerprint.
+pub(crate) fn read_page(source: &Path) -> Result<Option<String>, String> {
+    let ext = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !is_text_extension(&ext) {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(source)
+        .map_err(|e| format!("Cannot open {}: {e}", source.display()))?
+        .take(MAX_TEXT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read {}: {e}", source.display()))?;
+    if bytes.len() as u64 > MAX_TEXT_BYTES {
+        return Err("Text file exceeds the 16 MiB limit".into());
+    }
+    to_html(source, &ext, &bytes).map(Some)
 }
 
 /// Decode UTF-8 (with or without BOM), UTF-16 with BOM, or else the system ANSI code page
