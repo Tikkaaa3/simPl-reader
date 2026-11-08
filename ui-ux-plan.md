@@ -107,7 +107,7 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Trunk has no driver, so record that fact. Launch trunk by hand and head through the driver with the same fixture, then capture the reading screen at 1400x900. Save `ux0-regression.png`. Pass when both captures show the same layout.
-- [ ] Lane 2. Launch with `-Profile target\lane-profile-2`. Save `ux0-isolated.png`. Pass when `target\lane-profile-2\simPl\preferences.json` exists and the modified time of `%LOCALAPPDATA%\simPl` in the real profile is unchanged.
+- [ ] Lane 2. Launch with `-Profile target\lane-profile-2`. Save `ux0-isolated.png`. Pass when `target\lane-profile-2\simPl\library.json` exists and the modified time of `%LOCALAPPDATA%\simPl` in the real profile is unchanged.
 - [ ] Lane 3. Run `-Resize 860x700`, then `-Shot`. Save `ux0-resize.png`. Pass when the PNG is exactly 860x700.
 - [ ] Lane 4. Press Ctrl+W, then move the cursor over a library card. Save `ux0-hover.png`. Pass when the card shows its favourite and remove buttons.
 - [ ] Lane 5. Click the Continue Reading card. Save `ux0-click.png`. Pass when the book opens at its saved page.
