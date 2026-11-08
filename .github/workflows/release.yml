@@ -1,8 +1,10 @@
 name: Release
 
 # Push a version tag (for example v0.1.0) to build the Windows x64 installer and
-# portable folder and publish them as a draft GitHub Release. macOS (.dmg) and
-# Linux (AppImage) jobs are added once the reader supports those targets.
+# portable folder and publish them as a draft GitHub Release. If the tag already
+# has a published release, the run still builds and checks everything but does
+# not upload, so a rerun can't replace published files. macOS (.dmg) and Linux
+# (AppImage) jobs are added once the reader supports those targets.
 
 on:
   push:
@@ -105,7 +107,29 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $stage 'LICENSE.txt'))) { throw 'Portable package is missing LICENSE.txt.' }
           Compress-Archive -Path $stage -DestinationPath "target\simPl-$version-windows-x64-portable.zip" -Force
 
+      - name: Check for a published release
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Publishing again would replace the release's files with this run's
+          # builds, which don't match its published SHA256SUMS.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $tag = '${{ steps.version.outputs.tag }}'
+          # This endpoint finds published releases only, never drafts.
+          $response = gh api "repos/${{ github.repository }}/releases/tags/$tag" --jq '.html_url' 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            "published=true" >> $env:GITHUB_OUTPUT
+            "::notice::$tag is already published at $response. Skipping the upload, so the published files stay unchanged."
+          } elseif ("$response" -match 'HTTP 404') {
+            "published=false" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "Could not check for a published $tag release: $response"
+          }
+
       - name: Publish the draft release
+        if: steps.existing.outputs.published == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
