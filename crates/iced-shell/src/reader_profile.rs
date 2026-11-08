@@ -14,6 +14,8 @@ const STATES: &[State] = &[
     ("library", library, still),
     ("reading-idle", reading, still),
     ("reading-page-turn", reading, turn_page),
+    ("reading-bar-hidden", reading_bar_hidden, still),
+    ("reading-bar-reveal", reading_bar_hidden, reveal_bar),
     ("settings", settings, still),
 ];
 
@@ -53,6 +55,13 @@ fn reading() -> Reader {
     reader
 }
 
+fn reading_bar_hidden() -> Reader {
+    Reader {
+        bar: reading_chrome::Bar::hidden(),
+        ..reading()
+    }
+}
+
 fn settings() -> Reader {
     Reader {
         show_settings: true,
@@ -61,6 +70,17 @@ fn settings() -> Reader {
 }
 
 fn still(_: &mut Reader, _: usize) {}
+
+/// Every frame draws the next step of the bar's fade-in, restarting every ten frames.
+fn reveal_bar(reader: &mut Reader, frame: usize) {
+    if frame.is_multiple_of(10) {
+        reader.bar = reading_chrome::Bar::hidden();
+        reader.bar.hover(Instant::now(), true);
+    } else {
+        reader.bar.step_by(std::time::Duration::from_millis(15));
+    }
+    assert!(reader.bar.visible());
+}
 
 fn turn_page(reader: &mut Reader, frame: usize) {
     let before = reader.offset;

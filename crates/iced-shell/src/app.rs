@@ -32,6 +32,8 @@ mod notes_ui;
 mod profile_ui;
 #[path = "read_aloud.rs"]
 mod read_aloud;
+#[path = "reading_chrome.rs"]
+mod reading_chrome;
 #[path = "reading_ui.rs"]
 mod reading_ui;
 #[path = "word_translation.rs"]
@@ -879,7 +881,7 @@ struct Reader {
     dialog: Option<OpenAs>,
     pending_open: Option<OpenAs>,
     show_recent: bool,
-    toolbar_expanded: bool,
+    bar: reading_chrome::Bar,
     show_help: bool,
     focused: Option<Control>,
     focus_generation: u64,
@@ -985,7 +987,7 @@ impl Default for Reader {
             pending_open: None,
             show_recent: false,
             show_help: false,
-            toolbar_expanded: true,
+            bar: Default::default(),
             focused: None,
             focus_generation: 0,
             focus_pending: false,
@@ -1055,10 +1057,8 @@ enum Control {
     SettingsHelp,
     SettingsTheme(usize),
     Close,
-    ToggleToolbar,
     FontDown,
     FontUp,
-    ToggleAppearance,
     Back,
     BookMode,
     DocumentMode,
@@ -1131,7 +1131,11 @@ enum Message {
     RecentLoaded(Result<Vec<Entry>, String>),
     RecentSaved(Result<(), String>),
     ToggleRecent,
-    ToggleToolbar,
+    /// F8: keep the reading bar on screen, or let it hide again.
+    TogglePinnedBar,
+    /// The pointer entered the band that reveals the hidden reading bar.
+    RevealBar,
+    BarFrame(std::time::Instant),
     ToggleHelp,
     FocusReady(u64),
     OpenRecent(usize),
@@ -2080,7 +2084,8 @@ impl Reader {
         let has_document = book.is_some() || self.pdf.is_some();
         let history = self.show_recent && !overlay;
         let pdf_page = self.pdf.as_ref().map(pdf_reader::Reader::page_index);
-        let expanded = has_document && self.toolbar_expanded && !overlay;
+        let reading = has_document && !overlay;
+        let pdf = self.pdf.as_ref();
         let finding = self.find.is_some() && has_document && !overlay;
         let has_matches = self.find.as_ref().is_some_and(|find| find.count() > 0);
         let primary = [
@@ -2094,44 +2099,6 @@ impl Reader {
                 .then_some(Control::ReadAloudFaster),
             (has_document && !overlay && self.read_aloud.active())
                 .then_some(Control::ReadAloudPause),
-            expanded.then_some(Control::Find),
-            expanded.then_some(Control::ReadAloud),
-            (expanded && self.book.is_some()).then_some(Control::BookPageInput),
-            (expanded && self.can_turn(false)).then_some(Control::PreviousBookPage),
-            (expanded && self.can_turn(true)).then_some(Control::NextBookPage),
-            expanded.then_some(Control::Close),
-            (expanded && self.pdf.as_ref().is_some_and(|p| p.document().can_copy))
-                .then_some(Control::BookMode),
-            (expanded && book.is_some_and(|b| b.pdf_source.is_some()))
-                .then_some(Control::DocumentMode),
-            (expanded && !self.returns.is_empty()).then_some(Control::Back),
-            pdf_page
-                .filter(|page| expanded && *page > 0)
-                .map(|_| Control::Pdf(pdf_reader::FocusControl::Previous)),
-            (expanded && self.pdf.is_some())
-                .then_some(Control::Pdf(pdf_reader::FocusControl::Page)),
-            pdf_page
-                .filter(|page| {
-                    expanded
-                        && self
-                            .pdf
-                            .as_ref()
-                            .is_some_and(|pdf| *page + 1 < pdf.document().pages.len())
-                })
-                .map(|_| Control::Pdf(pdf_reader::FocusControl::Next)),
-            (expanded && self.pdf.is_some())
-                .then_some(Control::Pdf(pdf_reader::FocusControl::ZoomOut)),
-            (expanded && self.pdf.is_some())
-                .then_some(Control::Pdf(pdf_reader::FocusControl::ZoomIn)),
-            (expanded && self.pdf.is_some())
-                .then_some(Control::Pdf(pdf_reader::FocusControl::ActualSize)),
-            (expanded && self.pdf.is_some())
-                .then_some(Control::Pdf(pdf_reader::FocusControl::FitWidth)),
-            (expanded && !self.contents().is_empty()).then_some(Control::Contents),
-            (expanded && book.is_some() && self.zoom > 0.25).then_some(Control::FontDown),
-            (expanded && book.is_some() && self.zoom < 3.0).then_some(Control::FontUp),
-            (expanded && book.is_some()).then_some(Control::FitBookWidth),
-            expanded.then_some(Control::ToggleAppearance),
         ];
         let secondary = [
             self.error.as_ref().map(|_| Control::DismissError),
@@ -2143,20 +2110,45 @@ impl Reader {
             (self.history_corrupt && self.history_notice.is_some()).then_some(Control::ResetRecent),
             history.then_some(Control::HideRecent),
         ];
-        // Title-bar focus follows the visual order of the header in chrome::view.
+        // Header focus follows the visual order of chrome::view and the reading bar.
         let title_bar = [
             Some(Control::Chrome(chrome::Action::Settings)),
-            has_document.then_some(Control::ToggleToolbar),
-            (!has_document).then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
+            Some(Control::Chrome(chrome::Action::ToggleAppearance)),
             Some(Control::Chrome(chrome::Action::Search)),
-            Some(Control::Chrome(chrome::Action::Minimize)),
-            Some(Control::Chrome(chrome::Action::Maximize)),
-            Some(Control::Chrome(chrome::Action::Close)),
+            has_document.then_some(Control::Close),
+            (book.is_some() && !self.returns.is_empty()).then_some(Control::Back),
+            pdf.is_some_and(|p| p.document().can_copy)
+                .then_some(Control::BookMode),
+            book.is_some_and(|b| b.pdf_source.is_some())
+                .then_some(Control::DocumentMode),
+            (book.is_some() && self.can_turn(false)).then_some(Control::PreviousBookPage),
+            book.is_some().then_some(Control::BookPageInput),
+            (book.is_some() && self.can_turn(true)).then_some(Control::NextBookPage),
+            (has_document && !self.contents().is_empty()).then_some(Control::Contents),
+            pdf_page
+                .filter(|page| *page > 0)
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::Previous)),
+            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::Page)),
+            pdf_page
+                .filter(|page| pdf.is_some_and(|pdf| *page + 1 < pdf.document().pages.len()))
+                .map(|_| Control::Pdf(pdf_reader::FocusControl::Next)),
+            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomOut)),
+            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomIn)),
+            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ActualSize)),
+            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::FitWidth)),
+            has_document.then_some(Control::Find),
+            has_document.then_some(Control::ReadAloud),
+            (book.is_some() && self.zoom > 0.25).then_some(Control::FontDown),
+            book.is_some().then_some(Control::FitBookWidth),
+            (book.is_some() && self.zoom < 3.0).then_some(Control::FontUp),
+            (!self.fullscreen).then_some(Control::Chrome(chrome::Action::Minimize)),
+            (!self.fullscreen).then_some(Control::Chrome(chrome::Action::Maximize)),
+            (!self.fullscreen).then_some(Control::Chrome(chrome::Action::Close)),
         ];
         title_bar
             .into_iter()
             .flatten()
-            .filter(move |_| !overlay && !self.fullscreen)
+            .filter(move |_| !overlay && (has_document || !self.fullscreen))
             .map(Some)
             .chain([
                 self.show_search.then_some(Control::SearchInput),
@@ -2191,7 +2183,7 @@ impl Reader {
             .chain(
                 self.contents_range()
                     .map(Control::ContentsEntry)
-                    .filter(move |_| expanded),
+                    .filter(move |_| reading),
             )
             .chain(book.into_iter().flat_map(move |book| {
                 self.heights
@@ -2278,12 +2270,10 @@ impl Reader {
             Control::DismissOverlay => Message::DismissOverlay,
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
-            Control::ToggleToolbar => Message::ToggleToolbar,
             Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
             Control::SettingsTheme(index) => Message::SetTheme(index),
             Control::FontDown | Control::SettingsFontDown => Message::Zoom(self.zoom - 0.1),
             Control::FontUp | Control::SettingsFontUp => Message::Zoom(self.zoom + 0.1),
-            Control::ToggleAppearance => Message::ToggleAppearance,
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
             Control::Back => Message::Back,
@@ -3222,13 +3212,15 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         .map(|pdf| (pdf.document().id, pdf.page_index()));
     let previous_focus = reader.focused;
     let previous_panels = (reader.show_recent, reader.show_help, reader.show_contents);
-    let previous_toolbar = reader.toolbar_expanded;
+    let previous_bar = reader.bar.visible();
+    let pointer = reading_chrome::pointer_change(&message);
     let resized = matches!(
         &message,
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
     let task = Task::batch([task, reader.drain_inbox()]);
+    reader.sync_bar(std::time::Instant::now(), pointer);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
             || previous_pdf_page
@@ -3255,7 +3247,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     if reader.focused != previous_focus
         || resized
         || panels_changed
-        || previous_toolbar != reader.toolbar_expanded
+        || previous_bar != reader.bar.visible()
     {
         reader.focus_generation = reader.focus_generation.wrapping_add(1);
         reader.focus_pending = reader.focused.is_some();
@@ -3393,7 +3385,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Chrome(action) => match action {
-            chrome::Action::ToggleToolbar => update_inner(reader, Message::ToggleToolbar),
             chrome::Action::ToggleAppearance => update_inner(reader, Message::ToggleAppearance),
             chrome::Action::Close => reader.close(CloseAction::Window),
             chrome::Action::Search if reader.interactive() => {
@@ -3770,14 +3761,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.recent_dirty = true;
             reader.persist_recent()
         }
-        Message::ToggleToolbar if reader.book.is_some() || reader.pdf.is_some() => {
-            reader.toolbar_expanded = !reader.toolbar_expanded;
-            if !reader.toolbar_expanded {
-                reader.show_contents = false;
-                reader.show_help = false;
-            }
-            reader.focused = Some(Control::ToggleToolbar);
-            restore_viewport(reader)
+        Message::TogglePinnedBar if reader.book.is_some() || reader.pdf.is_some() => {
+            reader.bar.toggle_pin(std::time::Instant::now());
+            Task::none()
+        }
+        Message::RevealBar => {
+            reader.bar.hover(std::time::Instant::now(), true);
+            Task::none()
+        }
+        Message::BarFrame(at) => {
+            reader.bar.tick(at);
+            Task::none()
         }
         Message::ToggleRecent if reader.interactive() => {
             reader.show_settings = false;
@@ -4098,9 +4092,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ToggleContents if reader.interactive() => {
             if !reader.contents().is_empty() {
                 reader.show_contents = !reader.show_contents;
-                if reader.show_contents {
-                    reader.toolbar_expanded = true;
-                }
                 reader.contents_offset = 0.0;
                 reader.focused = if reader.show_contents && !reader.contents_range().is_empty() {
                     Some(Control::ContentsEntry(0))
@@ -4660,7 +4651,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         return update_inner(reader, Message::ToggleFullscreen);
                     }
                     Key::Named(key::Named::F8) if !repeat => {
-                        return update_inner(reader, Message::ToggleToolbar);
+                        return update_inner(reader, Message::TogglePinnedBar);
                     }
                     Key::Named(key::Named::F1) if !repeat => {
                         return update_inner(reader, Message::ToggleHelp);
@@ -4693,6 +4684,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         if reader.fullscreen {
                             return reader.toggle_fullscreen();
                         }
+                        if (reader.book.is_some() || reader.pdf.is_some())
+                            && reader
+                                .bar
+                                .dismiss(std::time::Instant::now(), reader.bar_held())
+                        {
+                            return Task::none();
+                        }
                     }
                     Key::Character(value)
                         if modifiers.control() && value.eq_ignore_ascii_case("r") && !repeat =>
@@ -4704,7 +4702,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && value.eq_ignore_ascii_case("l")
                             && reader.book.is_some() =>
                     {
-                        reader.toolbar_expanded = true;
                         reader.focused = Some(Control::BookPageInput);
                         return iced::widget::operation::focus(iced::advanced::widget::Id::new(
                             "book-page",
@@ -4715,7 +4712,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && value.eq_ignore_ascii_case("l")
                             && reader.pdf.is_some() =>
                     {
-                        reader.toolbar_expanded = true;
                         reader.focused = Some(Control::Pdf(pdf_reader::FocusControl::Page));
                         return Task::batch([
                             restore_viewport(reader),
@@ -6014,23 +6010,6 @@ fn hinted_control<'a>(
     .into()
 }
 
-fn appearance_button(reader: &Reader, active: bool) -> Element<'static, Message> {
-    hinted_control(
-        reader,
-        Control::ToggleAppearance,
-        text(if reader.appearance == Appearance::Light {
-            "☾"
-        } else {
-            "☼"
-        })
-        .font(iced::Font::with_name("Segoe UI Symbol"))
-        .size(16)
-        .line_height(1.0),
-        reader.appearance.toggle_label(),
-        active.then_some(Message::ToggleAppearance),
-    )
-}
-
 fn find_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     hinted_control(
         reader,
@@ -6063,218 +6042,6 @@ fn listen_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     .padding(6)
     .style(ui::panel)
     .into()
-}
-
-fn document_toolbar(reader: &Reader, active: bool) -> Element<'_, Message> {
-    if reader.book.is_none() && reader.pdf.is_none() {
-        return iced::widget::Space::new().height(0).into();
-    }
-    if !reader.toolbar_expanded {
-        return iced::widget::Space::new().height(0).into();
-    }
-    let toolbar: Element<'_, Message> = {
-        let library = control_button(
-            reader,
-            Control::Close,
-            row![
-                text("←").font(ui::SANS).size(16),
-                text("Library").font(ui::MEDIUM).size(13)
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
-            active.then_some(Message::Close(CloseAction::Document)),
-        );
-        if let Some(pdf) = &reader.pdf {
-            let id = pdf.document().id;
-            let mode = hinted_control(
-                reader,
-                Control::BookMode,
-                text("Book").font(ui::MEDIUM).size(13),
-                "Read this PDF in Book mode",
-                (active && pdf.document().can_copy).then_some(Message::BookMode),
-            );
-            let focused = reader.focused.and_then(|control| {
-                if let Control::Pdf(control) = control {
-                    Some(control)
-                } else {
-                    None
-                }
-            });
-            let forward = move |message| Message::Pdf {
-                document: id,
-                message,
-            };
-            if reader.window_size.width < 900.0 {
-                column![
-                    row![
-                        library,
-                        mode,
-                        iced::widget::Space::new().width(Length::Fill),
-                        find_button(reader, active),
-                        listen_button(reader, active),
-                        appearance_button(reader, active)
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center),
-                    pdf.toolbar(focused).map(forward)
-                ]
-                .spacing(6)
-                .into()
-            } else {
-                // Same three columns as the Book toolbar: Library / pages / zoom.
-                row![
-                    container(
-                        row![library, mode]
-                            .spacing(8)
-                            .align_y(iced::Alignment::Center)
-                    )
-                    .width(Length::FillPortion(1)),
-                    pdf.navigation(focused).map(forward),
-                    container(
-                        row![
-                            pdf.zoom_controls(focused).map(forward),
-                            find_button(reader, active),
-                            listen_button(reader, active),
-                            appearance_button(reader, active)
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Alignment::Center)
-                    )
-                    .width(Length::FillPortion(1))
-                    .align_x(iced::alignment::Horizontal::Right)
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center)
-                .into()
-            }
-        } else {
-            let mut library = row![library].spacing(6).align_y(iced::Alignment::Center);
-            if !reader.returns.is_empty() {
-                library = library.push(hinted_control(
-                    reader,
-                    Control::Back,
-                    text("↶").size(16),
-                    "Back to previous passage (Alt+Left)",
-                    active.then_some(Message::Back),
-                ));
-            }
-            let fonts = row![
-                find_button(reader, active),
-                listen_button(reader, active),
-                hinted_control(
-                    reader,
-                    Control::FontDown,
-                    text("−").size(16),
-                    "Zoom out",
-                    (active && reader.zoom > 0.25).then_some(Message::Zoom(reader.zoom - 0.1))
-                ),
-                hinted_control(
-                    reader,
-                    Control::FitBookWidth,
-                    text(if reader.fit_width {
-                        "Fit".to_owned()
-                    } else {
-                        format!("{:.0}%", reader.zoom * 100.0)
-                    })
-                    .size(12),
-                    "Fit width / restore zoom (Ctrl+Shift+F)",
-                    active.then_some(Message::FitBookWidth)
-                ),
-                hinted_control(
-                    reader,
-                    Control::FontUp,
-                    text("+").size(16),
-                    "Zoom in",
-                    (active && reader.zoom < 3.0).then_some(Message::Zoom(reader.zoom + 0.1))
-                ),
-                appearance_button(reader, active),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center);
-            if reader.book.as_ref().is_some_and(|b| b.pdf_source.is_some()) {
-                library = library.push(control_button(
-                    reader,
-                    Control::DocumentMode,
-                    text("Document").font(ui::MEDIUM).size(13),
-                    active.then_some(Message::DocumentMode { source_page: true }),
-                ));
-            }
-            let pages = reader.pages();
-            let current = book_pages::current(pages, reader.offset)
-                .map_or_else(|| "1".to_owned(), |p| p.label.clone());
-            let mut navigation = row![
-                hinted_control(
-                    reader,
-                    Control::PreviousBookPage,
-                    "←",
-                    "Previous page (Left arrow)",
-                    (active && reader.can_turn(false)).then_some(Message::BookPage(false))
-                ),
-                iced::widget::text_input(
-                    if current.is_empty() { "—" } else { "Page" },
-                    reader.page_input.as_deref().unwrap_or(&current),
-                )
-                .id(iced::advanced::widget::Id::new("book-page"))
-                .on_input(Message::PageInput)
-                .on_submit(Message::PageSubmit)
-                .width(64)
-                .size(13)
-                .style(ui::input_style),
-                text(format!("/ {}", reader.page_total()))
-                    .size(12)
-                    .style(ui::muted_text),
-                hinted_control(
-                    reader,
-                    Control::NextBookPage,
-                    "→",
-                    "Next page (Right arrow)",
-                    (active && reader.can_turn(true)).then_some(Message::BookPage(true))
-                ),
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center);
-            if !reader.contents().is_empty() {
-                navigation = navigation.push(toned_button(
-                    reader,
-                    Control::Contents,
-                    text("Contents").font(ui::MEDIUM).size(13),
-                    active.then_some(Message::ToggleContents),
-                    ui::ButtonTone::Surface,
-                    reader.show_contents,
-                ));
-            }
-            if reader.window_size.width < 900.0 {
-                column![
-                    row![
-                        library,
-                        iced::widget::Space::new().width(Length::Fill),
-                        fonts
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center),
-                    container(navigation).center_x(Length::Fill),
-                ]
-                .spacing(6)
-                .into()
-            } else {
-                row![
-                    container(library).width(Length::FillPortion(1)),
-                    navigation,
-                    container(row![fonts].spacing(4).align_y(iced::Alignment::Center))
-                        .width(Length::FillPortion(1))
-                        .align_x(iced::alignment::Horizontal::Right)
-                ]
-                .spacing(4)
-                .align_y(iced::Alignment::Center)
-                .into()
-            }
-        }
-    };
-    container(toolbar)
-        .width(Length::Fill)
-        .padding([6, 20])
-        .style(ui::header)
-        .into()
 }
 
 fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Message> {
@@ -6387,8 +6154,6 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
 fn view(reader: &Reader) -> Element<'_, Message> {
     let active = reader.interactive() && reader.confirm_remove.is_none();
     let has_document = reader.book.is_some() || reader.pdf.is_some();
-    // The toolbar occupies one stable slot for every document format.
-    let toolbar = document_toolbar(reader, active);
     // This slot is always present, so expanding any panel never replaces the
     // reading scrollable's widget-tree position or its native scroll state.
     let mut auxiliary = column![].spacing(8);
@@ -6403,7 +6168,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         auxiliary = auxiliary.push(read_aloud::player(reader, active));
     }
     let contents = reader.contents();
-    if !contents.is_empty() && reader.show_contents && reader.toolbar_expanded {
+    if !contents.is_empty() && reader.show_contents {
         let height = (reader.window_size.height * 0.35).clamp(100.0, 240.0);
         let range = reader.contents_range();
         let start = range.start;
@@ -6545,7 +6310,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
                 .size(12).style(ui::muted_text),
             text("Ctrl+Shift+U  Read aloud / stop    Listen reads the selection, or continues from the current page")
                 .size(12).style(ui::muted_text),
-            text("Hold middle button  Scroll · Move away to change speed · Release / Escape to stop    F8 / title-bar panel icon  Hide / show toolbar")
+            text("Hold middle button  Scroll · Move away to change speed · Release / Escape to stop    F8  Pin / unpin the reading bar")
                 .size(12).style(ui::muted_text),
         ]
         .spacing(6);
@@ -6616,32 +6381,31 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     } else {
         iced::widget::Space::new().height(0).into()
     };
-    let header: Element<'_, Message> = if reader.fullscreen {
+    // A document keeps the reading bar's height free at the top, so the page
+    // stays put while the bar floats over that band and hides.
+    let header: Element<'_, Message> = if has_document {
+        iced::widget::Space::new()
+            .height(reading_chrome::height(reader))
+            .into()
+    } else if reader.fullscreen {
         iced::widget::Space::new().height(0).into()
     } else {
         chrome::view(
             reader.focused.and_then(|control| match control {
                 Control::Chrome(action) => Some(action),
-                Control::ToggleToolbar => Some(chrome::Action::ToggleToolbar),
                 _ => None,
             }),
             active,
-            reader.reading_title(),
             chrome::Controls {
                 maximized: reader.maximized,
-                tooltips: !reader.show_settings
-                    && !reader.show_search
-                    && reader.confirm_remove.is_none()
-                    && reader.notes.editor.is_none(),
+                tooltips: reader.chrome_tooltips(),
             },
-            (!has_document).then_some(reader.appearance),
-            has_document.then_some(reader.toolbar_expanded),
+            reader.appearance,
         )
         .map(Message::Chrome)
     };
     let mut page = column![
         header,
-        toolbar,
         loading,
         container(
             scrollable(auxiliary)
@@ -6689,10 +6453,12 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     } else {
         content
     });
-    let base = container(page)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
+    let page = container(page).width(Length::Fill).height(Length::Fill);
+    let base = if has_document {
+        iced::widget::stack![page, reading_chrome::view(reader, active)].into()
+    } else {
+        page.into()
+    };
     chrome::frame(overlays(reader, base), |direction| {
         Message::Chrome(chrome::Action::Resize(direction))
     })
@@ -6787,6 +6553,9 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
         subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
     }
     subscriptions.push(Subscription::run(instance::forwarded).map(Message::Forwarded));
+    if reader.bar.needs_frames() {
+        subscriptions.push(window::frames().map(Message::BarFrame));
+    }
     Subscription::batch(subscriptions)
 }
 
@@ -7417,16 +7186,18 @@ mod tests {
         );
         assert_eq!(reader.width, book_map::TEXT);
         assert_eq!(reader.saved_position().unwrap().1.item_id, "paragraph-5");
+        let _ = update_inner(&mut reader, Message::TogglePinnedBar);
         assert!(
             reader
                 .controls()
-                .any(|control| control == Control::ToggleAppearance)
+                .any(|control| control == Control::Chrome(chrome::Action::ToggleAppearance))
         );
-        let _ = update_inner(&mut reader, Message::ToggleToolbar);
-        assert!(!reader.controls().any(|control| matches!(
-            control,
-            Control::ToggleAppearance | Control::FontUp | Control::FontDown
-        )));
+        assert!(
+            reader
+                .controls()
+                .any(|control| control == Control::FitBookWidth),
+            "a pinned bar keeps every control"
+        );
     }
 
     pub(super) fn book(title: &str) -> Arc<Book> {
@@ -7574,7 +7345,60 @@ mod tests {
     }
 
     #[test]
-    fn book_toolbar_controls_fit_the_supported_window_widths() {
+    fn reading_bar_controls_fit_without_overlapping() {
+        ui::load_test_fonts();
+        let mut source = Arc::try_unwrap(book("bar-layout")).unwrap();
+        source.items[0] = Item::Heading {
+            id: "paragraph-0".into(),
+            text: "Chapter One".into(),
+            level: 1,
+        };
+        let mut reader = Reader {
+            book: Some(Arc::new(source)),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        assert!(!reader.contents().is_empty());
+        reader.returns.push(ReturnLocation {
+            chapter: None,
+            item_id: "paragraph-2".into(),
+            within: 0.0,
+        });
+        assert_bar_fits(
+            &mut reader,
+            &[540.0, 719.0, 720.0, 780.0, 859.0, 860.0, 1280.0],
+        );
+        use crate::pdf_reader::tests::{complete, tall_pdf};
+        let dll = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pdfium.dll");
+        if !dll.exists() {
+            eprintln!("skipped the PDF bar: pdfium.dll is not beside the test executable");
+            return;
+        }
+        let path =
+            std::env::temp_dir().join(format!("simpl-bar-layout-{}.pdf", std::process::id()));
+        std::fs::write(&path, tall_pdf()).unwrap();
+        let document = complete(reader_pdf::open(path.clone())).unwrap();
+        let _ = std::fs::remove_file(path);
+        let (pdf, _) = pdf_reader::Reader::new(document, None, Size::new(1280.0, 800.0), 1.0);
+        let mut reader = Reader {
+            pdf: Some(pdf),
+            ..Reader::default()
+        };
+        assert_bar_fits(
+            &mut reader,
+            &[540.0, 719.0, 720.0, 860.0, 999.0, 1000.0, 1280.0],
+        );
+    }
+
+    fn assert_bar_fits(reader: &mut Reader, widths: &[f32]) {
         use iced::advanced::{
             Layout, layout,
             widget::{Id, Operation, Tree},
@@ -7591,44 +7415,54 @@ mod tests {
                 }
             }
         }
-        let mut reader = searchable_reader();
-        reader.returns.push(ReturnLocation {
-            chapter: None,
-            item_id: "paragraph-2".into(),
-            within: 0.0,
-        });
         let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
-        for width in [540.0, 780.0, 899.0, 900.0, 1050.0, 1280.0] {
+        for &width in widths {
             reader.window_size.width = width;
-            for control in [
-                Control::Close,
-                Control::Back,
-                Control::Find,
-                Control::ReadAloud,
-                Control::FontDown,
-                Control::FontUp,
-                Control::ToggleAppearance,
-            ] {
+            let height = reading_chrome::height(reader);
+            let mut placed: Vec<(Control, iced::Rectangle)> = Vec::new();
+            let controls: Vec<Control> = reader
+                .controls()
+                .filter(|control| reading_chrome::is_bar_control(*control))
+                .collect();
+            assert!(controls.contains(&Control::Chrome(chrome::Action::Close)));
+            for control in controls {
                 reader.focused = Some(control);
-                let mut toolbar = document_toolbar(&reader, true);
-                let mut tree = Tree::new(&toolbar);
-                let node = toolbar.as_widget_mut().layout(
+                let mut bar = reading_chrome::view(reader, true);
+                let mut tree = Tree::new(&bar);
+                let node = bar.as_widget_mut().layout(
                     &mut tree,
                     &renderer,
                     &layout::Limits::new(Size::ZERO, Size::new(width, 800.0)),
                 );
+                assert_eq!(node.bounds().height, height, "bar height at {width}");
                 let mut bounds = FocusBounds::default();
-                toolbar.as_widget_mut().operate(
-                    &mut tree,
-                    Layout::new(&node),
-                    &renderer,
-                    &mut bounds,
-                );
-                let bounds = bounds.0.expect("focused toolbar control is present");
+                bar.as_widget_mut()
+                    .operate(&mut tree, Layout::new(&node), &renderer, &mut bounds);
+                let Some(bounds) = bounds.0 else {
+                    // The page fields show focus through iced's own text input focus.
+                    assert!(matches!(
+                        control,
+                        Control::BookPageInput | Control::Pdf(pdf_reader::FocusControl::Page)
+                    ));
+                    continue;
+                };
                 assert!(
-                    bounds.x >= 0.0 && bounds.x + bounds.width <= width + 0.5,
+                    bounds.x >= 0.0
+                        && bounds.x + bounds.width <= width + 0.5
+                        && bounds.y >= 0.0
+                        && bounds.y + bounds.height <= height,
                     "{control:?} at {width}: {bounds:?}"
                 );
+                for (other, placed) in &placed {
+                    let overlap = bounds
+                        .intersection(placed)
+                        .is_some_and(|area| area.width > 0.5 && area.height > 0.5);
+                    assert!(
+                        !overlap,
+                        "{control:?} {bounds:?} overlaps {other:?} {placed:?} at {width}"
+                    );
+                }
+                placed.push((control, bounds));
             }
         }
     }
@@ -8922,8 +8756,24 @@ mod tests {
         );
     }
 
+    fn f8() -> Message {
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Named(key::Named::F8),
+                modified_key: Key::Named(key::Named::F8),
+                physical_key: key::Physical::Code(key::Code::F8),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            }),
+            window::Id::unique(),
+        )
+    }
+
     #[test]
-    fn collapsing_reader_controls_preserves_position_and_removes_hidden_focus_targets() {
+    fn f8_pins_the_bar_without_moving_the_page_or_focus() {
+        use reading_chrome::BarState;
         let mut reader = Reader {
             book: Some(book("reading")),
             focused: Some(Control::FontUp),
@@ -8936,27 +8786,121 @@ mod tests {
         });
         settle_pagination(&mut reader);
         let original = reader.saved_position().unwrap().1;
-        let _ = update_inner(&mut reader, Message::ToggleToolbar);
-        assert!(!reader.toolbar_expanded);
-        assert!(!reader.show_help);
-        assert_eq!(reader.focused, Some(Control::ToggleToolbar));
-        assert!(
-            !reader
-                .controls()
-                .any(|control| control == Control::FontUp || control == Control::Close)
-        );
+        let _ = update(&mut reader, f8());
+        assert_eq!(reader.bar.state(), BarState::Pinned);
+        assert!(reader.show_help, "pinning closes no panel");
+        assert_eq!(reader.focused, Some(Control::FontUp));
         assert!(
             reader
                 .controls()
-                .any(|control| control == Control::ToggleToolbar)
+                .any(|control| control == Control::FontUp || control == Control::Close)
         );
-        let collapsed = reader.saved_position().unwrap().1;
-        assert_eq!(collapsed.item_id, original.item_id);
-        assert_eq!(collapsed.within, original.within);
-        let _ = reader.activate(Control::ToggleToolbar);
-        assert!(reader.toolbar_expanded);
-        assert!(reader.controls().any(|control| control == Control::Close));
+        let pinned = reader.saved_position().unwrap().1;
+        assert_eq!(pinned.item_id, original.item_id);
+        assert_eq!(pinned.within, original.within);
+        reader.focused = None;
+        let _ = update(&mut reader, f8());
+        assert!(
+            matches!(reader.bar.state(), BarState::Shown { hide_at: Some(_) }),
+            "unpinning starts the leave delay"
+        );
         assert_eq!(reader.saved_position().unwrap().1.item_id, original.item_id);
+    }
+
+    #[test]
+    fn tab_reveals_the_bar_and_escape_hides_it() {
+        use reading_chrome::BarState;
+        let key = |named: key::Named, code: key::Code| {
+            Message::Event(
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: Key::Named(named),
+                    modified_key: Key::Named(named),
+                    physical_key: key::Physical::Code(code),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                }),
+                window::Id::unique(),
+            )
+        };
+        let mut reader = Reader {
+            book: Some(book("keyboard")),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        reader.bar = reading_chrome::Bar::hidden();
+        let _ = update(&mut reader, key(key::Named::Tab, key::Code::Tab));
+        assert_eq!(
+            reader.focused,
+            Some(Control::Chrome(chrome::Action::Settings)),
+            "Tab lands on the bar's first control"
+        );
+        assert_eq!(reader.bar.state(), BarState::Shown { hide_at: None });
+        let _ = update(&mut reader, key(key::Named::Escape, key::Code::Escape));
+        assert_eq!(reader.focused, None);
+        assert_eq!(reader.bar.state(), BarState::Hidden);
+    }
+
+    #[test]
+    fn bar_overlay_does_not_move_the_page() {
+        ui::load_test_fonts();
+        let output = std::env::temp_dir().join(format!("simpl-bar-overlay-{}", std::process::id()));
+        std::fs::create_dir_all(&output).unwrap();
+        let mut reader = Reader {
+            book: Some(book("bar-overlay")),
+            window_size: Size::new(1280.0, 800.0),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        let shown = output.join("shown.png");
+        let hidden = output.join("hidden.png");
+        assert!(reader.bar.visible());
+        book_preview::render(&mut reader, &shown);
+        let opened = std::time::Instant::now();
+        reader.bar.open(opened);
+        reader.bar.tick(opened + std::time::Duration::from_secs(3));
+        reader.bar.tick(opened + std::time::Duration::from_secs(4));
+        assert!(!reader.bar.visible());
+        book_preview::render(&mut reader, &hidden);
+        let shown = ::image::open(&shown).unwrap().to_rgba8();
+        let hidden = ::image::open(&hidden).unwrap().to_rgba8();
+        let _ = std::fs::remove_dir_all(&output);
+        let top = reading_chrome::height(&reader) as u32;
+        // Text is the only dark ink on the light paper and desk.
+        let first_text_row = |image: &::image::RgbaImage| {
+            (top..image.height())
+                .find(|&y| {
+                    (0..image.width()).any(|x| {
+                        let [r, g, b, _] = image.get_pixel(x, y).0;
+                        u32::from(r) + u32::from(g) + u32::from(b) < 3 * 80
+                    })
+                })
+                .expect("the page shows text")
+        };
+        let row = first_text_row(&shown);
+        assert_eq!(row, first_text_row(&hidden));
+        assert!(row > top);
+        assert!(
+            (top..shown.height()).all(
+                |y| (0..shown.width()).all(|x| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
+            ),
+            "everything below the bar is identical whether it shows or not"
+        );
+        assert!(
+            (0..top).any(
+                |y| (0..shown.width()).any(|x| shown.get_pixel(x, y) != hidden.get_pixel(x, y))
+            ),
+            "the shown capture draws the bar"
+        );
     }
 
     #[test]

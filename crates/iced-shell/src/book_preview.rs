@@ -133,15 +133,16 @@ fn single_page_reading_and_toolbar() {
                     path.display(),
                     before.content.height
                 );
-                let _ = update_inner(&mut reader, Message::ToggleToolbar);
+                reader.bar = reading_chrome::Bar::hidden();
                 let after = paper_viewport(&reader);
-                assert!(
-                    after.bounds.height >= before.bounds.height + 30.0,
-                    "toolbar must release its whole height"
+                assert_eq!(
+                    after.bounds, before.bounds,
+                    "hiding the floating bar never moves the page"
                 );
                 assert_eq!(
-                    after.bounds.y, 48.0,
-                    "only native title bar remains above reading area"
+                    after.bounds.y,
+                    reading_chrome::height(&reader),
+                    "only the reading bar's band is above the reading area"
                 );
                 assert_eq!(reader.active_page().unwrap().number, selected);
                 let _ = reader.jump(f32::MAX);
@@ -152,19 +153,19 @@ fn single_page_reading_and_toolbar() {
                 );
                 let _ = reader.jump(0.0);
                 assert_eq!(reader.active_page().unwrap().number, selected);
-                let _ = update_inner(&mut reader, Message::ToggleToolbar);
+                reader.bar = Default::default();
             }
             let _ = update_inner(&mut reader, Message::Zoom(0.6));
             render(
                 &mut reader,
                 &output.join(format!("single-{case}-{requested}-toolbar.png")),
             );
-            let _ = update_inner(&mut reader, Message::ToggleToolbar);
+            reader.bar = reading_chrome::Bar::hidden();
             render(
                 &mut reader,
                 &output.join(format!("single-{case}-{requested}-focus.png")),
             );
-            let _ = update_inner(&mut reader, Message::ToggleToolbar);
+            reader.bar = Default::default();
             let old_generation = reader.generation;
             let old_top = reader.active_page().unwrap().top;
             if page + 1 < reader.pages().len() {
@@ -778,6 +779,104 @@ fn render_annotation_views() {
     assert!(reader.page_is_bookmarked());
     let _ = reader.notes_action(notes::Action::ToggleBookmark);
     assert!(!reader.page_is_bookmarked());
+}
+
+#[test]
+fn appearance_toggle_keeps_its_position_across_screens() {
+    ui::load_test_fonts();
+    let toggle = Some(Control::Chrome(chrome::Action::ToggleAppearance));
+    let library = focused_bounds(&Reader {
+        focused: toggle,
+        ..Reader::default()
+    })
+    .expect("the Library header shows the toggle");
+    for (fullscreen, width) in [(false, 1280.0), (false, 860.0), (true, 1280.0)] {
+        let mut reader = Reader {
+            book: Some(super::tests::book("toggle")),
+            window_size: Size::new(width, 800.0),
+            fullscreen,
+            focused: toggle,
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        let reading = focused_bounds(&reader).expect("the reading bar shows the toggle");
+        assert!(
+            (reading.x - library.x).abs() <= 2.0,
+            "toggle at x={} while reading ({width}, fullscreen {fullscreen}), x={} on the Library",
+            reading.x,
+            library.x
+        );
+    }
+}
+
+#[test]
+#[ignore = "Reading bar QA: set SIMPL_PREVIEW_OUTPUT"]
+fn render_reading_bar_previews() {
+    ui::load_test_fonts();
+    let output = PathBuf::from(std::env::var_os("SIMPL_PREVIEW_OUTPUT").expect("output directory"));
+    std::fs::create_dir_all(&output).unwrap();
+    let mut library = Reader::default();
+    render(&mut library, &output.join("bar-library.png"));
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        for width in [1280.0, 860.0] {
+            let mut reader = Reader {
+                book: Some(super::tests::book("reading-bar")),
+                window_size: Size::new(width, 700.0),
+                appearance,
+                ..Reader::default()
+            };
+            reader.returns.push(ReturnLocation {
+                chapter: None,
+                item_id: "paragraph-2".into(),
+                within: 0.0,
+            });
+            let _ = reader.rebuild_geometry(Anchor {
+                row: 0,
+                fraction: 0.0,
+            });
+            settle_pagination(&mut reader);
+            render(
+                &mut reader,
+                &output.join(format!("bar-shown-{name}-{width}.png")),
+            );
+            reader.bar = reading_chrome::Bar::hidden();
+            render(
+                &mut reader,
+                &output.join(format!("bar-hidden-{name}-{width}.png")),
+            );
+            reader.bar.hover(std::time::Instant::now(), true);
+            reader.bar.step_by(std::time::Duration::from_millis(75));
+            render(
+                &mut reader,
+                &output.join(format!("bar-fading-{name}-{width}.png")),
+            );
+            reader.bar = Default::default();
+            reader.fullscreen = true;
+            render(
+                &mut reader,
+                &output.join(format!("bar-fullscreen-{name}-{width}.png")),
+            );
+        }
+    }
+    use crate::pdf_reader::tests::{complete, tall_pdf};
+    let path = std::env::temp_dir().join(format!("simpl-bar-preview-{}.pdf", std::process::id()));
+    std::fs::write(&path, tall_pdf()).unwrap();
+    let document = complete(reader_pdf::open(path.clone())).unwrap();
+    let _ = std::fs::remove_file(path);
+    for width in [1280.0, 860.0] {
+        let (pdf, _) =
+            pdf_reader::Reader::new(document.clone(), None, Size::new(width, 700.0), 1.0);
+        let mut reader = Reader {
+            pdf: Some(pdf),
+            window_size: Size::new(width, 700.0),
+            ..Reader::default()
+        };
+        render(&mut reader, &output.join(format!("bar-pdf-{width}.png")));
+    }
 }
 
 #[test]

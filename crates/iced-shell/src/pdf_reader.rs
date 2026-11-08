@@ -31,7 +31,6 @@ const POINT_TO_DIP: f32 = 96.0 / 72.0;
 // Allow for the root header, PDF controls and status. The first on_scroll
 // report replaces this conservative viewport estimate with its actual bounds.
 const INITIAL_CHROME: f32 = 136.0;
-const COMPACT_TOOLBAR_WIDTH: f32 = 840.0;
 
 pub fn page_input_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-page-input")
@@ -68,13 +67,19 @@ fn focus_button<'a>(
     focused: bool,
     selected: bool,
 ) -> Element<'a, Message> {
-    button(text(label).font(ui::MEDIUM))
+    let control = button(text(label).font(ui::MEDIUM))
         .padding([7, 10])
         .on_press_maybe(action)
         .style(move |theme, status| {
             ui::button_style(theme, status, ButtonTone::Surface, focused, selected)
-        })
-        .into()
+        });
+    if focused {
+        container(control)
+            .id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL))
+            .into()
+    } else {
+        control.into()
+    }
 }
 
 #[derive(Debug)]
@@ -1323,22 +1328,6 @@ impl Reader {
         .spacing(7)
         .align_y(iced::Alignment::Center)
         .into()
-    }
-
-    /// Both control groups in one strip, for windows too narrow for the three-column layout.
-    pub fn toolbar(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
-        let navigation = self.navigation(focused);
-        let zoom = container(self.zoom_controls(focused)).width(Length::Fill);
-        // The app supplies the one collapsible toolbar slot around these controls.
-        let toolbar: Element<'_, Message> = if self.size.width < COMPACT_TOOLBAR_WIDTH {
-            column![navigation, zoom].spacing(5).into()
-        } else {
-            row![navigation, zoom]
-                .spacing(16)
-                .align_y(iced::Alignment::Center)
-                .into()
-        };
-        toolbar
     }
 
     pub fn view(&self) -> Element<'_, Message> {

@@ -30,8 +30,10 @@ and keep your highlights and notes with your books.
 - **Offline word lookup.** Double-click a word or select → right-click → Translate. Choose your language pair and automatic lookup preference. Download only the dictionaries you need; the 13 optional directions cover English, Turkish, Spanish, German, French, Japanese, Korean and Chinese. Lookup works locally after installation.
 - **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
 - **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
-- **Less chrome.** Collapse the toolbar to reclaim reading space. The title bar keeps
-  standard Windows minimize, maximize and close buttons. Geist for the interface,
+- **Less chrome.** While you read, one bar holds the window and reading controls and
+  fades away when idle; point at the top edge to bring it back, or press F8 to pin it.
+  The page never moves when it shows or hides. The bar keeps standard Windows
+  minimize, maximize and close buttons. Geist for the interface,
   Literata (or the theme's font) for the book, and bundled fonts for offline reading.
 - **Keyboard access.** Navigate controls, switch books, turn pages and copy selected
   text without reaching for the mouse.
@@ -265,7 +267,7 @@ JSON also preserves their full anchors, IDs and timestamps.
 | **Ctrl+B** | Show or hide bookmarks, highlights and notes |
 | **Ctrl+Shift+F** | Toggle fit width / previous zoom in Book or PDF Document |
 | **F11** | Enter / exit fullscreen; Esc exits after dismissing open panels |
-| **F8** | Hide / show the reading toolbar |
+| **F8** | Pin / unpin the reading bar |
 | **Tab / Shift+Tab** | Move between controls |
 | **F1** | Show shortcut help |
 

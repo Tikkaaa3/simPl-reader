@@ -19,7 +19,6 @@ pub enum Action {
     Search,
     Settings,
     ToggleAppearance,
-    ToggleToolbar,
     Resize(window::Direction),
 }
 
@@ -122,13 +121,11 @@ fn icon(
     let selected = focused == Some(action);
     let control = button(
         text(name)
-            .font(
-                if matches!(action, Action::ToggleAppearance | Action::ToggleToolbar) {
-                    iced::Font::with_name("Segoe UI Symbol")
-                } else {
-                    ui::ICONS
-                },
-            )
+            .font(if action == Action::ToggleAppearance {
+                iced::Font::with_name("Segoe UI Symbol")
+            } else {
+                ui::ICONS
+            })
             .size(19)
             .line_height(1.0)
             .shaping(text::Shaping::Advanced),
@@ -185,59 +182,69 @@ pub struct Controls {
     pub tooltips: bool,
 }
 
-/// The 48-DIP draggable header. Controls receive events before the drag surface.
-/// `active` changes visual emphasis, never whether the native controls work.
-pub fn view<'a>(
+/// Space between the window's left edge and the first header tool.
+pub const TOOLS_EDGE: f32 = 24.0;
+/// Width of the Settings, appearance and Search tools.
+pub const TOOLS_WIDTH: f32 = 3.0 * 32.0 + 2.0 * 8.0;
+/// Width of the three caption buttons and their right edge.
+pub const CAPTIONS_WIDTH: f32 = 3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE;
+
+/// Minimize, maximize or restore, and close, ending `CAPTION_EDGE` from the right.
+pub fn captions(focused: Option<Action>, controls: Controls) -> Element<'static, Action> {
+    container(
+        row![
+            caption(
+                Action::Minimize,
+                "\u{e921}",
+                focused,
+                controls.tooltips,
+                "Minimize"
+            ),
+            if controls.maximized {
+                caption(
+                    Action::Maximize,
+                    "\u{e923}",
+                    focused,
+                    controls.tooltips,
+                    "Restore down",
+                )
+            } else {
+                caption(
+                    Action::Maximize,
+                    "\u{e922}",
+                    focused,
+                    controls.tooltips,
+                    "Maximize",
+                )
+            },
+            caption(
+                Action::Close,
+                "\u{e8bb}",
+                focused,
+                controls.tooltips,
+                "Close"
+            ),
+        ]
+        .spacing(CAPTION_GAP)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding(iced::Padding {
+        right: CAPTION_EDGE,
+        ..iced::Padding::ZERO
+    })
+    .into()
+}
+
+/// Settings, the light and dark toggle, and Search. The Library header and the
+/// reading bar both start this row `TOOLS_EDGE` from the left, so the toggle
+/// keeps one position across screens.
+pub fn tools(
     focused: Option<Action>,
-    active: bool,
-    document_title: Option<String>,
-    controls: Controls,
-    appearance: Option<reader_document::preferences::Appearance>,
-    toolbar: Option<bool>,
-) -> Element<'a, Action> {
-    let captions = row![
-        caption(
-            Action::Minimize,
-            "\u{e921}",
-            focused,
-            controls.tooltips,
-            "Minimize"
-        ),
-        if controls.maximized {
-            caption(
-                Action::Maximize,
-                "\u{e923}",
-                focused,
-                controls.tooltips,
-                "Restore down",
-            )
-        } else {
-            caption(
-                Action::Maximize,
-                "\u{e922}",
-                focused,
-                controls.tooltips,
-                "Maximize",
-            )
-        },
-        caption(
-            Action::Close,
-            "\u{e8bb}",
-            focused,
-            controls.tooltips,
-            "Close"
-        ),
-    ]
-    .spacing(CAPTION_GAP)
-    .align_y(iced::Alignment::Center);
-    let mut tools = row![icon(
-        Action::Settings,
-        "\u{e8b8}",
-        focused,
-        controls.tooltips,
-        "Settings",
-    )];
-    let appearance_icon = appearance.map(|appearance| {
+    hints: bool,
+    appearance: reader_document::preferences::Appearance,
+) -> Element<'static, Action> {
+    row![
+        icon(Action::Settings, "\u{e8b8}", focused, hints, "Settings"),
         icon(
             Action::ToggleAppearance,
             if appearance == reader_document::preferences::Appearance::Dark {
@@ -246,40 +253,30 @@ pub fn view<'a>(
                 "☾"
             },
             focused,
-            controls.tooltips,
+            hints,
             appearance.toggle_label(),
-        )
-    });
-    let toolbar_icon = toolbar.map(|expanded| {
+        ),
         icon(
-            Action::ToggleToolbar,
-            "▤",
+            Action::Search,
+            "\u{e8b6}",
             focused,
-            controls.tooltips,
-            if expanded {
-                "Hide reading toolbar (F8)"
-            } else {
-                "Show reading toolbar (F8)"
-            },
-        )
-    });
-    if let Some(icon) = toolbar_icon {
-        tools = tools.push(icon);
-    }
-    if let Some(icon) = appearance_icon {
-        tools = tools.push(icon);
-    }
-    tools = tools.push(icon(
-        Action::Search,
-        "\u{e8b6}",
-        focused,
-        controls.tooltips,
-        "Search or switch (Ctrl+K)",
-    ));
-    let tools = tools.spacing(8).align_y(iced::Alignment::Center);
-    let tool_count: f32 = 2.0 + f32::from(appearance.is_some()) + f32::from(toolbar.is_some());
-    let tools_width = tool_count * 32.0 + (tool_count - 1.0) * 8.0;
-    // Library keeps the tracked wordmark; a document uses its own title.
+            hints,
+            "Search or switch (Ctrl+K)",
+        ),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
+/// The 48-DIP draggable Library header. Controls receive events before the drag surface.
+/// `active` changes visual emphasis, never whether the native controls work.
+pub fn view<'a>(
+    focused: Option<Action>,
+    active: bool,
+    controls: Controls,
+    appearance: reader_document::preferences::Appearance,
+) -> Element<'a, Action> {
     let title_style = move |theme: &Theme| text::Style {
         color: Some(if active {
             ui::palette(theme).secondary
@@ -287,31 +284,21 @@ pub fn view<'a>(
             ui::palette(theme).muted
         }),
     };
-    let title: Element<'a, Action> = if let Some(document_title) = document_title {
-        text(document_title)
-            .font(ui::MEDIUM)
-            .size(12)
-            .style(title_style)
-            .wrapping(text::Wrapping::None)
-            .into()
-    } else {
-        row![
-            text("S").font(ui::MEDIUM).size(12).style(title_style),
-            text("I").font(ui::MEDIUM).size(12).style(title_style),
-            text("M").font(ui::MEDIUM).size(12).style(title_style),
-            text("P").font(ui::MEDIUM).size(12).style(title_style),
-            text("L").font(ui::MEDIUM).size(12).style(title_style),
-        ]
-        .spacing(1.2)
-        .into()
-    };
-    // Both sides share one width so the title stays centred in the window.
-    let side_width = (tools_width + 48.0).max(3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE);
+    let title = row![
+        text("S").font(ui::MEDIUM).size(12).style(title_style),
+        text("I").font(ui::MEDIUM).size(12).style(title_style),
+        text("M").font(ui::MEDIUM).size(12).style(title_style),
+        text("P").font(ui::MEDIUM).size(12).style(title_style),
+        text("L").font(ui::MEDIUM).size(12).style(title_style),
+    ]
+    .spacing(1.2);
+    // Both sides share one width so the wordmark stays centred in the window.
+    let side_width = (TOOLS_WIDTH + 2.0 * TOOLS_EDGE).max(CAPTIONS_WIDTH);
     let content = row![
-        container(tools)
+        container(tools(focused, controls.tooltips, appearance))
             .width(side_width)
             .height(HEIGHT)
-            .padding([0, 24])
+            .padding([0.0, TOOLS_EDGE])
             .align_y(iced::alignment::Vertical::Center),
         container(title)
             .width(Length::Fill)
@@ -319,21 +306,17 @@ pub fn view<'a>(
             .center_x(Length::Fill)
             .center_y(HEIGHT)
             .clip(true),
-        container(captions)
+        container(captions(focused, controls))
             .width(side_width)
             .height(HEIGHT)
-            .padding(iced::Padding {
-                right: CAPTION_EDGE,
-                ..iced::Padding::ZERO
-            })
             .align_x(iced::alignment::Horizontal::Right)
             .align_y(iced::alignment::Vertical::Center),
     ]
     .width(Length::Fill)
     .height(HEIGHT)
     .align_y(iced::Alignment::Center);
-    Element::new(DragHeader {
-        content: container(content)
+    drag_region(
+        container(content)
             .width(Length::Fill)
             .height(HEIGHT)
             .style(|theme| container::Style {
@@ -341,11 +324,22 @@ pub fn view<'a>(
                 ..container::Style::default()
             })
             .into(),
-    })
+        |action| action,
+    )
 }
 
-struct DragHeader<'a> {
-    content: Element<'a, Action>,
+/// Makes `content` a window title bar: a press on its background drags the
+/// window, a double click maximizes it, and a right click opens the system menu.
+pub fn drag_region<'a, M: 'a>(
+    content: Element<'a, M>,
+    on_action: fn(Action) -> M,
+) -> Element<'a, M> {
+    Element::new(DragHeader { content, on_action })
+}
+
+struct DragHeader<'a, M> {
+    content: Element<'a, M>,
+    on_action: fn(Action) -> M,
 }
 
 #[derive(Default)]
@@ -353,7 +347,7 @@ struct HeaderState {
     previous_click: Option<mouse::Click>,
 }
 
-impl Widget<Action, Theme, iced::Renderer> for DragHeader<'_> {
+impl<M> Widget<M, Theme, iced::Renderer> for DragHeader<'_, M> {
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<HeaderState>()
     }
@@ -398,7 +392,7 @@ impl Widget<Action, Theme, iced::Renderer> for DragHeader<'_> {
         cursor: mouse::Cursor,
         renderer: &iced::Renderer,
         clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Action>,
+        shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
         self.content.as_widget_mut().update(
@@ -421,16 +415,18 @@ impl Widget<Action, Theme, iced::Renderer> for DragHeader<'_> {
                     let click =
                         mouse::Click::new(position, mouse::Button::Left, state.previous_click);
                     state.previous_click = Some(click);
-                    shell.publish(if click.kind() == mouse::click::Kind::Double {
-                        Action::Maximize
-                    } else {
-                        Action::Drag
-                    });
+                    shell.publish((self.on_action)(
+                        if click.kind() == mouse::click::Kind::Double {
+                            Action::Maximize
+                        } else {
+                            Action::Drag
+                        },
+                    ));
                     shell.capture_event();
                 }
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                shell.publish(Action::Menu);
+                shell.publish((self.on_action)(Action::Menu));
                 shell.capture_event();
             }
             _ => {}
@@ -484,7 +480,7 @@ impl Widget<Action, Theme, iced::Renderer> for DragHeader<'_> {
         renderer: &iced::Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Action, Theme, iced::Renderer>> {
+    ) -> Option<overlay::Element<'b, M, Theme, iced::Renderer>> {
         self.content.as_widget_mut().overlay(
             &mut tree.children[0],
             layout,

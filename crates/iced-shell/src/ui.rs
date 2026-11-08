@@ -10,11 +10,46 @@ pub use reader_layout::themes::Palette;
 pub(crate) use reader_layout::themes::{DARK, LIGHT};
 
 pub fn palette(theme: &Theme) -> Palette {
-    crate::themes::palette_of(theme).unwrap_or(if theme.extended_palette().is_dark {
+    let palette = crate::themes::palette_of(theme).unwrap_or(if theme.extended_palette().is_dark {
         DARK
     } else {
         LIGHT
-    })
+    });
+    let alpha = FADE.get();
+    if alpha < 1.0 {
+        faded_palette(palette, alpha)
+    } else {
+        palette
+    }
+}
+
+thread_local! {
+    static FADE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// Runs `draw` with every [`palette`] colour at `alpha` opacity, so a widget
+/// subtree styled from the palette fades as one.
+pub(crate) fn with_alpha<T>(alpha: f32, draw: impl FnOnce() -> T) -> T {
+    let previous = FADE.replace(alpha.clamp(0.0, 1.0));
+    let result = draw();
+    FADE.set(previous);
+    result
+}
+
+fn faded_palette(palette: Palette, alpha: f32) -> Palette {
+    Palette {
+        background: palette.background.scale_alpha(alpha),
+        surface: palette.surface.scale_alpha(alpha),
+        raised: palette.raised.scale_alpha(alpha),
+        lowest: palette.lowest.scale_alpha(alpha),
+        border: palette.border.scale_alpha(alpha),
+        text: palette.text.scale_alpha(alpha),
+        secondary: palette.secondary.scale_alpha(alpha),
+        muted: palette.muted.scale_alpha(alpha),
+        accent: palette.accent.scale_alpha(alpha),
+        danger: palette.danger.scale_alpha(alpha),
+        control_border: palette.control_border.scale_alpha(alpha),
+    }
 }
 
 /// `amount` of `foreground` over an opaque `background`.
