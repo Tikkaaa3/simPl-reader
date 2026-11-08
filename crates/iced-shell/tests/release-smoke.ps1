@@ -222,7 +222,7 @@ try {
     $scale = [ReleaseSmokeNative]::GetDpiForWindow($window)/96.0
     $bounds = New-Object ReleaseSmokeNative+Rect; [void][ReleaseSmokeNative]::GetClientRect($window,[ref]$bounds)
     $point = New-Object ReleaseSmokeNative+Point; [void][ReleaseSmokeNative]::ClientToScreen($window,[ref]$point)
-    [void][ReleaseSmokeNative]::SetCursorPos($point.X+$bounds.Right-[int](40*$scale),$point.Y+[int](24*$scale))
+    [void][ReleaseSmokeNative]::SetCursorPos($point.X+[int](49*$scale),$point.Y+[int](28*$scale))
     Assert-Target; [ReleaseSmokeNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [ReleaseSmokeNative]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500; Capture '14-settings-top'
     [void][ReleaseSmokeNative]::SetCursorPos($point.X+[int](300*$scale),$point.Y+[int](340*$scale))
