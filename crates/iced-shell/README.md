@@ -35,11 +35,13 @@ against the active document/generation so stale work cannot replace a newer view
 - EPUB/HTML use source page markers when available, otherwise a canonical first
   layout. Window resizing and zoom do not change those saved boundaries.
 - In a document, the title bar and the toolbar are one reading bar
-  (`reading_chrome.rs`) that floats over a band kept free at the top, so the
-  page never moves. It shows for 2 s after opening, while the pointer is in the
-  top 48 px, while one of its controls has focus or a panel it opened is open,
-  and hides 1.5 s after that. F8 pins it. Its controls stay in the keyboard
-  focus order while hidden; focusing one reveals the bar.
+  (`reading_chrome.rs`) stacked over the reading area, which starts at the top
+  of the window, so the page never moves when the bar shows or hides. Panels
+  such as Find hang below the bar and hold it open. It shows for 2 s after
+  opening, while the pointer is in the top 48 px, while one of its controls has
+  focus or a panel is open, and hides 1.5 s after that. F8 pins it. The wheel
+  over the bar scrolls the page. Its controls stay in the keyboard focus order
+  while hidden; focusing one reveals the bar.
 - Managed imports live below `%LOCALAPPDATA%\simPl\documents`. HTML book folders
   use an internal EPUB container, with source-format metadata so the shelf still
   identifies them as HTML. Removal is restricted to owned copies.

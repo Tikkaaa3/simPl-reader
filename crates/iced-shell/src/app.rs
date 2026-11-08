@@ -1136,6 +1136,8 @@ enum Message {
     /// The pointer entered the band that reveals the hidden reading bar.
     RevealBar,
     BarFrame(std::time::Instant),
+    /// The wheel turned over the reading bar; it scrolls the document under it.
+    BarWheel(mouse::ScrollDelta),
     ToggleHelp,
     FocusReady(u64),
     OpenRecent(usize),
@@ -3773,6 +3775,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.bar.tick(at);
             Task::none()
         }
+        Message::BarWheel(delta) => reading_chrome::forward_wheel(reader, delta),
         Message::ToggleRecent if reader.interactive() => {
             reader.show_settings = false;
             reader.show_search = false;
@@ -5401,7 +5404,7 @@ fn toned_button<'a>(
     selected: bool,
 ) -> Element<'a, Message> {
     let focused = reader.focused == Some(control);
-    let compact = reader.window_size.width < 780.0 && reader.book.is_some();
+    let compact = reading_chrome::compact(reader);
     let button = iced::widget::button(label)
         .padding([7, if compact { 7 } else { 11 }])
         .on_press_maybe(message)
@@ -6381,43 +6384,16 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     } else {
         iced::widget::Space::new().height(0).into()
     };
-    // A document keeps the reading bar's height free at the top, so the page
-    // stays put while the bar floats over that band and hides.
-    let header: Element<'_, Message> = if has_document {
-        iced::widget::Space::new()
-            .height(reading_chrome::height(reader))
-            .into()
-    } else if reader.fullscreen {
-        iced::widget::Space::new().height(0).into()
-    } else {
-        chrome::view(
-            reader.focused.and_then(|control| match control {
-                Control::Chrome(action) => Some(action),
-                _ => None,
-            }),
-            active,
-            chrome::Controls {
-                maximized: reader.maximized,
-                tooltips: reader.chrome_tooltips(),
-            },
-            reader.appearance,
-        )
-        .map(Message::Chrome)
-    };
-    let mut page = column![
-        header,
-        loading,
-        container(
-            scrollable(auxiliary)
-                .id(iced::advanced::widget::Id::new("reader-panels"))
-                .direction(ui::vertical_scrollbar())
-                .style(ui::scroll_style)
-                .height(Length::Shrink),
-        )
-        .width(Length::Fill)
-        .max_height(reader.window_size.height * 0.38)
-        .padding([0, 20]),
-    ];
+    let panels = container(
+        scrollable(auxiliary)
+            .id(iced::advanced::widget::Id::new("reader-panels"))
+            .direction(ui::vertical_scrollbar())
+            .style(ui::scroll_style)
+            .height(Length::Shrink),
+    )
+    .width(Length::Fill)
+    .max_height(reader.window_size.height * 0.38)
+    .padding([0, 20]);
     let content: Element<'_, Message> = if let Some(pdf) = &reader.pdf {
         let document = pdf.document().id;
         pdf.view()
@@ -6443,21 +6419,48 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             )
             .map(Message::Shelf)
     };
-    page = page.push(if has_document {
-        row![
+    let base: Element<'_, Message> = if has_document {
+        // The reading area starts at the top of the window; the bar and the
+        // panels it holds open float above it, so the page never moves when
+        // they show or hide.
+        let reading = row![
             container(content).width(Length::Fill).height(Length::Fill),
             notes_ui::sidebar(reader, active),
         ]
-        .height(Length::Fill)
-        .into()
+        .width(Length::Fill)
+        .height(Length::Fill);
+        let mut top = column![reading_chrome::view(reader, active)];
+        if reader.has_panels() {
+            top = top.push(iced::widget::opaque(
+                column![loading, panels].spacing(8).padding(iced::Padding {
+                    top: 8.0,
+                    ..iced::Padding::ZERO
+                }),
+            ));
+        }
+        iced::widget::stack![reading, top].into()
     } else {
-        content
-    });
-    let page = container(page).width(Length::Fill).height(Length::Fill);
-    let base = if has_document {
-        iced::widget::stack![page, reading_chrome::view(reader, active)].into()
-    } else {
-        page.into()
+        let header: Element<'_, Message> = if reader.fullscreen {
+            iced::widget::Space::new().height(0).into()
+        } else {
+            chrome::view(
+                reader.focused.and_then(|control| match control {
+                    Control::Chrome(action) => Some(action),
+                    _ => None,
+                }),
+                active,
+                chrome::Controls {
+                    maximized: reader.maximized,
+                    tooltips: reader.chrome_tooltips(),
+                },
+                reader.appearance,
+            )
+            .map(Message::Chrome)
+        };
+        container(column![header, loading, panels, content])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     };
     chrome::frame(overlays(reader, base), |direction| {
         Message::Chrome(chrome::Action::Resize(direction))
@@ -7370,8 +7373,11 @@ mod tests {
         });
         assert_bar_fits(
             &mut reader,
-            &[540.0, 719.0, 720.0, 780.0, 859.0, 860.0, 1280.0],
+            &[540.0, 671.0, 672.0, 688.0, 779.0, 780.0, 860.0, 1280.0],
         );
+        // An 860px client at 125% scale.
+        reader.window_size.width = 688.0;
+        assert_eq!(reading_chrome::height(&reader), 44.0, "one row at 688");
         use crate::pdf_reader::tests::{complete, tall_pdf};
         let dll = std::env::current_exe()
             .unwrap()
@@ -7394,8 +7400,10 @@ mod tests {
         };
         assert_bar_fits(
             &mut reader,
-            &[540.0, 719.0, 720.0, 860.0, 999.0, 1000.0, 1280.0],
+            &[540.0, 679.0, 680.0, 688.0, 860.0, 899.0, 900.0, 1280.0],
         );
+        reader.window_size.width = 688.0;
+        assert_eq!(reading_chrome::height(&reader), 44.0, "one row at 688");
     }
 
     fn assert_bar_fits(reader: &mut Reader, widths: &[f32]) {
@@ -8800,6 +8808,14 @@ mod tests {
         assert_eq!(pinned.within, original.within);
         reader.focused = None;
         let _ = update(&mut reader, f8());
+        assert_eq!(
+            reader.bar.state(),
+            BarState::Shown { hide_at: None },
+            "the open help panel hangs below the bar and holds it"
+        );
+        let _ = update(&mut reader, f8());
+        reader.show_help = false;
+        let _ = update(&mut reader, f8());
         assert!(
             matches!(reader.bar.state(), BarState::Shown { hide_at: Some(_) }),
             "unpinning starts the leave delay"
@@ -8874,10 +8890,10 @@ mod tests {
         let shown = ::image::open(&shown).unwrap().to_rgba8();
         let hidden = ::image::open(&hidden).unwrap().to_rgba8();
         let _ = std::fs::remove_dir_all(&output);
-        let top = reading_chrome::height(&reader) as u32;
+        let bar = reading_chrome::height(&reader) as u32;
         // Text is the only dark ink on the light paper and desk.
         let first_text_row = |image: &::image::RgbaImage| {
-            (top..image.height())
+            (bar..image.height())
                 .find(|&y| {
                     (0..image.width()).any(|x| {
                         let [r, g, b, _] = image.get_pixel(x, y).0;
@@ -8886,21 +8902,25 @@ mod tests {
                 })
                 .expect("the page shows text")
         };
-        let row = first_text_row(&shown);
-        assert_eq!(row, first_text_row(&hidden));
-        assert!(row > top);
+        assert_eq!(first_text_row(&shown), first_text_row(&hidden));
         assert!(
-            (top..shown.height()).all(
+            (bar..shown.height()).all(
                 |y| (0..shown.width()).all(|x| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
             ),
-            "everything below the bar is identical whether it shows or not"
+            "everything outside the bar is identical whether it shows or not"
         );
         assert!(
-            (0..top).any(
+            (0..bar).any(
                 |y| (0..shown.width()).any(|x| shown.get_pixel(x, y) != hidden.get_pixel(x, y))
             ),
             "the shown capture draws the bar"
         );
+        // No band: with the bar hidden the paper starts at the top of the window.
+        let centre = hidden.width() / 2;
+        let paper_top = (0..hidden.height())
+            .find(|&y| hidden.get_pixel(centre, y) != hidden.get_pixel(4, y))
+            .expect("the paper is visible");
+        assert!(paper_top < 20, "the paper's top edge is at y={paper_top}");
     }
 
     #[test]

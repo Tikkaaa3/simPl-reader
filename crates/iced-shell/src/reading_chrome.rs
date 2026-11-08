@@ -17,14 +17,20 @@ pub(super) const REVEAL_ZONE: f32 = 48.0;
 const OPEN_HOLD: Duration = Duration::from_millis(2000);
 const LEAVE_HOLD: Duration = Duration::from_millis(1500);
 const FADE: Duration = Duration::from_millis(150);
-/// Narrowest windows whose bar fits on one row, with every optional control shown.
-const BOOK_ONE_ROW: f32 = 860.0;
+/// Narrowest windows, in logical pixels, whose bar fits on one row with every
+/// optional control shown and room for four-digit page counts. An 860px client
+/// at 125% scale is 688 logical pixels.
+const BOOK_ONE_ROW: f32 = 672.0;
 /// The Document button of a PDF read in Book mode.
 const DOCUMENT_BUTTON: f32 = 100.0;
-const PDF_ONE_ROW: f32 = 1000.0;
-/// Below this width the Library button shows only its arrow.
-const SHORT_LIBRARY: f32 = 720.0;
-const GROUP_GAP: f32 = 16.0;
+const PDF_ONE_ROW: f32 = 680.0;
+/// Below these widths the bar's buttons tighten and Library shows only its arrow.
+const BOOK_COMPACT: f32 = 780.0;
+const PDF_COMPACT: f32 = 900.0;
+/// Space between the bar's groups; compact windows halve it.
+const GROUP_GAP: f32 = 8.0;
+/// Pixels an iced scrollable moves per wheel line.
+const WHEEL_LINE: f32 = 60.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BarState {
@@ -244,15 +250,34 @@ impl Reader {
             .or_else(|| self.book.as_ref().map(|book| book.path.as_path()))
     }
 
-    /// A bar control has keyboard focus, or a panel the bar opened is open.
+    /// A bar control has keyboard focus, a panel the bar opened is open, or a
+    /// panel hangs below the bar. The transient loading line does not hold it,
+    /// so a slow first layout never stretches the 2 s shown after opening.
     pub(super) fn bar_held(&self) -> bool {
         self.focused.is_some_and(is_bar_control)
             || self.page_input.is_some()
-            || self.find.is_some()
-            || self.show_contents
-            || self.read_aloud.active()
             || self.show_settings
             || self.show_search
+            || self.has_held_panels()
+    }
+
+    /// Something shows in the panel area under the bar.
+    pub(super) fn has_panels(&self) -> bool {
+        self.has_held_panels() || self.opening.is_some() || self.pagination.is_some()
+    }
+
+    /// Find, the read-aloud player, contents, help, recent documents or notices.
+    fn has_held_panels(&self) -> bool {
+        self.find.is_some()
+            || self.read_aloud.active()
+            || (self.show_contents && !self.contents().is_empty())
+            || self.error.is_some()
+            || self.history_notice.is_some()
+            || self.show_recent
+            || self.show_help
+            || self.preferences_notice.is_some()
+            || self.shelf.notice.is_some()
+            || self.saving
     }
 
     /// Header tooltips stay quiet while a modal covers the header.
@@ -295,6 +320,16 @@ impl Reader {
     }
 }
 
+/// Narrow windows tighten the reading controls so the bar keeps one row.
+pub(super) fn compact(reader: &Reader) -> bool {
+    let width = reader.window_size.width;
+    if reader.pdf.is_some() {
+        width < PDF_COMPACT
+    } else {
+        reader.book.is_some() && width < BOOK_COMPACT
+    }
+}
+
 fn one_row(reader: &Reader) -> bool {
     let needed = if reader.pdf.is_some() {
         PDF_ONE_ROW
@@ -329,10 +364,15 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
         _ => None,
     });
     let hints = reader.chrome_tooltips();
+    let gap = if compact(reader) {
+        GROUP_GAP / 2.0
+    } else {
+        GROUP_GAP
+    };
     let tools = container(chrome::tools(focused, hints, reader.appearance).map(Message::Chrome))
         .padding(iced::Padding {
             left: chrome::TOOLS_EDGE,
-            right: GROUP_GAP,
+            right: gap,
             ..iced::Padding::ZERO
         });
     let captions: Element<'_, Message> = if reader.fullscreen {
@@ -349,7 +389,7 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
             .map(Message::Chrome),
         )
         .padding(iced::Padding {
-            left: GROUP_GAP,
+            left: gap,
             ..iced::Padding::ZERO
         })
         .into()
@@ -365,7 +405,7 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
             tools,
             groups.left,
             fill(),
-            container(groups.middle).padding([0.0, GROUP_GAP]),
+            container(groups.middle).padding([0.0, gap]),
             fill(),
             groups.right,
             captions,
@@ -395,10 +435,30 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
     ])
     .width(Length::Fill)
     .style(ui::header);
-    Element::new(Fade {
+    // Wheel over the bar scrolls the document under it.
+    mouse_area(Element::new(Fade {
         content: chrome::drag_region(bar.into(), Message::Chrome),
         alpha: reader.bar.alpha(),
-    })
+    }))
+    .on_scroll(Message::BarWheel)
+    .into()
+}
+
+/// Scrolls the open document by a wheel `delta` received over the bar, by the
+/// same distance its scrollable moves for that delta.
+pub(super) fn forward_wheel(reader: &Reader, delta: mouse::ScrollDelta) -> Task<Message> {
+    let (x, y) = match delta {
+        mouse::ScrollDelta::Lines { x, y } => (-x * WHEEL_LINE, -y * WHEEL_LINE),
+        mouse::ScrollDelta::Pixels { x, y } => (-x, -y),
+    };
+    let offset = iced::widget::scrollable::AbsoluteOffset { x, y };
+    if reader.pdf.is_some() {
+        iced::widget::operation::scroll_by(pdf_reader::scroll_id(), offset)
+    } else if reader.book.is_some() {
+        iced::widget::operation::scroll_by(scroll_id(), offset)
+    } else {
+        Task::none()
+    }
 }
 
 struct Groups<'a> {
@@ -409,7 +469,7 @@ struct Groups<'a> {
 
 fn library_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     let arrow = text("←").font(ui::SANS).size(16);
-    if reader.window_size.width < SHORT_LIBRARY {
+    if compact(reader) {
         hinted_control(
             reader,
             Control::Close,
@@ -449,16 +509,16 @@ fn pdf_groups(reader: &Reader, active: bool) -> Groups<'_> {
     };
     Groups {
         left: row![library_button(reader, active), mode]
-            .spacing(8)
+            .spacing(if compact(reader) { 6 } else { 8 })
             .align_y(iced::Alignment::Center)
             .into(),
-        middle: pdf.navigation(focused).map(forward),
+        middle: pdf.navigation(focused, compact(reader)).map(forward),
         right: row![
-            pdf.zoom_controls(focused).map(forward),
+            pdf.zoom_controls(focused, compact(reader)).map(forward),
             find_button(reader, active),
             listen_button(reader, active),
         ]
-        .spacing(8)
+        .spacing(if compact(reader) { 6 } else { 8 })
         .align_y(iced::Alignment::Center)
         .into(),
     }
@@ -804,6 +864,20 @@ mod tests {
         reader.book = None;
         reader.sync_bar(now + seconds(0.5), None);
         assert!(!reader.bar.needs_frames(), "closing it stops the frames");
+    }
+
+    #[test]
+    fn a_slow_first_layout_does_not_stretch_the_open_delay() {
+        let mut reader = Reader {
+            book: Some(super::super::tests::book("bar-paginating")),
+            pagination: Some(Arc::new(AtomicBool::new(false))),
+            ..Reader::default()
+        };
+        let opened = Instant::now();
+        reader.sync_bar(opened, None);
+        assert!(reader.has_panels(), "the loading line shows below the bar");
+        reader.bar.tick(opened + seconds(2.1));
+        assert_eq!(reader.bar.state(), BarState::Hidden);
     }
 
     #[test]

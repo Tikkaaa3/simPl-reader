@@ -36,7 +36,7 @@ pub fn page_input_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-page-input")
 }
 
-fn scroll_id() -> iced::advanced::widget::Id {
+pub(crate) fn scroll_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-document")
 }
 
@@ -66,9 +66,10 @@ fn focus_button<'a>(
     action: Option<Message>,
     focused: bool,
     selected: bool,
+    compact: bool,
 ) -> Element<'a, Message> {
     let control = button(text(label).font(ui::MEDIUM))
-        .padding([7, 10])
+        .padding([7, if compact { 7 } else { 10 }])
         .on_press_maybe(action)
         .style(move |theme, status| {
             ui::button_style(theme, status, ButtonTone::Surface, focused, selected)
@@ -1250,15 +1251,17 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    /// Previous / page number / next, sized for the centre of the app toolbar.
-    pub fn navigation(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    /// Previous / page number / next, sized for the centre of the reading bar.
+    /// `compact` uses arrows and tighter buttons for narrow windows.
+    pub fn navigation(&self, focused: Option<FocusControl>, compact: bool) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
         row![
             focus_button(
-                "Prev",
+                if compact { "←" } else { "Prev" },
                 (page > 0).then_some(Message::Previous),
                 focused == Some(FocusControl::Previous),
                 false,
+                compact,
             ),
             text_input("Page", &self.page_input)
                 .id(page_input_id())
@@ -1279,19 +1282,24 @@ impl Reader {
                 .size(13)
                 .style(ui::muted_text),
             focus_button(
-                "Next",
+                if compact { "→" } else { "Next" },
                 (page + 1 < self.document.pages.len()).then_some(Message::Next),
                 focused == Some(FocusControl::Next),
                 false,
+                compact,
             ),
         ]
-        .spacing(7)
+        .spacing(if compact { 4 } else { 7 })
         .align_y(iced::Alignment::Center)
         .into()
     }
 
-    /// Zoom and fit controls, sized for the right side of the app toolbar.
-    pub fn zoom_controls(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    /// Zoom and fit controls, sized for the right side of the reading bar.
+    pub fn zoom_controls(
+        &self,
+        focused: Option<FocusControl>,
+        compact: bool,
+    ) -> Element<'_, Message> {
         // Show the size in use; Fit width stays marked on its own button.
         let zoom_label = format!("{:.0}%", self.effective_scale() * 100.0);
         row![
@@ -1300,6 +1308,7 @@ impl Reader {
                 Some(Message::ZoomOut),
                 focused == Some(FocusControl::ZoomOut),
                 false,
+                compact,
             ),
             text(zoom_label).size(13).style(ui::muted_text),
             focus_button(
@@ -1307,15 +1316,17 @@ impl Reader {
                 Some(Message::ZoomIn),
                 focused == Some(FocusControl::ZoomIn),
                 false,
+                compact,
             ),
             focus_button(
                 "100%",
                 Some(Message::ActualSize),
                 focused == Some(FocusControl::ActualSize),
                 self.zoom == PdfZoom::Scale(1.0),
+                compact,
             ),
             focus_button(
-                if self.size.width < 520.0 {
+                if compact || self.size.width < 520.0 {
                     "Fit"
                 } else {
                     "Fit width"
@@ -1323,9 +1334,10 @@ impl Reader {
                 Some(Message::FitWidth),
                 focused == Some(FocusControl::FitWidth),
                 self.zoom == PdfZoom::FitWidth,
+                compact,
             ),
         ]
-        .spacing(7)
+        .spacing(if compact { 4 } else { 7 })
         .align_y(iced::Alignment::Center)
         .into()
     }

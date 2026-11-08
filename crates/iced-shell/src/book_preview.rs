@@ -140,9 +140,8 @@ fn single_page_reading_and_toolbar() {
                     "hiding the floating bar never moves the page"
                 );
                 assert_eq!(
-                    after.bounds.y,
-                    reading_chrome::height(&reader),
-                    "only the reading bar's band is above the reading area"
+                    after.bounds.y, 0.0,
+                    "the reading area starts at the top, under the bar"
                 );
                 assert_eq!(reader.active_page().unwrap().number, selected);
                 let _ = reader.jump(f32::MAX);
@@ -814,6 +813,104 @@ fn appearance_toggle_keeps_its_position_across_screens() {
 }
 
 #[test]
+fn wheel_over_the_bar_scrolls_the_page_under_it() {
+    use iced_futures::futures::{StreamExt, executor::block_on};
+    use iced_runtime::{Action as RuntimeAction, task::into_stream};
+    ui::load_test_fonts();
+    let mut reader = Reader {
+        book: Some(super::tests::book("wheel")),
+        window_size: Size::new(1280.0, 500.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let size = reader.window_size;
+    let bounds = Rectangle::with_size(size);
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let top = Point::new(size.width / 2.0, 20.0);
+    // Turns the wheel one line down at `top`, then applies any forwarded
+    // scroll, and returns the page offset with the messages it published.
+    let wheel = |reader: &Reader| {
+        let mut element = view(reader);
+        let mut tree = Tree::new(&element);
+        let node =
+            element
+                .as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let mut messages = Vec::new();
+        for event in [
+            mouse::Event::CursorMoved { position: top },
+            mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+            },
+        ] {
+            element.as_widget_mut().update(
+                &mut tree,
+                &iced::Event::Mouse(event),
+                Layout::new(&node),
+                mouse::Cursor::Available(top),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut iced::advanced::Shell::new(&mut messages),
+                &bounds,
+            );
+        }
+        let mut probe = PaperViewport::default();
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
+        let direct = probe.offset.y;
+        for message in &messages {
+            let Message::BarWheel(delta) = message else {
+                continue;
+            };
+            block_on(async {
+                let mut stream = into_stream(reading_chrome::forward_wheel(reader, *delta))
+                    .expect("a forwarded scroll");
+                while let Some(action) = stream.next().await {
+                    if let RuntimeAction::Widget(mut operation) = action {
+                        element.as_widget_mut().operate(
+                            &mut tree,
+                            Layout::new(&node),
+                            &renderer,
+                            operation.as_mut(),
+                        );
+                    }
+                }
+            });
+        }
+        let mut probe = PaperViewport::default();
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
+        (direct, probe.offset.y, messages)
+    };
+
+    reader.bar = reading_chrome::Bar::hidden();
+    let (direct, _, _) = wheel(&reader);
+    assert_eq!(
+        direct, 60.0,
+        "the hidden bar's reveal band lets the wheel reach the page"
+    );
+
+    reader.bar = Default::default();
+    let (direct, forwarded, messages) = wheel(&reader);
+    assert_eq!(direct, 0.0, "the shown bar covers the page");
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::BarWheel(_)))
+    );
+    assert_eq!(
+        forwarded, 60.0,
+        "the bar forwards one wheel line to the page"
+    );
+}
+
+#[test]
 #[ignore = "Reading bar QA: set SIMPL_PREVIEW_OUTPUT"]
 fn render_reading_bar_previews() {
     ui::load_test_fonts();
@@ -843,6 +940,12 @@ fn render_reading_bar_previews() {
                 &mut reader,
                 &output.join(format!("bar-shown-{name}-{width}.png")),
             );
+            let _ = update_inner(&mut reader, Message::FindOpen);
+            render(
+                &mut reader,
+                &output.join(format!("bar-find-{name}-{width}.png")),
+            );
+            let _ = update_inner(&mut reader, Message::FindClose);
             reader.bar = reading_chrome::Bar::hidden();
             render(
                 &mut reader,
