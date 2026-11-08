@@ -122,6 +122,8 @@ fn size(bytes: u64) -> String {
     let bytes = bytes as f64;
     if bytes >= 1024.0 * MB {
         format!("{:.1} GB", bytes / (1024.0 * MB))
+    } else if bytes == 0.0 {
+        "0 MB".into()
     } else {
         format!("{:.0} MB", (bytes / MB).max(1.0))
     }
@@ -580,11 +582,11 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
             .spacing(8);
             if let Some(summary) = &state.summary {
                 line = line.push(
-                    text(format!(
-                        "{} · {}",
-                        books(summary.books),
-                        size(summary.bytes)
-                    ))
+                    text(if summary.books == 0 {
+                        "No imported books".to_string()
+                    } else {
+                        format!("{} · {}", books(summary.books), size(summary.bytes))
+                    })
                     .size(12)
                     .style(ui::muted_text),
                 );

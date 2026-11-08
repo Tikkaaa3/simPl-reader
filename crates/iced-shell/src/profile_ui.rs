@@ -36,6 +36,8 @@ pub(super) struct State {
     pub notice: Option<String>,
     pub options: Options,
     pub estimate: Option<Summary>,
+    /// The last failed estimate, cleared from `notice` once one succeeds.
+    estimate_error: Option<String>,
     pub pending: Option<(PathBuf, Summary)>,
     pub format: ExportFormat,
     generation: u64,
@@ -51,6 +53,7 @@ impl Default for State {
                 dictionaries: false,
             },
             estimate: None,
+            estimate_error: None,
             pending: None,
             format: ExportFormat::Markdown,
             generation: 0,
@@ -89,9 +92,15 @@ impl Reader {
     pub(super) fn profile_estimated(&mut self, generation: u64, result: Result<Summary, String>) {
         if generation == self.profile.generation {
             match result {
-                Ok(summary) => self.profile.estimate = Some(summary),
+                Ok(summary) => {
+                    self.profile.estimate = Some(summary);
+                    if self.profile.notice == self.profile.estimate_error.take() {
+                        self.profile.notice = None;
+                    }
+                }
                 Err(error) => {
                     self.profile.estimate = None;
+                    self.profile.estimate_error = Some(error.clone());
                     self.profile.notice = Some(error);
                 }
             }
@@ -437,6 +446,31 @@ mod tests {
         )));
         reader
     }
+    #[test]
+    fn a_successful_estimate_clears_only_its_own_earlier_error() {
+        let mut reader = ready();
+        let missing = "The library folder E:\\Books isn't connected.".to_string();
+        let summary = Summary {
+            files: 3,
+            bytes: 10,
+            documents: true,
+            dictionaries: false,
+        };
+        reader.profile_estimated(0, Err(missing.clone()));
+        assert_eq!(reader.profile.notice.as_deref(), Some(missing.as_str()));
+        reader.profile_estimated(0, Ok(summary.clone()));
+        assert_eq!(reader.profile.notice, None);
+        assert_eq!(reader.profile.estimate.as_ref().map(|s| s.files), Some(3));
+
+        reader.profile_estimated(0, Err(missing));
+        reader.profile.notice = Some("Saved to E:\\backup.zip".into());
+        reader.profile_estimated(0, Ok(summary));
+        assert_eq!(
+            reader.profile.notice.as_deref(),
+            Some("Saved to E:\\backup.zip")
+        );
+    }
+
     #[test]
     fn destructive_restore_waits_for_loads_writes_and_document_close() {
         let mut reader = ready();
