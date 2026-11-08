@@ -72,11 +72,16 @@ fn owned_folder(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     Ok(Some(actual))
 }
 
+/// Whether `path` is a simPl copy inside the store at `root`.
+pub(crate) fn is_owned_at(root: &Path, path: &Path) -> bool {
+    matches!(owned_folder(root, path), Ok(Some(_)))
+}
+
 pub fn import(path: &Path) -> Result<PathBuf, String> {
     import_at(&root(), path)
 }
 
-fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     if owned_folder(root, path)?.is_some() {
         return Ok(path.to_path_buf());
     }
@@ -333,7 +338,7 @@ pub fn source_kind(path: &Path) -> Option<crate::library::SourceFormat> {
     source_kind_at(&root(), path)
 }
 
-fn source_kind_at(root: &Path, path: &Path) -> Option<crate::library::SourceFormat> {
+pub(crate) fn source_kind_at(root: &Path, path: &Path) -> Option<crate::library::SourceFormat> {
     use crate::library::SourceFormat;
     let ext = path.extension()?.to_str()?;
     if !ext.eq_ignore_ascii_case("html") && path.file_name()?.to_str()? != "book.epub" {

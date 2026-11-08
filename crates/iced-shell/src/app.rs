@@ -199,6 +199,16 @@ enum Storage {
     Import,
 }
 
+impl Storage {
+    /// The one place that maps storage to library card policy.
+    fn card(self) -> shelf::Card {
+        match self {
+            Self::InPlace => shelf::Card::Refresh,
+            Self::Import => shelf::Card::Write,
+        }
+    }
+}
+
 /// An open that moves an existing entry to the chosen file. `recent::relocate`
 /// carries the reading position over, and the old entry leaves Recent and the library.
 #[derive(Clone, Debug)]
@@ -3825,10 +3835,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.opening = None;
             reader.opening_task = None;
             let navigation = reader.pending_navigation.take();
-            let relocated = reader
-                .pending_open
-                .take()
-                .and_then(|how| how.relocation().map(|relocation| relocation.old().clone()));
+            let how = reader.pending_open.take();
+            let relocated = how
+                .as_ref()
+                .and_then(OpenAs::relocation)
+                .map(|relocation| relocation.old().clone());
+            let card = how
+                .as_ref()
+                .map_or(shelf::Card::Refresh, |how| how.storage().card());
             let recent_open = reader.recent_open.take();
             let history_task = result.as_ref().ok().map_or_else(Task::none, |document| {
                 reader.missing_recent = None;
@@ -3839,7 +3853,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     let task = reply.catalog.map_or_else(Task::none, |entry| {
                         reader
                             .shelf
-                            .remember(entry, relocated.as_ref().map(|entry| entry.path.as_path()))
+                            .remember(
+                                entry,
+                                relocated.as_ref().map(|entry| entry.path.as_path()),
+                                card,
+                            )
                             .map(Message::Shelf)
                     });
                     (Ok(reply.document), task)
@@ -8206,6 +8224,7 @@ mod tests {
     fn reader_with(cards: Vec<library::Entry>, recent: Vec<Entry>) -> Reader {
         let mut reader = Reader {
             recent,
+            recent_loading: false,
             ..Reader::default()
         };
         let _ = reader
@@ -8254,6 +8273,122 @@ mod tests {
             open_mode(vec![Message::LocateRecent(0), chosen(new)]),
             Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Row.pdf"))))
         );
+    }
+
+    /// A finished load of `path` for the in-flight request, proposing `catalog`.
+    fn reply_for(reader: &Reader, path: &str, catalog: library::Entry) -> Message {
+        let mut document = book("Reply");
+        Arc::get_mut(&mut document).unwrap().path = PathBuf::from(path);
+        Message::Loaded {
+            request: reader.request,
+            result: Ok(LoadReply {
+                document: LoadedDocument::Reflow(document),
+                catalog: Some(catalog),
+            }),
+        }
+    }
+
+    fn paths(reader: &Reader) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        (
+            reader
+                .shelf
+                .entries
+                .iter()
+                .map(|entry| entry.document.path.clone())
+                .collect(),
+            reader
+                .recent
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn in_place_open_of_a_new_file_adds_no_card() {
+        let mut reader = reader_with(Vec::new(), vec![row(r"C:\Books\Row.pdf")]);
+        let _ = update_inner(&mut reader, Message::OpenRecent(0));
+        let reply = reply_for(&reader, r"C:\Books\Row.pdf", card(r"C:\Books\Row.pdf"));
+        let _ = update_inner(&mut reader, reply);
+        assert_eq!(reader.book.as_ref().unwrap().title, "Reply");
+        assert_eq!(
+            paths(&reader),
+            (Vec::new(), vec![PathBuf::from(r"C:\Books\Row.pdf")])
+        );
+    }
+
+    #[test]
+    fn opening_a_library_card_updates_it() {
+        let mut stored = card(r"C:\Books\Card.pdf");
+        stored.favourite = true;
+        let mut reader = reader_with(vec![stored], Vec::new());
+        let _ = update_inner(&mut reader, Message::OpenLibrary(0));
+        let mut loaded = card(r"C:\Books\Card.pdf");
+        loaded.cover = true;
+        loaded.author = Some("New Author".into());
+        let reply = reply_for(&reader, r"C:\Books\Card.pdf", loaded);
+        let _ = update_inner(&mut reader, reply);
+        assert_eq!(reader.shelf.entries.len(), 1);
+        let entry = &reader.shelf.entries[0];
+        assert!(entry.cover && entry.favourite);
+        assert_eq!(entry.author.as_deref(), Some("New Author"));
+    }
+
+    #[test]
+    fn import_writes_a_card() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+        let _ = update_inner(&mut reader, chosen(r"C:\Books\New.pdf"));
+        let reply = reply_for(&reader, r"C:\Copies\New.pdf", card(r"C:\Copies\New.pdf"));
+        let _ = update_inner(&mut reader, reply);
+        assert_eq!(
+            paths(&reader),
+            (
+                vec![PathBuf::from(r"C:\Copies\New.pdf")],
+                vec![PathBuf::from(r"C:\Copies\New.pdf")]
+            )
+        );
+    }
+
+    #[test]
+    fn recent_locate_repoints_an_existing_card() {
+        let mut reader = reader_with(
+            vec![card(r"C:\Books\Old.pdf")],
+            vec![row(r"C:\Books\Old.pdf")],
+        );
+        let _ = update_inner(&mut reader, Message::LocateRecent(0));
+        let _ = update_inner(&mut reader, chosen(r"C:\Moved\Old.pdf"));
+        let reply = reply_for(&reader, r"C:\Moved\Old.pdf", card(r"C:\Moved\Old.pdf"));
+        let _ = update_inner(&mut reader, reply);
+        assert_eq!(
+            paths(&reader),
+            (
+                vec![PathBuf::from(r"C:\Moved\Old.pdf")],
+                vec![PathBuf::from(r"C:\Moved\Old.pdf")]
+            )
+        );
+    }
+
+    #[test]
+    fn obsolete_open_cannot_apply_catalog_or_history() {
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+        let _ = update_inner(&mut reader, chosen(r"C:\Books\New.pdf"));
+        let mut reply = reply_for(&reader, r"C:\Copies\Old.pdf", card(r"C:\Copies\Old.pdf"));
+        if let Message::Loaded { request, .. } = &mut reply {
+            *request = request.wrapping_sub(1);
+        }
+        let _ = update_inner(&mut reader, reply);
+        assert!(reader.book.is_none());
+        assert_eq!(paths(&reader), (Vec::new(), Vec::new()));
+        assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
+
+        // A mode switch or chapter load has no pending open and so only refreshes.
+        let mut reader = reader_with(Vec::new(), Vec::new());
+        let reply = reply_for(&reader, r"C:\Books\Mode.pdf", card(r"C:\Books\Mode.pdf"));
+        let _ = update_inner(&mut reader, reply);
+        assert_eq!(reader.book.as_ref().unwrap().title, "Reply");
+        assert_eq!(reader.shelf.entries.len(), 0);
     }
 
     #[test]

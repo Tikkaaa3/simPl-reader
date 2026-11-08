@@ -79,6 +79,16 @@ struct Naming {
     error: Option<String>,
 }
 
+/// What a finished load may do to the library card for its path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Card {
+    /// Insert or replace the card (imports).
+    Write,
+    /// Replace a card that already exists for the path or for the replaced
+    /// path; never insert one (in-place opens).
+    Refresh,
+}
+
 #[derive(Debug)]
 pub struct Shelf {
     pub entries: Vec<Entry>,
@@ -89,7 +99,10 @@ pub struct Shelf {
     pub blocked: bool,
     save_failed: bool,
     pub visible: bool,
-    pending: Vec<(Entry, Option<std::path::PathBuf>)>,
+    /// Card writes that arrived before the library loaded. A `Refresh` is
+    /// decided against the loaded entries, so an in-place open at startup
+    /// never adds a card.
+    pending: Vec<(Entry, Option<std::path::PathBuf>, Card)>,
     covers: HashMap<String, Option<image::Handle>>,
     fetching: HashSet<String>,
     order: Vec<usize>,
@@ -409,8 +422,8 @@ impl Shelf {
                         ));
                     }
                 }
-                for (entry, old) in std::mem::take(&mut self.pending) {
-                    self.remember_entry(entry, old.as_deref());
+                for (entry, old, card) in std::mem::take(&mut self.pending) {
+                    self.remember_entry(entry, old.as_deref(), card);
                 }
                 self.reorder_closing_menu();
                 Task::batch([self.persist(), self.ensure_covers()])
@@ -468,22 +481,37 @@ impl Shelf {
         Task::perform(async move { library::save(&entries) }, Message::Saved)
     }
 
-    pub fn remember(&mut self, entry: Entry, old: Option<&Path>) -> Task<Message> {
+    pub fn remember(&mut self, entry: Entry, old: Option<&Path>, card: Card) -> Task<Message> {
         if self.loading {
-            self.pending.push((entry, old.map(Path::to_path_buf)));
+            self.pending.push((entry, old.map(Path::to_path_buf), card));
             return Task::none();
         }
-        self.remember_entry(entry, old);
+        if !self.remember_entry(entry, old, card) {
+            return Task::none();
+        }
         self.reorder_closing_menu();
         Task::batch([self.persist(), self.ensure_covers()])
     }
 
-    fn remember_entry(&mut self, entry: Entry, old: Option<&Path>) {
+    /// Returns whether the shelf changed.
+    fn remember_entry(&mut self, entry: Entry, old: Option<&Path>, card: Card) -> bool {
+        if card == Card::Refresh
+            && self.card(&entry.document.path).is_none()
+            && old.and_then(|old| self.card(old)).is_none()
+        {
+            return false;
+        }
         if let Err(error) = library::remember(&mut self.entries, entry, old) {
             self.notice = Some(error);
-            return;
+            return false;
         }
         self.dirty = true;
+        true
+    }
+
+    /// The card for `path`, matched like Windows paths.
+    pub fn card(&self, path: &Path) -> Option<&Entry> {
+        library::find(&self.entries, path).map(|index| &self.entries[index])
     }
 
     pub fn remove(&mut self, path: &Path) -> Task<Message> {
@@ -510,7 +538,7 @@ impl Shelf {
             entry.total = total;
             self.dirty = true;
         }
-        for (entry, _) in &mut self.pending {
+        for (entry, _, _) in &mut self.pending {
             if entry.document.path == path {
                 entry.progress = fraction.clamp(0.0, 1.0);
                 entry.current = current;
@@ -2192,6 +2220,90 @@ mod tests {
         let _ = shelf.update(Message::ShelvesLoaded(Ok(Shelves::default())));
         let _ = shelf.update(Message::Loaded(Ok(entries)));
         shelf
+    }
+
+    fn loaded(entries: Vec<Entry>) -> Shelf {
+        let mut shelf = Shelf::default();
+        let _ = shelf.update(Message::Loaded(Ok(entries)));
+        shelf
+    }
+
+    fn titles(shelf: &Shelf) -> Vec<&str> {
+        shelf
+            .entries
+            .iter()
+            .map(|entry| entry.document.title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn refresh_updates_only_existing_cards() {
+        let [a, b] = <[Entry; 2]>::try_from(sample_entries(&[
+            ("A", DocumentKind::Pdf),
+            ("B", DocumentKind::Pdf),
+        ]))
+        .unwrap();
+        let mut shelf = loaded(vec![a.clone()]);
+        let _ = shelf.remember(Entry { cover: true, ..a }, None, Card::Refresh);
+        assert_eq!(titles(&shelf), ["A"]);
+        assert!(shelf.entries[0].cover);
+        let _ = shelf.remember(b.clone(), None, Card::Refresh);
+        assert_eq!(titles(&shelf), ["A"]);
+        let _ = shelf.remember(b, None, Card::Write);
+        assert_eq!(titles(&shelf), ["B", "A"]);
+    }
+
+    #[test]
+    fn refresh_follows_the_replaced_path() {
+        let mut card = sample_entries(&[("A", DocumentKind::Pdf)]).remove(0);
+        card.document.path = std::path::PathBuf::from(r"C:\Books\Old.pdf");
+        card.favourite = true;
+        let mut shelf = loaded(vec![card.clone()]);
+        card.document.path = std::path::PathBuf::from(r"C:\Books\New.pdf");
+        card.favourite = false;
+        let _ = shelf.remember(card, Some(Path::new(r"C:\Books\Old.pdf")), Card::Refresh);
+        assert_eq!(shelf.entries.len(), 1);
+        assert_eq!(
+            shelf.entries[0].document.path,
+            std::path::PathBuf::from(r"C:\Books\New.pdf")
+        );
+        assert!(shelf.entries[0].favourite);
+    }
+
+    #[test]
+    fn refresh_waits_for_the_library_to_load() {
+        let [a, b] = <[Entry; 2]>::try_from(sample_entries(&[
+            ("A", DocumentKind::Pdf),
+            ("B", DocumentKind::Pdf),
+        ]))
+        .unwrap();
+        let mut shelf = Shelf::default();
+        let _ = shelf.remember(
+            Entry {
+                cover: true,
+                ..a.clone()
+            },
+            None,
+            Card::Refresh,
+        );
+        let _ = shelf.remember(b, None, Card::Refresh);
+        let _ = shelf.update(Message::Loaded(Ok(vec![a])));
+        assert_eq!(titles(&shelf), ["A"]);
+        assert!(shelf.entries[0].cover);
+    }
+
+    #[test]
+    fn failed_library_load_does_not_promote_a_refresh() {
+        let a = sample_entries(&[("A", DocumentKind::Pdf)]).remove(0);
+        let mut shelf = Shelf::default();
+        let _ = shelf.remember(a, None, Card::Refresh);
+        let _ = shelf.update(Message::Loaded(Err("corrupt".into())));
+        assert_eq!(shelf.entries.len(), 0);
+        assert!(shelf.blocked);
+        assert_eq!(
+            shelf.notice.as_deref(),
+            Some("Cannot read the library: corrupt. The original file has not been changed.")
+        );
     }
 
     fn name(shelf: &mut Shelf, start: Control, value: &str) {
