@@ -26,6 +26,8 @@ use reader_document::{BaseDirection, Endpoint, Item};
 mod book_map;
 #[path = "book_zoom.rs"]
 mod book_zoom;
+#[path = "library_ui.rs"]
+mod library_ui;
 #[path = "notes_ui.rs"]
 mod notes_ui;
 #[path = "profile_ui.rs"]
@@ -867,6 +869,7 @@ struct Reader {
     fullscreen: bool,
     before_fullscreen_maximized: bool,
     profile: profile_ui::State,
+    library: library_ui::State,
     show_settings: bool,
     dropping: Option<Storage>,
     recent_loading: bool,
@@ -972,6 +975,7 @@ impl Default for Reader {
             fullscreen: false,
             before_fullscreen_maximized: false,
             profile: Default::default(),
+            library: Default::default(),
             show_settings: false,
             dropping: None,
             recent_loading: true,
@@ -1043,6 +1047,7 @@ enum Control {
     FitBookWidth,
     Fullscreen,
     Profile(profile_ui::Focus),
+    Library(library_ui::Focus),
     Dictionary(word_translation::Focus),
     Chrome(chrome::Action),
     Shelf(shelf::Control),
@@ -1108,6 +1113,8 @@ enum Message {
         result: Result<reader_document::backup::Summary, String>,
     },
     ProfileReply(Result<profile_ui::Reply, String>),
+    Library(library_ui::Action),
+    LibraryReply(library_ui::Reply),
     Forwarded(instance::Request),
     PdfBookRaster {
         document: u64,
@@ -2172,6 +2179,7 @@ impl Reader {
             .flatten()
             .chain(reading_ui::controls(self))
             .chain(self.dictionary_controls())
+            .chain(library_ui::controls(self))
             .chain(profile_ui::controls(self).filter(move |_| self.show_settings))
             .chain(
                 (0..themes::THEMES.len())
@@ -2261,6 +2269,7 @@ impl Reader {
             Control::FitBookWidth => Message::FitBookWidth,
             Control::Fullscreen => Message::ToggleFullscreen,
             Control::Profile(focus) => return self.profile_focus(focus),
+            Control::Library(focus) => return self.library_focus(focus),
             Control::Dictionary(focus) => {
                 Message::Dictionary(word_translation::focus_action(focus))
             }
@@ -2703,6 +2712,7 @@ impl Reader {
                 }
                 if !self.exit_ready() {
                     self.pending_exit = true;
+                    self.library.cancel_move();
                     Task::batch([
                         note,
                         self.persist_recent(),
@@ -3299,6 +3309,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ToggleFullscreen => reader.toggle_fullscreen(),
         Message::Profile(action) => reader.profile_action(action),
         Message::ProfileReply(result) => reader.profile_reply(result),
+        Message::Library(action) => reader.library_action(action),
+        Message::LibraryReply(reply) => reader.library_reply(reply),
         Message::Forwarded(request) => {
             reader.inbox.raise = true;
             if let instance::Request::Open(path) = request {
@@ -3422,7 +3434,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Control::Chrome(chrome::Action::Settings)
                 });
                 if reader.show_settings {
-                    Task::batch([reader.refresh_dictionaries(), reader.estimate_backup()])
+                    Task::batch([
+                        reader.refresh_dictionaries(),
+                        reader.estimate_backup(),
+                        reader.refresh_library(),
+                    ])
                 } else {
                     Task::none()
                 }
@@ -5790,6 +5806,7 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             .push(word_translation::settings(reader))
             .push(rule())
             .push(section("Library & data"))
+            .push(library_ui::settings(reader))
             .push(profile_ui::settings(reader))
             .push(rule())
             .push(row![
@@ -6268,6 +6285,9 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         }
         auxiliary = auxiliary.push(container(notice).padding(12).style(ui::panel));
     }
+    if let Some(banner) = library_ui::banner(reader) {
+        auxiliary = auxiliary.push(banner);
+    }
     if let Some(notice) = &reader.history_notice {
         let label = text(notice)
             .size(13)
@@ -6601,7 +6621,8 @@ fn loading_frames() -> impl iced_futures::futures::Stream<Item = u8> {
     )
 }
 
-pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
+/// `notice` reports a library move that startup recovery finished or undid.
+pub fn run(path: Option<PathBuf>, error: Option<String>, notice: Option<String>) -> iced::Result {
     let mut application = iced::application(
         move || {
             let mut reader = Reader {
@@ -6609,7 +6630,9 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 preferences_loading: true,
                 ..Reader::default()
             };
+            reader.library.notice = notice.clone();
             let tasks = [
+                reader.refresh_library(),
                 Task::perform(async { preferences::load() }, Message::PreferencesLoaded),
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),

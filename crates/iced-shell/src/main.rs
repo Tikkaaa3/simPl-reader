@@ -1482,7 +1482,8 @@ fn main() {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
         };
-        if let Err(error) = app::run(path, error) {
+        let notice = reader_document::library_location::recover();
+        if let Err(error) = app::run(path, error, notice) {
             eprintln!("failed to run simPl: {error}");
             std::process::exit(1);
         }
