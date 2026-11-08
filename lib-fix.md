@@ -198,7 +198,7 @@ Change… uses `<picked>\simPl Library`. Nothing else is written into the picked
 
 - a missing folder, a file, a link or a junction;
 - a network folder (`\\?\UNC\…` or `GetDriveTypeW == DRIVE_REMOTE`), because the HTML, TXT, MD and EPUB loaders reject UNC paths;
-- a target that already holds a simPl copy (an owned `<64-hex id>` folder). Other files in it are allowed and left alone;
+- a target that already holds a simPl copy (an owned `<64-hex id>` folder) or a `.incoming` folder, because rollback and staging delete those. Other files in it are allowed and left alone;
 - the current folder, a folder inside it or around it;
 - simPl's data folder or its install folder, or a folder around either;
 - an unavailable current folder, a pending journal, and a drive without the bytes to copy plus max(64 MiB, 2 %).
@@ -226,7 +226,7 @@ The move holds an exclusive `library-location.lock` handle; recovery takes the s
 
 The banner and Settings say "Library folder not found: …" with Retry. Settings adds:
 
-- **Find it…** (`relink`). It accepts the picked `simPl Library`, or a folder holding one, when it has an owned copy for every library and Recent path under the old folder. It writes `Cleaning` with the old folder as `from` and runs `finish`, which copies positions and rewrites paths but deletes nothing. Nothing is copied.
+- **Find it…** (`relink`). It accepts the picked `simPl Library`, or a folder holding one, when it has an owned copy, with its book file, for every library and Recent path under the old folder. It writes `Cleaning` with the old folder as `from` and runs `finish`, which copies positions and rewrites paths but deletes nothing. Nothing is copied.
 - **Stop using this folder…** (`forget`). It switches to the default folder without moving or deleting anything. It also works mid-cleanup when the new folder is gone, which is the only way out of a lost drive.
 
 ### Backup and restore
