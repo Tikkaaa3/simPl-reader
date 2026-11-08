@@ -792,6 +792,12 @@ fn id_under<'a>(path: &'a Path, from: &[Vec<String>]) -> Option<&'a str> {
         .then_some(id)
 }
 
+/// `<library>\<id>\<name>` as `<to>\<id>\<name>`, without touching either.
+pub(crate) fn rebase(path: &Path, library: &Path, to: &Path) -> Option<PathBuf> {
+    let id = id_under(path, &root_keys(library))?;
+    Some(to.join(id).join(path.file_name()?))
+}
+
 fn root_keys(root: &Path) -> Vec<Vec<String>> {
     vec![parts(root), parts(&resolved(root))]
 }
@@ -2004,6 +2010,162 @@ pub(crate) mod tests {
         let library = fs::canonicalize(renamed.join(FOLDER)).unwrap();
         assert_eq!(location().unwrap().root, library);
         assert_converged(&seeded, &picked, "on-e");
+    }
+
+    fn archived(zip: &Path, name: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(fs::File::open(zip).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        archive
+            .by_name(name)
+            .unwrap_or_else(|_| panic!("{name} is not in the backup"))
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn archived_names(zip: &Path) -> Vec<String> {
+        let mut archive = zip::ZipArchive::new(fs::File::open(zip).unwrap()).unwrap();
+        let mut names = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// Seeds a profile and moves its library to `<scratch>\E\simPl Library`.
+    fn custom_library(scratch: &Path) -> (Seeded, PathBuf) {
+        let seeded = seed(scratch);
+        let picked = scratch.join("E");
+        fs::create_dir(&picked).unwrap();
+        let plan = plan(Target::Folder(picked)).unwrap();
+        run_move(&plan, &mut |_| {}, &quiet()).unwrap();
+        (seeded, plan.to().to_path_buf())
+    }
+
+    const BOOKS: crate::backup::Options = crate::backup::Options {
+        documents: true,
+        dictionaries: false,
+    };
+
+    isolated!(a_custom_library_backs_up_as_a_default_layout_archive);
+    fn a_custom_library_backs_up_as_a_default_layout_archive() {
+        let (base, scratch) = store();
+        let (seeded, library) = custom_library(&scratch);
+        crate::position::save(&path_of("Story"), &reflow("on-e")).unwrap();
+        fs::write(library.join("user notes.txt"), b"not a book").unwrap();
+        let zip = scratch.join("backup.zip");
+
+        let estimate = crate::backup::estimate(BOOKS).unwrap();
+        let created = crate::backup::create(&zip, BOOKS).unwrap();
+
+        assert_eq!(
+            (created.files, created.bytes),
+            (estimate.files, estimate.bytes)
+        );
+        let source_root = fs::canonicalize(base.join("simPl")).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&archived(&zip, "manifest.json")).unwrap();
+        assert_eq!(manifest["version"], 1);
+        assert_eq!(manifest["source_root"], source_root.to_str().unwrap());
+        let virtual_path = |title: &str| {
+            let path = path_of(title);
+            let folder = path.parent().unwrap();
+            source_root
+                .join("documents")
+                .join(folder.file_name().unwrap())
+                .join(path.file_name().unwrap())
+        };
+        let books = archived_names(&zip)
+            .into_iter()
+            .filter(|name| name.starts_with("documents/"))
+            .collect::<Vec<_>>();
+        let mut expected = Vec::new();
+        for (title, bytes) in &seeded.books {
+            let path = path_of(title);
+            let id = path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert_eq!(&archived(&zip, &format!("documents/{id}/{name}")), bytes);
+            expected.push(format!("documents/{id}/{name}"));
+            expected.push(format!("documents/{id}/{MARKER}"));
+        }
+        expected.sort();
+        assert_eq!(books, expected);
+        let cards: serde_json::Value =
+            serde_json::from_slice(&archived(&zip, "library.json")).unwrap();
+        let paths = cards["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|card| PathBuf::from(card["document"]["path"].as_str().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                virtual_path("Story"),
+                virtual_path("Novel"),
+                virtual_path("Big"),
+                seeded.legacy.clone()
+            ]
+        );
+        let recent: serde_json::Value =
+            serde_json::from_slice(&archived(&zip, "recent.json")).unwrap();
+        assert_eq!(
+            recent["entries"][1]["path"].as_str().unwrap(),
+            seeded.in_place.to_str().unwrap()
+        );
+        let story_key = crate::position::path_key(&virtual_path("Story"));
+        let position: serde_json::Value =
+            serde_json::from_slice(&archived(&zip, &format!("positions/{story_key}.json")))
+                .unwrap();
+        assert_eq!(position["position"]["item_id"], "on-e");
+
+        // SAFETY: the isolated child runs this one test on one thread.
+        unsafe { std::env::set_var("LOCALAPPDATA", scratch.join("other")) };
+        crate::backup::restore(&zip).unwrap();
+        let documents = fs::canonicalize(default_root()).unwrap();
+        for (title, bytes) in &seeded.books {
+            let path = path_of(title);
+            assert_eq!(path.parent().unwrap().parent().unwrap(), documents);
+            assert_eq!(&fs::read(&path).unwrap(), bytes);
+        }
+        assert_eq!(
+            crate::position::load(&path_of("Story"))
+                .unwrap()
+                .unwrap()
+                .item_id,
+            "on-e"
+        );
+        assert!(!location().unwrap().custom);
+    }
+
+    isolated!(including_books_needs_the_library_folder_connected);
+    fn including_books_needs_the_library_folder_connected() {
+        let (_, scratch) = store();
+        let (_, library) = custom_library(&scratch);
+        fs::rename(scratch.join("E"), scratch.join("unplugged")).unwrap();
+        let zip = scratch.join("backup.zip");
+        let error = format!(
+            "The library folder {} isn't connected. Connect it or turn off Include book files.",
+            display_path(&library)
+        );
+
+        assert_eq!(crate::backup::estimate(BOOKS).unwrap_err(), error);
+        assert_eq!(crate::backup::create(&zip, BOOKS).unwrap_err(), error);
+        assert!(!zip.exists());
+
+        let light = crate::backup::create(&zip, crate::backup::Options::default()).unwrap();
+        assert!(!light.documents);
+        assert!(
+            !archived_names(&zip)
+                .iter()
+                .any(|name| name.starts_with("documents/"))
+        );
     }
 
     #[test]

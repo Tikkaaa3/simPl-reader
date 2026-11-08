@@ -201,11 +201,184 @@ fn inventory(root: &Path, options: Options) -> Result<Vec<(String, u64)>, String
     Ok(files)
 }
 
+/// Where an archived file's bytes come from.
+enum Origin {
+    File(PathBuf),
+    Bytes(Vec<u8>),
+}
+
+struct Content {
+    name: String,
+    bytes: u64,
+    origin: Origin,
+}
+
+/// A custom library folder, which backups read the books from. `None` is
+/// the profile's own `documents\`.
+fn custom_library() -> Result<Option<PathBuf>, String> {
+    let location = crate::library_location::location()?;
+    if location.moving {
+        return Err("Finish the library move first.".into());
+    }
+    Ok(location.custom.then_some(location.root))
+}
+
+/// The archive's files. With a custom library the archive still looks like a
+/// default one: books are stored as `documents/<id>/…` and library, Recent
+/// and position keys name `<source_root>\documents\<id>\…`, so any simPl
+/// can restore it.
+fn contents(root: &Path, library: Option<&Path>, options: Options) -> Result<Vec<Content>, String> {
+    let from_profile = |options| -> Result<Vec<Content>, String> {
+        Ok(inventory(root, options)?
+            .into_iter()
+            .map(|(name, bytes)| Content {
+                origin: Origin::File(root.join(&name)),
+                name,
+                bytes,
+            })
+            .collect())
+    };
+    let Some(library) = library else {
+        return from_profile(options);
+    };
+    let mut files = from_profile(Options {
+        documents: false,
+        ..options
+    })?;
+    if options.documents {
+        if !library.is_dir() {
+            return Err(format!(
+                "The library folder {} isn't connected. Connect it or turn off Include book files.",
+                crate::library_location::display_path(library)
+            ));
+        }
+        for copy in crate::managed::owned_copies(library)? {
+            let folder = copy.parent().ok_or("Invalid library folder")?;
+            let id = folder
+                .file_name()
+                .and_then(|id| id.to_str())
+                .ok_or("Invalid library folder")?;
+            book_files(folder, &format!("documents/{id}"), options, &mut files)?;
+        }
+    }
+    let documents = root.join("documents");
+    let mut moved = Vec::new();
+    for file in &mut files {
+        if matches!(file.name.as_str(), "library.json" | "recent.json") {
+            let mut data: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.join(&file.name)).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("Invalid {}: {e}", file.name))?;
+            rebase_paths(&mut data, library, &documents, &mut moved);
+            let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+            file.bytes = bytes.len() as u64;
+            file.origin = Origin::Bytes(bytes);
+        }
+    }
+    moved.sort();
+    moved.dedup();
+    for (old, new) in moved {
+        for suffix in crate::position::SUFFIXES {
+            let source = root
+                .join("positions")
+                .join(format!("{}.{suffix}", crate::position::path_key(&old)));
+            if !source.is_file() {
+                continue;
+            }
+            let name = format!("positions/{}.{suffix}", crate::position::path_key(&new));
+            let bytes = plain(&source)?.len();
+            files.retain(|file| file.name != name);
+            files.push(Content {
+                name,
+                bytes,
+                origin: Origin::File(source),
+            });
+        }
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    if files.len() > MAX_FILES {
+        return Err("Backup contains too many files".into());
+    }
+    if files.iter().map(|f| f.bytes).sum::<u64>() > MAX_TOTAL {
+        return Err("Backup exceeds the 16 GiB limit".into());
+    }
+    Ok(files)
+}
+
+fn book_files(
+    folder: &Path,
+    name: &str,
+    options: Options,
+    files: &mut Vec<Content>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Library filenames must be Unicode")?;
+        let name = format!("{name}/{file_name}");
+        let metadata = plain(&path)?;
+        if metadata.is_dir() {
+            book_files(&path, &name, options, files)?;
+        } else if metadata.is_file() {
+            checked_name(&name, options)?;
+            if metadata.len() > MAX_FILE {
+                return Err(format!("Backup file exceeds 512 MiB: {name}"));
+            }
+            files.push(Content {
+                name,
+                bytes: metadata.len(),
+                origin: Origin::File(path),
+            });
+        } else {
+            return Err("The library contains an unsupported file type".into());
+        }
+    }
+    Ok(())
+}
+
+/// Rewrites every `path` under `library` to the same `<id>\<name>` under
+/// `documents`, recording each `(old, new)` pair.
+fn rebase_paths(
+    value: &mut serde_json::Value,
+    library: &Path,
+    documents: &Path,
+    moved: &mut Vec<(PathBuf, PathBuf)>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if key == "path"
+                    && let serde_json::Value::String(text) = value
+                {
+                    if let Some(new) =
+                        crate::library_location::rebase(Path::new(text), library, documents)
+                    {
+                        moved.push((PathBuf::from(text.as_str()), new.clone()));
+                        *text = new.to_string_lossy().into_owned();
+                    }
+                } else {
+                    rebase_paths(value, library, documents, moved);
+                }
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for value in array {
+                rebase_paths(value, library, documents, moved);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn estimate(options: Options) -> Result<Summary, String> {
-    let files = inventory(&root(), options)?;
+    let root = root();
+    let root = root.canonicalize().unwrap_or(root);
+    let files = contents(&root, custom_library()?.as_deref(), options)?;
     Ok(Summary {
         files: files.len(),
-        bytes: files.iter().map(|f| f.1).sum(),
+        bytes: files.iter().map(|f| f.bytes).sum(),
         documents: options.documents,
         dictionaries: options.dictionaries,
     })
@@ -252,10 +425,15 @@ fn copy_hash(
 }
 
 pub fn create(destination: &Path, options: Options) -> Result<Summary, String> {
-    create_from(&root(), destination, options)
+    create_from(&root(), custom_library()?.as_deref(), destination, options)
 }
 
-fn create_from(root: &Path, destination: &Path, options: Options) -> Result<Summary, String> {
+fn create_from(
+    root: &Path,
+    library: Option<&Path>,
+    destination: &Path,
+    options: Options,
+) -> Result<Summary, String> {
     let parent = destination
         .parent()
         .ok_or("Backup destination needs a folder")?;
@@ -271,10 +449,10 @@ fn create_from(root: &Path, destination: &Path, options: Options) -> Result<Summ
     if parent.starts_with(&root) {
         return Err("Save the backup outside the simPl profile".into());
     }
-    let files = inventory(&root, options)?;
+    let files = contents(&root, library, options)?;
     let summary = Summary {
         files: files.len(),
-        bytes: files.iter().map(|f| f.1).sum(),
+        bytes: files.iter().map(|f| f.bytes).sum(),
         documents: options.documents,
         dictionaries: options.dictionaries,
     };
@@ -295,21 +473,33 @@ fn create_from(root: &Path, destination: &Path, options: Options) -> Result<Summ
             options,
             files: Vec::new(),
         };
-        for (name, bytes) in files {
-            let path = root.join(&name);
-            let before = plain(&path)?;
+        for Content {
+            name,
+            bytes,
+            origin,
+        } in files
+        {
             zip.start_file(&name, settings).map_err(|e| e.to_string())?;
-            let sha256 = copy_hash(
-                File::open(&path).map_err(|e| e.to_string())?,
-                &mut zip,
-                bytes,
-            )?;
-            let after = plain(&path)?;
-            if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-                return Err(format!(
-                    "Profile changed while backing up {name}; try again"
-                ));
-            }
+            let sha256 = match origin {
+                Origin::Bytes(data) => copy_hash(data.as_slice(), &mut zip, bytes)?,
+                Origin::File(path) => {
+                    let before = plain(&path)?;
+                    let sha256 = copy_hash(
+                        File::open(&path).map_err(|e| e.to_string())?,
+                        &mut zip,
+                        bytes,
+                    )?;
+                    let after = plain(&path)?;
+                    if before.len() != after.len()
+                        || before.modified().ok() != after.modified().ok()
+                    {
+                        return Err(format!(
+                            "Profile changed while backing up {name}; try again"
+                        ));
+                    }
+                    sha256
+                }
+            };
             manifest.files.push(Item {
                 path: name,
                 bytes,
@@ -902,7 +1092,7 @@ mod tests {
             documents: true,
             dictionaries: true,
         };
-        let summary = create_from(&dir.0.join("source"), &backup, options).unwrap();
+        let summary = create_from(&dir.0.join("source"), None, &backup, options).unwrap();
         assert!(summary.files >= 11);
         assert_eq!(inspect(&backup).unwrap().files, summary.files);
         let destination = dir.0.join("destination");
@@ -996,7 +1186,7 @@ mod tests {
         dir.write("destination/documents/local.html", b"local");
         dir.write("destination/dictionaries/local.bin", b"local pack");
         let backup = dir.0.join("snapshot.zip");
-        create_from(&dir.0.join("source"), &backup, Options::default()).unwrap();
+        create_from(&dir.0.join("source"), None, &backup, Options::default()).unwrap();
         let destination = dir.0.join("destination");
         restore_into(&backup, &destination).unwrap();
         assert_eq!(
@@ -1097,10 +1287,18 @@ mod tests {
         let dir = TestDir::new();
         record(&dir);
         let source = dir.0.join("source");
-        assert!(create_from(&source, &source.join("snapshot.zip"), Options::default()).is_err());
+        assert!(
+            create_from(
+                &source,
+                None,
+                &source.join("snapshot.zip"),
+                Options::default()
+            )
+            .is_err()
+        );
         let backup = dir.0.join("snapshot.zip");
         fs::write(&backup, b"previous").unwrap();
-        create_from(&source, &backup, Options::default()).unwrap();
+        create_from(&source, None, &backup, Options::default()).unwrap();
         assert!(inspect(&backup).is_ok());
     }
     #[test]
