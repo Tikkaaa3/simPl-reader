@@ -45,6 +45,35 @@ fn paper_viewport(reader: &Reader) -> PaperViewport {
     probe
 }
 
+#[derive(Default)]
+struct FocusedBounds(Option<Rectangle>);
+impl iced::advanced::widget::Operation for FocusedBounds {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        visit(self);
+    }
+    fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle) {
+        if id == Some(&iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL)) {
+            self.0 = Some(bounds);
+        }
+    }
+}
+
+fn focused_bounds(reader: &Reader) -> Option<Rectangle> {
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(reader.window_size, reader.window_size),
+    );
+    let mut find = FocusedBounds::default();
+    element
+        .as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut find);
+    find.0
+}
+
 #[test]
 #[ignore = "Single-paper native QA: SIMPL_PAGE_QA_BOOKS JSON list, OUTPUT, isolated STORE"]
 fn single_page_reading_and_toolbar() {
@@ -372,6 +401,15 @@ pub(super) fn render(reader: &mut Reader, output: &Path) {
 }
 
 pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
+    render_frame(reader, output, scale, mouse::Cursor::Unavailable);
+}
+
+/// Renders hover as the runtime does, applying `mouse_area` enter messages before drawing.
+pub(super) fn render_with_cursor(reader: &mut Reader, output: &Path, point: Point) {
+    render_frame(reader, output, 1.0, mouse::Cursor::Available(point));
+}
+
+fn render_frame(reader: &mut Reader, output: &Path, scale: f32, cursor: mouse::Cursor) {
     assert!(scale.is_finite() && (1.0..=3.0).contains(&scale));
     settle_pagination(reader);
     let _ = reader.request_pdf_book_raster();
@@ -432,75 +470,102 @@ pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
             "Book scroll extent must contain exactly one paper"
         );
     }
-    let offset = reader.local_offset() * reader.zoom;
-    let mut element = view(reader);
-    let mut tree = Tree::new(&element);
-    let node =
-        element
-            .as_widget_mut()
-            .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
-    use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, scroll_to};
-    element.as_widget_mut().operate(
-        &mut tree,
-        Layout::new(&node),
-        &renderer,
-        &mut scroll_to::<()>(
-            scroll_id(),
-            AbsoluteOffset {
-                x: None,
-                y: Some(offset),
-            },
-        ),
-    );
-    if let Some(pdf) = &reader.pdf {
-        use iced_futures::futures::{StreamExt, executor::block_on};
-        use iced_runtime::{Action as RuntimeAction, task::into_stream};
-        block_on(async {
-            if let Some(mut stream) = into_stream(pdf.restore_scroll()) {
-                while let Some(action) = stream.next().await {
-                    if let RuntimeAction::Widget(mut operation) = action {
-                        loop {
-                            element.as_widget_mut().operate(
-                                &mut tree,
-                                Layout::new(&node),
-                                &renderer,
-                                operation.as_mut(),
-                            );
-                            match operation.finish() {
-                                iced::advanced::widget::operation::Outcome::Chain(next) => {
-                                    operation = next
+    let mut tree = Tree::empty();
+    let mut hover_rounds = 0;
+    let (mut element, node) = loop {
+        let offset = reader.local_offset() * reader.zoom;
+        let mut element = view(reader);
+        tree.diff(element.as_widget());
+        let node =
+            element
+                .as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, scroll_to};
+        element.as_widget_mut().operate(
+            &mut tree,
+            Layout::new(&node),
+            &renderer,
+            &mut scroll_to::<()>(
+                scroll_id(),
+                AbsoluteOffset {
+                    x: None,
+                    y: Some(offset),
+                },
+            ),
+        );
+        if let Some(pdf) = &reader.pdf {
+            use iced_futures::futures::{StreamExt, executor::block_on};
+            use iced_runtime::{Action as RuntimeAction, task::into_stream};
+            block_on(async {
+                if let Some(mut stream) = into_stream(pdf.restore_scroll()) {
+                    while let Some(action) = stream.next().await {
+                        if let RuntimeAction::Widget(mut operation) = action {
+                            loop {
+                                element.as_widget_mut().operate(
+                                    &mut tree,
+                                    Layout::new(&node),
+                                    &renderer,
+                                    operation.as_mut(),
+                                );
+                                match operation.finish() {
+                                    iced::advanced::widget::operation::Outcome::Chain(next) => {
+                                        operation = next
+                                    }
+                                    _ => break,
                                 }
-                                _ => break,
                             }
                         }
                     }
                 }
-            }
-        });
-    }
-    if reader.show_settings && reader.focused.is_some() {
-        use iced::advanced::widget::{Operation, operation::Outcome};
-        let mut operation: Box<dyn Operation<()>> = Box::new(ui::reveal_focus_operation());
-        loop {
-            element.as_widget_mut().operate(
-                &mut tree,
-                Layout::new(&node),
-                &renderer,
-                operation.as_mut(),
-            );
-            match operation.finish() {
-                Outcome::Chain(next) => operation = next,
-                _ => break,
+            });
+        }
+        if reader.show_settings && reader.focused.is_some() {
+            use iced::advanced::widget::{Operation, operation::Outcome};
+            let mut operation: Box<dyn Operation<()>> = Box::new(ui::reveal_focus_operation());
+            loop {
+                element.as_widget_mut().operate(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    operation.as_mut(),
+                );
+                match operation.finish() {
+                    Outcome::Chain(next) => operation = next,
+                    _ => break,
+                }
             }
         }
-    }
+        let Some(position) = cursor.position() else {
+            break (element, node);
+        };
+        let mut messages = Vec::new();
+        element.as_widget_mut().update(
+            &mut tree,
+            &iced::Event::Mouse(mouse::Event::CursorMoved { position }),
+            Layout::new(&node),
+            cursor,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut iced::advanced::Shell::new(&mut messages),
+            &bounds,
+        );
+        if messages.is_empty() {
+            break (element, node);
+        }
+        drop(element);
+        for message in messages {
+            let _ = update_inner(reader, message);
+        }
+        hover_rounds += 1;
+        assert!(hover_rounds < 50, "hover messages must settle");
+    };
     // A redraw event resolves enabled/hover/focus styles just as the runtime does.
     let mut messages = Vec::new();
     element.as_widget_mut().update(
         &mut tree,
         &iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
         Layout::new(&node),
-        mouse::Cursor::Unavailable,
+        cursor,
         &renderer,
         &mut iced::advanced::clipboard::Null,
         &mut iced::advanced::Shell::new(&mut messages),
@@ -515,7 +580,7 @@ pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
             text_color: theme.palette().text,
         },
         Layout::new(&node),
-        mouse::Cursor::Unavailable,
+        cursor,
         &bounds,
     );
     let physical = Size::new(
@@ -543,6 +608,54 @@ pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
         ::image::ColorType::Rgba8,
     )
     .unwrap();
+}
+
+#[test]
+fn render_with_cursor_shows_card_hover() {
+    ui::load_test_fonts();
+    let mut reader = Reader {
+        window_size: Size::new(1280.0, 800.0),
+        ..Reader::default()
+    };
+    let entries =
+        shelf::sample_entries(&[("Frankenstein", reader_document::recent::DocumentKind::Epub)]);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(reader.window_size);
+    reader.focused = Some(Control::Shelf(shelf::Control::Favourite(0, false)));
+    let favourite = focused_bounds(&reader).expect("a focused card shows its favourite button");
+    reader.focused = None;
+    let output = std::env::temp_dir().join("simpl-render-with-cursor");
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("idle.png"));
+    render_with_cursor(&mut reader, &output.join("hover.png"), favourite.center());
+    // The app-state hover persists without a cursor; only the widget under the cursor changes.
+    render(&mut reader, &output.join("cursorless.png"));
+    let patch = |name: &str, area: Rectangle| {
+        let image = ::image::open(output.join(name)).unwrap().to_rgba8();
+        let (x, y) = (area.x as u32, area.y as u32);
+        ::image::imageops::crop_imm(&image, x, y, area.width as u32, area.height as u32)
+            .to_image()
+            .into_raw()
+    };
+    assert_ne!(
+        patch("idle.png", favourite),
+        patch("hover.png", favourite),
+        "the hovered card must show its favourite button"
+    );
+    assert_ne!(
+        patch("hover.png", favourite),
+        patch("cursorless.png", favourite),
+        "the favourite button under the cursor must show its hover style"
+    );
+    let corner = Rectangle::new(Point::ORIGIN, Size::new(40.0, 40.0));
+    assert_eq!(
+        patch("idle.png", corner),
+        patch("hover.png", corner),
+        "hover must not repaint the window corner"
+    );
 }
 
 #[test]
@@ -890,22 +1003,7 @@ fn render_library_workflow() {
             &renderer,
             &layout::Limits::new(reader.window_size, reader.window_size),
         );
-        #[derive(Default)]
-        struct Find(Option<Rectangle>);
-        impl iced::advanced::widget::Operation for Find {
-            fn traverse(
-                &mut self,
-                visit: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
-            ) {
-                visit(self);
-            }
-            fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle) {
-                if id == Some(&iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL)) {
-                    self.0 = Some(bounds);
-                }
-            }
-        }
-        let mut find = Find::default();
+        let mut find = FocusedBounds::default();
         element
             .as_widget_mut()
             .operate(&mut tree, Layout::new(&node), &renderer, &mut find);
