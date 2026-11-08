@@ -191,7 +191,9 @@ fn forward(name: &PipeName, request: &Request, timeout: Duration) -> io::Result<
 
 mod wire {
     use super::Request;
+    use std::ffi::OsString;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
 
     pub(super) const MAX_PAYLOAD: usize = 32 * 1024;
@@ -227,11 +229,10 @@ mod wire {
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        let text = String::from_utf16(&units).ok()?;
-        if text.contains('\0') {
+        if units.contains(&0) {
             return None;
         }
-        let path = PathBuf::from(text);
+        let path = PathBuf::from(OsString::from_wide(&units));
         path.is_absolute().then_some(Request::Open(path))
     }
 }
@@ -498,11 +499,23 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf16_nul_and_relative_paths_are_dropped() {
-        assert_eq!(wire::decode(&units_frame(&[0xD800])), None);
+    fn nul_and_relative_paths_are_dropped() {
         assert_eq!(wire::decode(&frame("C:\\a\0b")), None);
         assert_eq!(wire::decode(&frame("book.pdf")), None);
         assert_eq!(wire::decode(&frame(r"C:\a")), Some(open(r"C:\a")));
+    }
+
+    #[test]
+    fn a_name_with_an_unpaired_surrogate_round_trips() {
+        use std::os::windows::ffi::OsStringExt;
+        let mut units: Vec<u16> = r"C:\a".encode_utf16().collect();
+        units.push(0xD800);
+        let path = PathBuf::from(std::ffi::OsString::from_wide(&units));
+        let request = Request::Open(path);
+        assert_eq!(
+            wire::decode(&wire::encode(&request).unwrap()),
+            Some(request)
+        );
     }
 
     #[test]
