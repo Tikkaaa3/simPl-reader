@@ -6778,6 +6778,9 @@ mod book_preview;
 #[path = "promotion_preview.rs"]
 mod promotion_preview;
 #[cfg(test)]
+#[path = "reader_profile.rs"]
+mod reader_profile;
+#[cfg(test)]
 #[path = "settings_profile.rs"]
 mod settings_profile;
 
