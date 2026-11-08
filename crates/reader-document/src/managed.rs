@@ -240,19 +240,34 @@ pub(crate) fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     copied
 }
 
-/// The same single-file book imported from another location reuses its existing managed copy.
-fn find_copy(root: &Path, ext: &str, len: u64, digest: &[u8]) -> Result<Option<PathBuf>, String> {
+/// Every simPl copy directly under `root`, as `<root>\<id>\<name>`.
+pub(crate) fn owned_copies(root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut copies = Vec::new();
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
         let folder = entry.map_err(|e| e.to_string())?.path();
         let Ok(marker) = fs::read_to_string(folder.join(MARKER)) else {
             continue;
         };
         let candidate = folder.join(&marker);
+        if owned_folder(root, &candidate)?.is_some() {
+            copies.push(candidate);
+        }
+    }
+    copies.sort();
+    Ok(copies)
+}
+
+/// The same single-file book imported from another location reuses its existing managed copy.
+fn find_copy(root: &Path, ext: &str, len: u64, digest: &[u8]) -> Result<Option<PathBuf>, String> {
+    for candidate in owned_copies(root)? {
         let same_format = candidate
             .extension()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.eq_ignore_ascii_case(ext));
-        if !same_format || owned_folder(root, &candidate)?.is_none() {
+        if !same_format {
             continue;
         }
         let Ok(meta) = regular(&candidate) else {

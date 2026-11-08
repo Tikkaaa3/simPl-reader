@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
 };
 
 const FILE: &str = "library-location.json";
@@ -207,6 +207,276 @@ pub fn forget() -> Result<(), String> {
     write(&Record::new(Root::Default, None))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// The folder the user picked; the library goes into its `simPl Library`.
+    Folder(PathBuf),
+    Default,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Summary {
+    pub books: usize,
+    pub bytes: u64,
+}
+
+/// A validated move. Only [`plan`] builds one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    from: Root,
+    to: Root,
+    to_path: PathBuf,
+    summary: Summary,
+}
+
+impl Plan {
+    pub fn to(&self) -> &Path {
+        &self.to_path
+    }
+
+    pub fn summary(&self) -> Summary {
+        self.summary
+    }
+}
+
+/// The imported books in the current library folder.
+pub fn summary() -> Result<Summary, String> {
+    count(&current_root()?)
+}
+
+fn count(root: &Path) -> Result<Summary, String> {
+    let mut summary = Summary { books: 0, bytes: 0 };
+    for folder in owned_folders(root)? {
+        summary.books += 1;
+        summary.bytes += tree_bytes(&folder)?;
+    }
+    Ok(summary)
+}
+
+fn owned_folders(root: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(crate::managed::owned_copies(root)?
+        .into_iter()
+        .filter_map(|copy| copy.parent().map(Path::to_path_buf))
+        .collect())
+}
+
+fn tree_bytes(folder: &Path) -> Result<u64, String> {
+    let mut bytes = 0;
+    for entry in fs::read_dir(folder).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let metadata = crate::managed::regular(&path)?;
+        bytes += if metadata.is_dir() {
+            tree_bytes(&path)?
+        } else {
+            metadata.len()
+        };
+    }
+    Ok(bytes)
+}
+
+/// Checks a move from the current library folder to `target`.
+pub fn plan(target: Target) -> Result<Plan, String> {
+    let record = read()?;
+    if record.moving.is_some() {
+        return Err("Finish the library move first.".into());
+    }
+    let from_path = record.root.path();
+    if matches!(record.root, Root::Folder(_)) && !from_path.is_dir() {
+        return Err(format!(
+            "Library folder not found: {}",
+            display_path(&from_path)
+        ));
+    }
+    let to = match target {
+        Target::Default if record.root == Root::Default => {
+            return Err("This is already your library folder.".into());
+        }
+        Target::Default => Root::Default,
+        Target::Folder(picked) => Root::Folder(picked_library(&picked)?),
+    };
+    let to_path = to.path();
+    let to_resolved = resolved(&to_path);
+    let from_resolved = resolved(&from_path);
+    if within(&to_resolved, &from_resolved) && within(&from_resolved, &to_resolved) {
+        return Err("This is already your library folder.".into());
+    }
+    if overlaps(&to_resolved, &from_resolved) {
+        return Err("The new library folder can't be inside the current one or contain it.".into());
+    }
+    if matches!(to, Root::Folder(_)) && overlaps(&to_resolved, &resolved(&profile())) {
+        return Err("Choose a folder outside simPl's own data folder.".into());
+    }
+    if let Some(install) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(resolved))
+        && overlaps(&to_resolved, &install)
+    {
+        return Err("Choose a folder outside the folder simPl is installed in.".into());
+    }
+    if to_path.exists() {
+        if !crate::managed::regular(&to_path)?.is_dir() {
+            return Err(format!("{} is not a folder.", display_path(&to_path)));
+        }
+        if !crate::managed::owned_copies(&to_path)?.is_empty() {
+            return Err(format!(
+                "{} already has simPl books in it. Choose another folder.",
+                display_path(&to_path)
+            ));
+        }
+    }
+    let summary = count(&from_path)?;
+    check_free_space(&to_resolved, summary.bytes)?;
+    Ok(Plan {
+        from: record.root,
+        to,
+        to_path,
+        summary,
+    })
+}
+
+/// `<picked>\simPl Library`, canonical, on a local drive.
+fn picked_library(picked: &Path) -> Result<PathBuf, String> {
+    let shown = display_path(picked);
+    let metadata =
+        fs::symlink_metadata(picked).map_err(|_| format!("The folder {shown} doesn't exist."))?;
+    if crate::managed::regular(picked).is_err() {
+        return Err(format!(
+            "{shown} is a link or junction. Choose the folder it points to."
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!("{shown} is not a folder."));
+    }
+    let canonical = fs::canonicalize(picked).map_err(|error| error.to_string())?;
+    if network(&canonical) {
+        return Err("Network folders can't hold the library. Choose a folder on this PC.".into());
+    }
+    Ok(canonical.join(FOLDER))
+}
+
+#[cfg(windows)]
+fn network(canonical: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_REMOTE: u32 = 4;
+    let drive = match canonical.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(drive) | Prefix::Disk(drive) => drive,
+            _ => return true,
+        },
+        _ => return true,
+    };
+    let root: Vec<u16> = std::ffi::OsStr::new(&format!("{}:\\", drive as char))
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: `root` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+}
+
+#[cfg(not(windows))]
+fn network(_canonical: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn check_free_space(target: &Path, bytes: u64) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let existing = target
+        .ancestors()
+        .find(|path| path.is_dir())
+        .ok_or("The library folder's drive is not available.")?;
+    let name: Vec<u16> = existing.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free = 0_u64;
+    // SAFETY: `name` is NUL-terminated and `free` is a valid output location.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            name.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "Cannot read the free space on {}: {}",
+            display_path(existing),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let needed = bytes + (bytes / 50).max(64 * 1024 * 1024);
+    if free < needed {
+        let mb = |bytes: u64| bytes.div_ceil(1024 * 1024);
+        return Err(format!(
+            "Not enough free space: the move needs {} MB and {} has {} MB free.",
+            mb(needed),
+            display_path(existing),
+            mb(free)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn check_free_space(_target: &Path, _bytes: u64) -> Result<(), String> {
+    Ok(())
+}
+
+/// `path` with its longest existing ancestor canonicalized.
+fn resolved(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(current) {
+            canonical.extend(missing.iter().rev());
+            return canonical;
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Path components compared the way Windows does, with `\\?\` and plain
+/// prefixes treated alike.
+fn parts(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|component| match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::VerbatimDisk(drive) | Prefix::Disk(drive) => {
+                    format!("{}:", drive.to_ascii_uppercase() as char)
+                }
+                Prefix::VerbatimUNC(server, share) | Prefix::UNC(server, share) => format!(
+                    r"\\{}\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                ),
+                _ => prefix.as_os_str().to_string_lossy().into_owned(),
+            },
+            other => other.as_os_str().to_string_lossy().into_owned(),
+        })
+        .collect()
+}
+
+/// Whether `path` is `base` or inside it.
+fn within(path: &Path, base: &Path) -> bool {
+    let (path, base) = (parts(path), parts(base));
+    base.len() <= path.len()
+        && base
+            .iter()
+            .zip(&path)
+            .all(|(a, b)| crate::recent::same_path(Path::new(a), Path::new(b)))
+}
+
+fn overlaps(first: &Path, second: &Path) -> bool {
+    within(first, second) || within(second, first)
+}
+
 /// The path without the `\\?\` prefix, for the UI and Explorer.
 pub fn display_path(path: &Path) -> String {
     let text = path.to_string_lossy();
@@ -393,6 +663,183 @@ pub(crate) mod tests {
         );
     }
 
+    /// Imports `name` with `bytes` into the current library and returns the copy.
+    pub(crate) fn import(scratch: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let source = scratch.join("sources").join(name);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, bytes).unwrap();
+        fs::canonicalize(crate::managed::import(&source).unwrap()).unwrap()
+    }
+
+    pub(crate) fn copy_dir(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let path = entry.unwrap().path();
+            let target = to.join(path.file_name().unwrap());
+            if path.is_dir() {
+                copy_dir(&path, &target);
+            } else {
+                fs::copy(&path, &target).unwrap();
+            }
+        }
+    }
+
+    fn junction(link: &Path, target: &Path) {
+        let status = Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+    }
+
+    isolated!(plan_counts_books_and_refuses_unsafe_targets);
+    fn plan_counts_books_and_refuses_unsafe_targets() {
+        let (base, scratch) = store();
+        let profile = base.join("simPl");
+        import(&scratch, "one.pdf", b"%PDF one");
+        import(&scratch, "two.epub", b"epub two bytes");
+        let picked = scratch.join("E");
+        fs::create_dir(&picked).unwrap();
+        let refused = |target: Target| plan(target).unwrap_err();
+
+        let plan_e = plan(Target::Folder(picked.clone())).unwrap();
+        let library = fs::canonicalize(&picked).unwrap().join(FOLDER);
+        assert_eq!(plan_e.to(), library);
+        assert_eq!(
+            plan_e.summary(),
+            Summary {
+                books: 2,
+                bytes: (8 + 7) + (14 + 8)
+            }
+        );
+        assert!(!library.exists());
+
+        assert_eq!(
+            refused(Target::Default),
+            "This is already your library folder."
+        );
+        assert_eq!(
+            refused(Target::Folder(scratch.join("missing"))),
+            format!(
+                "The folder {} doesn't exist.",
+                scratch.join("missing").display()
+            )
+        );
+        assert_eq!(
+            refused(Target::Folder(profile.join("documents"))),
+            "The new library folder can't be inside the current one or contain it."
+        );
+        assert_eq!(
+            refused(Target::Folder(profile.clone())),
+            "Choose a folder outside simPl's own data folder."
+        );
+        fs::create_dir_all(profile.join("covers")).unwrap();
+        assert_eq!(
+            refused(Target::Folder(profile.join("covers"))),
+            "Choose a folder outside simPl's own data folder."
+        );
+        let install = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            refused(Target::Folder(install)),
+            "Choose a folder outside the folder simPl is installed in."
+        );
+        let link = scratch.join("link");
+        junction(&link, &picked);
+        assert_eq!(
+            refused(Target::Folder(link.clone())),
+            format!(
+                "{} is a link or junction. Choose the folder it points to.",
+                link.display()
+            )
+        );
+        let file = scratch.join("file.txt");
+        fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            refused(Target::Folder(file.clone())),
+            format!("{} is not a folder.", file.display())
+        );
+
+        let used = scratch.join("used");
+        let copy = import(&scratch, "three.pdf", b"%PDF three");
+        let id = copy.parent().unwrap().file_name().unwrap();
+        copy_dir(copy.parent().unwrap(), &used.join(FOLDER).join(id));
+        assert_eq!(
+            refused(Target::Folder(used.clone())),
+            format!(
+                "{} already has simPl books in it. Choose another folder.",
+                display_path(&fs::canonicalize(&used).unwrap().join(FOLDER))
+            )
+        );
+        let unowned = scratch.join("unowned");
+        fs::create_dir_all(unowned.join(FOLDER).join("a".repeat(64))).unwrap();
+        fs::write(unowned.join(FOLDER).join("notes.txt"), b"mine").unwrap();
+        assert_eq!(plan(Target::Folder(unowned)).unwrap().summary().books, 3);
+
+        point_at(&Root::Folder(library.clone()));
+        fs::create_dir(&library).unwrap();
+        assert_eq!(
+            refused(Target::Folder(picked.clone())),
+            "This is already your library folder."
+        );
+        fs::create_dir(library.join("inner")).unwrap();
+        assert_eq!(
+            refused(Target::Folder(library.join("inner"))),
+            "The new library folder can't be inside the current one or contain it."
+        );
+        assert_eq!(
+            refused(Target::Default),
+            format!(
+                "{} already has simPl books in it. Choose another folder.",
+                profile.join("documents").display()
+            )
+        );
+
+        fs::remove_dir_all(&library).unwrap();
+        assert_eq!(
+            refused(Target::Default),
+            format!("Library folder not found: {}", display_path(&library))
+        );
+        fs::write(
+            profile.join(FILE),
+            serde_json::to_vec(&Record::new(
+                Root::Default,
+                Some(Move::Copying {
+                    to: Root::Folder(library),
+                }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            refused(Target::Folder(picked)),
+            "Finish the library move first."
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn network_paths_and_nesting_compare_like_windows() {
+        assert!(network(Path::new(r"\\?\UNC\server\share\Books")));
+        assert!(!network(Path::new(r"\\?\C:\Books")));
+        assert!(within(
+            Path::new(r"\\?\C:\Users\A\simPl\documents"),
+            Path::new(r"c:\users\a\SIMPL")
+        ));
+        assert!(!within(
+            Path::new(r"C:\Users\A\simPl-old"),
+            Path::new(r"C:\Users\A\simPl")
+        ));
+        assert!(!within(Path::new(r"C:\Books"), Path::new(r"D:\Books")));
+    }
     #[test]
     fn display_path_strips_the_verbatim_prefix() {
         assert_eq!(
