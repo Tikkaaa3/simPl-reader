@@ -9,16 +9,15 @@ use std::{
 #[path = "html_bundle.rs"]
 mod html_bundle;
 
-const MARKER: &str = ".simpl-owned";
+pub(crate) const MARKER: &str = ".simpl-owned";
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 
-pub fn root() -> PathBuf {
-    crate::position::storage_base()
-        .join("simPl")
-        .join("documents")
+/// The library root named by `library-location.json`, read on every call.
+pub fn root() -> Result<PathBuf, String> {
+    crate::library_location::current_root()
 }
 
-fn regular(path: &Path) -> Result<fs::Metadata, String> {
+pub(crate) fn regular(path: &Path) -> Result<fs::Metadata, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
@@ -33,7 +32,7 @@ fn regular(path: &Path) -> Result<fs::Metadata, String> {
     Ok(meta)
 }
 
-fn owned_folder(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
+pub(crate) fn owned_folder(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     let Some(parent) = path.parent() else {
         return Ok(None);
     };
@@ -77,7 +76,7 @@ pub(crate) fn is_owned_at(root: &Path, path: &Path) -> bool {
 }
 
 pub fn import(path: &Path) -> Result<PathBuf, String> {
-    import_at(&root(), path)
+    import_at(&crate::library_location::import_root()?, path)
 }
 
 pub(crate) fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
@@ -297,7 +296,7 @@ fn copy(source: &Path, target: &Path) -> Result<(), String> {
     output.flush().map_err(|e| e.to_string())
 }
 
-fn check_tree(folder: &Path) -> Result<(), String> {
+pub(crate) fn check_tree(folder: &Path) -> Result<(), String> {
     regular(folder)?;
     for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
@@ -310,7 +309,7 @@ fn check_tree(folder: &Path) -> Result<(), String> {
 
 /// External/legacy documents are unlisted only. Their source files are never deleted.
 pub fn remove(path: &Path) -> Result<(), String> {
-    remove_at(&root(), path)
+    remove_at(&root()?, path)
 }
 fn remove_at(root: &Path, path: &Path) -> Result<(), String> {
     if let Some(folder) = owned_folder(root, path)? {
@@ -322,7 +321,7 @@ fn remove_at(root: &Path, path: &Path) -> Result<(), String> {
 
 /// Original user-facing format can differ from the internal chapter container.
 pub fn source_kind(path: &Path) -> Option<crate::library::SourceFormat> {
-    source_kind_at(&root(), path)
+    source_kind_at(&root().ok()?, path)
 }
 
 pub(crate) fn source_kind_at(root: &Path, path: &Path) -> Option<crate::library::SourceFormat> {
