@@ -39,7 +39,7 @@ pub(super) fn boot() -> Reader {
 }
 pub(super) fn opened(reader: &mut Reader, source: PathBuf) {
     let started = std::time::Instant::now();
-    let task = reader.open_with_import(source.clone(), None, true);
+    let task = reader.open(source.clone(), OpenAs::New(Storage::Import));
     pump(reader, task);
     settle_pagination(reader);
     assert!(reader.opening.is_none() && reader.pagination.is_none());
@@ -213,7 +213,7 @@ fn production_format_workflows() {
     let title = reopened.book.as_ref().unwrap().title.clone();
     let broken = sources.join("broken.epub");
     std::fs::write(&broken, b"not a zip").unwrap();
-    let task = reopened.open_with_import(broken, None, true);
+    let task = reopened.open(broken, OpenAs::New(Storage::Import));
     pump(&mut reopened, task);
     assert!(reopened.error.is_some());
     assert_eq!(reopened.book.as_ref().unwrap().title, title);

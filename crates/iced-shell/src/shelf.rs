@@ -28,6 +28,7 @@ pub enum Sort {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
+    Open,
     Add,
     RetrySave,
     Resume(usize),
@@ -79,6 +80,12 @@ struct Naming {
     error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Card {
+    Write,
+    UpdateExisting,
+}
+
 #[derive(Debug)]
 pub struct Shelf {
     pub entries: Vec<Entry>,
@@ -89,7 +96,7 @@ pub struct Shelf {
     pub blocked: bool,
     save_failed: bool,
     pub visible: bool,
-    pending: Vec<(Entry, Option<std::path::PathBuf>)>,
+    pending: Vec<(Entry, Option<std::path::PathBuf>, Card)>,
     covers: HashMap<String, Option<image::Handle>>,
     fetching: HashSet<String>,
     order: Vec<usize>,
@@ -409,8 +416,8 @@ impl Shelf {
                         ));
                     }
                 }
-                for (entry, old) in std::mem::take(&mut self.pending) {
-                    self.remember_entry(entry, old.as_deref());
+                for (entry, old, card) in std::mem::take(&mut self.pending) {
+                    self.remember_entry(entry, old.as_deref(), card);
                 }
                 self.reorder_closing_menu();
                 Task::batch([self.persist(), self.ensure_covers()])
@@ -468,22 +475,39 @@ impl Shelf {
         Task::perform(async move { library::save(&entries) }, Message::Saved)
     }
 
-    pub fn remember(&mut self, entry: Entry, old: Option<&Path>) -> Task<Message> {
+    pub fn remember(&mut self, entry: Entry, old: Option<&Path>, card: Card) -> Task<Message> {
         if self.loading {
-            self.pending.push((entry, old.map(Path::to_path_buf)));
+            self.pending.push((entry, old.map(Path::to_path_buf), card));
             return Task::none();
         }
-        self.remember_entry(entry, old);
+        if !self.remember_entry(entry, old, card) {
+            return Task::none();
+        }
         self.reorder_closing_menu();
         Task::batch([self.persist(), self.ensure_covers()])
     }
 
-    fn remember_entry(&mut self, entry: Entry, old: Option<&Path>) {
+    fn remember_entry(&mut self, entry: Entry, old: Option<&Path>, card: Card) -> bool {
+        if card == Card::UpdateExisting
+            && self.card(&entry.document.path).is_none()
+            && old.and_then(|old| self.card(old)).is_none()
+        {
+            return false;
+        }
         if let Err(error) = library::remember(&mut self.entries, entry, old) {
             self.notice = Some(error);
-            return;
+            return false;
         }
         self.dirty = true;
+        true
+    }
+
+    pub fn card(&self, path: &Path) -> Option<&Entry> {
+        library::find(&self.entries, path).map(|index| &self.entries[index])
+    }
+
+    pub fn can_add(&self, path: &Path) -> bool {
+        !self.loading && !self.blocked && self.card(path).is_none()
     }
 
     pub fn remove(&mut self, path: &Path) -> Task<Message> {
@@ -510,7 +534,7 @@ impl Shelf {
             entry.total = total;
             self.dirty = true;
         }
-        for (entry, _) in &mut self.pending {
+        for (entry, _, _) in &mut self.pending {
             if entry.document.path == path {
                 entry.progress = fraction.clamp(0.0, 1.0);
                 entry.current = current;
@@ -536,7 +560,8 @@ impl Shelf {
     }
 
     pub fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
-        std::iter::once(Control::Add)
+        [Control::Open, Control::Add]
+            .into_iter()
             .chain(self.continuing.iter().copied().map(Control::Resume))
             .chain(SORTS.into_iter().map(Control::Sort))
             .chain(std::iter::once(Control::Filter(None)))
@@ -787,19 +812,22 @@ impl Shelf {
         } else {
             (self.continuing.len().max(1) as f32 * 170.0) - 24.0
         };
-        let grid_top = 40.0
-            + if wide { 136.0 } else { 226.0 }
-            + 56.0
-            + 32.0
-            + 20.0
-            + continuation
-            + 56.0
-            + if wide {
-                LIBRARY_HEADING_WIDE
+        let grid_top =
+            40.0 + if wide {
+                136.0
             } else {
-                LIBRARY_HEADING_WIDE + 40.0
-            }
-            + 24.0;
+                136.0 + 32.0 + ACTIONS_HEIGHT
+            } + 56.0
+                + 32.0
+                + 20.0
+                + continuation
+                + 56.0
+                + if wide {
+                    LIBRARY_HEADING_WIDE
+                } else {
+                    LIBRARY_HEADING_WIDE + 40.0
+                }
+                + 24.0;
         Metrics {
             gutter,
             width,
@@ -894,13 +922,12 @@ impl Shelf {
         &self,
         focused: Option<Control>,
         active: bool,
-        dropping: bool,
+        drop_target: Option<Control>,
     ) -> Element<'_, Message> {
         let m = self.metrics();
         let wide = self.size.width >= 768.0;
-        let add_width = 280.0;
         let intro_width = if wide {
-            m.width - add_width - 24.0
+            m.width - ACTION_CARD_WIDTH - 24.0
         } else {
             m.width
         };
@@ -927,40 +954,38 @@ impl Shelf {
         ]
         .spacing(8)
         .width(448.0_f32.min(intro_width));
-        let add = card_button(
-            row![
-                container(icon("\u{e145}", 18).style(ui::accent_text))
-                    .center(28)
-                    .style(|theme| fill(ui::palette(theme).raised, 4.0)),
-                column![
-                    label("Add document", 13).style(ui::primary_text),
-                    label("Drop PDF, EPUB, HTML, TXT or MD", 11).style(ui::secondary_text)
-                ]
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-            Control::Add,
-            focused,
-            active,
-            false,
-        )
-        .padding([12, 20])
-        .width(add_width)
-        .height(58)
-        .style(move |theme, status| {
-            card_style(
-                theme,
-                status,
-                dropping || focused == Some(Control::Add),
-                false,
+        let action = |glyph, title, subtitle, control| {
+            action_card(
+                glyph,
+                title,
+                subtitle,
+                control,
+                focused,
+                active,
+                drop_target == Some(control),
             )
-        });
+        };
+        let actions = column![
+            action(
+                "\u{ea19}",
+                "Open file",
+                "Reads it from where it is, without copying",
+                Control::Open,
+            ),
+            action(
+                "\u{e145}",
+                "Add document",
+                "Keeps a copy in your simPl library",
+                Control::Add,
+            ),
+        ]
+        .spacing(ACTION_CARD_GAP);
         let hero: Element<'_, Message> = if wide {
-            row![intro, Space::new().width(Length::Fill), add]
+            row![intro, Space::new().width(Length::Fill), actions]
                 .align_y(Alignment::Center)
                 .into()
         } else {
-            column![intro, add].spacing(32).into()
+            column![intro, actions].spacing(32).into()
         };
         let continue_heading = row![
             text("Continue Reading")
@@ -2122,6 +2147,51 @@ fn card_style(
     }
 }
 
+const ACTION_CARD_WIDTH: f32 = 320.0;
+const ACTION_CARD_HEIGHT: f32 = 58.0;
+const ACTION_CARD_GAP: f32 = 8.0;
+const ACTIONS_HEIGHT: f32 = 2.0 * ACTION_CARD_HEIGHT + ACTION_CARD_GAP;
+
+fn action_card<'a>(
+    glyph: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    control: Control,
+    focused: Option<Control>,
+    active: bool,
+    drop_target: bool,
+) -> Element<'a, Message> {
+    card_button(
+        row![
+            container(icon(glyph, 18).style(ui::accent_text))
+                .center(28)
+                .style(|theme| fill(ui::palette(theme).raised, 4.0)),
+            column![
+                label(title, 13).style(ui::primary_text),
+                label(subtitle, 11).style(ui::secondary_text)
+            ]
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+        control,
+        focused,
+        active,
+        false,
+    )
+    .padding([12, 20])
+    .width(ACTION_CARD_WIDTH)
+    .height(ACTION_CARD_HEIGHT)
+    .style(move |theme, status| {
+        card_style(
+            theme,
+            status,
+            drop_target || focused == Some(control),
+            false,
+        )
+    })
+    .into()
+}
+
 fn card_button<'a>(
     content: impl Into<Element<'a, Message>>,
     control: Control,
@@ -2192,6 +2262,102 @@ mod tests {
         let _ = shelf.update(Message::ShelvesLoaded(Ok(Shelves::default())));
         let _ = shelf.update(Message::Loaded(Ok(entries)));
         shelf
+    }
+
+    fn loaded(entries: Vec<Entry>) -> Shelf {
+        let mut shelf = Shelf::default();
+        let _ = shelf.update(Message::Loaded(Ok(entries)));
+        shelf
+    }
+
+    fn titles(shelf: &Shelf) -> Vec<&str> {
+        shelf
+            .entries
+            .iter()
+            .map(|entry| entry.document.title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn open_and_add_cards_lead_the_focus_order() {
+        assert_eq!(
+            Shelf::default().controls().take(3).collect::<Vec<_>>(),
+            vec![Control::Open, Control::Add, Control::Sort(Sort::Recent)]
+        );
+    }
+
+    #[test]
+    fn refresh_updates_only_existing_cards() {
+        let [a, b] = <[Entry; 2]>::try_from(sample_entries(&[
+            ("A", DocumentKind::Pdf),
+            ("B", DocumentKind::Pdf),
+        ]))
+        .unwrap();
+        let mut shelf = loaded(vec![a.clone()]);
+        let _ = shelf.remember(Entry { cover: true, ..a }, None, Card::UpdateExisting);
+        assert_eq!(titles(&shelf), ["A"]);
+        assert!(shelf.entries[0].cover);
+        let _ = shelf.remember(b.clone(), None, Card::UpdateExisting);
+        assert_eq!(titles(&shelf), ["A"]);
+        let _ = shelf.remember(b, None, Card::Write);
+        assert_eq!(titles(&shelf), ["B", "A"]);
+    }
+
+    #[test]
+    fn refresh_follows_the_replaced_path() {
+        let mut card = sample_entries(&[("A", DocumentKind::Pdf)]).remove(0);
+        card.document.path = std::path::PathBuf::from(r"C:\Books\Old.pdf");
+        card.favourite = true;
+        let mut shelf = loaded(vec![card.clone()]);
+        card.document.path = std::path::PathBuf::from(r"C:\Books\New.pdf");
+        card.favourite = false;
+        let _ = shelf.remember(
+            card,
+            Some(Path::new(r"C:\Books\Old.pdf")),
+            Card::UpdateExisting,
+        );
+        assert_eq!(shelf.entries.len(), 1);
+        assert_eq!(
+            shelf.entries[0].document.path,
+            std::path::PathBuf::from(r"C:\Books\New.pdf")
+        );
+        assert!(shelf.entries[0].favourite);
+    }
+
+    #[test]
+    fn refresh_waits_for_the_library_to_load() {
+        let [a, b] = <[Entry; 2]>::try_from(sample_entries(&[
+            ("A", DocumentKind::Pdf),
+            ("B", DocumentKind::Pdf),
+        ]))
+        .unwrap();
+        let mut shelf = Shelf::default();
+        let _ = shelf.remember(
+            Entry {
+                cover: true,
+                ..a.clone()
+            },
+            None,
+            Card::UpdateExisting,
+        );
+        let _ = shelf.remember(b, None, Card::UpdateExisting);
+        let _ = shelf.update(Message::Loaded(Ok(vec![a])));
+        assert_eq!(titles(&shelf), ["A"]);
+        assert!(shelf.entries[0].cover);
+    }
+
+    #[test]
+    fn failed_library_load_does_not_promote_a_refresh() {
+        let a = sample_entries(&[("A", DocumentKind::Pdf)]).remove(0);
+        let mut shelf = Shelf::default();
+        let _ = shelf.remember(a, None, Card::UpdateExisting);
+        let _ = shelf.update(Message::Loaded(Err("corrupt".into())));
+        assert_eq!(shelf.entries.len(), 0);
+        assert!(shelf.blocked);
+        assert_eq!(
+            shelf.notice.as_deref(),
+            Some("Cannot read the library: corrupt. The original file has not been changed.")
+        );
     }
 
     fn name(shelf: &mut Shelf, start: Control, value: &str) {

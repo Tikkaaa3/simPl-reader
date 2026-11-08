@@ -113,6 +113,8 @@ impl ResourceLoader for LocalResources {
 }
 
 /// Load a local HTML or XHTML file using HTML5 tree construction and entity decoding.
+/// A text or Markdown file is converted in memory to the page an import stores,
+/// so its fingerprint matches an imported copy; nothing is written.
 pub fn load_html(path: &Path) -> Result<Document, String> {
     if is_unc_path(path) {
         return Err("Network/UNC HTML paths are unsupported".into());
@@ -121,6 +123,9 @@ pub fn load_html(path: &Path) -> Result<Document, String> {
         .map_err(|e| format!("Cannot open HTML file {}: {e}", path.display()))?;
     if is_unc_path(&path) {
         return Err("Network/UNC HTML paths are unsupported".into());
+    }
+    if let Some(page) = crate::text::read_page(&path)? {
+        return load_html_bytes(path, page.as_bytes());
     }
     let file = fs::File::open(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
     let metadata = file
@@ -1127,6 +1132,51 @@ mod tests {
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
+
+    #[test]
+    fn text_and_markdown_load_in_place_without_writing_files() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.0.join("img")).unwrap();
+        fs::write(
+            dir.0.join("img/dot.png"),
+            include_bytes!("../../../fixtures/reader-workload/assets/images/reader-sample.png"),
+        )
+        .unwrap();
+        let notes = dir.0.join("Notes.MD");
+        fs::write(&notes, "# Field notes\n\n![dot](img/dot.png)\n").unwrap();
+        let story = dir.0.join("story.txt");
+        fs::write(&story, "Once upon\na time.\n\nThe end.\n").unwrap();
+
+        let markdown = load_html(&notes).unwrap();
+        assert_eq!(markdown.title, "Field notes");
+        assert_eq!(markdown.images.len(), 1);
+        assert_eq!(markdown.path, fs::canonicalize(&notes).unwrap());
+        let text = load_html(&story).unwrap();
+        assert_eq!(text.title, "story");
+        assert_eq!(text.items.len(), 2);
+
+        let names = |path: PathBuf| {
+            let mut names = fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        assert_eq!(names(dir.0.clone()), ["Notes.MD", "img", "story.txt"]);
+        assert_eq!(names(dir.0.join("img")), ["dot.png"]);
+    }
+
+    #[test]
+    fn oversized_text_is_refused_in_place() {
+        let dir = TempDir::new();
+        let big = dir.0.join("big.txt");
+        fs::write(&big, vec![b'a'; 16 * 1024 * 1024 + 1]).unwrap();
+        assert_eq!(
+            load_html(&big).unwrap_err(),
+            "Text file exceeds the 16 MiB limit"
+        );
+    }
 
     struct TempDir(PathBuf);
 

@@ -72,11 +72,15 @@ fn owned_folder(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     Ok(Some(actual))
 }
 
+pub(crate) fn is_owned_at(root: &Path, path: &Path) -> bool {
+    matches!(owned_folder(root, path), Ok(Some(_)))
+}
+
 pub fn import(path: &Path) -> Result<PathBuf, String> {
     import_at(&root(), path)
 }
 
-fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     if owned_folder(root, path)?.is_some() {
         return Ok(path.to_path_buf());
     }
@@ -128,19 +132,7 @@ fn import_at(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let mut content = Sha256::new();
     let mut generated = None;
     if text_source {
-        if meta.len() > crate::text::MAX_TEXT_BYTES {
-            return Err("Text file exceeds the 16 MiB import limit".into());
-        }
-        let mut bytes = Vec::new();
-        fs::File::open(&source)
-            .map_err(|e| e.to_string())?
-            .take(crate::text::MAX_TEXT_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > crate::text::MAX_TEXT_BYTES {
-            return Err("Text file grew beyond the import limit".into());
-        }
-        generated = Some(crate::text::to_html(&source, &ext, &bytes)?);
+        generated = crate::text::read_page(&source)?;
     } else {
         let mut file = fs::File::open(&source).map_err(|e| e.to_string())?;
         let mut buffer = [0; 64 * 1024];
@@ -333,7 +325,7 @@ pub fn source_kind(path: &Path) -> Option<crate::library::SourceFormat> {
     source_kind_at(&root(), path)
 }
 
-fn source_kind_at(root: &Path, path: &Path) -> Option<crate::library::SourceFormat> {
+pub(crate) fn source_kind_at(root: &Path, path: &Path) -> Option<crate::library::SourceFormat> {
     use crate::library::SourceFormat;
     let ext = path.extension()?.to_str()?;
     if !ext.eq_ignore_ascii_case("html") && path.file_name()?.to_str()? != "book.epub" {
@@ -522,6 +514,41 @@ mod tests {
         fs::write(dir.join("escape.md"), "![x](../outside.png)").unwrap();
         let escaped = import_at(&root, &dir.join("escape.md")).unwrap();
         assert_eq!(fs::read_dir(escaped.parent().unwrap()).unwrap().count(), 3);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn in_place_text_matches_the_imported_copy() {
+        let dir = std::env::temp_dir().join(format!(
+            "simpl-import-parity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("img")).unwrap();
+        fs::write(
+            dir.join("img/dot.png"),
+            include_bytes!("../../../fixtures/reader-workload/assets/images/reader-sample.png"),
+        )
+        .unwrap();
+        let markdown = dir.join("Notes.MD");
+        fs::write(&markdown, "# Field notes\n\n![dot](img/dot.png)\n").unwrap();
+        let plain = dir.join("story.txt");
+        fs::write(&plain, "Once upon\na time.\n\nThe end.\n").unwrap();
+        let root = dir.join("managed");
+        for (source, title) in [(&markdown, "Field notes"), (&plain, "story")] {
+            let copy = import_at(&root, source).unwrap();
+            assert!(copy.starts_with(&root));
+            let imported = crate::load_html(&copy).unwrap();
+            let in_place = crate::load_html(source).unwrap();
+            assert_eq!(in_place.fingerprint, imported.fingerprint);
+            assert_eq!(
+                (in_place.title.as_str(), imported.title.as_str()),
+                (title, title)
+            );
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

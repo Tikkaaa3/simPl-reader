@@ -21,6 +21,19 @@ pub enum DocumentKind {
     Epub,
 }
 
+impl DocumentKind {
+    /// The reader that opens `path`, by extension. Text and Markdown are read
+    /// by the HTML reader, so their kind is `Html`.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+            "html" | "htm" | "xhtml" | "txt" | "text" | "md" | "markdown" => Some(Self::Html),
+            "pdf" => Some(Self::Pdf),
+            "epub" => Some(Self::Epub),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
@@ -218,8 +231,10 @@ pub(crate) fn compare_path_keys(first: &[u16], second: &[u16]) -> std::cmp::Orde
     result.cmp(&CSTR_EQUAL)
 }
 
+/// Whether two paths name the same file the way Windows compares them
+/// (ordinal case-insensitive, `/` equals `\`), without touching the file system.
 #[cfg(windows)]
-pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
+pub fn same_path(first: &Path, second: &Path) -> bool {
     first == second || compare_path_keys(&path_key(first), &path_key(second)).is_eq()
 }
 
@@ -234,7 +249,7 @@ pub(crate) fn compare_path_keys(first: &Path, second: &Path) -> std::cmp::Orderi
 }
 
 #[cfg(not(windows))]
-pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
+pub fn same_path(first: &Path, second: &Path) -> bool {
     first == second
 }
 
@@ -245,6 +260,37 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn document_kind_follows_the_extension() {
+        let kinds = [
+            "a.MD",
+            "b.txt",
+            "c.markdown",
+            "d.text",
+            "e.XHTML",
+            "f.Pdf",
+            "g.epub",
+            "h.docx",
+            "books",
+        ]
+        .map(|name| DocumentKind::from_path(Path::new(name)));
+        use DocumentKind::{Epub, Html, Pdf};
+        assert_eq!(
+            kinds,
+            [
+                Some(Html),
+                Some(Html),
+                Some(Html),
+                Some(Html),
+                Some(Html),
+                Some(Pdf),
+                Some(Epub),
+                None,
+                None
+            ]
+        );
+    }
 
     struct Scratch(PathBuf);
     impl Scratch {

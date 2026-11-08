@@ -141,32 +141,38 @@ fn validate(entries: &[Entry]) -> Result<(), String> {
     Ok(())
 }
 
-/// A missing library bootstraps the recent list once; an existing empty library stays empty.
+/// A missing library is bootstrapped once from the simPl copies in the recent
+/// list; an existing empty library stays empty.
 pub fn load() -> Result<Vec<Entry>, String> {
     let path = library_path();
     match File::open(&path) {
         Ok(file) => load_file(file, &path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let entries = recent::load()?
-                .into_iter()
-                .map(|document| Entry {
-                    source_kind: crate::managed::source_kind(&document.path),
-                    document,
-                    author: None,
-                    byte_len: 0,
-                    opened_at: 0,
-                    progress: 0.0,
-                    current: 0,
-                    total: 0,
-                    cover: false,
-                    favourite: false,
-                })
-                .collect::<Vec<_>>();
-            validate(&entries)?;
-            Ok(entries)
+            bootstrap(recent::load()?, &crate::managed::root())
         }
         Err(error) => Err(format!("cannot open library {}: {error}", path.display())),
     }
+}
+
+fn bootstrap(recent: Vec<recent::Entry>, root: &Path) -> Result<Vec<Entry>, String> {
+    let entries = recent
+        .into_iter()
+        .filter(|document| crate::managed::is_owned_at(root, &document.path))
+        .map(|document| Entry {
+            source_kind: crate::managed::source_kind_at(root, &document.path),
+            document,
+            author: None,
+            byte_len: 0,
+            opened_at: 0,
+            progress: 0.0,
+            current: 0,
+            total: 0,
+            cover: false,
+            favourite: false,
+        })
+        .collect::<Vec<_>>();
+    validate(&entries)?;
+    Ok(entries)
 }
 
 pub(crate) fn load_at(path: &Path) -> Result<Vec<Entry>, String> {
@@ -218,6 +224,14 @@ fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
     position::atomic_write(path, &bytes, "library", "library", ".library")
 }
 
+/// Index of the entry for `path`, matched like Windows paths (ordinal
+/// case-insensitive, `/` equals `\`), without touching the file system.
+pub fn find(entries: &[Entry], path: &Path) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| recent::same_path(&entry.document.path, path))
+}
+
 /// Update a validated shelf without cloning older entries or silently evicting books.
 pub fn remember(
     entries: &mut Vec<Entry>,
@@ -225,15 +239,9 @@ pub fn remember(
     replaced: Option<&Path>,
 ) -> Result<(), String> {
     validate(std::slice::from_ref(&entry))?;
-    let mut existing = entries
-        .iter()
-        .position(|existing| recent::same_path(&existing.document.path, &entry.document.path));
+    let mut existing = find(entries, &entry.document.path);
     let old = replaced
-        .and_then(|path| {
-            entries
-                .iter()
-                .position(|entry| recent::same_path(&entry.document.path, path))
-        })
+        .and_then(|path| find(entries, path))
         .filter(|index| Some(*index) != existing);
     let mut entry = entry;
     entry.favourite |= existing.or(old).is_some_and(|i| entries[i].favourite);
@@ -405,6 +413,51 @@ mod tests {
             favourite: false,
             source_kind: None,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn find_matches_paths_like_windows() {
+        let mut card = entry(0);
+        card.document.path = PathBuf::from(r"C:\Books\A.pdf");
+        let entries = [card];
+        assert_eq!(find(&entries, Path::new("c:/books/a.PDF")), Some(0));
+        assert_eq!(find(&entries, Path::new(r"C:\Books\B.pdf")), None);
+    }
+
+    #[test]
+    fn missing_library_adopts_only_simpl_copies_from_recent() {
+        let dir = std::env::temp_dir().join(format!(
+            "simpl-bootstrap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("documents");
+        let outside = dir.join("Notes.md");
+        std::fs::write(&outside, "# Notes\n").unwrap();
+        let copy = crate::managed::import_at(&root, &outside).unwrap();
+        let recent_entry = |path: &Path| recent::Entry {
+            path: path.to_path_buf(),
+            title: "Notes".into(),
+            fingerprint: format!("{:064x}", 1),
+            kind: DocumentKind::Html,
+        };
+        let entries = bootstrap(
+            vec![
+                recent_entry(&std::fs::canonicalize(&outside).unwrap()),
+                recent_entry(&copy),
+            ],
+            &root,
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].document.path, copy);
+        assert_eq!(entries[0].format(), SourceFormat::Markdown);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
