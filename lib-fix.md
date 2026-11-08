@@ -282,15 +282,14 @@ The banner and Settings say "Library folder not found: …" with Retry. Settings
 
 ## Phase LF-4: Docs and release
 
-- README "Library and local data" (`README.md:185`):
-  - Open vs Add document.
-  - Library vs Recent.
-  - Add to library.
-  - The library location setting.
-  - How to make simPl the default ("Always open with simPl").
-- Release notes for 0.1.6. Reply on issue #1 linking the release.
-- Existing users: nothing is migrated automatically. Their library books stay imported. To read a PDF from its original location, they Open it. Opened that way, it starts a new reading position, because positions are keyed by path.
-  Follow-up idea: when an opened file's content matches an imported book, offer to carry over its position.
+Status: prepared on `docs/lf4-release-0.1.6`.
+
+- `README.md` "Library and local data" covers Open file vs Add Document, the library vs Recent, Add to library, the library folder setting, one window, and choosing **Always** in Open with.
+- `docs/releases/0.1.6.md` has the release notes. The installer, `scripts/installer.ps1`, `scripts/test-installer.ps1`, `installer/README.md` and the README download link name 0.1.6.
+- Existing users get no migration. Books in their library stay imported. A book opened in place from its original file keeps its notes, highlights and typography, because those follow the content fingerprint, but starts a new reading position, because positions follow the path. The release notes say so.
+- Still to do after merge: build and publish the 0.1.6 release, then reply on issue #1 with its link.
+
+Follow-up idea: when an opened file's content matches an imported book, offer to carry over its reading position.
 
 ## Order and size
 
