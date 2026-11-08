@@ -31,13 +31,12 @@ const POINT_TO_DIP: f32 = 96.0 / 72.0;
 // Allow for the root header, PDF controls and status. The first on_scroll
 // report replaces this conservative viewport estimate with its actual bounds.
 const INITIAL_CHROME: f32 = 136.0;
-const COMPACT_TOOLBAR_WIDTH: f32 = 840.0;
 
 pub fn page_input_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-page-input")
 }
 
-fn scroll_id() -> iced::advanced::widget::Id {
+pub(crate) fn scroll_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("pdf-document")
 }
 
@@ -67,14 +66,21 @@ fn focus_button<'a>(
     action: Option<Message>,
     focused: bool,
     selected: bool,
+    compact: bool,
 ) -> Element<'a, Message> {
-    button(text(label).font(ui::MEDIUM))
-        .padding([7, 10])
+    let control = button(text(label).font(ui::MEDIUM))
+        .padding([7, if compact { 7 } else { 10 }])
         .on_press_maybe(action)
         .style(move |theme, status| {
             ui::button_style(theme, status, ButtonTone::Surface, focused, selected)
-        })
-        .into()
+        });
+    if focused {
+        container(control)
+            .id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL))
+            .into()
+    } else {
+        control.into()
+    }
 }
 
 #[derive(Debug)]
@@ -118,6 +124,8 @@ pub enum Message {
         result: Result<Arc<TextLayer>, String>,
     },
     PageInput(String),
+    /// The page field gained or lost keyboard focus.
+    PageFocus(bool),
     PageSubmit,
     Previous,
     Next,
@@ -182,6 +190,7 @@ pub struct Reader {
     error: Option<String>,
     page_input: String,
     editing_page: bool,
+    page_focused: bool,
     selection: Option<Selection>,
     word_selection: Option<Selection>,
     selection_ready: bool,
@@ -248,6 +257,7 @@ impl Reader {
             error: None,
             page_input: "1".into(),
             editing_page: false,
+            page_focused: false,
             selection: None,
             word_selection: None,
             selection_ready: false,
@@ -283,6 +293,11 @@ impl Reader {
 
     pub fn document(&self) -> &Arc<Document> {
         &self.document
+    }
+
+    /// The page field has keyboard focus.
+    pub fn page_focused(&self) -> bool {
+        self.page_focused
     }
 
     pub fn page_index(&self) -> usize {
@@ -1065,6 +1080,15 @@ impl Reader {
                 self.editing_page = true;
                 Task::none()
             }
+            Message::PageFocus(focused) => {
+                self.page_focused = focused;
+                // Leaving the field without Enter abandons the draft.
+                if !focused {
+                    self.editing_page = false;
+                    self.page_input = (self.anchor().page + 1).to_string();
+                }
+                Task::none()
+            }
             Message::PageSubmit => match self.page_input.trim().parse::<usize>() {
                 Ok(page) if page > 0 && page <= self.document.pages.len() => self.jump(page - 1),
                 _ => {
@@ -1245,48 +1269,58 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    /// Previous / page number / next, sized for the centre of the app toolbar.
-    pub fn navigation(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    /// Previous / page number / next, sized for the centre of the reading bar.
+    /// `compact` uses arrows and tighter buttons for narrow windows.
+    pub fn navigation(&self, focused: Option<FocusControl>, compact: bool) -> Element<'_, Message> {
         let page = self.anchor().page as usize;
         row![
             focus_button(
-                "Prev",
+                if compact { "←" } else { "Prev" },
                 (page > 0).then_some(Message::Previous),
                 focused == Some(FocusControl::Previous),
                 false,
+                compact,
             ),
-            text_input("Page", &self.page_input)
-                .id(page_input_id())
-                .on_input(Message::PageInput)
-                .on_submit(Message::PageSubmit)
-                .size(13)
-                .padding([6, 8])
-                .width(65)
-                .style(move |theme, status| {
-                    let mut style = ui::input_style(theme, status);
-                    if focused == Some(FocusControl::Page) {
-                        style.border.color = ui::palette(theme).accent;
-                        style.border.width = 2.0;
-                    }
-                    style
-                }),
+            ui::watch_focus(
+                text_input("Page", &self.page_input)
+                    .id(page_input_id())
+                    .on_input(Message::PageInput)
+                    .on_submit(Message::PageSubmit)
+                    .size(13)
+                    .padding([6, 8])
+                    .width(65)
+                    .style(move |theme, status| {
+                        let mut style = ui::input_style(theme, status);
+                        if focused == Some(FocusControl::Page) {
+                            style.border.color = ui::palette(theme).accent;
+                            style.border.width = 2.0;
+                        }
+                        style
+                    }),
+                Message::PageFocus,
+            ),
             text(format!("of {}", self.document.pages.len()))
                 .size(13)
                 .style(ui::muted_text),
             focus_button(
-                "Next",
+                if compact { "→" } else { "Next" },
                 (page + 1 < self.document.pages.len()).then_some(Message::Next),
                 focused == Some(FocusControl::Next),
                 false,
+                compact,
             ),
         ]
-        .spacing(7)
+        .spacing(if compact { 4 } else { 7 })
         .align_y(iced::Alignment::Center)
         .into()
     }
 
-    /// Zoom and fit controls, sized for the right side of the app toolbar.
-    pub fn zoom_controls(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    /// Zoom and fit controls, sized for the right side of the reading bar.
+    pub fn zoom_controls(
+        &self,
+        focused: Option<FocusControl>,
+        compact: bool,
+    ) -> Element<'_, Message> {
         // Show the size in use; Fit width stays marked on its own button.
         let zoom_label = format!("{:.0}%", self.effective_scale() * 100.0);
         row![
@@ -1295,6 +1329,7 @@ impl Reader {
                 Some(Message::ZoomOut),
                 focused == Some(FocusControl::ZoomOut),
                 false,
+                compact,
             ),
             text(zoom_label).size(13).style(ui::muted_text),
             focus_button(
@@ -1302,15 +1337,17 @@ impl Reader {
                 Some(Message::ZoomIn),
                 focused == Some(FocusControl::ZoomIn),
                 false,
+                compact,
             ),
             focus_button(
                 "100%",
                 Some(Message::ActualSize),
                 focused == Some(FocusControl::ActualSize),
                 self.zoom == PdfZoom::Scale(1.0),
+                compact,
             ),
             focus_button(
-                if self.size.width < 520.0 {
+                if compact || self.size.width < 520.0 {
                     "Fit"
                 } else {
                     "Fit width"
@@ -1318,27 +1355,12 @@ impl Reader {
                 Some(Message::FitWidth),
                 focused == Some(FocusControl::FitWidth),
                 self.zoom == PdfZoom::FitWidth,
+                compact,
             ),
         ]
-        .spacing(7)
+        .spacing(if compact { 4 } else { 7 })
         .align_y(iced::Alignment::Center)
         .into()
-    }
-
-    /// Both control groups in one strip, for windows too narrow for the three-column layout.
-    pub fn toolbar(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
-        let navigation = self.navigation(focused);
-        let zoom = container(self.zoom_controls(focused)).width(Length::Fill);
-        // The app supplies the one collapsible toolbar slot around these controls.
-        let toolbar: Element<'_, Message> = if self.size.width < COMPACT_TOOLBAR_WIDTH {
-            column![navigation, zoom].spacing(5).into()
-        } else {
-            row![navigation, zoom]
-                .spacing(16)
-                .align_y(iced::Alignment::Center)
-                .into()
-        };
-        toolbar
     }
 
     pub fn view(&self) -> Element<'_, Message> {
