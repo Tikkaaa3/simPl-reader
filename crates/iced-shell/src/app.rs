@@ -41,6 +41,9 @@ pub(crate) mod word_translation;
 #[path = "golden_atlas.rs"]
 mod golden_atlas;
 #[cfg(test)]
+#[path = "isolated.rs"]
+mod isolated;
+#[cfg(test)]
 #[path = "release_audit.rs"]
 mod release_audit;
 
@@ -3415,9 +3418,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let path = entry.document.path.clone();
-            let prior = entry.document.clone();
             reader.show_recent = false;
-            reader.open_with_import(path, Some(prior), true)
+            reader.open(path, None)
         }
         Message::LocateLibrary(index) if reader.interactive() => {
             let Some(entry) = reader.shelf.entries.get(index) else {
