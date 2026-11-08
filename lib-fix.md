@@ -220,7 +220,7 @@ The move holds an exclusive `library-location.lock` handle; recovery takes the s
 
 `run_move` returns `Moved`, `Cancelled { kept }`, or `Committed { to, error }` when `finish` failed after the commit. A failure before the commit is an `Err`.
 
-`recover()` runs in `main` after `instance::claim` and before the window opens. It undoes `Copying`, reruns `finish` for `Cleaning`, and returns the one notice the app shows. It never overwrites an unreadable record, and it skips this start when another process holds the lock.
+`recover()` runs in `main` after `instance::claim` and before the window opens. It first finishes an interrupted restore (see Backup and restore), then undoes `Copying`, reruns `finish` for `Cleaning`, and returns the one notice the app shows. It never overwrites an unreadable record, and it skips this start when another process holds the lock.
 
 ### Unavailable folder
 
@@ -233,6 +233,7 @@ The banner and Settings say "Library folder not found: …" with Retry. Settings
 
 - **Backup.** With a custom folder, "Include book files" reads the owned copies from it and stores them as `documents/<id>/…`. `library.json` and `recent.json` are archived from memory with their paths rewritten to `<source_root>\documents\<id>\…`, and the position records follow the rewritten keys. The archive is an ordinary v1 backup that Android and older builds restore. Including books with the folder unplugged fails with "The library folder … isn't connected. Connect it or turn off Include book files."
 - **Restore.** The setting never changes on restore: the current record is copied into the stage. With a custom folder, each owned book in the archive goes through the same copy-verify-rename routine (`placed_id`, `place_book`). A folder with an identical tree is reused, and a differing one gets a fresh id (SHA-256 of the archive id and the tree digest). Nothing in the folder is deleted. Paths under the archive's `documents\<id>` map to the placed copy. A backup without books maps them to the copies already in the folder. A books archive is refused while the folder is unplugged.
+- **Interrupted restore.** The swap is two renames: profile to `.simPl-before-restore-*`, then the stage `.simPl-restore-*` to the profile. Just before the first, restore writes `%LOCALAPPDATA%\.simPl-restore.json` (`{ version: 1, stage, previous }`, folder names only) outside the swapped folder, and removes it after the second rename or a successful rollback. `backup::recover_restore` decides from what is on disk: profile and stage mean the swap never started, so the stage is deleted (only after `check_tree`); no profile with stage and previous means it stopped halfway, so the stage becomes the profile; a profile without a stage means it finished. Anything else, and a journal that doesn't parse or names anything but a bare folder with the expected prefix, is reported and left alone. `library_location::recover` runs it before the move recovery, because the setting lives in the profile. Android runs it in `initialize`.
 - Backup and restore are refused while a journal is pending.
 
 ### App (`crates/iced-shell`)
@@ -259,13 +260,13 @@ The banner and Settings say "Library folder not found: …" with Retry. Settings
   - an unplugged folder with "Include book files";
   - restore into a custom folder.
 - Fault injection (`every_interrupted_step_converges`) fails, then crashes, every step of `run_move` and `finish` in both directions. After each one, `recover()` runs twice. Every card and Recent entry must open, every book's bytes must be in the current folder, positions must resolve, and the other folder must hold no copies.
+- `backup.rs` crashes a restore after the journal write, after the first rename and after the second; `recover_restore` runs twice and the profile, with its `library-location.json`, is the original or the restored one, with no stage or journal left. A journal naming a path outside the profile's parent, or a folder without the expected prefix, is refused and changes nothing.
 - `isolated.rs`: a missing folder refuses Add document and can be forgotten. A move through the app messages holds a forwarded open until it ends, then opens it, and the card opens from the new folder.
 - `settings_profile.rs` renders the new section and still expects one damage region.
 - `release-smoke.ps1` scrolls Settings to the library folder and checks that showing it wrote no setting.
 
 ### Accepted for now
 
-- A crash between restore's two renames (an existing gap) now also loses the setting, so the next start uses the default folder. Books in the custom folder are untouched, and the previous profile is still in `.simPl-before-restore-*`.
 - Two simPl processes on one profile (only after an LF-2 forward fails) can overwrite each other's library edits, as they already can. The lock only keeps two moves, or a move and a recovery, apart.
 - `recover()` runs before the window opens. After a crash mid-move, rolling back or finishing a large library delays the first window.
 - A restore that fails after placing books in a custom folder leaves those copies there without cards. A later move copies them too.

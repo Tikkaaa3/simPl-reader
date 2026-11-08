@@ -969,9 +969,19 @@ fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> 
     write(&Record::new(to.clone(), None))
 }
 
-/// Finishes or undoes a move a crash interrupted. Called once at startup,
-/// before the library loads, and by Retry. Returns a notice for the user.
+/// Finishes or undoes a restore or a move a crash interrupted. Called once
+/// at startup, before the library loads, and by Retry. Returns a notice for
+/// the user.
 pub fn recover() -> Option<String> {
+    // The setting lives inside the profile, so the profile comes back first.
+    let notices = [crate::backup::recover_restore(), recover_move()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    (!notices.is_empty()).then(|| notices.join(" "))
+}
+
+fn recover_move() -> Option<String> {
     match read() {
         Err(error) => return Some(error),
         Ok(record) if record.moving.is_none() => return None,

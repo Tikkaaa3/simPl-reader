@@ -711,9 +711,15 @@ fn restore_into(path: &Path, root: &Path, library: Option<&Path>) -> Result<Path
         }
         let previous = unique(&parent, "before-restore");
         let had_profile = root.exists();
+        let journal = parent.join(JOURNAL);
         if had_profile {
-            fs::rename(&root, &previous)
-                .map_err(|e| format!("Cannot retain the current profile: {e}"))?;
+            write_journal(&journal, &stage, &previous)?;
+            reached(Step::Journal);
+            if let Err(error) = fs::rename(&root, &previous) {
+                let _ = fs::remove_file(&journal);
+                return Err(format!("Cannot retain the current profile: {error}"));
+            }
+            reached(Step::Retained);
         }
         if let Err(error) = fs::rename(&stage, &root) {
             if had_profile && let Err(rollback) = fs::rename(&previous, &root) {
@@ -722,10 +728,13 @@ fn restore_into(path: &Path, root: &Path, library: Option<&Path>) -> Result<Path
                     previous.display()
                 ));
             }
+            let _ = fs::remove_file(&journal);
             return Err(format!(
                 "Restore failed; the current profile was preserved: {error}"
             ));
         }
+        reached(Step::Swapped);
+        let _ = fs::remove_file(&journal);
         Ok(if had_profile {
             previous
         } else {
@@ -736,6 +745,147 @@ fn restore_into(path: &Path, root: &Path, library: Option<&Path>) -> Result<Path
         let _ = fs::remove_dir_all(&stage);
     }
     result
+}
+
+/// Lives beside the profile, not in it, so it survives the swap it guards.
+const JOURNAL: &str = ".simPl-restore.json";
+const STAGE_PREFIX: &str = ".simPl-restore-";
+const PREVIOUS_PREFIX: &str = ".simPl-before-restore-";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Journal {
+    version: u32,
+    stage: String,
+    previous: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Journal,
+    Retained,
+    Swapped,
+}
+
+#[cfg(test)]
+thread_local!(static CRASH_AFTER: std::cell::Cell<Option<Step>> = const { std::cell::Cell::new(None) });
+
+fn reached(step: Step) {
+    #[cfg(test)]
+    if CRASH_AFTER.get() == Some(step) {
+        panic!("simulated crash after {step:?}");
+    }
+    let _ = step;
+}
+
+fn write_journal(journal: &Path, stage: &Path, previous: &Path) -> Result<(), String> {
+    let name = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .ok_or("Invalid restore folder name")
+    };
+    let record = Journal {
+        version: 1,
+        stage: name(stage)?,
+        previous: name(previous)?,
+    };
+    let bytes = serde_json::to_vec(&record).map_err(|e| e.to_string())?;
+    crate::position::atomic_write(
+        journal,
+        &bytes,
+        "restore record",
+        "profile",
+        ".simPl-journal",
+    )
+}
+
+/// The journal is external data: only a bare folder name with the expected
+/// prefix is ever joined to the profile's parent.
+fn read_journal(bytes: &[u8]) -> Result<(String, String), String> {
+    let record: Journal = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if record.version != 1 {
+        return Err(format!("unsupported version {}", record.version));
+    }
+    for (name, prefix) in [
+        (&record.stage, STAGE_PREFIX),
+        (&record.previous, PREVIOUS_PREFIX),
+    ] {
+        let mut parts = Path::new(name).components();
+        let bare = matches!(parts.next(), Some(Component::Normal(part)) if part == name.as_str())
+            && parts.next().is_none();
+        if !bare || !name.starts_with(prefix) || name.len() == prefix.len() {
+            return Err(format!("unexpected folder name {name:?}"));
+        }
+    }
+    Ok((record.stage, record.previous))
+}
+
+fn present(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// Finishes or undoes a restore a crash interrupted between writing its
+/// journal and swapping the profile. Called at startup, before anything
+/// reads the profile.
+pub fn recover_restore() -> Option<String> {
+    recover_restore_at(&root())
+}
+
+fn recover_restore_at(root: &Path) -> Option<String> {
+    let parent = root.parent()?;
+    let journal = parent.join(JOURNAL);
+    let failed = |detail: String| {
+        Some(format!(
+            "A restore was interrupted and couldn't be finished: {detail}"
+        ))
+    };
+    let bytes = match fs::read(&journal) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return failed(format!("{}: {error}", journal.display())),
+    };
+    let (stage, previous) = match read_journal(&bytes) {
+        Ok((stage, previous)) => (parent.join(stage), parent.join(previous)),
+        Err(error) => return failed(format!("{} is invalid: {error}", journal.display())),
+    };
+    let state = (|| Ok::<_, String>((present(root)?, present(&stage)?, present(&previous)?)))();
+    let notice = match state {
+        Err(error) => return failed(error),
+        Ok((true, true, _)) => {
+            if let Err(error) = crate::managed::check_tree(&stage)
+                .and_then(|()| fs::remove_dir_all(&stage).map_err(|e| e.to_string()))
+            {
+                return failed(format!("{}: {error}", stage.display()));
+            }
+            Some("A restore was interrupted before it started. Nothing changed.".to_owned())
+        }
+        Ok((false, true, true)) => {
+            if let Err(error) =
+                plain(&stage).and_then(|_| fs::rename(&stage, root).map_err(|e| e.to_string()))
+            {
+                return failed(error);
+            }
+            Some(format!(
+                "Finished restoring your backup. The previous profile is in {}.",
+                crate::library_location::display_path(&previous)
+            ))
+        }
+        Ok((true, false, _)) => None,
+        Ok((false, _, true)) => {
+            return failed(format!(
+                "the profile is missing. The previous profile is in {}.",
+                crate::library_location::display_path(&previous)
+            ));
+        }
+        Ok((false, _, false)) => return failed("the profile is missing.".to_owned()),
+    };
+    let _ = fs::remove_file(&journal);
+    notice
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
@@ -1349,6 +1499,114 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".simPl-restore-")
         }));
+    }
+    fn leftovers(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(STAGE_PREFIX) || name == JOURNAL)
+            .collect()
+    }
+    #[test]
+    fn a_restore_interrupted_at_any_step_converges_on_the_next_start() {
+        let setting = br#"{"version":1,"root":{"Folder":"D:\\simPl Library"},"moving":null}"#;
+        for step in [Step::Journal, Step::Retained, Step::Swapped] {
+            let dir = TestDir::new();
+            record(&dir);
+            dir.write("destination/preferences.json", br#"{"version":1,"appearance":"dark","reading":{"font":"spectral","size":18,"spacing":180,"margin":64}}"#);
+            dir.write("destination/library-location.json", setting);
+            dir.write("library/readme.txt", b"user file");
+            let backup = dir.0.join("snapshot.zip");
+            create_from(&dir.0.join("source"), None, &backup, Options::default()).unwrap();
+            let destination = dir.0.join("destination");
+            let library = dir.0.join("library");
+            CRASH_AFTER.set(Some(step));
+            let crashed =
+                std::panic::catch_unwind(|| restore_into(&backup, &destination, Some(&library)));
+            CRASH_AFTER.set(None);
+            assert!(crashed.is_err(), "{step:?}");
+            let previous = fs::read_dir(&dir.0)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(PREVIOUS_PREFIX)
+                });
+            let expected = match step {
+                Step::Journal => {
+                    Some("A restore was interrupted before it started. Nothing changed.".to_owned())
+                }
+                Step::Retained => Some(format!(
+                    "Finished restoring your backup. The previous profile is in {}.",
+                    crate::library_location::display_path(previous.as_ref().unwrap())
+                )),
+                Step::Swapped => None,
+            };
+            assert_eq!(recover_restore_at(&destination), expected, "{step:?}");
+            assert_eq!(recover_restore_at(&destination), None, "{step:?}");
+            let size = crate::preferences::load_from(&destination.join("preferences.json"))
+                .unwrap()
+                .reading
+                .size;
+            assert_eq!(
+                size,
+                if step == Step::Journal { 18 } else { 26 },
+                "{step:?}"
+            );
+            assert_eq!(
+                fs::read(destination.join("library-location.json")).unwrap(),
+                setting,
+                "{step:?}"
+            );
+            assert_eq!(leftovers(&dir.0), Vec::<String>::new(), "{step:?}");
+            assert_eq!(previous.is_some(), step != Step::Journal, "{step:?}");
+        }
+    }
+    #[test]
+    fn a_restore_journal_naming_another_folder_is_refused_and_touches_nothing() {
+        let dir = TestDir::new();
+        dir.write("victim/keep.txt", b"keep");
+        dir.write("home/.simPl-other-1/keep.txt", b"keep");
+        dir.write("home/.simPl-before-restore-1/preferences.json", b"previous");
+        let root = dir.0.join("home/simPl");
+        let journal = dir.0.join("home").join(JOURNAL);
+        let victim = dir.0.join("victim");
+        for (profile, stage) in [
+            (false, r"..\victim".to_owned()),
+            (true, r"..\victim".to_owned()),
+            (false, victim.to_string_lossy().into_owned()),
+            (true, ".simPl-restore-1/../../victim".to_owned()),
+            (false, ".simPl-other-1".to_owned()),
+            (false, ".simPl-restore-".to_owned()),
+        ] {
+            if profile {
+                dir.write("home/simPl/preferences.json", b"current");
+            }
+            let text = serde_json::to_vec(
+                &json!({"version":1,"stage":stage,"previous":".simPl-before-restore-1"}),
+            )
+            .unwrap();
+            fs::write(&journal, &text).unwrap();
+            let notice = recover_restore_at(&root).unwrap();
+            assert!(
+                notice.starts_with("A restore was interrupted and couldn't be finished: "),
+                "{notice}"
+            );
+            assert!(notice.contains("unexpected folder name"), "{notice}");
+            assert_eq!(fs::read(&journal).unwrap(), text);
+            assert_eq!(fs::read(victim.join("keep.txt")).unwrap(), b"keep");
+            assert_eq!(
+                fs::read(dir.0.join("home/.simPl-other-1/keep.txt")).unwrap(),
+                b"keep"
+            );
+            assert_eq!(root.exists(), profile, "{stage}");
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::write(&journal, b"{broken").unwrap();
+        assert!(recover_restore_at(&root).unwrap().contains("is invalid"));
+        assert_eq!(fs::read(&journal).unwrap(), b"{broken");
     }
     #[test]
     fn backup_must_be_outside_profile_and_can_atomically_replace_existing_zip() {

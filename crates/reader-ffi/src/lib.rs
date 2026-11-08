@@ -80,6 +80,8 @@ impl From<String> for CoreError {
 #[uniffi::export]
 pub fn initialize(data_dir: String, cache_dir: String, language: String) -> Result<(), CoreError> {
     reader_profile::configure(Path::new(&data_dir), Path::new(&cache_dir))?;
+    // Phones have no notice banner; finishing the swap is what matters.
+    let _ = reader_document::backup::recover_restore();
     reader_document::set_legacy_text_language(&language);
     Ok(())
 }
