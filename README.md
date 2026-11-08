@@ -94,9 +94,9 @@ not OS desktop captures. No controls or features were composited into the images
 
 ## Get started
 
-**[Download simPl 0.1.5 for Windows x64](https://github.com/Tikkaaa3/simPl-reader/releases/tag/v0.1.5)**
-— installer and portable ZIP. See the [release notes](docs/releases/0.1.5.md)
-for changes since 0.1.4.
+**[Download simPl 0.1.6 for Windows x64](https://github.com/Tikkaaa3/simPl-reader/releases/tag/v0.1.6)**
+— installer and portable ZIP. See the [release notes](docs/releases/0.1.6.md)
+for changes since 0.1.5.
 
 Desktop releases target **Windows x64**. The setup package is named
 `simPl-<version>-windows-x64-setup.exe`. It installs for your Windows account, offers
@@ -206,6 +206,9 @@ read the document where it is. Nothing is copied, and the book appears in **Rece
 the library folder and add it to the library. A dropped HTML book folder is always
 copied, because simPl packages it as an EPUB.
 
+The library lists the books simPl keeps a copy of. **Recent** lists everything you
+read, including files opened in place.
+
 The library folder is `%LOCALAPPDATA%\simPl\documents\` until you change it in
 **Settings → Library & data → Library folder**. **Change…** asks for a folder on this
 PC; simPl keeps its books in a `simPl Library` folder inside it and never writes
@@ -234,8 +237,8 @@ under `%LOCALAPPDATA%\simPl\`.
 
 Hover a library card to favourite or remove it. Favourites appear in their own
 section. Removal asks for confirmation and deletes the application's managed copy;
-your original file remains untouched. Back up the `simPl` profile folder if you want
-to preserve both the collection and reading state.
+your original file remains untouched. To keep both the collection and your reading
+state, use **Settings → Library & data → Library backup**.
 
 Reading is local and offline. Building the application initially needs network
 access to obtain dependencies and the pinned PDF runtime.
@@ -315,7 +318,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 check
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
 
 # Build a website installer (also requires Inno Setup 6.7.3).
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.5
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.6
 ```
 
 The portable output is `target\portable\simPl\simPl.exe`. The scripts initialize
