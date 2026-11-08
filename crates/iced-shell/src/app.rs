@@ -243,7 +243,16 @@ enum OpenAs {
 
 impl OpenAs {
     const IN_PLACE: Self = Self::New(Storage::InPlace);
-    const IMPORT: Self = Self::New(Storage::Import);
+
+    /// Paths handed over by Windows (drop, startup argument). Files are read in
+    /// place; an HTML book folder has no in-place reader, so it is imported.
+    fn external(path: &Path) -> Self {
+        Self::New(if path.is_dir() {
+            Storage::Import
+        } else {
+            Storage::InPlace
+        })
+    }
 
     fn storage(&self) -> Storage {
         match self {
@@ -261,7 +270,8 @@ impl OpenAs {
 
     fn dialog_title(&self) -> &'static str {
         match self {
-            Self::New(_) => "Open document",
+            Self::New(Storage::InPlace) => "Open document",
+            Self::New(Storage::Import) => "Add document to library",
             Self::Relocate(_) => "Locate moved document",
         }
     }
@@ -872,7 +882,8 @@ struct Reader {
     before_fullscreen_maximized: bool,
     profile: profile_ui::State,
     show_settings: bool,
-    dropping: bool,
+    /// Storage a hovered drop would use; picks the highlighted shelf card.
+    dropping: Option<Storage>,
     recent_loading: bool,
     recent_pending: Vec<(Entry, Option<Entry>)>,
     recent_saving: bool,
@@ -973,7 +984,7 @@ impl Default for Reader {
             before_fullscreen_maximized: false,
             profile: Default::default(),
             show_settings: false,
-            dropping: false,
+            dropping: None,
             recent_loading: true,
             recent_pending: Vec::new(),
             recent_saving: false,
@@ -1871,7 +1882,7 @@ impl Reader {
         let library_task = self.shelf.persist().map(Message::Shelf);
         self.show_search = false;
         self.show_settings = false;
-        self.dropping = false;
+        self.dropping = None;
         let previous = self.document_position();
         self.cancel_open();
         let request = self.request;
@@ -3425,6 +3436,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             page,
             result,
         } => reader.read_aloud_pdf_page(document, generation, page, result),
+        Message::Shelf(shelf::Message::Activate(shelf::Control::Open)) => {
+            update_inner(reader, Message::ChooseFile(Storage::InPlace))
+        }
         Message::Shelf(shelf::Message::Activate(shelf::Control::Add)) => {
             update_inner(reader, Message::ChooseFile(Storage::Import))
         }
@@ -4778,16 +4792,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 iced::Event::Window(window::Event::CloseRequested) => {
                     reader.close(CloseAction::Window)
                 }
-                iced::Event::Window(window::Event::FileHovered(_)) => {
-                    reader.dropping = true;
+                iced::Event::Window(window::Event::FileHovered(path)) => {
+                    reader.dropping = Some(OpenAs::external(&path).storage());
                     Task::none()
                 }
                 iced::Event::Window(window::Event::FilesHoveredLeft) => {
-                    reader.dropping = false;
+                    reader.dropping = None;
                     Task::none()
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
-                    reader.open(path, OpenAs::IMPORT)
+                    let how = OpenAs::external(&path);
+                    reader.open(path, how)
                 }
                 iced::Event::Window(window::Event::Unfocused)
                 | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -4802,7 +4817,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     match key.as_ref() {
                         Key::Character(value) if modifiers.control() => {
                             match value.to_ascii_lowercase().as_str() {
-                                "o" => update_inner(reader, Message::ChooseFile(Storage::Import)),
+                                "o" => update_inner(reader, Message::ChooseFile(Storage::InPlace)),
                                 "w" => reader.close(CloseAction::Document),
                                 "c" => update_inner(reader, Message::Copy),
                                 "a" if reader.interactive() => {
@@ -6639,7 +6654,10 @@ fn view(reader: &Reader) -> Element<'_, Message> {
                     }
                 }),
                 active,
-                reader.dropping,
+                reader.dropping.map(|storage| match storage {
+                    Storage::InPlace => shelf::Control::Open,
+                    Storage::Import => shelf::Control::Add,
+                }),
             )
             .map(Message::Shelf)
     };
@@ -6793,8 +6811,10 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 Task::perform(async { preferences::load() }, Message::PreferencesLoaded),
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),
-                path.clone()
-                    .map_or_else(Task::none, |path| reader.open(path, OpenAs::IMPORT)),
+                path.clone().map_or_else(Task::none, |path| {
+                    let how = OpenAs::external(&path);
+                    reader.open(path, how)
+                }),
             ];
             (reader, Task::batch(tasks))
         },
@@ -8226,8 +8246,8 @@ mod tests {
         reader
     }
 
-    /// The open that `messages` start on a reader with one card and one Recent row.
-    fn open_mode(messages: Vec<Message>) -> Option<(Storage, Option<PathBuf>)> {
+    /// A reader with one card and one Recent row, after `messages`.
+    fn after(messages: Vec<Message>) -> Reader {
         let mut reader = reader_with(
             vec![card(r"C:\Books\Card.pdf")],
             vec![row(r"C:\Books\Row.pdf")],
@@ -8235,11 +8255,38 @@ mod tests {
         for message in messages {
             let _ = update_inner(&mut reader, message);
         }
-        mode(&reader.pending_open)
+        reader
+    }
+
+    fn open_mode(messages: Vec<Message>) -> Option<(Storage, Option<PathBuf>)> {
+        mode(&after(messages).pending_open)
+    }
+
+    fn dialog_mode(messages: Vec<Message>) -> Option<(Storage, Option<PathBuf>)> {
+        mode(&after(messages).dialog)
     }
 
     fn chosen(path: &str) -> Message {
         Message::DialogChosen(Ok(Some(PathBuf::from(path))))
+    }
+
+    fn window_event(event: window::Event) -> Message {
+        Message::Event(iced::Event::Window(event), window::Id::unique())
+    }
+
+    fn ctrl_o() -> Message {
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Character("o".into()),
+                modified_key: Key::Character("o".into()),
+                physical_key: key::Physical::Code(key::Code::KeyO),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::CTRL,
+                text: None,
+                repeat: false,
+            }),
+            window::Id::unique(),
+        )
     }
 
     #[test]
@@ -8265,6 +8312,60 @@ mod tests {
             open_mode(vec![Message::LocateRecent(0), chosen(new)]),
             Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Row.pdf"))))
         );
+        let activate = |control| Message::Shelf(shelf::Message::Activate(control));
+        assert_eq!(
+            dialog_mode(vec![activate(shelf::Control::Open)]),
+            Some((Storage::InPlace, None))
+        );
+        assert_eq!(dialog_mode(vec![ctrl_o()]), Some((Storage::InPlace, None)));
+        assert_eq!(
+            dialog_mode(vec![activate(shelf::Control::Add)]),
+            Some((Storage::Import, None))
+        );
+        assert_eq!(
+            open_mode(vec![window_event(window::Event::FileDropped(
+                PathBuf::from(r"C:\Nowhere\drop.pdf")
+            ))]),
+            Some((Storage::InPlace, None))
+        );
+        assert_eq!(
+            open_mode(vec![window_event(window::Event::FileDropped(
+                std::env::temp_dir()
+            ))]),
+            Some((Storage::Import, None))
+        );
+    }
+
+    #[test]
+    fn external_paths_open_in_place_unless_they_are_folders() {
+        assert_eq!(
+            mode(&Some(OpenAs::external(Path::new(r"C:\Nowhere\book.pdf")))),
+            Some((Storage::InPlace, None))
+        );
+        assert_eq!(
+            mode(&Some(OpenAs::external(&std::env::temp_dir()))),
+            Some((Storage::Import, None))
+        );
+    }
+
+    #[test]
+    fn hovering_a_file_highlights_the_open_card() {
+        let mut reader = Reader::default();
+        let mut hover = |event| {
+            let _ = update_inner(&mut reader, window_event(event));
+            reader.dropping
+        };
+        assert_eq!(
+            hover(window::Event::FileHovered(PathBuf::from(
+                r"C:\Nowhere\a.pdf"
+            ))),
+            Some(Storage::InPlace)
+        );
+        assert_eq!(
+            hover(window::Event::FileHovered(std::env::temp_dir())),
+            Some(Storage::Import)
+        );
+        assert_eq!(hover(window::Event::FilesHoveredLeft), None);
     }
 
     /// A finished load of `path` for the in-flight request, proposing `catalog`.

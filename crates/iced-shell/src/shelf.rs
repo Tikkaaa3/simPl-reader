@@ -28,6 +28,9 @@ pub enum Sort {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
+    /// "Open file": pick a file and read it where it is.
+    Open,
+    /// "Add document": pick a file and import a copy into the library.
     Add,
     RetrySave,
     Resume(usize),
@@ -564,7 +567,8 @@ impl Shelf {
     }
 
     pub fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
-        std::iter::once(Control::Add)
+        [Control::Open, Control::Add]
+            .into_iter()
             .chain(self.continuing.iter().copied().map(Control::Resume))
             .chain(SORTS.into_iter().map(Control::Sort))
             .chain(std::iter::once(Control::Filter(None)))
@@ -918,17 +922,17 @@ impl Shelf {
         )
     }
 
+    /// `drop_target` is the hero card that takes a file hovered over the window.
     pub fn view(
         &self,
         focused: Option<Control>,
         active: bool,
-        dropping: bool,
+        drop_target: Option<Control>,
     ) -> Element<'_, Message> {
         let m = self.metrics();
         let wide = self.size.width >= 768.0;
-        let add_width = 280.0;
         let intro_width = if wide {
-            m.width - add_width - 24.0
+            m.width - ACTION_CARD_WIDTH - 24.0
         } else {
             m.width
         };
@@ -955,40 +959,38 @@ impl Shelf {
         ]
         .spacing(8)
         .width(448.0_f32.min(intro_width));
-        let add = card_button(
-            row![
-                container(icon("\u{e145}", 18).style(ui::accent_text))
-                    .center(28)
-                    .style(|theme| fill(ui::palette(theme).raised, 4.0)),
-                column![
-                    label("Add document", 13).style(ui::primary_text),
-                    label("Drop PDF, EPUB, HTML, TXT or MD", 11).style(ui::secondary_text)
-                ]
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-            Control::Add,
-            focused,
-            active,
-            false,
-        )
-        .padding([12, 20])
-        .width(add_width)
-        .height(58)
-        .style(move |theme, status| {
-            card_style(
-                theme,
-                status,
-                dropping || focused == Some(Control::Add),
-                false,
+        let action = |glyph, title, subtitle, control| {
+            action_card(
+                glyph,
+                title,
+                subtitle,
+                control,
+                focused,
+                active,
+                drop_target == Some(control),
             )
-        });
+        };
+        let actions = column![
+            action(
+                "\u{ea19}",
+                "Open file",
+                "Reads it from where it is, without copying",
+                Control::Open,
+            ),
+            action(
+                "\u{e145}",
+                "Add document",
+                "Keeps a copy in your simPl library",
+                Control::Add,
+            ),
+        ]
+        .spacing(8);
         let hero: Element<'_, Message> = if wide {
-            row![intro, Space::new().width(Length::Fill), add]
+            row![intro, Space::new().width(Length::Fill), actions]
                 .align_y(Alignment::Center)
                 .into()
         } else {
-            column![intro, add].spacing(32).into()
+            column![intro, actions].spacing(32).into()
         };
         let continue_heading = row![
             text("Continue Reading")
@@ -2150,6 +2152,49 @@ fn card_style(
     }
 }
 
+const ACTION_CARD_WIDTH: f32 = 320.0;
+
+/// One of the two hero cards; shared so they cannot drift apart.
+fn action_card<'a>(
+    glyph: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    control: Control,
+    focused: Option<Control>,
+    active: bool,
+    drop_target: bool,
+) -> Element<'a, Message> {
+    card_button(
+        row![
+            container(icon(glyph, 18).style(ui::accent_text))
+                .center(28)
+                .style(|theme| fill(ui::palette(theme).raised, 4.0)),
+            column![
+                label(title, 13).style(ui::primary_text),
+                label(subtitle, 11).style(ui::secondary_text)
+            ]
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+        control,
+        focused,
+        active,
+        false,
+    )
+    .padding([12, 20])
+    .width(ACTION_CARD_WIDTH)
+    .height(58)
+    .style(move |theme, status| {
+        card_style(
+            theme,
+            status,
+            drop_target || focused == Some(control),
+            false,
+        )
+    })
+    .into()
+}
+
 fn card_button<'a>(
     content: impl Into<Element<'a, Message>>,
     control: Control,
@@ -2234,6 +2279,14 @@ mod tests {
             .iter()
             .map(|entry| entry.document.title.as_str())
             .collect()
+    }
+
+    #[test]
+    fn open_and_add_cards_lead_the_focus_order() {
+        assert_eq!(
+            Shelf::default().controls().take(3).collect::<Vec<_>>(),
+            vec![Control::Open, Control::Add, Control::Sort(Sort::Recent)]
+        );
     }
 
     #[test]

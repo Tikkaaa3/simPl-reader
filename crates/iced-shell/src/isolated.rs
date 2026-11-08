@@ -98,6 +98,30 @@ fn item_texts(book: &Book) -> Vec<&str> {
     book.items.iter().filter_map(Item::text).collect()
 }
 
+fn dropped(path: &Path) -> Message {
+    Message::Event(
+        iced::Event::Window(window::Event::FileDropped(path.to_path_buf())),
+        window::Id::unique(),
+    )
+}
+
+fn names(folder: &Path) -> Vec<String> {
+    let mut names = fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn recent_paths(reader: &Reader) -> Vec<PathBuf> {
+    reader
+        .recent
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
 isolated!(library_card_outside_the_library_opens_in_place_without_a_copy);
 fn library_card_outside_the_library_opens_in_place_without_a_copy() {
     let (profile, books) = store();
@@ -144,4 +168,53 @@ fn library_card_outside_the_library_opens_in_place_without_a_copy() {
     assert!(reader.shelf.entries[0].favourite);
     assert_eq!(reader.recent.len(), 1);
     assert_eq!(reader.recent[0].path, canonical);
+}
+
+isolated!(dropped_markdown_opens_in_place_without_a_card_or_files);
+fn dropped_markdown_opens_in_place_without_a_card_or_files() {
+    let (profile, books) = store();
+    let source = books.join("Notes.md");
+    fs::write(&source, "# Field notes\n\nText.\n").unwrap();
+
+    let mut reader = boot();
+    send(&mut reader, dropped(&source));
+
+    assert_eq!(reader.error, None);
+    assert_eq!(reader.book.as_ref().unwrap().title, "Field notes");
+    let canonical = fs::canonicalize(&source).unwrap();
+    assert_eq!(reader.shelf.entries.len(), 0);
+    assert_eq!(recent_paths(&reader), [canonical]);
+    assert_eq!(reader.recent[0].kind, DocumentKind::Html);
+    assert!(!profile.join("simPl").join("documents").exists());
+    assert_eq!(names(&books), ["Notes.md"]);
+    drop(reader);
+    let reopened = boot();
+    assert_eq!(reopened.shelf.entries.len(), 0);
+    assert_eq!(reopened.recent.len(), 1);
+}
+
+isolated!(dropped_html_folder_is_imported_with_a_card);
+fn dropped_html_folder_is_imported_with_a_card() {
+    let (profile, books) = store();
+    let bundle = books.join("html-book");
+    fs::create_dir(&bundle).unwrap();
+    let first = "<title>My Book</title><h1>First</h1><a href='02.html#end'>Next</a>";
+    fs::write(bundle.join("index.html"), first).unwrap();
+    fs::write(bundle.join("01.html"), first).unwrap();
+    fs::write(bundle.join("02.html"), "<h1 id='end'>Last chapter</h1>").unwrap();
+
+    let mut reader = boot();
+    send(&mut reader, dropped(&bundle));
+
+    assert_eq!(reader.error, None);
+    assert_eq!(reader.shelf.entries.len(), 1);
+    let path = reader.shelf.entries[0].document.path.clone();
+    let documents = fs::canonicalize(&profile)
+        .unwrap()
+        .join("simPl")
+        .join("documents");
+    assert!(path.starts_with(&documents), "{}", path.display());
+    assert_eq!(path.file_name().unwrap(), "book.epub");
+    assert_eq!(recent_paths(&reader), [path]);
+    assert_eq!(names(&bundle), ["01.html", "02.html", "index.html"]);
 }
