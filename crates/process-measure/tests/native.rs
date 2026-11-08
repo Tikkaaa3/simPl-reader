@@ -2,7 +2,7 @@
 
 use process_measure::args::{StdioMode, ValidatedArgs};
 use process_measure::job::{LaunchFault, launch_with_fault, resolve_launch};
-use process_measure::records::{Manifest, SampleRecord};
+use process_measure::records::{Manifest, Metric, SampleRecord};
 use process_measure::run::{TestHooks, run_collection_with_hooks};
 use process_measure::sampler::SampleFault;
 use std::ffi::OsString;
@@ -49,7 +49,69 @@ impl OwnedTemp {
 }
 impl Drop for OwnedTemp {
     fn drop(&mut self) {
+        // These checks depend on timing, so a loaded runner can fail them. Print
+        // what the run recorded before the directory is deleted.
+        if std::thread::panicking() {
+            eprintln!("{}", report(&self.run()));
+        }
         let _ = fs::remove_dir_all(&self.root);
+    }
+}
+/// Summarizes a run directory's manifest and samples for a failing test.
+fn report(dir: &Path) -> String {
+    let m = match fs::read(dir.join("manifest.json")) {
+        Ok(bytes) => match serde_json::from_slice::<Manifest>(&bytes) {
+            Ok(m) => m,
+            Err(e) => return format!("{}: unreadable manifest ({e})", dir.display()),
+        },
+        Err(e) => return format!("{}: no manifest ({e})", dir.display()),
+    };
+    let mut out = format!(
+        "{}: state {}, stop {:?}, collection_valid {}, tool_exit_success {}, \
+         target_exit_code {:?}, required_live_query_failures {}, harness_error {:?}, \
+         cleanup_error {:?}, {:?}",
+        dir.display(),
+        m.state,
+        m.collection_stop_reason,
+        m.collection_valid,
+        m.tool_exit_success,
+        m.target_exit_code,
+        m.required_live_query_failures,
+        m.harness_error,
+        m.cleanup_error,
+        m.counts,
+    );
+    let ticks_per_ms = (m.qpc_frequency_hz / 1000).max(1) as i64;
+    let rows = fs::read_to_string(dir.join("samples.jsonl")).unwrap_or_default();
+    for line in rows.lines() {
+        match serde_json::from_str::<SampleRecord>(line) {
+            Ok(r) => out.push_str(&format!(
+                "\n  sample {}: slip {} ms, user cpu {}, kernel cpu {}, \
+                 private working set {}, private commit {}{}",
+                r.sequence,
+                r.schedule_slip_qpc_ticks / ticks_per_ms,
+                status(&r.user_cpu_100ns),
+                status(&r.kernel_cpu_100ns),
+                status(&r.private_working_set_bytes),
+                status(&r.private_commit_bytes),
+                if r.terminal_sample { ", terminal" } else { "" },
+            )),
+            Err(e) => out.push_str(&format!("\n  unreadable sample ({e})")),
+        }
+    }
+    out
+}
+fn status<T>(metric: &Metric<T>) -> String {
+    match metric {
+        Metric::Valid { .. } => "valid".into(),
+        Metric::Unavailable { error } => {
+            format!(
+                "unavailable ({} {}: {})",
+                error.api, error.os_code, error.reason
+            )
+        }
+        Metric::Unsupported { reason } => format!("unsupported ({reason})"),
+        Metric::TerminalUnavailable { reason } => format!("terminal unavailable ({reason})"),
     }
 }
 struct ChildGuard(Child);
