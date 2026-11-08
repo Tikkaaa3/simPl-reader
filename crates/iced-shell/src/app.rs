@@ -213,9 +213,10 @@ impl Storage {
 /// carries the reading position over, and the old entry leaves Recent and the library.
 #[derive(Clone, Debug)]
 enum Relocation {
-    /// Locate on a library card.
+    /// Locate on a library card: imports the chosen file, so the card stays
+    /// backed by a copy.
     Library(Entry),
-    /// Locate on a Recent row.
+    /// Locate on a Recent row: repoints the row to the chosen file in place.
     Recent(Entry),
 }
 
@@ -228,7 +229,8 @@ impl Relocation {
 
     fn storage(&self) -> Storage {
         match self {
-            Self::Library(_) | Self::Recent(_) => Storage::InPlace,
+            Self::Library(_) => Storage::Import,
+            Self::Recent(_) => Storage::InPlace,
         }
     }
 }
@@ -444,14 +446,6 @@ async fn load_document(
     locate: Option<Entry>,
 ) -> Result<LoadReply, String> {
     let kind = document_kind(&path)?;
-    if let Some(old) = &locate
-        && kind != old.kind
-    {
-        return Err(format!(
-            "Selected file is not the same format as {}.",
-            old.path.display()
-        ));
-    }
     let carried = previous.as_ref().filter(|position| {
         locate
             .as_ref()
@@ -891,8 +885,10 @@ struct Reader {
     history_corrupt: bool,
     pending_exit: bool,
     history_notice: Option<String>,
-    recent_open: Option<Entry>,
-    missing_recent: Option<Entry>,
+    /// What Locate retries if the in-flight open fails.
+    recent_open: Option<Relocation>,
+    /// The Locate the missing-file notice offers.
+    missing_recent: Option<Relocation>,
     /// The open the native file dialog will perform; `Some` while it is shown.
     dialog: Option<OpenAs>,
     /// The in-flight open; mode switches and chapter loads have none.
@@ -1889,27 +1885,25 @@ impl Reader {
         self.opening = Some(path.clone());
         let storage = how.storage();
         let locate = how.relocation().map(|relocation| relocation.old().clone());
-        self.pending_open = Some(how);
-        self.recent_open = if locate.is_some() {
-            None
-        } else {
-            self.recent
-                .iter()
-                .find(|entry| entry.path == path)
-                .cloned()
-                .or_else(|| {
-                    self.shelf
-                        .entries
-                        .iter()
-                        .find(|entry| entry.document.path == path)
-                        .map(|entry| entry.document.clone())
-                })
+        self.recent_open = match &how {
+            OpenAs::Relocate(relocation) => Some(relocation.clone()),
+            OpenAs::New(_) => self.locate_for(&path),
         };
+        self.pending_open = Some(how);
         self.error = None;
         self.missing_recent = None;
         self.selection.end_drag();
         let (task, handle) = Task::perform(
             async move {
+                // Checked before importing, so a Locate of the wrong format leaves no copy.
+                if let Some(old) = &locate
+                    && document_kind(&path)? != old.kind
+                {
+                    return Err(format!(
+                        "Selected file is not the same format as {}.",
+                        old.path.display()
+                    ));
+                }
                 let path = match storage {
                     Storage::Import => reader_document::managed::import(&path)?,
                     Storage::InPlace => path,
@@ -2005,6 +1999,21 @@ impl Reader {
             && !self.shelf.saving
             && !(self.shelf.dirty && !self.shelf.blocked)
             && self.shelf.shelves_settled()
+    }
+
+    /// The Locate a failed open of `path` offers. A library card wins over a
+    /// Recent row, so retrying it imports and the card stays backed by a copy.
+    fn locate_for(&self, path: &Path) -> Option<Relocation> {
+        self.shelf
+            .card(path)
+            .map(|card| Relocation::Library(card.document.clone()))
+            .or_else(|| {
+                self.recent
+                    .iter()
+                    .find(|entry| recent::same_path(&entry.path, path))
+                    .cloned()
+                    .map(Relocation::Recent)
+            })
     }
 
     /// Shows the native file picker; the chosen file is opened as `how`.
@@ -3797,10 +3806,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.choose(OpenAs::Relocate(Relocation::Recent(entry)))
         }
         Message::LocateMissing if reader.interactive() => {
-            let Some(entry) = reader.missing_recent.clone() else {
+            let Some(relocation) = reader.missing_recent.clone() else {
                 return Task::none();
             };
-            reader.choose(OpenAs::Relocate(Relocation::Recent(entry)))
+            reader.choose(OpenAs::Relocate(relocation))
         }
         Message::RemoveRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
@@ -3987,11 +3996,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
                 Err(error) => {
                     reader.notes.pending_reveal = None;
-                    reader.missing_recent = relocated.or(recent_open);
-                    reader.error = Some(if let Some(entry) = &reader.missing_recent {
+                    reader.missing_recent = recent_open;
+                    reader.error = Some(if let Some(relocation) = &reader.missing_recent {
                         format!(
                             "Could not open {}: {error}. Use Locate... to select its new location, or Remove it from Recent.",
-                            entry.path.display()
+                            relocation.old().path.display()
                         )
                     } else {
                         error
@@ -8223,7 +8232,9 @@ mod tests {
     }
 
     /// The storage of an open, and the path of the entry it relocates.
-    fn mode(how: &Option<OpenAs>) -> Option<(Storage, Option<PathBuf>)> {
+    type Mode = Option<(Storage, Option<PathBuf>)>;
+
+    fn mode(how: &Option<OpenAs>) -> Mode {
         how.as_ref().map(|how| {
             (
                 how.storage(),
@@ -8258,11 +8269,11 @@ mod tests {
         reader
     }
 
-    fn open_mode(messages: Vec<Message>) -> Option<(Storage, Option<PathBuf>)> {
+    fn open_mode(messages: Vec<Message>) -> Mode {
         mode(&after(messages).pending_open)
     }
 
-    fn dialog_mode(messages: Vec<Message>) -> Option<(Storage, Option<PathBuf>)> {
+    fn dialog_mode(messages: Vec<Message>) -> Mode {
         mode(&after(messages).dialog)
     }
 
@@ -8306,7 +8317,7 @@ mod tests {
         );
         assert_eq!(
             open_mode(vec![Message::LocateLibrary(0), chosen(new)]),
-            Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Card.pdf"))))
+            Some((Storage::Import, Some(PathBuf::from(r"C:\Books\Card.pdf"))))
         );
         assert_eq!(
             open_mode(vec![Message::LocateRecent(0), chosen(new)]),
@@ -8333,6 +8344,86 @@ mod tests {
                 std::env::temp_dir()
             ))]),
             Some((Storage::Import, None))
+        );
+    }
+
+    fn failed(reader: &mut Reader) {
+        let request = reader.request;
+        let _ = update_inner(
+            reader,
+            Message::Loaded {
+                request,
+                result: Err("gone".into()),
+            },
+        );
+    }
+
+    /// The Locate offered after `messages` and a failed load, and the dialog it shows.
+    fn missing_locate(
+        cards: Vec<library::Entry>,
+        recent: Vec<Entry>,
+        messages: Vec<Message>,
+    ) -> (Mode, Mode) {
+        let mut reader = reader_with(cards, recent);
+        for message in messages {
+            let _ = update_inner(&mut reader, message);
+        }
+        failed(&mut reader);
+        let offered = mode(&reader.missing_recent.clone().map(OpenAs::Relocate));
+        let _ = update_inner(&mut reader, Message::LocateMissing);
+        (offered, mode(&reader.dialog))
+    }
+
+    #[test]
+    fn failed_open_offers_the_matching_locate() {
+        let lists = || {
+            (
+                vec![card(r"C:\Books\Card.pdf")],
+                vec![row(r"c:/books/card.PDF"), row(r"C:\Books\Row.pdf")],
+            )
+        };
+        let card_locate = Some((Storage::Import, Some(PathBuf::from(r"C:\Books\Card.pdf"))));
+        let (cards, recent) = lists();
+        assert_eq!(
+            missing_locate(cards, recent, vec![Message::OpenLibrary(0)]),
+            (card_locate.clone(), card_locate.clone())
+        );
+        let (cards, recent) = lists();
+        assert_eq!(
+            missing_locate(cards, recent, vec![Message::OpenRecent(0)]),
+            (card_locate.clone(), card_locate)
+        );
+        let row_locate = Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Row.pdf"))));
+        let (cards, recent) = lists();
+        assert_eq!(
+            missing_locate(cards, recent, vec![Message::OpenRecent(1)]),
+            (row_locate.clone(), row_locate)
+        );
+    }
+
+    #[test]
+    fn missing_locate_retains_library_or_recent_origin() {
+        let lists = || {
+            (
+                vec![card(r"C:\Books\Same.pdf")],
+                vec![row(r"C:\Books\Same.pdf")],
+            )
+        };
+        let moved = chosen(r"C:\Moved\Same.pdf");
+        let (cards, recent) = lists();
+        assert_eq!(
+            missing_locate(
+                cards,
+                recent,
+                vec![Message::LocateLibrary(0), moved.clone()]
+            )
+            .0,
+            Some((Storage::Import, Some(PathBuf::from(r"C:\Books\Same.pdf"))))
+        );
+        let (cards, recent) = lists();
+        assert_eq!(
+            missing_locate(cards, recent, vec![Message::LocateRecent(0), moved]).0,
+            Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Same.pdf"))))
         );
     }
 

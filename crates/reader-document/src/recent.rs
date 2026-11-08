@@ -231,8 +231,10 @@ pub(crate) fn compare_path_keys(first: &[u16], second: &[u16]) -> std::cmp::Orde
     result.cmp(&CSTR_EQUAL)
 }
 
+/// Whether two paths name the same file the way Windows compares them
+/// (ordinal case-insensitive, `/` equals `\`), without touching the file system.
 #[cfg(windows)]
-pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
+pub fn same_path(first: &Path, second: &Path) -> bool {
     first == second || compare_path_keys(&path_key(first), &path_key(second)).is_eq()
 }
 
@@ -247,7 +249,7 @@ pub(crate) fn compare_path_keys(first: &Path, second: &Path) -> std::cmp::Orderi
 }
 
 #[cfg(not(windows))]
-pub(crate) fn same_path(first: &Path, second: &Path) -> bool {
+pub fn same_path(first: &Path, second: &Path) -> bool {
     first == second
 }
 

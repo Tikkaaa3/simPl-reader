@@ -218,3 +218,50 @@ fn dropped_html_folder_is_imported_with_a_card() {
     assert_eq!(recent_paths(&reader), [path]);
     assert_eq!(names(&bundle), ["01.html", "02.html", "index.html"]);
 }
+
+isolated!(library_locate_imports_and_recent_locate_does_not);
+fn library_locate_imports_and_recent_locate_does_not() {
+    let (profile, books) = store();
+    let documents = profile.join("simPl").join("documents");
+    let moved = books.join("moved");
+    fs::create_dir(&moved).unwrap();
+    let chosen = |path: &Path| Message::DialogChosen(Ok(Some(path.to_path_buf())));
+    let a = books.join("a.html");
+    fs::write(&a, "<title>A</title><p>Alpha</p>").unwrap();
+    let mut reader = boot();
+    let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+    send(&mut reader, chosen(&a));
+    let first_copy = reader.shelf.entries[0].document.path.clone();
+    assert!(first_copy.starts_with(fs::canonicalize(&documents).unwrap()));
+    fs::remove_file(&first_copy).unwrap();
+    fs::copy(&a, moved.join("a.html")).unwrap();
+
+    let _ = update_inner(&mut reader, Message::LocateLibrary(0));
+    send(&mut reader, chosen(&moved.join("a.html")));
+
+    assert_eq!(reader.error, None);
+    assert_eq!(reader.shelf.entries.len(), 1);
+    let copy = reader.shelf.entries[0].document.path.clone();
+    assert!(copy.starts_with(fs::canonicalize(&documents).unwrap()));
+    assert_ne!(copy, first_copy);
+    assert_eq!(recent_paths(&reader), std::slice::from_ref(&copy));
+
+    let b = books.join("b.html");
+    fs::write(&b, "<title>B</title><p>Beta</p>").unwrap();
+    send(&mut reader, dropped(&b));
+    fs::rename(&b, moved.join("b.html")).unwrap();
+    let _ = update_inner(&mut reader, Message::LocateRecent(0));
+    send(&mut reader, chosen(&moved.join("b.html")));
+
+    assert_eq!(reader.error, None);
+    assert_eq!(
+        recent_paths(&reader),
+        [
+            fs::canonicalize(moved.join("b.html")).unwrap(),
+            copy.clone()
+        ]
+    );
+    assert_eq!(reader.shelf.entries.len(), 1);
+    assert_eq!(reader.shelf.entries[0].document.path, copy);
+    assert_eq!(names(&documents).len(), 2);
+}
