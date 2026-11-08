@@ -42,10 +42,6 @@ fn render_promotion_gallery() {
     reader.window_size = Size::new(1280.0, 800.0);
     let task = reader.shelf.resize(reader.window_size).map(Message::Shelf);
     pump(&mut reader, task);
-    send(
-        &mut reader,
-        Message::SetWindowControls(WindowControls::Windows),
-    );
     for (index, demo) in books.iter().enumerate().rev() {
         opened(&mut reader, fixtures.join(&demo.source));
         if index < 3 {

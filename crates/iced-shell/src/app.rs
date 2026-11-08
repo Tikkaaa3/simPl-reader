@@ -18,7 +18,7 @@ use iced::{Element, Length, Size, Subscription, Task, mouse, window};
 use iced_shell::{reader, selection, virtual_reader};
 use reader_document::library;
 use reader_document::position::{self, EpubReadingPosition, PdfReadingPosition, ReadingPosition};
-use reader_document::preferences::{self, Appearance, Preferences, WindowControls};
+use reader_document::preferences::{self, Appearance, Preferences};
 use reader_document::recent::{self, DocumentKind, Entry};
 use reader_document::{BaseDirection, Endpoint, Item};
 
@@ -827,7 +827,6 @@ struct Reader {
     request: u64,
     generation: u64,
     appearance: Appearance,
-    window_controls: WindowControls,
     maximized: bool,
     preferences_loading: bool,
     preferences_dirty: bool,
@@ -927,7 +926,6 @@ impl Default for Reader {
             request: 0,
             generation: 0,
             appearance: Appearance::Light,
-            window_controls: WindowControls::default(),
             maximized: false,
             preferences_loading: false,
             preferences_dirty: false,
@@ -984,7 +982,6 @@ enum Control {
     DismissOverlay,
     SettingsFontDown,
     SettingsFontUp,
-    SettingsWindowControls(WindowControls),
     SettingsHelp,
     SettingsTheme(usize),
     Close,
@@ -1122,7 +1119,6 @@ enum Message {
     },
     ToggleAppearance,
     PreferencesLoaded(Result<Preferences, String>),
-    SetWindowControls(WindowControls),
     WindowMaximized(bool),
     PreferencesSaved(Result<(), String>),
     BookMode,
@@ -1903,7 +1899,6 @@ impl Reader {
         self.preferences_saving = true;
         let preferences = Preferences {
             appearance: self.appearance,
-            window_controls: self.window_controls,
             theme: self.theme.id.to_owned(),
             voice: self.read_aloud.voice.clone(),
             speech_rate: self.read_aloud.rate,
@@ -2025,42 +2020,18 @@ impl Reader {
             (self.history_corrupt && self.history_notice.is_some()).then_some(Control::ResetRecent),
             history.then_some(Control::HideRecent),
         ];
-        // Title-bar focus follows the visual order of the chosen window controls.
-        let native = match self.window_controls {
-            WindowControls::Mac => [
-                Some(Control::Chrome(chrome::Action::Close)),
-                Some(Control::Chrome(chrome::Action::Minimize)),
-                Some(Control::Chrome(chrome::Action::Maximize)),
-                None,
-            ],
-            WindowControls::Windows => [
-                Some(Control::Chrome(chrome::Action::Minimize)),
-                Some(Control::Chrome(chrome::Action::Maximize)),
-                Some(Control::Chrome(chrome::Action::Close)),
-                None,
-            ],
-        };
-        let tools = match self.window_controls {
-            WindowControls::Mac => [
-                Some(Control::Chrome(chrome::Action::Search)),
-                (!has_document).then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
-                has_document.then_some(Control::ToggleToolbar),
-                Some(Control::Chrome(chrome::Action::Settings)),
-            ],
-            WindowControls::Windows => [
-                Some(Control::Chrome(chrome::Action::Settings)),
-                has_document.then_some(Control::ToggleToolbar),
-                (!has_document).then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
-                Some(Control::Chrome(chrome::Action::Search)),
-            ],
-        };
-        let (first, last) = match self.window_controls {
-            WindowControls::Mac => (native, tools),
-            WindowControls::Windows => (tools, native),
-        };
-        first
+        // Title-bar focus follows the visual order of the header in chrome::view.
+        let title_bar = [
+            Some(Control::Chrome(chrome::Action::Settings)),
+            has_document.then_some(Control::ToggleToolbar),
+            (!has_document).then_some(Control::Chrome(chrome::Action::ToggleAppearance)),
+            Some(Control::Chrome(chrome::Action::Search)),
+            Some(Control::Chrome(chrome::Action::Minimize)),
+            Some(Control::Chrome(chrome::Action::Maximize)),
+            Some(Control::Chrome(chrome::Action::Close)),
+        ];
+        title_bar
             .into_iter()
-            .chain(last)
             .flatten()
             .filter(move |_| !overlay && !self.fullscreen)
             .map(Some)
@@ -2072,10 +2043,6 @@ impl Reader {
                     .then_some(Control::ConfirmRemove),
                 (self.show_settings && self.zoom > 0.25).then_some(Control::SettingsFontDown),
                 (self.show_settings && self.zoom < 3.0).then_some(Control::SettingsFontUp),
-                self.show_settings
-                    .then_some(Control::SettingsWindowControls(WindowControls::Windows)),
-                self.show_settings
-                    .then_some(Control::SettingsWindowControls(WindowControls::Mac)),
                 (self.show_settings && self.read_aloud.rate > crate::speech::MIN_RATE)
                     .then_some(Control::ReadAloudSlower),
                 (self.show_settings && self.read_aloud.rate < crate::speech::MAX_RATE)
@@ -2189,7 +2156,6 @@ impl Reader {
             Control::FontDown | Control::SettingsFontDown => Message::Zoom(self.zoom - 0.1),
             Control::FontUp | Control::SettingsFontUp => Message::Zoom(self.zoom + 0.1),
             Control::ToggleAppearance => Message::ToggleAppearance,
-            Control::SettingsWindowControls(controls) => Message::SetWindowControls(controls),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
             Control::Back => Message::Back,
@@ -3570,14 +3536,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.maximized = maximized;
             Task::none()
         }
-        Message::SetWindowControls(controls) if reader.interactive() => {
-            if reader.window_controls == controls {
-                return Task::none();
-            }
-            reader.window_controls = controls;
-            reader.preferences_dirty = true;
-            reader.persist_preferences()
-        }
         Message::PreferencesLoaded(result) => {
             reader.preferences_loading = false;
             let mut theme_task = Task::none();
@@ -3585,7 +3543,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 Ok(loaded) if !reader.preferences_dirty => {
                     reader.reading.defaults = loaded.reading.validated();
                     reader.appearance = loaded.appearance;
-                    reader.window_controls = loaded.window_controls;
                     reader.read_aloud.voice = loaded.voice;
                     reader.read_aloud.rate = loaded.speech_rate;
                     if reader.word_translation.settings != loaded.dictionary.validated() {
@@ -5665,15 +5622,6 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 note("Scales Book pages without changing their boundaries or total count. Applies during this session."),
             ].spacing(6))
             .push(rule())
-            .push(column![
-                row![
-                    text("Window controls").font(ui::MEDIUM).size(13), Space::new().width(Length::Fill),
-                    window_controls_button(reader, WindowControls::Windows, "Windows"),
-                    window_controls_button(reader, WindowControls::Mac, "macOS"),
-                ].spacing(8).align_y(iced::Alignment::Center),
-                note("Windows places minimize, maximize and close at the right of the title bar; macOS uses round buttons at the left."),
-            ].spacing(6))
-            .push(rule())
             .push(reading_ui::settings(reader))
             .push(rule())
             .push(control_button(reader, Control::Fullscreen, text(if reader.fullscreen { "Exit fullscreen (F11)" } else { "Fullscreen (F11)" }).size(12), Some(Message::ToggleFullscreen)))
@@ -5893,21 +5841,6 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
         rows = rows.push(line);
     }
     rows.into()
-}
-
-fn window_controls_button(
-    reader: &Reader,
-    controls: WindowControls,
-    label: &'static str,
-) -> Element<'static, Message> {
-    toned_button(
-        reader,
-        Control::SettingsWindowControls(controls),
-        text(label).size(12),
-        Some(Message::SetWindowControls(controls)),
-        ui::ButtonTone::Surface,
-        reader.window_controls == controls,
-    )
 }
 
 fn hinted_control<'a>(
@@ -6542,7 +6475,6 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             active,
             reader.reading_title(),
             chrome::Controls {
-                style: reader.window_controls,
                 maximized: reader.maximized,
                 tooltips: !reader.show_settings
                     && !reader.show_search
@@ -7726,7 +7658,6 @@ mod tests {
         let total = reader.page_total();
         let loaded = reader_document::preferences::Preferences {
             appearance: Appearance::Dark,
-            window_controls: WindowControls::Mac,
             theme: "clear".into(),
             ..Default::default()
         };
