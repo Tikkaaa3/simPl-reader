@@ -517,6 +517,11 @@ impl Shelf {
         library::find(&self.entries, path).map(|index| &self.entries[index])
     }
 
+    /// Whether a Recent row for `path` may offer "Add to library".
+    pub fn can_add(&self, path: &Path) -> bool {
+        !self.loading && !self.blocked && self.card(path).is_none()
+    }
+
     pub fn remove(&mut self, path: &Path) -> Task<Message> {
         let gone = library::remove(&mut self.entries, path);
         self.dirty = true;

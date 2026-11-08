@@ -265,3 +265,54 @@ fn library_locate_imports_and_recent_locate_does_not() {
     assert_eq!(reader.shelf.entries[0].document.path, copy);
     assert_eq!(names(&documents).len(), 2);
 }
+
+/// Reads `story.txt` in place at paragraph 20, optionally closes it, then adds
+/// its Recent row to the library.
+fn add_to_library_keeps_the_position(close: bool) {
+    let (profile, books) = store();
+    let source = books.join("story.txt");
+    let story = (0..40)
+        .map(|n| format!("Paragraph {n} of a story that is long enough to wrap.\n\n"))
+        .collect::<String>();
+    fs::write(&source, story).unwrap();
+    let mut reader = boot();
+    send(&mut reader, dropped(&source));
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 20,
+        fraction: 0.25,
+    });
+    settle_pagination(&mut reader);
+    let id = reader.book.as_ref().unwrap().items[20].id().to_owned();
+    if close {
+        let task = reader.close(CloseAction::Document);
+        super::release_audit::pump(&mut reader, task);
+        assert!(reader.book.is_none());
+    }
+
+    send(&mut reader, Message::AddRecent(0));
+
+    assert_eq!(reader.error, None);
+    let book = reader.book.as_ref().unwrap();
+    let documents = fs::canonicalize(&profile)
+        .unwrap()
+        .join("simPl")
+        .join("documents");
+    assert!(book.path.starts_with(&documents), "{}", book.path.display());
+    assert_eq!(book.path.file_name().unwrap(), "story.html");
+    assert_eq!(position::load(&book.path).unwrap().unwrap().item_id, id);
+    assert_eq!(book.restored.as_ref().unwrap().item_id, id);
+    assert_eq!(recent_paths(&reader), std::slice::from_ref(&book.path));
+    assert_eq!(reader.shelf.entries.len(), 1);
+    assert_eq!(reader.shelf.entries[0].document.path, book.path);
+    assert_eq!(names(&books), ["story.txt"]);
+}
+
+isolated!(add_to_library_keeps_the_reading_position);
+fn add_to_library_keeps_the_reading_position() {
+    add_to_library_keeps_the_position(true);
+}
+
+isolated!(add_to_library_while_reading_carries_the_live_position);
+fn add_to_library_while_reading_carries_the_live_position() {
+    add_to_library_keeps_the_position(false);
+}

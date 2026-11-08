@@ -218,18 +218,21 @@ enum Relocation {
     Library(Entry),
     /// Locate on a Recent row: repoints the row to the chosen file in place.
     Recent(Entry),
+    /// "Add to library" on a Recent row: imports the row's file and keeps its
+    /// reading position.
+    AddToLibrary(Entry),
 }
 
 impl Relocation {
     fn old(&self) -> &Entry {
         match self {
-            Self::Library(old) | Self::Recent(old) => old,
+            Self::Library(old) | Self::Recent(old) | Self::AddToLibrary(old) => old,
         }
     }
 
     fn storage(&self) -> Storage {
         match self {
-            Self::Library(_) => Storage::Import,
+            Self::Library(_) | Self::AddToLibrary(_) => Storage::Import,
             Self::Recent(_) => Storage::InPlace,
         }
     }
@@ -1090,6 +1093,7 @@ enum Control {
     ResetRecent,
     HideRecent,
     OpenRecent(usize),
+    AddRecent(usize),
     LocateRecent(usize),
     RemoveRecent(usize),
     HideHelp,
@@ -1143,6 +1147,7 @@ enum Message {
     ToggleHelp,
     FocusReady(u64),
     OpenRecent(usize),
+    AddRecent(usize),
     LocateRecent(usize),
     LocateMissing,
     RemoveRecent(usize),
@@ -2208,10 +2213,15 @@ impl Reader {
                     .filter(move |_| history)
                     .flat_map(|index| {
                         [
-                            Control::OpenRecent(index),
-                            Control::LocateRecent(index),
-                            Control::RemoveRecent(index),
+                            Some(Control::OpenRecent(index)),
+                            self.shelf
+                                .can_add(&self.recent[index].path)
+                                .then_some(Control::AddRecent(index)),
+                            Some(Control::LocateRecent(index)),
+                            Some(Control::RemoveRecent(index)),
                         ]
+                        .into_iter()
+                        .flatten()
                     }),
             )
             .chain(
@@ -2356,6 +2366,7 @@ impl Reader {
             Control::CloseWithoutSaving => Message::CloseWithoutSaving,
             Control::ResetRecent => Message::ResetRecent,
             Control::OpenRecent(index) => Message::OpenRecent(index),
+            Control::AddRecent(index) => Message::AddRecent(index),
             Control::LocateRecent(index) => Message::LocateRecent(index),
             Control::RemoveRecent(index) => Message::RemoveRecent(index),
             Control::Notes(focus) => Message::Notes(focus.action()),
@@ -3798,6 +3809,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             reader.show_recent = false;
             reader.open(entry.path, OpenAs::IN_PLACE)
+        }
+        Message::AddRecent(index) if reader.interactive() => {
+            let Some(entry) = reader.recent.get(index).cloned() else {
+                return Task::none();
+            };
+            reader.show_recent = false;
+            let path = entry.path.clone();
+            reader.open(path, OpenAs::Relocate(Relocation::AddToLibrary(entry)))
         }
         Message::LocateRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
@@ -5394,6 +5413,7 @@ fn toned_button<'a>(
             control,
             Control::HideHelp
                 | Control::OpenRecent(_)
+                | Control::AddRecent(_)
                 | Control::LocateRecent(_)
                 | Control::RemoveRecent(_)
         )
@@ -5436,6 +5456,16 @@ fn recent_panel(reader: &Reader, active: bool, has_document: bool) -> Element<'_
             DocumentKind::Pdf => "PDF",
             DocumentKind::Epub => "EPUB",
         };
+        let add = reader.shelf.can_add(&entry.path).then(|| {
+            toned_button(
+                reader,
+                Control::AddRecent(index),
+                text("Add to library").font(ui::MEDIUM).size(12),
+                active.then_some(Message::AddRecent(index)),
+                ui::ButtonTone::Subtle,
+                false,
+            )
+        });
         let mut card = container(
             row![
                 container(
@@ -5469,6 +5499,7 @@ fn recent_panel(reader: &Reader, active: bool, has_document: bool) -> Element<'_
                     text("Open").font(ui::MEDIUM).size(12),
                     active.then_some(Message::OpenRecent(index)),
                 ),
+                add,
                 toned_button(
                     reader,
                     Control::LocateRecent(index),
@@ -5493,7 +5524,7 @@ fn recent_panel(reader: &Reader, active: bool, has_document: bool) -> Element<'_
         .padding([3, 8])
         .style(ui::inset);
         if matches!(reader.focused,
-            Some(Control::OpenRecent(focused) | Control::LocateRecent(focused) | Control::RemoveRecent(focused))
+            Some(Control::OpenRecent(focused) | Control::AddRecent(focused) | Control::LocateRecent(focused) | Control::RemoveRecent(focused))
                 if focused == index)
         {
             card = card.id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL));
@@ -8323,6 +8354,10 @@ mod tests {
             open_mode(vec![Message::LocateRecent(0), chosen(new)]),
             Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Row.pdf"))))
         );
+        assert_eq!(
+            open_mode(vec![Message::AddRecent(0)]),
+            Some((Storage::Import, Some(PathBuf::from(r"C:\Books\Row.pdf"))))
+        );
         let activate = |control| Message::Shelf(shelf::Message::Activate(control));
         assert_eq!(
             dialog_mode(vec![activate(shelf::Control::Open)]),
@@ -8424,6 +8459,55 @@ mod tests {
         assert_eq!(
             missing_locate(cards, recent, vec![Message::LocateRecent(0), moved]).0,
             Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Same.pdf"))))
+        );
+    }
+
+    #[test]
+    fn add_to_library_is_offered_only_for_rows_without_a_card() {
+        let recent_controls = |reader: &Reader| {
+            reader
+                .controls()
+                .filter(|control| {
+                    matches!(
+                        control,
+                        Control::OpenRecent(_)
+                            | Control::AddRecent(_)
+                            | Control::LocateRecent(_)
+                            | Control::RemoveRecent(_)
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let recent = vec![row(r"c:/books/card.PDF"), row(r"C:\Books\Row.pdf")];
+        let mut reader = reader_with(vec![card(r"C:\Books\Card.pdf")], recent.clone());
+        reader.show_recent = true;
+        assert_eq!(
+            recent_controls(&reader),
+            [
+                Control::OpenRecent(0),
+                Control::LocateRecent(0),
+                Control::RemoveRecent(0),
+                Control::OpenRecent(1),
+                Control::AddRecent(1),
+                Control::LocateRecent(1),
+                Control::RemoveRecent(1),
+            ]
+        );
+        let loading = Reader {
+            recent,
+            show_recent: true,
+            ..Reader::default()
+        };
+        assert_eq!(
+            recent_controls(&loading),
+            [
+                Control::OpenRecent(0),
+                Control::LocateRecent(0),
+                Control::RemoveRecent(0),
+                Control::OpenRecent(1),
+                Control::LocateRecent(1),
+                Control::RemoveRecent(1),
+            ]
         );
     }
 
