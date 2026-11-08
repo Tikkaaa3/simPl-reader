@@ -2,17 +2,24 @@
 //! library root; only a missing file means the default `<profile>\documents`.
 //! Settings, positions and history always stay in the profile.
 
+use crate::managed::MARKER;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Component, Path, PathBuf, Prefix},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 const FILE: &str = "library-location.json";
 const LOCK: &str = "library-location.lock";
+/// One copy in flight: `<to>\.incoming\<id>`.
+const STAGING: &str = ".incoming";
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 64 * 1024;
+const CHUNK: usize = 64 * 1024;
+const BUSY: &str = "Another simPl window is changing the library.";
 /// The folder simPl creates inside the folder the user picks.
 pub const FOLDER: &str = "simPl Library";
 
@@ -123,6 +130,7 @@ fn read() -> Result<Record, String> {
 }
 
 fn write(record: &Record) -> Result<(), String> {
+    fault()?;
     let bytes = serde_json::to_vec(record).map_err(|error| error.to_string())?;
     crate::position::atomic_write(
         &profile().join(FILE),
@@ -138,7 +146,8 @@ fn write(record: &Record) -> Result<(), String> {
 struct Lock(#[allow(dead_code)] fs::File);
 
 impl Lock {
-    fn take() -> Result<Self, String> {
+    /// `None` when another process holds it.
+    fn take() -> Result<Option<Self>, String> {
         fs::create_dir_all(profile()).map_err(|error| error.to_string())?;
         let mut options = fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -147,16 +156,12 @@ impl Lock {
             use std::os::windows::fs::OpenOptionsExt;
             options.share_mode(0);
         }
-        options
-            .open(profile().join(LOCK))
-            .map(Self)
-            .map_err(|error| {
-                if error.raw_os_error() == Some(32) {
-                    "Another simPl window is changing the library.".into()
-                } else {
-                    format!("Cannot lock the library settings: {error}")
-                }
-            })
+        match options.open(profile().join(LOCK)) {
+            Ok(file) => Ok(Some(Self(file))),
+            // ERROR_SHARING_VIOLATION
+            Err(error) if error.raw_os_error() == Some(32) => Ok(None),
+            Err(error) => Err(format!("Cannot lock the library settings: {error}")),
+        }
     }
 }
 
@@ -190,7 +195,7 @@ pub fn location() -> Result<Location, String> {
 /// "Stop using this folder": an unavailable custom folder is replaced by the
 /// default one. Nothing is moved or deleted.
 pub fn forget() -> Result<(), String> {
-    let _lock = Lock::take()?;
+    let _lock = Lock::take()?.ok_or(BUSY)?;
     let record = read()?;
     let Root::Folder(root) = &record.root else {
         return Err("The library already uses the default folder.".into());
@@ -475,6 +480,569 @@ fn within(path: &Path, base: &Path) -> bool {
 
 fn overlaps(first: &Path, second: &Path) -> bool {
     within(first, second) || within(second, first)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub books: usize,
+    pub books_total: usize,
+    pub bytes: u64,
+    pub bytes_total: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Moved {
+        to: PathBuf,
+        books: usize,
+    },
+    /// Nothing changed; the books are still in `kept`.
+    Cancelled {
+        kept: PathBuf,
+    },
+    /// The library is now `to`, but cleaning up the old folder failed.
+    Committed {
+        to: PathBuf,
+        error: String,
+    },
+}
+
+/// Why copying stopped before the commit.
+enum Stop {
+    Cancelled,
+    Failed(String),
+}
+
+impl From<String> for Stop {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+fn io(error: std::io::Error) -> String {
+    error.to_string()
+}
+
+/// Progress and cancellation for one copy run.
+pub(crate) struct Job<'a> {
+    progress: Progress,
+    report: &'a mut dyn FnMut(Progress),
+    cancel: &'a AtomicBool,
+}
+
+impl Job<'_> {
+    fn check(&self) -> Result<(), Stop> {
+        if self.cancel.load(Ordering::Relaxed) {
+            Err(Stop::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Moves every imported copy to the plan's target. The source is not touched
+/// until the record names the target, so cancel, failure and crash before
+/// that point all leave the library where it was.
+pub fn run_move(
+    plan: &Plan,
+    progress: &mut dyn FnMut(Progress),
+    cancel: &AtomicBool,
+) -> Result<Outcome, String> {
+    let _lock = Lock::take()?.ok_or(BUSY)?;
+    let record = read()?;
+    if record.root != plan.from || record.moving.is_some() {
+        return Err("The library changed since the move was prepared. Try again.".into());
+    }
+    let from = plan.from.path();
+    let to = &plan.to_path;
+    match plan.to {
+        Root::Default => fs::create_dir_all(to).map_err(io)?,
+        Root::Folder(_) if !to.exists() => fs::create_dir(to).map_err(io)?,
+        Root::Folder(_) => {}
+    }
+    let mut job = Job {
+        progress: Progress {
+            books_total: plan.summary.books,
+            bytes_total: plan.summary.bytes,
+            ..Progress::default()
+        },
+        report: progress,
+        cancel,
+    };
+    (job.report)(job.progress);
+    // Rollback deletes every copy in `to`, so it must start without any.
+    if !crate::managed::owned_copies(to)?.is_empty() {
+        return Err(format!(
+            "{} already has simPl books in it. Choose another folder.",
+            display_path(to)
+        ));
+    }
+    let copied = (|| -> Result<(), Stop> {
+        remove_staging(to)?;
+        write(&Record::new(
+            plan.from.clone(),
+            Some(Move::Copying {
+                to: plan.to.clone(),
+            }),
+        ))?;
+        for folder in owned_folders(&from)? {
+            job.check()?;
+            place(&folder, to, &mut job)?;
+            job.progress.books += 1;
+            (job.report)(job.progress);
+        }
+        remove_staging(to)?;
+        job.check()?;
+        write(&Record::new(
+            plan.to.clone(),
+            Some(Move::Cleaning {
+                from: plan.from.clone(),
+                positions_copied: false,
+            }),
+        ))?;
+        Ok(())
+    })();
+    if let Err(stop) = copied {
+        let undone = rollback(to).and(write(&Record::new(plan.from.clone(), None)));
+        return match (stop, undone) {
+            (Stop::Cancelled, Ok(())) => Ok(Outcome::Cancelled { kept: from }),
+            (Stop::Cancelled, Err(error)) => Err(format!("The move was cancelled. {error}")),
+            (Stop::Failed(error), Ok(())) => Err(error),
+            (Stop::Failed(error), Err(undo)) => Err(format!("{error}. {undo}")),
+        };
+    }
+    Ok(match finish(&plan.from, &plan.to, false) {
+        Ok(()) => Outcome::Moved {
+            to: to.clone(),
+            books: plan.summary.books,
+        },
+        Err(error) => Outcome::Committed {
+            to: to.clone(),
+            error,
+        },
+    })
+}
+
+fn place(source: &Path, root: &Path, job: &mut Job) -> Result<PathBuf, Stop> {
+    let id = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid library folder name".to_string())?;
+    place_as(source, root, id, job)
+}
+
+/// Copies the id folder `source` to `root\.incoming\<id>`, verifies every
+/// file, then renames it to `root\<id>`. The ownership marker is copied last,
+/// so a partial copy is never mistaken for a book.
+fn place_as(source: &Path, root: &Path, id: &str, job: &mut Job) -> Result<PathBuf, Stop> {
+    crate::managed::check_tree(source)?;
+    let incoming = root.join(STAGING).join(id);
+    fs::create_dir_all(root.join(STAGING)).map_err(io)?;
+    if incoming.exists() {
+        crate::managed::check_tree(&incoming)?;
+        fs::remove_dir_all(&incoming).map_err(io)?;
+    }
+    fs::create_dir(&incoming).map_err(io)?;
+    copy_tree(source, &incoming, job)?;
+    fault()?;
+    let target = root.join(id);
+    fs::rename(&incoming, &target)
+        .map_err(|error| format!("Cannot place {}: {error}", display_path(&target)))?;
+    Ok(target)
+}
+
+fn copy_tree(source: &Path, target: &Path, job: &mut Job) -> Result<(), Stop> {
+    let mut entries = fs::read_dir(source)
+        .map_err(io)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io)?;
+    entries.sort_by_key(|path| {
+        (
+            path.file_name() == Some(std::ffi::OsStr::new(MARKER)),
+            path.clone(),
+        )
+    });
+    for path in entries {
+        let metadata = crate::managed::regular(&path)?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| "Invalid file name".to_string())?;
+        let destination = target.join(name);
+        if metadata.is_dir() {
+            fs::create_dir(&destination).map_err(io)?;
+            copy_tree(&path, &destination, job)?;
+        } else if metadata.is_file() {
+            copy_file(&path, &destination, metadata.len(), job)?;
+        } else {
+            return Err(Stop::Failed(format!(
+                "{} is not a regular file.",
+                display_path(&path)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn copy_file(source: &Path, target: &Path, len: u64, job: &mut Job) -> Result<(), Stop> {
+    let mut input = fs::File::open(source).map_err(io)?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(io)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; CHUNK];
+    let mut copied = 0_u64;
+    loop {
+        job.check()?;
+        let count = input.read(&mut buffer).map_err(io)?;
+        if count == 0 {
+            break;
+        }
+        copied += count as u64;
+        if copied > len {
+            break;
+        }
+        output.write_all(&buffer[..count]).map_err(io)?;
+        digest.update(&buffer[..count]);
+        job.progress.bytes += count as u64;
+        (job.report)(job.progress);
+    }
+    if copied != len {
+        return Err(Stop::Failed(format!(
+            "{} changed while it was being copied.",
+            display_path(source)
+        )));
+    }
+    output.sync_all().map_err(io)?;
+    drop(output);
+    fault()?;
+    if hash_file(target)? != (len, digest.finalize().to_vec()) {
+        return Err(Stop::Failed(format!(
+            "The copy of {} doesn't match the original.",
+            display_path(source)
+        )));
+    }
+    Ok(())
+}
+
+fn hash_file(path: &Path) -> Result<(u64, Vec<u8>), String> {
+    let mut file = fs::File::open(path).map_err(io)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0; CHUNK];
+    let mut len = 0;
+    loop {
+        let count = file.read(&mut buffer).map_err(io)?;
+        if count == 0 {
+            return Ok((len, digest.finalize().to_vec()));
+        }
+        len += count as u64;
+        digest.update(&buffer[..count]);
+    }
+}
+
+fn remove_staging(root: &Path) -> Result<(), String> {
+    let staging = root.join(STAGING);
+    if staging.exists() {
+        crate::managed::check_tree(&staging)?;
+        fs::remove_dir_all(&staging).map_err(io)?;
+    }
+    Ok(())
+}
+
+/// Undoes an unfinished copy: `to` held no simPl copies before the move, so
+/// every copy in it is ours. Other files there are left alone.
+fn rollback(to: &Path) -> Result<(), String> {
+    let undo = || -> Result<(), String> {
+        if !to.exists() {
+            return Ok(());
+        }
+        for folder in owned_folders(to)? {
+            fault()?;
+            crate::managed::check_tree(&folder)?;
+            fs::remove_dir_all(&folder).map_err(io)?;
+        }
+        remove_staging(to)?;
+        let _ = fs::remove_dir(to);
+        Ok(())
+    };
+    undo().map_err(|error| format!("Some copies may be left in {}: {error}", display_path(to)))
+}
+
+/// `<to>\<id>\<name>` for a path under `<from>\<id>`, if that copy exists.
+fn moved(path: &Path, from: &[Vec<String>], to: &Path) -> Option<PathBuf> {
+    let id = id_under(path, from)?;
+    fs::canonicalize(to.join(id).join(path.file_name()?)).ok()
+}
+
+/// The id folder name of a path `<from>\<id>\<name>`.
+fn id_under<'a>(path: &'a Path, from: &[Vec<String>]) -> Option<&'a str> {
+    let folder = path.parent()?;
+    let id = folder.file_name()?.to_str()?;
+    let root = parts(folder.parent()?);
+    let same = |base: &Vec<String>| {
+        base.len() == root.len()
+            && base
+                .iter()
+                .zip(&root)
+                .all(|(a, b)| crate::recent::same_path(Path::new(a), Path::new(b)))
+    };
+    (id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) && from.iter().any(same))
+        .then_some(id)
+}
+
+fn root_keys(root: &Path) -> Vec<Vec<String>> {
+    vec![parts(root), parts(&resolved(root))]
+}
+
+/// Keeps the first entry for each path.
+fn dedupe<T>(entries: &mut Vec<T>, path: impl Fn(&T) -> &Path) {
+    let mut kept: Vec<PathBuf> = Vec::new();
+    entries.retain(|entry| {
+        let path = path(entry);
+        let first = !kept.iter().any(|seen| crate::recent::same_path(seen, path));
+        if first {
+            kept.push(path.to_path_buf());
+        }
+        first
+    });
+}
+
+/// Finishes a committed move; safe to run again after any interruption.
+fn finish(from: &Root, to: &Root, positions_copied: bool) -> Result<(), String> {
+    let from_path = from.path();
+    let to_path = to.path();
+    if !to_path.is_dir() {
+        return Err(format!(
+            "Library folder not found: {}",
+            display_path(&to_path)
+        ));
+    }
+    let from_keys = root_keys(&from_path);
+    let library_file = crate::library::library_path();
+    let recent_file = crate::recent::history_path();
+    let mut library = crate::library::load_at(&library_file)?;
+    let mut recent = crate::recent::load_at(&recent_file)?;
+    if !positions_copied {
+        let paths = library
+            .iter()
+            .map(|entry| &entry.document.path)
+            .chain(recent.iter().map(|entry| &entry.path));
+        for old in paths {
+            if let Some(new) = moved(old, &from_keys, &to_path) {
+                fault()?;
+                crate::position::copy_saved_records(old, &new)?;
+            }
+        }
+        write(&Record::new(
+            to.clone(),
+            Some(Move::Cleaning {
+                from: from.clone(),
+                positions_copied: true,
+            }),
+        ))?;
+    }
+    let mut changed = false;
+    for entry in &mut library {
+        if let Some(new) = moved(&entry.document.path, &from_keys, &to_path) {
+            entry.document.path = new;
+            changed = true;
+        }
+    }
+    if changed {
+        dedupe(&mut library, |entry| &entry.document.path);
+        fault()?;
+        crate::library::save_at(&library_file, &library)?;
+    }
+    changed = false;
+    for entry in &mut recent {
+        if let Some(new) = moved(&entry.path, &from_keys, &to_path) {
+            entry.path = new;
+            changed = true;
+        }
+    }
+    if changed {
+        dedupe(&mut recent, |entry| &entry.path);
+        fault()?;
+        crate::recent::save_at(&recent_file, &recent)?;
+    }
+    let mut in_use = false;
+    if from_path.is_dir() {
+        let library = crate::library::load_at(&library_file)?;
+        let recent = crate::recent::load_at(&recent_file)?;
+        let referenced = library
+            .iter()
+            .map(|entry| entry.document.path.as_path())
+            .chain(recent.iter().map(|entry| entry.path.as_path()))
+            .collect::<Vec<_>>();
+        for copy in crate::managed::owned_copies(&from_path)? {
+            let folder = copy.parent().ok_or("Invalid library folder")?;
+            let Some(id) = folder.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let target = to_path.join(id).join(copy.file_name().unwrap_or_default());
+            let mut still_used = referenced
+                .iter()
+                .filter(|path| id_under(path, &from_keys) == Some(id));
+            if let Some(path) = still_used.next() {
+                // A card that can't be rewritten keeps reading this copy.
+                in_use |= moved(path, &from_keys, &to_path).is_some();
+                continue;
+            }
+            if !crate::managed::is_owned_at(&to_path, &target) {
+                continue;
+            }
+            fault()?;
+            crate::managed::check_tree(folder)?;
+            fs::remove_dir_all(folder).map_err(io)?;
+        }
+        let _ = fs::remove_dir(&from_path);
+    }
+    if in_use {
+        return Err(format!(
+            "Some books in {} were still in use. Retry to finish.",
+            display_path(&from_path)
+        ));
+    }
+    write(&Record::new(to.clone(), None))
+}
+
+/// Finishes or undoes a move a crash interrupted. Called once at startup,
+/// before the library loads, and by Retry. Returns a notice for the user.
+pub fn recover() -> Option<String> {
+    match read() {
+        Err(error) => return Some(error),
+        Ok(record) if record.moving.is_none() => return None,
+        Ok(_) => {}
+    }
+    let _lock = match Lock::take() {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return None,
+        Err(error) => return Some(error),
+    };
+    let record = match read() {
+        Ok(record) => record,
+        Err(error) => return Some(error),
+    };
+    let root = display_path(&record.root.path());
+    match &record.moving {
+        None => None,
+        Some(Move::Copying { to }) => {
+            let undone = rollback(&to.path());
+            let cleared = write(&Record::new(record.root.clone(), None));
+            Some(match (undone, cleared) {
+                (_, Err(error)) => format!(
+                    "A library move was interrupted and couldn't be undone: {error}. Retry in Settings."
+                ),
+                (Err(error), Ok(())) => format!(
+                    "A library move was interrupted. Your books are still in {root}. {error}"
+                ),
+                (Ok(()), Ok(())) => {
+                    format!("A library move was interrupted. Your books are still in {root}.")
+                }
+            })
+        }
+        Some(Move::Cleaning {
+            from,
+            positions_copied,
+        }) => Some(match finish(from, &record.root, *positions_copied) {
+            Ok(()) => format!("Finished moving your library to {root}."),
+            Err(error) => {
+                format!("Couldn't finish moving the library to {root}: {error} Retry in Settings.")
+            }
+        }),
+    }
+}
+
+/// "Find it…": the unavailable library folder is now at `picked` (another
+/// drive letter, a renamed parent). Accepted only when it holds a copy for
+/// every card and Recent entry; nothing is copied.
+pub fn relink(picked: &Path) -> Result<usize, String> {
+    let _lock = Lock::take()?.ok_or(BUSY)?;
+    let record = read()?;
+    let Root::Folder(old) = &record.root else {
+        return Err("The library uses the default folder.".into());
+    };
+    if record.moving.is_some() {
+        return Err("Finish the library move first.".into());
+    }
+    if old.is_dir() {
+        return Err(format!(
+            "The library folder {} is connected.",
+            display_path(old)
+        ));
+    }
+    let named = picked
+        .file_name()
+        .is_some_and(|name| crate::recent::same_path(Path::new(name), Path::new(FOLDER)));
+    let candidate = if named {
+        picked.to_path_buf()
+    } else {
+        picked.join(FOLDER)
+    };
+    if !candidate.is_dir() || crate::managed::regular(&candidate).is_err() {
+        return Err(format!(
+            "{} has no simPl Library folder.",
+            display_path(picked)
+        ));
+    }
+    let new = fs::canonicalize(&candidate).map_err(io)?;
+    if network(&new) {
+        return Err("Network folders can't hold the library. Choose a folder on this PC.".into());
+    }
+    let resolved_new = resolved(&new);
+    if overlaps(&resolved_new, &resolved(&profile())) {
+        return Err("Choose a folder outside simPl's own data folder.".into());
+    }
+    let keys = root_keys(old);
+    let library = crate::library::load_at(&crate::library::library_path())?;
+    let recent = crate::recent::load_at(&crate::recent::history_path())?;
+    let mut books: Vec<PathBuf> = Vec::new();
+    for path in library
+        .iter()
+        .map(|entry| &entry.document.path)
+        .chain(recent.iter().map(|entry| &entry.path))
+    {
+        if let Some(id) = id_under(path, &keys) {
+            let book = PathBuf::from(id).join(path.file_name().unwrap_or_default());
+            if !books
+                .iter()
+                .any(|known| crate::recent::same_path(known, &book))
+            {
+                books.push(book);
+            }
+        }
+    }
+    let missing = books
+        .iter()
+        .filter(|book| !crate::managed::is_owned_at(&new, &new.join(book)))
+        .count();
+    if missing > 0 {
+        return Err(format!(
+            "{missing} of {} books are not in {}. Choose the folder that holds your simPl Library.",
+            books.len(),
+            display_path(&new)
+        ));
+    }
+    let to = Root::Folder(new);
+    let from = record.root.clone();
+    write(&Record::new(
+        to.clone(),
+        Some(Move::Cleaning {
+            from: from.clone(),
+            positions_copied: false,
+        }),
+    ))?;
+    finish(&from, &to, false)?;
+    Ok(books.len())
+}
+
+/// A test hook: each step of a move may be made to fail or crash.
+fn fault() -> Result<(), String> {
+    #[cfg(test)]
+    tests::fault()?;
+    Ok(())
 }
 
 /// The path without the `\\?\` prefix, for the UI and Explorer.
@@ -840,6 +1408,604 @@ pub(crate) mod tests {
         ));
         assert!(!within(Path::new(r"C:\Books"), Path::new(r"D:\Books")));
     }
+    #[derive(Clone, Copy, Debug)]
+    enum Mode {
+        Crash,
+        Error,
+    }
+
+    thread_local! {
+        static STEP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static ARMED: std::cell::Cell<Option<(usize, Mode)>> = const { std::cell::Cell::new(None) };
+        static FIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn fault() -> Result<(), String> {
+        let step = STEP.get();
+        STEP.set(step + 1);
+        match ARMED.get() {
+            Some((at, mode)) if at == step => {
+                ARMED.set(None);
+                FIRED.set(true);
+                match mode {
+                    Mode::Crash => panic!("simulated crash at step {step}"),
+                    Mode::Error => Err(format!("simulated failure at step {step}")),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn arm(step: usize, mode: Mode) {
+        STEP.set(0);
+        FIRED.set(false);
+        ARMED.set(Some((step, mode)));
+    }
+
+    /// Whether the armed fault fired since `arm`.
+    fn disarm() -> bool {
+        ARMED.set(None);
+        FIRED.get()
+    }
+
+    const FINGERPRINT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    struct Seeded {
+        /// Title and bytes of each imported book.
+        books: Vec<(&'static str, Vec<u8>)>,
+        legacy: PathBuf,
+        in_place: PathBuf,
+    }
+
+    fn entry(path: &Path, title: &str) -> crate::recent::Entry {
+        crate::recent::Entry {
+            path: path.to_path_buf(),
+            title: title.into(),
+            fingerprint: FINGERPRINT.into(),
+            kind: crate::recent::DocumentKind::from_path(path).unwrap(),
+        }
+    }
+
+    fn card(path: &Path, title: &str) -> crate::library::Entry {
+        crate::library::Entry {
+            document: entry(path, title),
+            author: None,
+            byte_len: 1,
+            opened_at: 1,
+            progress: 0.5,
+            current: 1,
+            total: 2,
+            cover: false,
+            favourite: title == "Story",
+            source_kind: None,
+        }
+    }
+
+    fn reflow(item: &str) -> crate::position::ReadingPosition {
+        crate::position::ReadingPosition {
+            fingerprint: FINGERPRINT.into(),
+            item_id: item.into(),
+            within: 0.25,
+            font_size: 20.0,
+        }
+    }
+
+    /// Three imported books with cards, Recent entries and positions, a legacy
+    /// card outside the library and a book opened in place.
+    fn seed(scratch: &Path) -> Seeded {
+        let story = b"<title>Story</title><p>Once upon a time.</p>".to_vec();
+        let novel = b"PK novel bytes".to_vec();
+        let big = (0..200 * 1024).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        let html = import(scratch, "story.html", &story);
+        let epub = import(scratch, "novel.epub", &novel);
+        let pdf = import(scratch, "big.pdf", &big);
+        let legacy = scratch.join("legacy.pdf");
+        fs::write(&legacy, b"%PDF legacy").unwrap();
+        let legacy = fs::canonicalize(legacy).unwrap();
+        let in_place = scratch.join("open.html");
+        fs::write(&in_place, b"<p>in place</p>").unwrap();
+        let in_place = fs::canonicalize(in_place).unwrap();
+        crate::library::save(&[
+            card(&html, "Story"),
+            card(&epub, "Novel"),
+            card(&pdf, "Big"),
+            card(&legacy, "Legacy"),
+        ])
+        .unwrap();
+        crate::recent::save(&[
+            entry(&pdf, "Big"),
+            entry(&in_place, "Open"),
+            entry(&html, "Story"),
+        ])
+        .unwrap();
+        crate::position::save(&html, &reflow("html-item")).unwrap();
+        crate::position::save(&in_place, &reflow("in-place-item")).unwrap();
+        crate::position::save_epub(
+            &epub,
+            &crate::position::EpubReadingPosition {
+                fingerprint: FINGERPRINT.into(),
+                chapter: "OPS/ch2.xhtml".into(),
+                item_id: "epub-item".into(),
+                within: 0.5,
+                font_size: 18.0,
+            },
+        )
+        .unwrap();
+        crate::position::save_pdf(
+            &pdf,
+            &crate::position::PdfReadingPosition {
+                fingerprint: FINGERPRINT.into(),
+                page: 7,
+                within: 0.5,
+                horizontal: 0.0,
+                zoom: crate::position::PdfZoom::FitWidth,
+            },
+        )
+        .unwrap();
+        Seeded {
+            books: vec![("Story", story), ("Novel", novel), ("Big", big)],
+            legacy,
+            in_place,
+        }
+    }
+
+    fn cards() -> Vec<crate::library::Entry> {
+        crate::library::load_at(&crate::library::library_path()).unwrap()
+    }
+
+    fn history() -> Vec<crate::recent::Entry> {
+        crate::recent::load_at(&crate::recent::history_path()).unwrap()
+    }
+
+    fn path_of(title: &str) -> PathBuf {
+        cards()
+            .into_iter()
+            .find(|card| card.document.title == title)
+            .unwrap()
+            .document
+            .path
+    }
+
+    /// Every card and Recent entry opens, every book's bytes are in the
+    /// current library, positions resolve, and `other` holds no copies.
+    fn assert_converged(seeded: &Seeded, other: &Path, story_item: &str) {
+        let location = location().unwrap();
+        assert!(!location.moving);
+        let root = fs::canonicalize(&location.root).unwrap();
+        let cards = cards();
+        assert_eq!(cards.len(), 4);
+        for card in &cards {
+            assert!(
+                card.document.path.is_file(),
+                "{}",
+                card.document.path.display()
+            );
+        }
+        for entry in history() {
+            assert!(entry.path.is_file(), "{}", entry.path.display());
+        }
+        for (title, bytes) in &seeded.books {
+            let path = path_of(title);
+            assert_eq!(&fs::read(&path).unwrap(), bytes, "{title}");
+            assert_eq!(path.parent().unwrap().parent().unwrap(), root, "{title}");
+        }
+        assert_eq!(path_of("Legacy"), seeded.legacy);
+        assert!(history().iter().any(|entry| entry.path == seeded.in_place));
+        assert_eq!(crate::managed::owned_copies(&root).unwrap().len(), 3);
+        assert_eq!(
+            crate::managed::owned_copies(other).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        assert!(!root.join(STAGING).exists());
+        assert_eq!(
+            crate::position::load(&path_of("Story"))
+                .unwrap()
+                .unwrap()
+                .item_id,
+            story_item
+        );
+        assert_eq!(
+            crate::position::load_pdf(&path_of("Big"))
+                .unwrap()
+                .unwrap()
+                .page,
+            7
+        );
+    }
+
+    fn quiet() -> AtomicBool {
+        AtomicBool::new(false)
+    }
+
+    isolated!(a_move_copies_verifies_and_rewrites_every_path);
+    fn a_move_copies_verifies_and_rewrites_every_path() {
+        let (base, scratch) = store();
+        let documents = base.join("simPl").join("documents");
+        let seeded = seed(&scratch);
+        let picked = scratch.join("E");
+        fs::create_dir(&picked).unwrap();
+        let plan = plan(Target::Folder(picked.clone())).unwrap();
+        let total = plan.summary();
+        let mut reports = Vec::new();
+
+        let outcome = run_move(&plan, &mut |progress| reports.push(progress), &quiet()).unwrap();
+
+        let library = fs::canonicalize(&picked).unwrap().join(FOLDER);
+        assert_eq!(
+            outcome,
+            Outcome::Moved {
+                to: library.clone(),
+                books: 3
+            }
+        );
+        assert_eq!(
+            reports.first(),
+            Some(&Progress {
+                books: 0,
+                books_total: 3,
+                bytes: 0,
+                bytes_total: total.bytes
+            })
+        );
+        assert_eq!(
+            reports.last(),
+            Some(&Progress {
+                books: 3,
+                books_total: 3,
+                bytes: total.bytes,
+                bytes_total: total.bytes
+            })
+        );
+        assert_eq!(
+            location().unwrap(),
+            Location {
+                root: library.clone(),
+                custom: true,
+                available: true,
+                moving: false
+            }
+        );
+        assert_converged(&seeded, &documents, "html-item");
+        assert!(!documents.exists());
+        let epub = path_of("Novel");
+        assert_eq!(
+            crate::position::load_epub(&epub).unwrap().unwrap().chapter,
+            "OPS/ch2.xhtml"
+        );
+        let recent = history();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
+            [path_of("Big"), seeded.in_place.clone(), path_of("Story")]
+        );
+        assert_eq!(
+            crate::position::load(&seeded.in_place)
+                .unwrap()
+                .unwrap()
+                .item_id,
+            "in-place-item"
+        );
+        assert!(
+            cards()
+                .iter()
+                .any(|card| card.favourite && card.document.title == "Story")
+        );
+        assert_eq!(summary().unwrap(), total);
+    }
+
+    isolated!(a_round_trip_keeps_the_latest_position);
+    fn a_round_trip_keeps_the_latest_position() {
+        let (base, scratch) = store();
+        let documents = base.join("simPl").join("documents");
+        let seeded = seed(&scratch);
+        let picked = scratch.join("E");
+        fs::create_dir(&picked).unwrap();
+        let away = plan(Target::Folder(picked.clone())).unwrap();
+        run_move(&away, &mut |_| {}, &quiet()).unwrap();
+        crate::position::save(&path_of("Story"), &reflow("read-later")).unwrap();
+
+        let back = plan(Target::Default).unwrap();
+        assert_eq!(back.to(), documents);
+        let outcome = run_move(&back, &mut |_| {}, &quiet()).unwrap();
+
+        assert_eq!(
+            outcome,
+            Outcome::Moved {
+                to: documents.clone(),
+                books: 3
+            }
+        );
+        let story = path_of("Story");
+        assert_eq!(
+            story.parent().unwrap().parent().unwrap(),
+            fs::canonicalize(&documents).unwrap()
+        );
+        assert_eq!(
+            crate::position::load(&story).unwrap().unwrap().item_id,
+            "read-later"
+        );
+        assert!(!location().unwrap().custom);
+        assert!(!picked.join(FOLDER).exists());
+        assert_eq!(fs::read(path_of("Big")).unwrap(), seeded.books[2].1);
+    }
+
+    isolated!(cancel_leaves_the_library_where_it_was);
+    fn cancel_leaves_the_library_where_it_was() {
+        let (base, scratch) = store();
+        let documents = base.join("simPl").join("documents");
+        seed(&scratch);
+        let library_json = fs::read(crate::library::library_path()).unwrap();
+        let recent_json = fs::read(crate::recent::history_path()).unwrap();
+        let copies = crate::managed::owned_copies(&documents).unwrap();
+        let picked = scratch.join("E");
+        fs::create_dir(&picked).unwrap();
+        type When = fn(&Progress) -> bool;
+        let cases: [(&str, When); 3] = [
+            ("before the first file", |_| true),
+            ("mid-book", |progress| progress.bytes >= CHUNK as u64),
+            ("after the last book", |progress| {
+                progress.books == progress.books_total
+            }),
+        ];
+        for (case, when) in cases {
+            let plan = plan(Target::Folder(picked.clone())).unwrap();
+            let cancel = quiet();
+            let mut at = None;
+            let outcome = run_move(
+                &plan,
+                &mut |progress| {
+                    if at.is_none() && when(&progress) {
+                        at = Some(progress);
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                },
+                &cancel,
+            )
+            .unwrap();
+            assert_eq!(
+                outcome,
+                Outcome::Cancelled {
+                    kept: documents.clone()
+                },
+                "{case}"
+            );
+            let at = at.unwrap();
+            match case {
+                "before the first file" => assert_eq!(at.bytes, 0),
+                "mid-book" => assert!(at.books < 3 && at.bytes < at.bytes_total, "{at:?}"),
+                _ => assert_eq!(at.bytes, at.bytes_total),
+            }
+            assert_eq!(
+                location().unwrap(),
+                Location {
+                    root: documents.clone(),
+                    custom: false,
+                    available: true,
+                    moving: false
+                },
+                "{case}"
+            );
+            assert_eq!(crate::managed::owned_copies(&documents).unwrap(), copies);
+            assert_eq!(
+                fs::read(crate::library::library_path()).unwrap(),
+                library_json
+            );
+            assert_eq!(
+                fs::read(crate::recent::history_path()).unwrap(),
+                recent_json
+            );
+            assert!(!picked.join(FOLDER).exists(), "{case}");
+            assert!(picked.is_dir());
+        }
+    }
+
+    isolated!(every_interrupted_step_converges);
+    fn every_interrupted_step_converges() {
+        let (_, scratch) = store();
+        std::panic::set_hook(Box::new(|_| {}));
+        for back in [false, true] {
+            for mode in [Mode::Crash, Mode::Error] {
+                for step in 0.. {
+                    let run = scratch.join(format!("{back}-{mode:?}-{step}"));
+                    // SAFETY: the isolated child runs this one test on one thread.
+                    unsafe { std::env::set_var("LOCALAPPDATA", run.join("profile")) };
+                    let documents = default_root();
+                    let seeded = seed(&run.join("books"));
+                    let picked = run.join("E");
+                    fs::create_dir(&picked).unwrap();
+                    let away = plan(Target::Folder(picked.clone())).unwrap();
+                    let target = if back {
+                        run_move(&away, &mut |_| {}, &quiet()).unwrap();
+                        plan(Target::Default).unwrap()
+                    } else {
+                        away
+                    };
+                    let custom = fs::canonicalize(&picked).unwrap().join(FOLDER);
+                    let (from, to) = if back {
+                        (custom, documents.clone())
+                    } else {
+                        (documents.clone(), custom)
+                    };
+
+                    arm(step, mode);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_move(&target, &mut |_| {}, &quiet())
+                    }));
+                    let fired = disarm();
+                    recover();
+
+                    assert_eq!(recover(), None, "{back} {mode:?} {step} {result:?}");
+                    let root = location().unwrap().root;
+                    let other = if root == from { &to } else { &from };
+                    assert!(root == from || root == to, "{}", root.display());
+                    assert_converged(&seeded, other, "html-item");
+                    if !fired {
+                        assert!(step > 20, "only {step} steps");
+                        assert_eq!(root, to);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn journal(record: &Record) {
+        fs::write(profile().join(FILE), serde_json::to_vec(record).unwrap()).unwrap();
+    }
+
+    isolated!(recovery_undoes_copying_and_finishes_cleaning);
+    fn recovery_undoes_copying_and_finishes_cleaning() {
+        let (base, scratch) = store();
+        let documents = base.join("simPl").join("documents");
+        let seeded = seed(&scratch);
+        let library = scratch.join("E").join(FOLDER);
+        let gone = scratch.join("gone").join(FOLDER);
+        let copies = crate::managed::owned_copies(&documents).unwrap();
+        let copy_all = || {
+            for copy in &copies {
+                let folder = copy.parent().unwrap();
+                copy_dir(folder, &library.join(folder.file_name().unwrap()));
+            }
+        };
+
+        copy_all();
+        fs::create_dir_all(library.join(STAGING).join("partial")).unwrap();
+        fs::write(library.join("mine.txt"), b"user file").unwrap();
+        journal(&Record::new(
+            Root::Default,
+            Some(Move::Copying {
+                to: Root::Folder(library.clone()),
+            }),
+        ));
+        assert_eq!(
+            recover().unwrap(),
+            format!(
+                "A library move was interrupted. Your books are still in {}.",
+                documents.display()
+            )
+        );
+        assert_eq!(recover(), None);
+        assert_eq!(names(&library), ["mine.txt"]);
+        assert_converged(&seeded, &library, "html-item");
+        fs::remove_file(library.join("mine.txt")).unwrap();
+
+        journal(&Record::new(
+            Root::Default,
+            Some(Move::Copying {
+                to: Root::Folder(gone.clone()),
+            }),
+        ));
+        assert_eq!(
+            recover().unwrap(),
+            format!(
+                "A library move was interrupted. Your books are still in {}.",
+                documents.display()
+            )
+        );
+        assert!(!location().unwrap().moving);
+
+        copy_all();
+        let library = fs::canonicalize(&library).unwrap();
+        journal(&Record::new(
+            Root::Folder(library.clone()),
+            Some(Move::Cleaning {
+                from: Root::Default,
+                positions_copied: false,
+            }),
+        ));
+        assert_eq!(
+            recover().unwrap(),
+            format!(
+                "Finished moving your library to {}.",
+                display_path(&library)
+            )
+        );
+        assert_eq!(recover(), None);
+        assert_converged(&seeded, &documents, "html-item");
+
+        let before = (
+            fs::read(crate::library::library_path()).unwrap(),
+            fs::read(crate::recent::history_path()).unwrap(),
+        );
+        let stuck = Record::new(
+            Root::Folder(gone.clone()),
+            Some(Move::Cleaning {
+                from: Root::Folder(library.clone()),
+                positions_copied: false,
+            }),
+        );
+        journal(&stuck);
+        for _ in 0..2 {
+            assert_eq!(
+                recover().unwrap(),
+                format!(
+                    "Couldn't finish moving the library to {}: Library folder not found: {} Retry in Settings.",
+                    gone.display(),
+                    gone.display()
+                )
+            );
+            assert_eq!(read().unwrap(), stuck);
+            assert_eq!(
+                (
+                    fs::read(crate::library::library_path()).unwrap(),
+                    fs::read(crate::recent::history_path()).unwrap(),
+                ),
+                before
+            );
+        }
+        assert_eq!(
+            plan(Target::Default).unwrap_err(),
+            "Finish the library move first."
+        );
+        forget().unwrap();
+        assert_eq!(read().unwrap(), Record::new(Root::Default, None));
+        assert!(path_of("Story").is_file());
+    }
+
+    fn names(folder: &Path) -> Vec<String> {
+        let mut names = fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    isolated!(find_it_repoints_a_moved_library_folder);
+    fn find_it_repoints_a_moved_library_folder() {
+        let (_, scratch) = store();
+        let seeded = seed(&scratch);
+        let picked = scratch.join("E");
+        fs::create_dir(&picked).unwrap();
+        let away = plan(Target::Folder(picked.clone())).unwrap();
+        run_move(&away, &mut |_| {}, &quiet()).unwrap();
+        crate::position::save(&path_of("Story"), &reflow("on-e")).unwrap();
+        let renamed = scratch.join("F");
+        fs::rename(&picked, &renamed).unwrap();
+        assert!(!location().unwrap().available);
+
+        let story = path_of("Story");
+        let id = story.parent().unwrap().file_name().unwrap().to_owned();
+        let aside = scratch.join("aside");
+        fs::rename(renamed.join(FOLDER).join(&id), &aside).unwrap();
+        assert_eq!(
+            relink(&renamed).unwrap_err(),
+            format!(
+                "1 of 3 books are not in {}. Choose the folder that holds your simPl Library.",
+                display_path(&fs::canonicalize(renamed.join(FOLDER)).unwrap())
+            )
+        );
+        fs::rename(&aside, renamed.join(FOLDER).join(&id)).unwrap();
+
+        assert_eq!(relink(&renamed).unwrap(), 3);
+
+        let library = fs::canonicalize(renamed.join(FOLDER)).unwrap();
+        assert_eq!(location().unwrap().root, library);
+        assert_converged(&seeded, &picked, "on-e");
+    }
+
     #[test]
     fn display_path_strips_the_verbatim_prefix() {
         assert_eq!(

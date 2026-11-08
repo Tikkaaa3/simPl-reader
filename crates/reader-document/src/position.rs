@@ -162,6 +162,43 @@ fn save_epub_record(path: &Path, position: &EpubReadingPosition) -> Result<(), S
     write_record(path, position)
 }
 
+/// The typed records kept for one document, as suffixes of its key.
+pub(crate) const SUFFIXES: [&str; 5] = [
+    "json",
+    "epub.json",
+    "pdf.json",
+    "pdf-book.json",
+    "pdf-mode.json",
+];
+
+/// Copies every record saved for `old` to the key of `new`, replacing what is
+/// there. The old records stay.
+pub(crate) fn copy_saved_records(old: &Path, new: &Path) -> Result<(), String> {
+    let from = saved_record_path(old);
+    let to = record_path(new)?;
+    for suffix in SUFFIXES {
+        let source = from.with_extension(suffix);
+        let bytes = match fs::read(&source) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "cannot read reading position {}: {error}",
+                    source.display()
+                ));
+            }
+        };
+        atomic_write(
+            &to.with_extension(suffix),
+            &bytes,
+            "reading position",
+            "reading positions",
+            ".position",
+        )?;
+    }
+    Ok(())
+}
+
 /// The saved source path is already canonical and may no longer exist.
 /// Only a record for the same content can be carried to the new document.
 pub(crate) fn transfer_saved_position(

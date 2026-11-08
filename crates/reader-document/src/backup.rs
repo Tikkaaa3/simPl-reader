@@ -613,13 +613,7 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
     for (old, new) in paths {
         let old_key = source_path_key(&old, windows);
         let new_key = crate::position::path_key(&new);
-        for suffix in [
-            "json",
-            "epub.json",
-            "pdf.json",
-            "pdf-book.json",
-            "pdf-mode.json",
-        ] {
+        for suffix in crate::position::SUFFIXES {
             let original = stage.join("positions").join(format!("{old_key}.{suffix}"));
             let target = stage.join("positions").join(format!("{new_key}.{suffix}"));
             if original.exists() && original != target {

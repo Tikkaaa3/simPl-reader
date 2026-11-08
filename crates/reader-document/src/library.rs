@@ -79,7 +79,7 @@ struct LibraryRef<'a> {
     entries: &'a [Entry],
 }
 
-fn library_path() -> PathBuf {
+pub(crate) fn library_path() -> PathBuf {
     position::storage_base().join("simPl").join("library.json")
 }
 
@@ -215,7 +215,7 @@ pub fn save(entries: &[Entry]) -> Result<(), String> {
     save_at(&library_path(), entries)
 }
 
-fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
+pub(crate) fn save_at(path: &Path, entries: &[Entry]) -> Result<(), String> {
     validate(entries)?;
     let bytes = serde_json::to_vec(&LibraryRef {
         version: VERSION,
