@@ -614,11 +614,23 @@ pub fn inspect(path: &Path) -> Result<Summary, String> {
     })
 }
 
-pub fn restore(path: &Path) -> Result<PathBuf, String> {
-    restore_into(path, &root())
+/// Where restored `documents\<id>\…` paths point.
+enum Books<'a> {
+    /// The profile's own `documents\`.
+    Profile,
+    /// A custom library folder that kept its books (a backup without books).
+    Kept(&'a Path),
+    /// A custom library folder the archive's books were placed in, by archive id.
+    Placed(&'a Path, &'a HashMap<String, String>),
 }
 
-fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
+/// The library folder setting never changes on restore. With a custom
+/// folder, the archive's books are added to it and the paths follow.
+pub fn restore(path: &Path) -> Result<PathBuf, String> {
+    restore_into(path, &root(), custom_library()?.as_deref())
+}
+
+fn restore_into(path: &Path, root: &Path, library: Option<&Path>) -> Result<PathBuf, String> {
     let parent = root.parent().ok_or("Profile needs a parent folder")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let parent = parent.canonicalize().map_err(|e| e.to_string())?;
@@ -627,6 +639,15 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
         plain(&root)?;
     }
     let record = validate_archive(path)?;
+    if let Some(library) = library
+        && record.options.documents
+        && !library.is_dir()
+    {
+        return Err(format!(
+            "The library folder {} isn't connected. Connect it before restoring a backup with book files.",
+            crate::library_location::display_path(library)
+        ));
+    }
     let stage = unique(&parent, "restore");
     fs::create_dir(&stage).map_err(|e| e.to_string())?;
     let result = (|| {
@@ -655,12 +676,46 @@ fn restore_into(path: &Path, root: &Path) -> Result<PathBuf, String> {
             file.sync_all().map_err(|e| e.to_string())?;
         }
         drop(zip);
-        remap_paths(&stage, &record.source_root, &root)?;
+        let staged_books = stage.join("documents");
+        let mut placed = HashMap::new();
+        let books = match library {
+            None => Books::Profile,
+            Some(library) if !record.options.documents => Books::Kept(library),
+            Some(library) => {
+                for copy in crate::managed::owned_copies(&staged_books)? {
+                    let folder = copy.parent().ok_or("Invalid restored book folder")?;
+                    let id = folder
+                        .file_name()
+                        .and_then(|id| id.to_str())
+                        .ok_or("Invalid restored book folder")?;
+                    placed.insert(
+                        id.to_owned(),
+                        crate::library_location::placed_id(folder, library)?,
+                    );
+                }
+                Books::Placed(library, &placed)
+            }
+        };
+        remap_paths(&stage, &record.source_root, &root, &books)?;
         validate_profile(&stage)?;
+        if let Some(library) = library {
+            for (id, target) in &placed {
+                let folder = staged_books.join(id);
+                crate::library_location::place_book(&folder, library, target)?;
+                crate::managed::check_tree(&folder)?;
+                fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
+            }
+            let _ = fs::remove_dir(&staged_books);
+            let setting = root.join(crate::library_location::FILE);
+            if setting.exists() {
+                fs::copy(&setting, stage.join(crate::library_location::FILE))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         // A lightweight backup retains the current local document/dictionary
         // files. Included directories replace theirs as part of the snapshot.
         for (folder, included) in [
-            ("documents", record.options.documents),
+            ("documents", record.options.documents || library.is_some()),
             ("dictionaries", record.options.dictionaries),
         ] {
             if !included && root.join(folder).exists() {
@@ -716,7 +771,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
+fn remap_paths(stage: &Path, from: &Path, to: &Path, books: &Books) -> Result<(), String> {
     let mut paths = Vec::new();
     let from = from.to_str().ok_or("Backup profile path is not Unicode")?;
     let windows = windows_path(from);
@@ -726,11 +781,37 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
         from.into()
     };
     let prefix = format!("{}/", prefix.trim_end_matches('/'));
+    fn under_profile(relative: &str, to: &Path, books: &Books) -> Result<PathBuf, String> {
+        let all = Options {
+            documents: true,
+            dictionaries: true,
+        };
+        let name = checked_name(relative, all)?;
+        let mut parts = relative.splitn(3, '/');
+        if let (Some("documents"), Some(id), Some(rest)) =
+            (parts.next(), parts.next(), parts.next())
+            && id.len() == 64
+            && id.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            let book = |folder: PathBuf| rest.split('/').fold(folder, |path, part| path.join(part));
+            match books {
+                Books::Kept(library) => return Ok(book(library.join(id))),
+                Books::Placed(library, placed) => {
+                    if let Some(placed) = placed.get(id) {
+                        return Ok(book(library.join(placed)));
+                    }
+                }
+                Books::Profile => {}
+            }
+        }
+        Ok(to.join(name))
+    }
     fn walk(
         value: &mut serde_json::Value,
         prefix: &str,
         windows: bool,
         to: &Path,
+        books: &Books,
         paths: &mut Vec<(String, PathBuf)>,
     ) -> Result<(), String> {
         match value {
@@ -745,13 +826,7 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
                 };
                 let relative = normalized.strip_prefix(prefix);
                 let new = if let Some(relative) = relative {
-                    to.join(checked_name(
-                        relative,
-                        Options {
-                            documents: true,
-                            dictionaries: true,
-                        },
-                    )?)
+                    under_profile(relative, to, books)?
                 } else if Path::new(text).is_absolute() && windows_path(text) == cfg!(windows) {
                     PathBuf::from(text.as_str())
                 } else {
@@ -770,13 +845,13 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
             serde_json::Value::Object(map) => {
                 for (key, value) in map.iter_mut() {
                     if key == "path" || !value.is_string() {
-                        walk(value, prefix, windows, to, paths)?;
+                        walk(value, prefix, windows, to, books, paths)?;
                     }
                 }
             }
             serde_json::Value::Array(array) => {
                 for value in array {
-                    walk(value, prefix, windows, to, paths)?;
+                    walk(value, prefix, windows, to, books, paths)?;
                 }
             }
             _ => {}
@@ -794,7 +869,7 @@ fn remap_paths(stage: &Path, from: &Path, to: &Path) -> Result<(), String> {
         let mut data: serde_json::Value =
             serde_json::from_reader(File::open(&path).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("Invalid restored {name}: {e}"))?;
-        walk(&mut data, &prefix, windows, to, &mut paths)?;
+        walk(&mut data, &prefix, windows, to, books, &mut paths)?;
         fs::write(&path, serde_json::to_vec(&data).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     }
@@ -962,7 +1037,7 @@ mod tests {
             let zip = dir.0.join("portable.zip");
             fs::write(&zip, bytes).unwrap();
             let root = dir.0.join("restored");
-            restore_into(&zip, &root).unwrap();
+            restore_into(&zip, &root, None).unwrap();
             let books = crate::library::load_at(&root.join("library.json")).unwrap();
             let document = &books[0].document;
             assert!(document.path.is_file());
@@ -1002,7 +1077,13 @@ mod tests {
                 .unwrap(),
         );
         let root = dir.0.join("restored");
-        remap_paths(&dir.0.join("stage"), Path::new(source), &root).unwrap();
+        remap_paths(
+            &dir.0.join("stage"),
+            Path::new(source),
+            &root,
+            &Books::Profile,
+        )
+        .unwrap();
         let data: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.0.join("stage/library.json")).unwrap()).unwrap();
         let mapped = PathBuf::from(data["entries"][0]["document"]["path"].as_str().unwrap());
@@ -1096,7 +1177,7 @@ mod tests {
         assert!(summary.files >= 11);
         assert_eq!(inspect(&backup).unwrap().files, summary.files);
         let destination = dir.0.join("destination");
-        let previous = restore_into(&backup, &destination).unwrap();
+        let previous = restore_into(&backup, &destination, None).unwrap();
         assert_eq!(
             fs::read(previous.join("preferences.json")).unwrap(),
             b"previous bytes"
@@ -1188,7 +1269,7 @@ mod tests {
         let backup = dir.0.join("snapshot.zip");
         create_from(&dir.0.join("source"), None, &backup, Options::default()).unwrap();
         let destination = dir.0.join("destination");
-        restore_into(&backup, &destination).unwrap();
+        restore_into(&backup, &destination, None).unwrap();
         assert_eq!(
             fs::read(destination.join("documents/local.html")).unwrap(),
             b"local"
@@ -1250,26 +1331,26 @@ mod tests {
             "documents/a.",
         ] {
             archive(&backup, &[(name, b"unsafe")], |_| {});
-            assert!(restore_into(&backup, &destination).is_err(), "{name}");
+            assert!(restore_into(&backup, &destination, None).is_err(), "{name}");
         }
         archive(
             &backup,
             &[("documents/a", b"one"), ("documents/A", b"two")],
             |_| {},
         );
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         archive(&backup, &[("documents/a", b"payload")], |record| {
             record.files[0].sha256 = "0".repeat(64)
         });
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         archive(
             &backup,
             &[("documents/a", b"one"), ("documents/b", b"two")],
             |record| record.files.iter_mut().for_each(|f| f.bytes = u64::MAX),
         );
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         archive(&backup, &[("preferences.json", b"{broken")], |_| {});
-        assert!(restore_into(&backup, &destination).is_err());
+        assert!(restore_into(&backup, &destination, None).is_err());
         assert_eq!(
             fs::read(destination.join("preferences.json")).unwrap(),
             b"unchanged"

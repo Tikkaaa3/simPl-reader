@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-const FILE: &str = "library-location.json";
+pub(crate) const FILE: &str = "library-location.json";
 const LOCK: &str = "library-location.lock";
 /// One copy in flight: `<to>\.incoming\<id>`.
 const STAGING: &str = ".incoming";
@@ -621,6 +621,86 @@ pub fn run_move(
             error,
         },
     })
+}
+
+/// The id a restored book folder gets in `library`: its own when that slot
+/// is free or holds the identical tree, else one derived from its content.
+pub(crate) fn placed_id(staged: &Path, library: &Path) -> Result<String, String> {
+    let id = staged
+        .file_name()
+        .and_then(|id| id.to_str())
+        .ok_or("Invalid book folder")?;
+    let digest = tree_digest(staged)?;
+    let mut fresh = Sha256::new();
+    fresh.update(id.as_bytes());
+    fresh.update(digest.as_bytes());
+    let fresh = format!("{:x}", fresh.finalize());
+    for candidate in [id, fresh.as_str()] {
+        let folder = library.join(candidate);
+        if !folder.exists() || tree_digest(&folder)? == digest {
+            return Ok(candidate.to_owned());
+        }
+    }
+    Err(format!(
+        "{} already holds a different copy of a restored book.",
+        display_path(library)
+    ))
+}
+
+/// Places `staged` as `library\<id>` unless that identical copy is there.
+pub(crate) fn place_book(staged: &Path, library: &Path, id: &str) -> Result<(), String> {
+    if library.join(id).exists() {
+        return Ok(());
+    }
+    place_quietly(staged, library, id).map(drop)
+}
+
+/// SHA-256 over every file's relative path and content.
+fn tree_digest(folder: &Path) -> Result<String, String> {
+    fn visit(folder: &Path, prefix: &str, digest: &mut Sha256) -> Result<(), String> {
+        let mut entries = fs::read_dir(folder)
+            .map_err(io)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io)?;
+        entries.sort();
+        for path in entries {
+            let name = format!(
+                "{prefix}/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            if crate::managed::regular(&path)?.is_dir() {
+                visit(&path, &name, digest)?;
+            } else {
+                let (len, content) = hash_file(&path)?;
+                digest.update(name.as_bytes());
+                digest.update([0]);
+                digest.update(len.to_le_bytes());
+                digest.update(&content);
+            }
+        }
+        Ok(())
+    }
+    let mut digest = Sha256::new();
+    visit(folder, "", &mut digest)?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// A copy run that never reports progress and is never cancelled.
+pub(crate) fn place_quietly(source: &Path, root: &Path, id: &str) -> Result<PathBuf, String> {
+    let cancel = AtomicBool::new(false);
+    let mut report = |_| {};
+    let mut job = Job {
+        progress: Progress::default(),
+        report: &mut report,
+        cancel: &cancel,
+    };
+    let result = place_as(source, root, id, &mut job).map_err(|stop| match stop {
+        Stop::Failed(error) => error,
+        Stop::Cancelled => "Cancelled".into(),
+    });
+    remove_staging(root)?;
+    result
 }
 
 fn place(source: &Path, root: &Path, job: &mut Job) -> Result<PathBuf, Stop> {
@@ -2165,6 +2245,98 @@ pub(crate) mod tests {
             !archived_names(&zip)
                 .iter()
                 .any(|name| name.starts_with("documents/"))
+        );
+    }
+
+    isolated!(restore_adds_books_to_a_custom_library_and_keeps_the_setting);
+    fn restore_adds_books_to_a_custom_library_and_keeps_the_setting() {
+        let (_, scratch) = store();
+        let (seeded, library) = custom_library(&scratch);
+        let full = scratch.join("full.zip");
+        let light = scratch.join("light.zip");
+        crate::backup::create(&full, BOOKS).unwrap();
+        crate::backup::create(&light, crate::backup::Options::default()).unwrap();
+        let setting = fs::read(profile().join(FILE)).unwrap();
+        let folder_of = |title: &str| path_of(title).parent().unwrap().to_path_buf();
+        let (story, novel, big) = (folder_of("Story"), folder_of("Novel"), folder_of("Big"));
+        let changed = b"%PDF edited after the backup".to_vec();
+        fs::remove_dir_all(&novel).unwrap();
+        fs::write(path_of("Big"), &changed).unwrap();
+        crate::position::save(&path_of("Story"), &reflow("after-backup")).unwrap();
+
+        crate::backup::restore(&full).unwrap();
+
+        assert_eq!(fs::read(profile().join(FILE)).unwrap(), setting);
+        assert_eq!(location().unwrap().root, library);
+        assert_eq!(folder_of("Story"), story);
+        assert_eq!(folder_of("Novel"), novel);
+        let placed = folder_of("Big");
+        assert_eq!(placed.parent().unwrap(), library);
+        assert_ne!(placed, big);
+        for (title, bytes) in &seeded.books {
+            assert_eq!(&fs::read(path_of(title)).unwrap(), bytes, "{title}");
+        }
+        assert_eq!(fs::read(big.join("big.pdf")).unwrap(), changed);
+        assert_eq!(crate::managed::owned_copies(&library).unwrap().len(), 4);
+        assert!(!library.join(STAGING).exists());
+        assert!(!default_root().exists());
+        assert_eq!(
+            crate::position::load(&path_of("Story"))
+                .unwrap()
+                .unwrap()
+                .item_id,
+            "html-item"
+        );
+        assert_eq!(
+            crate::position::load_pdf(&path_of("Big"))
+                .unwrap()
+                .unwrap()
+                .page,
+            7
+        );
+        assert_eq!(path_of("Legacy"), seeded.legacy);
+
+        crate::backup::restore(&light).unwrap();
+
+        assert_eq!(fs::read(profile().join(FILE)).unwrap(), setting);
+        assert_eq!(folder_of("Story"), story);
+        assert_eq!(folder_of("Big"), big);
+        assert_eq!(
+            crate::position::load(&path_of("Story"))
+                .unwrap()
+                .unwrap()
+                .item_id,
+            "html-item"
+        );
+        assert!(!default_root().exists());
+
+        let before = fs::read(crate::library::library_path()).unwrap();
+        fs::rename(scratch.join("E"), scratch.join("unplugged")).unwrap();
+        assert_eq!(
+            crate::backup::restore(&full).unwrap_err(),
+            format!(
+                "The library folder {} isn't connected. Connect it before restoring a backup with book files.",
+                display_path(&library)
+            )
+        );
+        assert_eq!(fs::read(crate::library::library_path()).unwrap(), before);
+        fs::rename(scratch.join("unplugged"), scratch.join("E")).unwrap();
+
+        let pending = Record::new(
+            Root::Folder(library.clone()),
+            Some(Move::Cleaning {
+                from: Root::Default,
+                positions_copied: true,
+            }),
+        );
+        journal(&pending);
+        assert_eq!(
+            crate::backup::restore(&light).unwrap_err(),
+            "Finish the library move first."
+        );
+        assert_eq!(
+            crate::backup::create(&scratch.join("again.zip"), BOOKS).unwrap_err(),
+            "Finish the library move first."
         );
     }
 
