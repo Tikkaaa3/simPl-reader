@@ -14,7 +14,6 @@ use sha2::{Digest, Sha256};
 /// What another launch asks the running window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
-    /// Come to the front.
     Raise,
     /// Open this path, then come to the front. Absolute when it came from
     /// another process: `claim` absolutizes it and `wire::decode` refuses
@@ -33,7 +32,6 @@ pub enum Claim {
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Written once by `claim` (only when this process serves), taken once by `forwarded`.
 static INBOX: Mutex<Option<UnboundedReceiver<Request>>> = Mutex::new(None);
 
 /// Become the instance for this user, session and profile, or forward `path`
@@ -76,11 +74,9 @@ pub fn forwarded() -> impl Stream<Item = Request> {
     stream::iter(receiver).flatten()
 }
 
-/// `\\.\pipe\simPl.Reader.<session>.<32 hex>`, derived once per process.
 #[derive(Clone)]
 struct PipeName {
     text: String,
-    /// `text` as NUL-terminated UTF-16 for the Win32 calls.
     wide: Vec<u16>,
 }
 
@@ -90,7 +86,6 @@ impl PipeName {
         Self { text, wide }
     }
 
-    /// `None` when the process token can't be read; the caller then runs alone.
     fn current() -> Option<Self> {
         let (sid, session) = win32::user_and_session().ok()?;
         let profile = std::path::absolute(reader_profile::storage_base()).ok()?;
@@ -98,28 +93,15 @@ impl PipeName {
     }
 }
 
-/// The same user, session and profile folder always give the same name,
-/// whatever the case or trailing separator of the folder.
+/// Changing the frame format needs a new tag, so old and new builds never share a pipe.
+const PIPE_VERSION: &[u8] = b"simPl.Reader.v1\0";
+
 fn pipe_name(sid: &[u8], session: u32, profile: &Path) -> String {
-    use std::os::windows::ffi::OsStrExt;
-    let mut units: Vec<u16> = profile
-        .as_os_str()
-        .encode_wide()
-        .map(|unit| match unit {
-            0x2F => 0x5C,
-            0x41..=0x5A => unit + 0x20,
-            _ => unit,
-        })
-        .collect();
-    while units.last() == Some(&0x5C) {
-        units.pop();
-    }
     let mut hash = Sha256::new();
-    // A new tag gives a new name, so builds with different frames never meet.
-    hash.update(b"simPl.Reader.v1\0");
+    hash.update(PIPE_VERSION);
     hash.update((sid.len() as u32).to_le_bytes());
     hash.update(sid);
-    for unit in units {
+    for unit in normalize_profile(profile) {
         hash.update(unit.to_le_bytes());
     }
     let digest = hash.finalize();
@@ -130,9 +112,28 @@ fn pipe_name(sid: &[u8], session: u32, profile: &Path) -> String {
     format!(r"\\.\pipe\simPl.Reader.{session}.{hex}")
 }
 
-/// Server thread body. Keeps one instance listening at every moment: the next
-/// instance is created before the connected one is read, so a newcomer sees
-/// ERROR_PIPE_BUSY (and waits), never ERROR_FILE_NOT_FOUND (and starts a second window).
+/// ASCII case folded, `/` as `\`, no trailing separator.
+fn normalize_profile(profile: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let backslash = u16::from(b'\\');
+    let mut units: Vec<u16> = profile
+        .as_os_str()
+        .encode_wide()
+        .map(|unit| match u8::try_from(unit) {
+            Ok(b'/') => backslash,
+            Ok(byte) => u16::from(byte.to_ascii_lowercase()),
+            Err(_) => unit,
+        })
+        .collect();
+    while units.last() == Some(&backslash) {
+        units.pop();
+    }
+    units
+}
+
+/// Keeps one instance listening at every moment: the next instance is created
+/// before the connected one is read, so a newcomer sees ERROR_PIPE_BUSY (and
+/// waits), never ERROR_FILE_NOT_FOUND (and starts a second window).
 fn serve(name: PipeName, first: File, inbox: UnboundedSender<Request>) {
     let mut current = first;
     loop {
@@ -152,12 +153,8 @@ fn serve(name: PipeName, first: File, inbox: UnboundedSender<Request>) {
     }
 }
 
-/// One frame per connection, read to EOF. Anything malformed is dropped.
 fn read_request(pipe: &File) -> Option<Request> {
     let mut frame = Vec::new();
-    // No read timeout: a client that connects and never writes stalls later
-    // forwards until they time out and start normally, which only a hostile
-    // process of the same user can cause.
     pipe.take(wire::MAX_FRAME as u64 + 1)
         .read_to_end(&mut frame)
         .ok()?;
@@ -170,7 +167,6 @@ fn listen(name: &PipeName, first: bool) -> io::Result<File> {
     win32::create_pipe(name, first)
 }
 
-/// Client: connect within `timeout`, let the server take the foreground, write, close.
 fn forward(name: &PipeName, request: &Request, timeout: Duration) -> io::Result<()> {
     let frame = wire::encode(request).ok_or(io::ErrorKind::InvalidInput)?;
     let deadline = Instant::now() + timeout;
@@ -193,7 +189,6 @@ fn forward(name: &PipeName, request: &Request, timeout: Duration) -> io::Result<
     pipe.write_all(&frame)
 }
 
-/// `[u32 LE payload bytes][UTF-16LE payload]`. Zero payload = Raise.
 mod wire {
     use super::Request;
     use std::os::windows::ffi::OsStrExt;
@@ -202,7 +197,6 @@ mod wire {
     pub(super) const MAX_PAYLOAD: usize = 32 * 1024;
     pub(super) const MAX_FRAME: usize = 4 + MAX_PAYLOAD;
 
-    /// `None` when the path doesn't fit; the launcher then runs normally.
     pub(super) fn encode(request: &Request) -> Option<Vec<u8>> {
         let units: Vec<u16> = match request {
             Request::Raise => Vec::new(),
@@ -220,8 +214,6 @@ mod wire {
         Some(frame)
     }
 
-    /// The parse boundary. Exact length, even, at most MAX_PAYLOAD, valid
-    /// UTF-16, no NUL, absolute; anything else is `None`.
     pub(super) fn decode(frame: &[u8]) -> Option<Request> {
         let (head, body) = frame.split_first_chunk::<4>()?;
         let length = u32::from_le_bytes(*head) as usize;
@@ -244,7 +236,6 @@ mod wire {
     }
 }
 
-/// Every unsafe call of this module. Each returns an owned value or `io::Result`.
 mod win32 {
     use super::PipeName;
     use std::fs::{File, OpenOptions};
@@ -271,10 +262,9 @@ mod win32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
     pub(super) const PIPE_BUSY: i32 = ERROR_PIPE_BUSY as i32;
-    /// Larger than the biggest frame, so a client's write never waits for the server.
     const IN_BUFFER: u32 = 64 * 1024;
+    const _: () = assert!(IN_BUFFER as usize > super::wire::MAX_FRAME);
 
-    /// Binary SID of the process user and its Windows session id.
     pub(super) fn user_and_session() -> io::Result<(Vec<u8>, u32)> {
         let mut raw: HANDLE = std::ptr::null_mut();
         // SAFETY: the pseudo handle of the current process needs no closing, and
@@ -361,7 +351,7 @@ mod win32 {
         Ok(File::from(unsafe { OwnedHandle::from_raw_handle(handle) }))
     }
 
-    /// Waits for a client. ERROR_PIPE_CONNECTED and ERROR_NO_DATA mean one came first.
+    /// ERROR_PIPE_CONNECTED and ERROR_NO_DATA mean a client came first.
     pub(super) fn accept(pipe: &File) -> io::Result<()> {
         // SAFETY: the handle stays open for the borrow, and a null OVERLAPPED
         // makes this a blocking wait on a synchronous handle.
@@ -375,7 +365,7 @@ mod win32 {
         }
     }
 
-    /// Write end of the pipe; reading attributes lets the client ask for the server's process id.
+    /// Reading attributes lets the client ask for the server's process id.
     pub(super) fn connect(name: &PipeName) -> io::Result<File> {
         OpenOptions::new()
             .access_mode(FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES)
@@ -383,7 +373,7 @@ mod win32 {
             .open(&name.text)
     }
 
-    /// WaitNamedPipeW for at most `left`; at least 1 ms, because 0 means the pipe default.
+    /// At least 1 ms, because 0 means the pipe default.
     pub(super) fn wait(name: &PipeName, left: Duration) -> io::Result<()> {
         let milliseconds = left.as_millis().clamp(1, 60_000) as u32;
         // SAFETY: `wide` is NUL-terminated and outlives the call.
@@ -670,7 +660,6 @@ mod tests {
     const CLAIM_BARRIER: &str = "SIMPL_CLAIM_BARRIER";
     const PREFIX: &str = "simpl-instance-";
 
-    /// A headless child test process that calls `claim` under a temp profile.
     struct Claimer {
         child: Child,
         stdin: Option<ChildStdin>,
@@ -741,8 +730,6 @@ mod tests {
         root
     }
 
-    /// Child body: claims, reports `claim=` and `elapsed_ms=`, and when it
-    /// serves, reports each forward as `received=` until its stdin closes.
     #[test]
     #[ignore = "runs in a child process with a temp profile through the claim tests"]
     fn claimer() {

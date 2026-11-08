@@ -925,9 +925,6 @@ struct Reader {
     inbox: Inbox,
 }
 
-/// Requests from outside the window (the startup argument, a drop, another
-/// launch) that wait until the reader can act on them. One slot: the newest
-/// path wins.
 #[derive(Debug, Default)]
 struct Inbox {
     open: Option<PathBuf>,
@@ -1858,8 +1855,6 @@ impl Reader {
         }
     }
 
-    /// The one rule for when a document may replace what the reader shows.
-    /// `open` refuses otherwise; the inbox waits for it.
     fn can_open(&self) -> bool {
         !(self.saving
             || self.dialog.is_some()
@@ -1873,7 +1868,6 @@ impl Reader {
         if !self.can_open() {
             return Task::none();
         }
-        // A choice made now replaces a waiting external one.
         self.inbox.open = None;
         self.show_conversion = false;
         self.word_translation.reset();
@@ -1919,12 +1913,15 @@ impl Reader {
         Task::batch([task, library_task])
     }
 
-    /// Acts on whatever the inbox holds that the reader can act on now. Safe
-    /// to call after every message: it takes what it uses.
+    /// The native file and backup pickers have no owner window, so raising the
+    /// reader while one is open would hide it.
+    fn picker_open(&self) -> bool {
+        self.dialog.is_some() || self.profile.busy
+    }
+
     fn drain_inbox(&mut self) -> Task<Message> {
         let raise = match self.window {
-            // The native pickers have no owner, so a raised reader would hide them.
-            Some(id) if self.inbox.raise && self.dialog.is_none() && !self.profile.busy => {
+            Some(id) if self.inbox.raise && !self.picker_open() => {
                 self.inbox.raise = false;
                 window::minimize(id, false).chain(window::gain_focus(id))
             }
@@ -6789,7 +6786,6 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
     if reader.read_aloud.ticking() {
         subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
     }
-    // Unconditional: dropping it would drop the receiver and stop the server thread.
     subscriptions.push(Subscription::run(instance::forwarded).map(Message::Forwarded));
     Subscription::batch(subscriptions)
 }
@@ -8514,7 +8510,6 @@ mod tests {
         assert_eq!(mode(&reader.pending_open), Some((Storage::Import, None)));
     }
 
-    /// The restore and focus actions a task asks of the window, in order.
     fn raises(task: Task<Message>) -> Vec<(window::Id, &'static str)> {
         use iced_futures::futures::{StreamExt, executor::block_on};
         use iced_runtime::{Action, window::Action as WindowAction};

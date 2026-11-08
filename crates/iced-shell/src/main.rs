@@ -1447,7 +1447,6 @@ fn application_style(_: &Shell, _: &Theme) -> iced::theme::Style {
     }
 }
 
-/// Normal-mode arguments: none, one path not starting with `--`, or `-- <path>`.
 fn normal_launch(arguments: &[std::ffi::OsString]) -> Result<Option<std::path::PathBuf>, String> {
     match arguments {
         [] => Ok(None),
