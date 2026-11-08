@@ -132,12 +132,13 @@ Status: implemented on `feat/lf2-open-with`.
 
 ### One window per profile
 
-`crates/iced-shell/src/instance.rs` owns single-instance behaviour. `main()` calls `instance::claim(path)` in normal mode only, after mode detection and before iced starts. It returns `Claim::Primary` (run the reader) or `Claim::Forwarded` (exit 0). The diagnostic modes never create or contact the pipe.
+`crates/iced-shell/src/instance.rs` owns single-instance behaviour. `main()` calls `instance::claim(path)` in normal mode only, after mode detection and before iced starts. It returns `Claim::Primary` (run the reader), `Claim::Forwarded` (exit 0) or `Claim::Unreachable` (show a message box and exit 1). The diagnostic modes never create or contact the pipe.
 
 - **Key.** The pipe name is `\\.\pipe\simPl.Reader.<session>.<hash>`. The hash covers a version tag, the user's binary SID and the normalized profile folder (`reader_profile::storage_base()`). Scripts that set their own `LOCALAPPDATA` therefore get their own window and never reach yours.
 - **Election.** A launch first tries to create the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so Windows decides which of two simultaneous launches becomes the server. The loser forwards.
 - **Server.** A dedicated thread accepts one request per connection. It creates the next pipe instance before reading the current one, so a burst of launches waits briefly instead of finding no server. A client that wrote and closed before the server accepted still delivers: `ConnectNamedPipe` returns `ERROR_NO_DATA` and the bytes are readable.
-- **Client.** The second launch resolves the path against its own working directory, connects within 500 ms, lets the server take the foreground (`AllowSetForegroundWindow`) and writes one frame. Any failure, including an elevated first instance, means it starts normally.
+- **Client.** The second launch resolves the path against its own working directory, connects within 5 s, lets the server take the foreground (`AllowSetForegroundWindow`) and writes one frame.
+- **Never a second window.** A launch that can't forward doesn't start its own reader. If the pipe vanished (the first window just exited), it tries to become the server again, up to five times. Access denied means the first window runs as administrator: "simPl is already running as administrator. Close it and try again." A timeout or any other failure gives "simPl is already running but isn't responding. Close it and try again." Only a missing user SID or profile path, where no pipe name can be built, still runs without the check. A primary whose serving thread can't start keeps the first pipe instance open, so later launches get the not-responding message. `main` shows the message box, so `claim` never blocks a test.
 - **Wire.** A 4-byte length, then UTF-16 (at most 32 KiB). Zero length means "come to the front". `wire::decode` is the only place that checks incoming bytes.
 
 ### In the running window
@@ -160,14 +161,14 @@ Status: implemented on `feat/lf2-open-with`.
 
 ### Checks
 
-- `instance.rs` tests use throwaway pipe names: framing and rejection, write-before-accept, a burst of 16, the stuck-server deadline, and the first-instance flag. Child processes with a temporary `LOCALAPPDATA` test a simultaneous election, a crashed primary and a forward into a running reader.
+- `instance.rs` tests use throwaway pipe names: framing and rejection, write-before-accept, a burst of 16, a stuck server reported as not responding at the deadline, a launch that takes over when the first exits mid-forward, and the first-instance flag. Child processes with a temporary `LOCALAPPDATA` test a three-way election, a crashed primary and a forward into a running reader.
 - `crates/iced-shell/tests/release-smoke.ps1` launches a second copy with a file, after minimizing, and while the file picker is open, then checks that one reader process remains.
 - `scripts/test-installer.ps1` passed with the eight extensions.
 - A manual check of the release build is not committed. It covered forwarding, a relative path, restore and front while minimized, a maximized window staying maximized, a launch with no file, a burst and two profiles.
 
 ### Accepted for now
 
-- A client that connects and never writes stalls later forwards until they time out and start their own window. Only a hostile process of the same user can do this.
+- A client that connects and never writes stalls later forwards until they time out and show the not-responding message. Only a hostile process of the same user can do this.
 - A forward that reaches a window while it is closing is lost; there is no acknowledgement.
 - Selecting several files in Explorer opens one of them.
 - A forwarded open while a note is being written does not save the draft first. Drops have the same gap.
@@ -267,7 +268,6 @@ The banner and Settings say "Library folder not found: …" with Retry. Settings
 
 ### Accepted for now
 
-- Two simPl processes on one profile (only after an LF-2 forward fails) can overwrite each other's library edits, as they already can. The lock only keeps two moves, or a move and a recovery, apart.
 - `recover()` runs before the window opens. After a crash mid-move, rolling back or finishing a large library delays the first window.
 - A restore that fails after placing books in a custom folder leaves those copies there without cards. A later move copies them too.
 - Every move copies, even on the same drive, so it needs twice the space while it runs.
