@@ -29,6 +29,8 @@ public static class ReleaseSmokeNative {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
@@ -142,6 +144,18 @@ function Add([string]$Path,[string]$Title) {
     Assert-Target
     if ([ReleaseSmokeNative]::GetForegroundWindow() -ne $window) { throw 'File picker did not return to the reader.' }
 }
+function Launch-Second([string]$Path) {
+    $start = @{ FilePath=$ExePath; WorkingDirectory=$env:TEMP; PassThru=$true }
+    if ($Path) { $start.ArgumentList = '"' + $Path + '"' }
+    $second = Start-Process @start
+    if (-not $second.WaitForExit(3000) -or $second.ExitCode -ne 0) { throw "Second launch '$Path' did not forward and exit." }
+}
+function Wait-Front {
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    while (([ReleaseSmokeNative]::IsIconic($window) -or [ReleaseSmokeNative]::GetForegroundWindow() -ne $window) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
+    if ([ReleaseSmokeNative]::IsIconic($window)) { throw 'Second launch did not restore the minimized reader.' }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -ne $window) { throw 'Second launch did not bring the reader to the front.' }
+}
 $resources = New-Object 'System.Collections.Generic.List[object]'
 function Sample-Resources([int]$Cycle) {
     Assert-Target
@@ -235,13 +249,33 @@ try {
         }
         Capture '17-library-after-repeat'
     }
+    Launch-Second $md
+    Wait-Title 'A reading checklist'
+    Wait-Front
+    Capture '18-forwarded-open'
+    [void][ReleaseSmokeNative]::ShowWindow($window, 6)
+    Launch-Second ''
+    Wait-Front
+    Key 0x4f -Ctrl -Shift
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+Shift+O did not open the native file picker.' }
+    Launch-Second $txt
+    Start-Sleep -Milliseconds 700
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'A forward raised the reader over its open file picker.' }
+    Key 0x1b
+    Wait-Title 'Native reading notes'
+    Wait-Front
+    Capture '19-forward-after-picker'
+    $readers = @(Get-Process | Where-Object { $_.Path -eq $ExePath })
+    if ($readers.Count -ne 1) { throw "Expected one reader process, found $($readers.Count)." }
     Key 0x73 -Alt
     if (-not $process.WaitForExit(8000) -or $process.ExitCode -ne 0) { throw 'Normal close did not exit cleanly.' }
     $library = Get-Content -Raw -LiteralPath (Join-Path $profile 'simPl/library.json') | ConvertFrom-Json
     if ($library.entries.Count -ne 5) { throw "Expected five imported formats, got $($library.entries.Count)." }
     $formats = @($library.entries | ForEach-Object { if ($_.PSObject.Properties['source_kind']) { $_.source_kind } else { $_.document.kind } })
     if (-not ($formats -contains 'Text') -or -not ($formats -contains 'Markdown')) { throw 'TXT/Markdown source labels were not retained.' }
-    $evidence = [ordered]@{ exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant(); dpi_scale=$scale; profile=$profile; formats=$formats; result='passed'; repeat_cycles=$RepeatCycles; resources=@($resources.ToArray()); assertions='native picker, keyboard navigation, persisted five imports/source labels, repeated opens without duplicate imports, clean exit; screenshots require visual review' }
+    $evidence = [ordered]@{ exe_sha256=(Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant(); dpi_scale=$scale; profile=$profile; formats=$formats; result='passed'; repeat_cycles=$RepeatCycles; resources=@($resources.ToArray()); assertions='native picker, keyboard navigation, persisted five imports/source labels, repeated opens without duplicate imports, second launches forward to one window, clean exit; screenshots require visual review' }
     $evidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $EvidenceDirectory 'result.json')
     Write-Host 'Normal-reader native smoke passed; inspect all screenshots.'
 } finally {
