@@ -15,9 +15,6 @@ fn is_markdown_extension(ext: &str) -> bool {
     matches!(ext, "md" | "markdown")
 }
 
-/// The generated page for the text or Markdown file at `source`, or `None` for
-/// any other extension. Reading in place and importing both use it, so they
-/// hash the same bytes and an imported copy keeps the original's fingerprint.
 pub(crate) fn read_page(source: &Path) -> Result<Option<String>, String> {
     let ext = source
         .extension()

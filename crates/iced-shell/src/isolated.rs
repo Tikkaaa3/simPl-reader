@@ -1,5 +1,3 @@
-//! Real opens, imports and saves, each run in a child test process whose
-//! LOCALAPPDATA is a fresh temp folder, so the user's profile is never touched.
 use super::release_audit::{boot, send};
 use super::*;
 use std::fs;
@@ -8,8 +6,6 @@ use std::process::Command;
 const STORE: &str = "SIMPL_ISOLATED_STORE";
 const PREFIX: &str = "simpl-isolated-";
 
-/// Runs ignored test `name` (e.g. "app::isolated::x::child") in a child process
-/// with its own profile, and fails with the child's output when it fails.
 fn run_isolated(name: &str) {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -45,8 +41,6 @@ fn run_isolated(name: &str) {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// In the child: the `(profile, books)` folders. Panics before any storage
-/// access unless `run_isolated` started this process with a temp profile.
 fn store() -> (PathBuf, PathBuf) {
     let root = PathBuf::from(std::env::var_os(STORE).expect("run through run_isolated"));
     assert!(
@@ -72,8 +66,6 @@ fn store() -> (PathBuf, PathBuf) {
     (profile, books)
 }
 
-/// `isolated!(name)` adds the tests `name::run`, which runs `name()` in a child
-/// process through `run_isolated`, and the ignored `name::child` it starts.
 macro_rules! isolated {
     ($name:ident) => {
         mod $name {
@@ -266,8 +258,31 @@ fn library_locate_imports_and_recent_locate_does_not() {
     assert_eq!(names(&documents).len(), 2);
 }
 
-/// Reads `story.txt` in place at paragraph 20, optionally closes it, then adds
-/// its Recent row to the library.
+isolated!(library_locate_of_another_format_leaves_no_copy);
+fn library_locate_of_another_format_leaves_no_copy() {
+    let (profile, books) = store();
+    let documents = profile.join("simPl").join("documents");
+    let chosen = |path: &Path| Message::DialogChosen(Ok(Some(path.to_path_buf())));
+    let a = books.join("a.html");
+    fs::write(&a, "<title>A</title><p>Alpha</p>").unwrap();
+    let wrong = books.join("a.pdf");
+    fs::write(&wrong, b"%PDF-1.4").unwrap();
+    let mut reader = boot();
+    let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+    send(&mut reader, chosen(&a));
+
+    let _ = update_inner(&mut reader, Message::LocateLibrary(0));
+    send(&mut reader, chosen(&wrong));
+
+    let error = reader.error.clone().unwrap();
+    assert!(
+        error.contains("Selected file is not the same format as"),
+        "{error}"
+    );
+    assert_eq!(names(&documents).len(), 1);
+    assert_eq!(reader.shelf.entries.len(), 1);
+}
+
 fn add_to_library_keeps_the_position(close: bool) {
     let (profile, books) = store();
     let source = books.join("story.txt");

@@ -28,9 +28,7 @@ pub enum Sort {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
-    /// "Open file": pick a file and read it where it is.
     Open,
-    /// "Add document": pick a file and import a copy into the library.
     Add,
     RetrySave,
     Resume(usize),
@@ -82,14 +80,10 @@ struct Naming {
     error: Option<String>,
 }
 
-/// What a finished load may do to the library card for its path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Card {
-    /// Insert or replace the card (imports).
     Write,
-    /// Replace a card that already exists for the path or for the replaced
-    /// path; never insert one (in-place opens).
-    Refresh,
+    UpdateExisting,
 }
 
 #[derive(Debug)]
@@ -102,9 +96,6 @@ pub struct Shelf {
     pub blocked: bool,
     save_failed: bool,
     pub visible: bool,
-    /// Card writes that arrived before the library loaded. A `Refresh` is
-    /// decided against the loaded entries, so an in-place open at startup
-    /// never adds a card.
     pending: Vec<(Entry, Option<std::path::PathBuf>, Card)>,
     covers: HashMap<String, Option<image::Handle>>,
     fetching: HashSet<String>,
@@ -496,9 +487,8 @@ impl Shelf {
         Task::batch([self.persist(), self.ensure_covers()])
     }
 
-    /// Returns whether the shelf changed.
     fn remember_entry(&mut self, entry: Entry, old: Option<&Path>, card: Card) -> bool {
-        if card == Card::Refresh
+        if card == Card::UpdateExisting
             && self.card(&entry.document.path).is_none()
             && old.and_then(|old| self.card(old)).is_none()
         {
@@ -512,12 +502,10 @@ impl Shelf {
         true
     }
 
-    /// The card for `path`, matched like Windows paths.
     pub fn card(&self, path: &Path) -> Option<&Entry> {
         library::find(&self.entries, path).map(|index| &self.entries[index])
     }
 
-    /// Whether a Recent row for `path` may offer "Add to library".
     pub fn can_add(&self, path: &Path) -> bool {
         !self.loading && !self.blocked && self.card(path).is_none()
     }
@@ -927,7 +915,6 @@ impl Shelf {
         )
     }
 
-    /// `drop_target` is the hero card that takes a file hovered over the window.
     pub fn view(
         &self,
         focused: Option<Control>,
@@ -2159,7 +2146,6 @@ fn card_style(
 
 const ACTION_CARD_WIDTH: f32 = 320.0;
 
-/// One of the two hero cards; shared so they cannot drift apart.
 fn action_card<'a>(
     glyph: &'static str,
     title: &'static str,
@@ -2302,10 +2288,10 @@ mod tests {
         ]))
         .unwrap();
         let mut shelf = loaded(vec![a.clone()]);
-        let _ = shelf.remember(Entry { cover: true, ..a }, None, Card::Refresh);
+        let _ = shelf.remember(Entry { cover: true, ..a }, None, Card::UpdateExisting);
         assert_eq!(titles(&shelf), ["A"]);
         assert!(shelf.entries[0].cover);
-        let _ = shelf.remember(b.clone(), None, Card::Refresh);
+        let _ = shelf.remember(b.clone(), None, Card::UpdateExisting);
         assert_eq!(titles(&shelf), ["A"]);
         let _ = shelf.remember(b, None, Card::Write);
         assert_eq!(titles(&shelf), ["B", "A"]);
@@ -2319,7 +2305,11 @@ mod tests {
         let mut shelf = loaded(vec![card.clone()]);
         card.document.path = std::path::PathBuf::from(r"C:\Books\New.pdf");
         card.favourite = false;
-        let _ = shelf.remember(card, Some(Path::new(r"C:\Books\Old.pdf")), Card::Refresh);
+        let _ = shelf.remember(
+            card,
+            Some(Path::new(r"C:\Books\Old.pdf")),
+            Card::UpdateExisting,
+        );
         assert_eq!(shelf.entries.len(), 1);
         assert_eq!(
             shelf.entries[0].document.path,
@@ -2342,9 +2332,9 @@ mod tests {
                 ..a.clone()
             },
             None,
-            Card::Refresh,
+            Card::UpdateExisting,
         );
-        let _ = shelf.remember(b, None, Card::Refresh);
+        let _ = shelf.remember(b, None, Card::UpdateExisting);
         let _ = shelf.update(Message::Loaded(Ok(vec![a])));
         assert_eq!(titles(&shelf), ["A"]);
         assert!(shelf.entries[0].cover);
@@ -2354,7 +2344,7 @@ mod tests {
     fn failed_library_load_does_not_promote_a_refresh() {
         let a = sample_entries(&[("A", DocumentKind::Pdf)]).remove(0);
         let mut shelf = Shelf::default();
-        let _ = shelf.remember(a, None, Card::Refresh);
+        let _ = shelf.remember(a, None, Card::UpdateExisting);
         let _ = shelf.update(Message::Loaded(Err("corrupt".into())));
         assert_eq!(shelf.entries.len(), 0);
         assert!(shelf.blocked);

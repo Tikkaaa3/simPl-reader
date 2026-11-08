@@ -154,8 +154,6 @@ pub fn load() -> Result<Vec<Entry>, String> {
     }
 }
 
-/// Books read in place stay Recent-only: the first in-place open can write the
-/// recent list before the library is first read.
 fn bootstrap(recent: Vec<recent::Entry>, root: &Path) -> Result<Vec<Entry>, String> {
     let entries = recent
         .into_iter()

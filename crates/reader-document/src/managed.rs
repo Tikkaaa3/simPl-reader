@@ -72,7 +72,6 @@ fn owned_folder(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     Ok(Some(actual))
 }
 
-/// Whether `path` is a simPl copy inside the store at `root`.
 pub(crate) fn is_owned_at(root: &Path, path: &Path) -> bool {
     matches!(owned_folder(root, path), Ok(Some(_)))
 }
