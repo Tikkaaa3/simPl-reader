@@ -812,19 +812,22 @@ impl Shelf {
         } else {
             (self.continuing.len().max(1) as f32 * 170.0) - 24.0
         };
-        let grid_top = 40.0
-            + if wide { 136.0 } else { 226.0 }
-            + 56.0
-            + 32.0
-            + 20.0
-            + continuation
-            + 56.0
-            + if wide {
-                LIBRARY_HEADING_WIDE
+        let grid_top =
+            40.0 + if wide {
+                136.0
             } else {
-                LIBRARY_HEADING_WIDE + 40.0
-            }
-            + 24.0;
+                136.0 + 32.0 + ACTIONS_HEIGHT
+            } + 56.0
+                + 32.0
+                + 20.0
+                + continuation
+                + 56.0
+                + if wide {
+                    LIBRARY_HEADING_WIDE
+                } else {
+                    LIBRARY_HEADING_WIDE + 40.0
+                }
+                + 24.0;
         Metrics {
             gutter,
             width,
@@ -976,7 +979,7 @@ impl Shelf {
                 Control::Add,
             ),
         ]
-        .spacing(8);
+        .spacing(ACTION_CARD_GAP);
         let hero: Element<'_, Message> = if wide {
             row![intro, Space::new().width(Length::Fill), actions]
                 .align_y(Alignment::Center)
@@ -2145,6 +2148,9 @@ fn card_style(
 }
 
 const ACTION_CARD_WIDTH: f32 = 320.0;
+const ACTION_CARD_HEIGHT: f32 = 58.0;
+const ACTION_CARD_GAP: f32 = 8.0;
+const ACTIONS_HEIGHT: f32 = 2.0 * ACTION_CARD_HEIGHT + ACTION_CARD_GAP;
 
 fn action_card<'a>(
     glyph: &'static str,
@@ -2174,7 +2180,7 @@ fn action_card<'a>(
     )
     .padding([12, 20])
     .width(ACTION_CARD_WIDTH)
-    .height(58)
+    .height(ACTION_CARD_HEIGHT)
     .style(move |theme, status| {
         card_style(
             theme,
