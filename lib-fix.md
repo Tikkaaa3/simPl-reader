@@ -58,7 +58,7 @@ The library screen shows imported books. Recent shows everything you read, inclu
 | Appears in | Library + Recent | Recent only |
 | Shelves, favourites, cover grid | yes | no (use **Add to library** from Recent) |
 | Reading position, notes, highlights | yes | yes (same storage as today) |
-| Remove | deletes simPl's copy (current text) | Recent → Remove deletes the history entry only (current behaviour) |
+| Remove | deletes simPl's copy (current text) | Recent → Remove deletes the history entry. It also removes a matching library card, which is today's behaviour, but an in-place book has none. |
 | Original moved or deleted | unaffected | Recent row shows it as missing → **Locate** (current behaviour) |
 | Backup "Include book files" | bundled | path only (unchanged) |
 | Library location move | moved | untouched |
@@ -71,41 +71,60 @@ Entry points:
 - **Library card → Locate** (the copy is missing, for example after restoring a backup without book files) **imports** the chosen file. That keeps every library card backed by a copy.
 - **Recent row → Locate** keeps today's behaviour: it repoints the history entry to the chosen file without copying.
 - TXT, Markdown and single-file HTML opened in place are converted **in memory** on every load. `text::to_html` and `html::load_html_bytes(source, bytes)` already resolve images relative to the source, so nothing is written.
-- HTML book folders need a packaged EPUB. Opened in place, it is generated into the disposable cache (`cache_base()\simPl\converted\<key>`) and rebuilt when the folder changes. The Recent entry still points at the folder.
+- HTML book folders need a packaged EPUB, so a dropped folder, or a folder passed at startup, is still imported (copy and card). Reading folders in place, with the EPUB in the disposable cache, is a follow-up.
 
 Legacy library entries that already point outside `managed::root()` (made by today's Locate, or restored from a backup) stay on the library screen. They open in place and are never silently replaced by a copy.
 
 ## Phase LF-1: Open in place
 
-1. Replace `open_with_import(path, locate, import: bool)` with an explicit mode: `enum Storage { InPlace, Import }`.
-   Every call site picks a mode. Nothing infers it from the presence of `locate`.
-2. **Fix the bug in `OpenLibrary` (`app.rs:3420`).** Never call `managed::import` for an existing library entry. A card backed by a copy opens that copy; a legacy entry outside `root()` opens in place.
-   Ship this first, on its own commit, with a regression test.
-3. **Library cards only for imports.** `load_document` returns `catalog: Some(..)` only when one of these holds:
-   - the mode is `Import`;
-   - the opened path is inside `managed::root()`;
-   - the path already belongs to a library entry, so its progress and cover stay updated.
-   Otherwise it returns `catalog: None`. Recent is still updated via `remember_recent`.
-4. Loading in place inside `load_document`:
-   - canonicalize the path;
-   - reject links and junctions (reuse `managed::regular`);
-   - keep the 512 MiB limit;
-   - convert TXT and MD in memory;
-   - package HTML folders into the cache.
-5. UI:
-   - Point Ctrl+O at Open: a file dialog, then open in place.
-   - Point drop at Open, and update the drop overlay text.
-   - The **Add document** card in `shelf.rs:936` keeps importing. Its subtitle becomes "Keeps a copy in your simPl library". Add an **Open file** card next to it with the subtitle "Reads it from where it is, without copying".
-6. **Add to library** action on Recent rows. It calls `managed::import`. Then `recent::relocate`/`transfer_saved_position` moves the position, so the history entry points at the copy and keeps its place.
-7. **Library card → Locate** imports the chosen file (see Target behaviour). Recent → Locate is unchanged.
-8. Tests:
-   - Each entry point produces the expected mode.
-   - `OpenLibrary` never calls `managed::import`.
-   - In-place opens add no library entry and write nothing under `root()`.
-   - TXT/MD in-place opens write no files.
-   - Opening an existing library book still updates its card's progress.
-   - Add to library keeps the reading position.
-   - Library Locate produces a copy; Recent Locate doesn't.
+Status: implemented on `fix/library`.
+
+### What each entry point does
+
+`app.rs` has one type per decision. Each entry point builds an `OpenAs`, and the file dialog and the load carry it unchanged.
+
+- `Storage { InPlace, Import }` says whether the file is copied first.
+- `Relocation { Library(Entry), Recent(Entry), AddToLibrary(Entry) }` is an open that moves an existing entry to another file. `Relocation::storage()` maps Library and AddToLibrary to `Import` and Recent to `InPlace`, so an in-place Library Locate can't be written.
+- `OpenAs { New(Storage), Relocate(Relocation) }` is the whole intent. `OpenAs::external(path)` handles drop and the startup argument: a file opens in place, a folder is imported.
+
+| Entry point | `OpenAs` | Copies | Library card |
+|---|---|---|---|
+| Library card | `New(InPlace)` | no | refreshed |
+| Recent → Open | `New(InPlace)` | no | refreshed if one exists |
+| Open file card, Ctrl+O | `New(InPlace)` | no | refreshed if one exists |
+| Add document card | `New(Import)` | yes | written |
+| Add document on a file that already has a card | `Relocate(Library)` | yes | moved to the copy |
+| Drop or startup: a file | `New(InPlace)` | no | refreshed if one exists |
+| Drop or startup: a folder | `New(Import)` | yes | written |
+| Library card → Locate | `Relocate(Library)` | yes | moved to the copy |
+| Recent → Locate | `Relocate(Recent)` | no | moved if one exists |
+| Recent → Add to library | `Relocate(AddToLibrary)` | yes | written |
+
+The missing-file notice offers the Locate the failed open carried. For a plain open, a matching library card wins over a Recent row.
+
+### Library cards
+
+`shelf::Card { Write, Refresh }` decides what a finished load may do to the library. `Storage::card()` is the only map: `Import` writes a card and `InPlace` refreshes one. A `Refresh` updates a card that already exists for the opened or the replaced path and never inserts one. The shelf decides at write time. Writes that arrive while the library is still loading wait in its queue and are decided after the load. This stops the startup open, which can finish first, from adding a card.
+
+A missing `library.json` is rebuilt from Recent, but only from simPl's own copies (`library::bootstrap`). On first run the startup open can write `recent.json` before the library is read, and a profile that only uses Open never writes `library.json`.
+
+### Text and Markdown
+
+`load_html` also reads `.txt`, `.text`, `.md` and `.markdown`. It converts the file in memory with `text::read_page`, which `managed::import_at` also uses. Both hash the same bytes, so an in-place file and its imported copy share a fingerprint, notes and per-book typography. `DocumentKind::from_path` is the one extension table.
+
+### Tests
+
+- `app.rs` entry-point tests check the `OpenAs` each message produces.
+- `isolated.rs` re-runs a test in a child process whose `LOCALAPPDATA` is a fresh temp folder. Tests that open real files use it, so they never touch the real profile. The regression test for the original bug is `library_card_outside_the_library_opens_in_place_without_a_copy`.
+- A manual check of the release build is not committed. It launched PDF, Markdown, TXT and HTML files the way Explorer does, and each left no copy and no card, with Recent pointing at the original. It also ran Add to library from the Recent panel, which made one copy and one card.
+
+### Accepted for now
+
+- A relocation that fails after importing, because the fingerprint doesn't match, leaves the new copy behind.
+- Library Locate on a card whose copy still exists leaves the old copy without a card.
+- `load_html` refuses UNC paths, so HTML, TXT and Markdown can't be opened in place from a network share. Add document still works for TXT and Markdown.
+- Recent shows TXT and Markdown files with the "HTML" tag.
+- Links and junctions are not rejected for in-place reads. OneDrive placeholders are reparse points, and Recent already opens them today.
 
 ## Phase LF-2: Explorer double-click and Open with
 
