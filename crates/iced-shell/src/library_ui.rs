@@ -43,6 +43,7 @@ pub(super) enum Reply {
     /// Recovery, "Find it…" or "Stop using this folder" finished; the text is
     /// the notice to show.
     Changed(Result<Option<String>, String>),
+    Opened(Result<(), String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,10 +211,7 @@ impl Reader {
                     let root = location.root.clone();
                     Task::perform(
                         async move { crate::platform::open_in_explorer(&root) },
-                        |result| match result {
-                            Ok(()) => Message::LibraryReply(Reply::Changed(Ok(None))),
-                            Err(error) => Message::LibraryReply(Reply::Changed(Err(error))),
-                        },
+                        |result| Message::LibraryReply(Reply::Opened(result)),
                     )
                 }
                 _ => Task::none(),
@@ -404,6 +402,12 @@ impl Reader {
                 } else {
                     self.finish_library_job()
                 }
+            }
+            Reply::Opened(result) => {
+                if let Err(error) = result {
+                    self.library.notice = Some(error);
+                }
+                Task::none()
             }
             Reply::Changed(result) => {
                 self.profile.busy = false;

@@ -111,15 +111,12 @@ fn read() -> Result<Record, String> {
             record.version
         )));
     }
-    let folders = [Some(&record.root)]
-        .into_iter()
-        .chain(match &record.moving {
-            Some(Move::Copying { to }) => [Some(to)],
-            Some(Move::Cleaning { from, .. }) => [Some(from)],
-            None => [None],
-        })
-        .flatten();
-    for root in folders {
+    let other = match &record.moving {
+        Some(Move::Copying { to }) => Some(to),
+        Some(Move::Cleaning { from, .. }) => Some(from),
+        None => None,
+    };
+    for root in std::iter::once(&record.root).chain(other) {
         if let Root::Folder(path) = root
             && !(path.is_absolute() && path.to_str().is_some())
         {
@@ -608,7 +605,7 @@ pub fn run_move(
             (Stop::Cancelled, Ok(())) => Ok(Outcome::Cancelled { kept: from }),
             (Stop::Cancelled, Err(error)) => Err(format!("The move was cancelled. {error}")),
             (Stop::Failed(error), Ok(())) => Err(error),
-            (Stop::Failed(error), Err(undo)) => Err(format!("{error}. {undo}")),
+            (Stop::Failed(error), Err(undo)) => Err(format!("{error} {undo}")),
         };
     }
     Ok(match finish(&plan.from, &plan.to, false) {
