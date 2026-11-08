@@ -17,13 +17,13 @@ pub fn mark_reader_running() {
 /// Display the native Windows picker. Call this from an application worker task,
 /// not from the UI update/view thread. Cancellation is not an error.
 #[cfg(windows)]
-pub fn open_document_dialog(locate: bool) -> Result<Option<PathBuf>, String> {
-    open_file_dialog(locate, false)
+pub fn open_document_dialog(title: &str) -> Result<Option<PathBuf>, String> {
+    open_file_dialog(title, false)
 }
 
 #[cfg(windows)]
 pub fn open_dictionary_dialog() -> Result<Option<PathBuf>, String> {
-    open_file_dialog(false, true)
+    open_file_dialog("Import dictionary package", true)
 }
 
 /// Native backup/export picker, run on a worker so the reader stays responsive.
@@ -130,7 +130,7 @@ pub fn transfer_dialog(
 }
 
 #[cfg(windows)]
-fn open_file_dialog(locate: bool, dictionary: bool) -> Result<Option<PathBuf>, String> {
+fn open_file_dialog(title: &str, dictionary: bool) -> Result<Option<PathBuf>, String> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -147,15 +147,7 @@ fn open_file_dialog(locate: bool, dictionary: bool) -> Result<Option<PathBuf>, S
     }
     .encode_utf16()
     .collect();
-    let title: Vec<u16> = if dictionary {
-        "Import dictionary package\0"
-    } else if locate {
-        "Locate moved document\0"
-    } else {
-        "Open document\0"
-    }
-    .encode_utf16()
-    .collect();
+    let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
     let mut filename = vec![0_u16; 32_768];
     let mut options = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
@@ -196,7 +188,7 @@ fn open_file_dialog(locate: bool, dictionary: bool) -> Result<Option<PathBuf>, S
 }
 
 #[cfg(not(windows))]
-pub fn open_document_dialog(_locate: bool) -> Result<Option<PathBuf>, String> {
+pub fn open_document_dialog(_title: &str) -> Result<Option<PathBuf>, String> {
     Err("the native document picker requires Windows".into())
 }
 

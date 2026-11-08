@@ -192,6 +192,71 @@ struct LoadReply {
     catalog: Option<library::Entry>,
 }
 
+/// Whether an open reads the chosen file where it is or imports a copy first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Storage {
+    InPlace,
+    Import,
+}
+
+/// An open that moves an existing entry to the chosen file. `recent::relocate`
+/// carries the reading position over, and the old entry leaves Recent and the library.
+#[derive(Clone, Debug)]
+enum Relocation {
+    /// Locate on a library card.
+    Library(Entry),
+    /// Locate on a Recent row.
+    Recent(Entry),
+}
+
+impl Relocation {
+    fn old(&self) -> &Entry {
+        match self {
+            Self::Library(old) | Self::Recent(old) => old,
+        }
+    }
+
+    fn storage(&self) -> Storage {
+        match self {
+            Self::Library(_) | Self::Recent(_) => Storage::InPlace,
+        }
+    }
+}
+
+/// How one open treats the file. Chosen by the entry point and carried
+/// unchanged through the file dialog and the load.
+#[derive(Clone, Debug)]
+enum OpenAs {
+    New(Storage),
+    Relocate(Relocation),
+}
+
+impl OpenAs {
+    const IN_PLACE: Self = Self::New(Storage::InPlace);
+    const IMPORT: Self = Self::New(Storage::Import);
+
+    fn storage(&self) -> Storage {
+        match self {
+            Self::New(storage) => *storage,
+            Self::Relocate(relocation) => relocation.storage(),
+        }
+    }
+
+    fn relocation(&self) -> Option<&Relocation> {
+        match self {
+            Self::New(_) => None,
+            Self::Relocate(relocation) => Some(relocation),
+        }
+    }
+
+    fn dialog_title(&self) -> &'static str {
+        match self {
+            Self::New(_) => "Open document",
+            Self::Relocate(_) => "Locate moved document",
+        }
+    }
+}
+
 enum SavedPosition {
     Html(PathBuf, ReadingPosition),
     PdfBook(PathBuf, ReadingPosition),
@@ -815,8 +880,10 @@ struct Reader {
     history_notice: Option<String>,
     recent_open: Option<Entry>,
     missing_recent: Option<Entry>,
-    dialog_locate: Option<Entry>,
-    pending_locate: Option<Entry>,
+    /// The open the native file dialog will perform; `Some` while it is shown.
+    dialog: Option<OpenAs>,
+    /// The in-flight open; mode switches and chapter loads have none.
+    pending_open: Option<OpenAs>,
     show_recent: bool,
     toolbar_expanded: bool,
     show_help: bool,
@@ -824,7 +891,6 @@ struct Reader {
     focus_generation: u64,
     focus_pending: bool,
     error: Option<String>,
-    dialog_open: bool,
     show_contents: bool,
     contents_offset: f32,
     request: u64,
@@ -915,8 +981,8 @@ impl Default for Reader {
             history_notice: None,
             recent_open: None,
             missing_recent: None,
-            dialog_locate: None,
-            pending_locate: None,
+            dialog: None,
+            pending_open: None,
             show_recent: false,
             show_help: false,
             toolbar_expanded: true,
@@ -924,7 +990,6 @@ impl Default for Reader {
             focus_generation: 0,
             focus_pending: false,
             error: None,
-            dialog_open: false,
             show_contents: false,
             contents_offset: 0.0,
             request: 0,
@@ -1061,7 +1126,7 @@ enum Message {
         result: Result<(), String>,
     },
     DismissOverlay,
-    OpenDialog,
+    ChooseFile(Storage),
     RecentLoaded(Result<Vec<Entry>, String>),
     RecentSaved(Result<(), String>),
     ToggleRecent,
@@ -1231,7 +1296,7 @@ impl Reader {
     fn interactive(&self) -> bool {
         self.opening.is_none()
             && !self.saving
-            && !self.dialog_open
+            && self.dialog.is_none()
             && self.removing.is_none()
             && !self.profile.busy
     }
@@ -1619,7 +1684,7 @@ impl Reader {
         }
         self.request = self.request.wrapping_add(1);
         self.opening = None;
-        self.pending_locate = None;
+        self.pending_open = None;
         self.pending_navigation = None;
         self.recent_open = None;
     }
@@ -1789,17 +1854,9 @@ impl Reader {
         }
     }
 
-    fn open(&mut self, path: PathBuf, locate: Option<Entry>) -> Task<Message> {
-        self.open_with_import(path, locate, false)
-    }
-    fn open_with_import(
-        &mut self,
-        path: PathBuf,
-        locate: Option<Entry>,
-        import: bool,
-    ) -> Task<Message> {
+    fn open(&mut self, path: PathBuf, how: OpenAs) -> Task<Message> {
         if self.saving
-            || self.dialog_open
+            || self.dialog.is_some()
             || self.failed_close.is_some()
             || self.removing.is_some()
             || self.confirm_remove.is_some()
@@ -1817,7 +1874,9 @@ impl Reader {
         self.cancel_open();
         let request = self.request;
         self.opening = Some(path.clone());
-        self.pending_locate = locate.clone();
+        let storage = how.storage();
+        let locate = how.relocation().map(|relocation| relocation.old().clone());
+        self.pending_open = Some(how);
         self.recent_open = if locate.is_some() {
             None
         } else {
@@ -1838,10 +1897,9 @@ impl Reader {
         self.selection.end_drag();
         let (task, handle) = Task::perform(
             async move {
-                let path = if import {
-                    reader_document::managed::import(&path)?
-                } else {
-                    path
+                let path = match storage {
+                    Storage::Import => reader_document::managed::import(&path)?,
+                    Storage::InPlace => path,
                 };
                 load_document(path, previous, locate).await
             },
@@ -1936,13 +1994,15 @@ impl Reader {
             && self.shelf.shelves_settled()
     }
 
-    fn locate(&mut self, entry: Entry) -> Task<Message> {
+    /// Shows the native file picker; the chosen file is opened as `how`.
+    fn choose(&mut self, how: OpenAs) -> Task<Message> {
         self.show_search = false;
-        self.dialog_locate = Some(entry);
-        self.dialog_open = true;
+        self.show_settings = false;
+        let title = how.dialog_title();
+        self.dialog = Some(how);
         self.selection.end_drag();
         Task::perform(
-            async { crate::platform::open_document_dialog(true) },
+            async move { crate::platform::open_document_dialog(title) },
             Message::DialogChosen,
         )
     }
@@ -2646,7 +2706,7 @@ impl Reader {
 
     fn close(&mut self, action: CloseAction) -> Task<Message> {
         self.word_translation.reset();
-        if self.saving || self.dialog_open {
+        if self.saving || self.dialog.is_some() {
             return Task::none();
         }
         self.failed_close = None;
@@ -3185,7 +3245,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             | Message::FollowLink(_)
             | Message::DocumentMode { .. }
             | Message::BookMode
-            | Message::OpenDialog
+            | Message::ChooseFile(_)
             | Message::Chrome(_)
             | Message::ContextBlank
             | Message::FindOpen
@@ -3364,7 +3424,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             result,
         } => reader.read_aloud_pdf_page(document, generation, page, result),
         Message::Shelf(shelf::Message::Activate(shelf::Control::Add)) => {
-            update_inner(reader, Message::OpenDialog)
+            update_inner(reader, Message::ChooseFile(Storage::Import))
         }
         Message::Shelf(shelf::Message::Activate(
             shelf::Control::Resume(index)
@@ -3419,13 +3479,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             let path = entry.document.path.clone();
             reader.show_recent = false;
-            reader.open(path, None)
+            reader.open(path, OpenAs::IN_PLACE)
         }
         Message::LocateLibrary(index) if reader.interactive() => {
             let Some(entry) = reader.shelf.entries.get(index) else {
                 return Task::none();
             };
-            reader.locate(entry.document.clone())
+            let old = entry.document.clone();
+            reader.choose(OpenAs::Relocate(Relocation::Library(old)))
         }
         Message::RemoveLibrary(index)
             if reader.interactive() && reader.confirm_remove.is_none() =>
@@ -3711,19 +3772,19 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 return Task::none();
             };
             reader.show_recent = false;
-            reader.open(entry.path, None)
+            reader.open(entry.path, OpenAs::IN_PLACE)
         }
         Message::LocateRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
                 return Task::none();
             };
-            reader.locate(entry)
+            reader.choose(OpenAs::Relocate(Relocation::Recent(entry)))
         }
         Message::LocateMissing if reader.interactive() => {
             let Some(entry) = reader.missing_recent.clone() else {
                 return Task::none();
             };
-            reader.locate(entry)
+            reader.choose(OpenAs::Relocate(Relocation::Recent(entry)))
         }
         Message::RemoveRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
@@ -3742,37 +3803,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.failed_close = None;
             restore_viewport(reader)
         }
-        Message::OpenDialog if reader.interactive() => {
-            reader.show_search = false;
-            reader.show_settings = false;
-            reader.dialog_open = true;
-            reader.selection.end_drag();
-            Task::perform(
-                async { crate::platform::open_document_dialog(false) },
-                Message::DialogChosen,
-            )
-        }
+        Message::ChooseFile(storage) if reader.interactive() => reader.choose(OpenAs::New(storage)),
         Message::DialogChosen(result) => {
-            reader.dialog_open = false;
-            let locate = reader.dialog_locate.take();
-            let task = match result {
-                Ok(Some(path)) => {
-                    let import = locate.is_none();
-                    let prior = locate.or_else(|| {
-                        reader
-                            .shelf
-                            .entries
-                            .iter()
-                            .find(|e| {
-                                e.document.path
-                                    == path.canonicalize().unwrap_or_else(|_| path.clone())
-                            })
-                            .map(|e| e.document.clone())
-                    });
-                    reader.open_with_import(path, prior, import)
-                }
-                Ok(None) => Task::none(),
-                Err(error) => {
+            let how = reader.dialog.take();
+            let task = match (result, how) {
+                (Ok(Some(path)), Some(how)) => reader.open(path, how),
+                (Ok(_), _) => Task::none(),
+                (Err(error), _) => {
                     reader.error = Some(error);
                     Task::none()
                 }
@@ -3788,7 +3825,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.opening = None;
             reader.opening_task = None;
             let navigation = reader.pending_navigation.take();
-            let relocated = reader.pending_locate.take();
+            let relocated = reader
+                .pending_open
+                .take()
+                .and_then(|how| how.relocation().map(|relocation| relocation.old().clone()));
             let recent_open = reader.recent_open.take();
             let history_task = result.as_ref().ok().map_or_else(Task::none, |document| {
                 reader.missing_recent = None;
@@ -4737,7 +4777,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Task::none()
                 }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
-                    reader.open_with_import(path, None, true)
+                    reader.open(path, OpenAs::IMPORT)
                 }
                 iced::Event::Window(window::Event::Unfocused)
                 | iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -4752,7 +4792,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     match key.as_ref() {
                         Key::Character(value) if modifiers.control() => {
                             match value.to_ascii_lowercase().as_str() {
-                                "o" => update_inner(reader, Message::OpenDialog),
+                                "o" => update_inner(reader, Message::ChooseFile(Storage::Import)),
                                 "w" => reader.close(CloseAction::Document),
                                 "c" => update_inner(reader, Message::Copy),
                                 "a" if reader.interactive() => {
@@ -6744,7 +6784,7 @@ pub fn run(path: Option<PathBuf>, error: Option<String>) -> iced::Result {
                 Task::perform(async { recent::load() }, Message::RecentLoaded),
                 shelf::Shelf::load().map(Message::Shelf),
                 path.clone()
-                    .map_or_else(Task::none, |path| reader.open_with_import(path, None, true)),
+                    .map_or_else(Task::none, |path| reader.open(path, OpenAs::IMPORT)),
             ];
             (reader, Task::batch(tasks))
         },
@@ -8135,6 +8175,97 @@ mod tests {
         );
         assert!(reader.error.is_none());
         assert_eq!(reader.book.as_ref().unwrap().title, "latest");
+    }
+
+    fn card(path: &str) -> library::Entry {
+        let mut entry = shelf::sample_entries(&[("Card", DocumentKind::Pdf)]).remove(0);
+        entry.document.path = PathBuf::from(path);
+        entry
+    }
+
+    fn row(path: &str) -> Entry {
+        Entry {
+            path: PathBuf::from(path),
+            title: "Row".into(),
+            fingerprint: format!("{:064x}", 9),
+            kind: DocumentKind::Pdf,
+        }
+    }
+
+    /// The storage of an open, and the path of the entry it relocates.
+    fn mode(how: &Option<OpenAs>) -> Option<(Storage, Option<PathBuf>)> {
+        how.as_ref().map(|how| {
+            (
+                how.storage(),
+                how.relocation()
+                    .map(|relocation| relocation.old().path.clone()),
+            )
+        })
+    }
+
+    fn reader_with(cards: Vec<library::Entry>, recent: Vec<Entry>) -> Reader {
+        let mut reader = Reader {
+            recent,
+            ..Reader::default()
+        };
+        let _ = reader
+            .shelf
+            .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+        let _ = reader.shelf.update(shelf::Message::Loaded(Ok(cards)));
+        reader
+    }
+
+    /// The open that `messages` start on a reader with one card and one Recent row.
+    fn open_mode(messages: Vec<Message>) -> Option<(Storage, Option<PathBuf>)> {
+        let mut reader = reader_with(
+            vec![card(r"C:\Books\Card.pdf")],
+            vec![row(r"C:\Books\Row.pdf")],
+        );
+        for message in messages {
+            let _ = update_inner(&mut reader, message);
+        }
+        mode(&reader.pending_open)
+    }
+
+    fn chosen(path: &str) -> Message {
+        Message::DialogChosen(Ok(Some(PathBuf::from(path))))
+    }
+
+    #[test]
+    fn entry_points_choose_how_to_open() {
+        let new = r"C:\Books\New.pdf";
+        assert_eq!(
+            open_mode(vec![Message::OpenLibrary(0)]),
+            Some((Storage::InPlace, None))
+        );
+        assert_eq!(
+            open_mode(vec![Message::OpenRecent(0)]),
+            Some((Storage::InPlace, None))
+        );
+        assert_eq!(
+            open_mode(vec![Message::ChooseFile(Storage::Import), chosen(new)]),
+            Some((Storage::Import, None))
+        );
+        assert_eq!(
+            open_mode(vec![Message::LocateLibrary(0), chosen(new)]),
+            Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Card.pdf"))))
+        );
+        assert_eq!(
+            open_mode(vec![Message::LocateRecent(0), chosen(new)]),
+            Some((Storage::InPlace, Some(PathBuf::from(r"C:\Books\Row.pdf"))))
+        );
+    }
+
+    #[test]
+    fn dialog_carries_its_open_and_clears_on_cancel() {
+        let mut reader = Reader::default();
+        let _ = update_inner(&mut reader, Message::ChooseFile(Storage::Import));
+        assert_eq!(mode(&reader.dialog), Some((Storage::Import, None)));
+        assert!(!reader.interactive());
+        let _ = update_inner(&mut reader, Message::DialogChosen(Ok(None)));
+        assert_eq!(mode(&reader.dialog), None);
+        assert_eq!(mode(&reader.pending_open), None);
+        assert!(reader.interactive());
     }
 
     #[test]
