@@ -104,7 +104,7 @@ The missing-file notice offers the Locate the failed open carried. For a plain o
 
 ### Library cards
 
-`shelf::Card { Write, Refresh }` decides what a finished load may do to the library. `Storage::card()` is the only map: `Import` writes a card and `InPlace` refreshes one. A `Refresh` updates a card that already exists for the opened or the replaced path and never inserts one. The shelf decides at write time. Writes that arrive while the library is still loading wait in its queue and are decided after the load. This stops the startup open, which can finish first, from adding a card.
+`shelf::Card { Write, UpdateExisting }` decides what a finished load may do to the library. `Storage::card()` is the only map: `Import` writes a card and `InPlace` updates one. `UpdateExisting` updates a card that already exists for the opened or the replaced path and never inserts one. The shelf decides at write time. Writes that arrive while the library is still loading wait in its queue and are decided after the load. This stops the startup open, which can finish first, from adding a card.
 
 A missing `library.json` is rebuilt from Recent, but only from simPl's own copies (`library::bootstrap`). On first run the startup open can write `recent.json` before the library is read, and a profile that only uses Open never writes `library.json`.
 
