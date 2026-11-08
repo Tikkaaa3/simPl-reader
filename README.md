@@ -107,7 +107,8 @@ To create the portable application, follow [Build from source](#build-from-sourc
 If you already have a portable folder:
 
 1. Run `simPl.exe`. Keep `pdfium.dll` and the `third-party` folder beside it.
-2. Select **Add Document**, press **Ctrl+O**, or drop a supported file into the window.
+2. Select **Open file**, press **Ctrl+O**, or drop a supported file into the window to read it where it is.
+   Select **Add Document** or press **Ctrl+Shift+O** to copy it into your library.
 3. Read, then return to **Library**. Your position and reading preferences are saved.
 
 The portable executable needs no Rust installation. Move or copy the **whole
@@ -236,7 +237,8 @@ JSON also preserves their full anchors, IDs and timestamps.
 
 | Shortcut | Action |
 | --- | --- |
-| **Ctrl+O** | Add a document |
+| **Ctrl+O** | Open a file where it is |
+| **Ctrl+Shift+O** | Add a document to the library |
 | **Ctrl+K** | Search and switch books |
 | **Ctrl+W** | Save and return to Library |
 | **Space** in Library | Resume the most recent unfinished book when no control is focused |

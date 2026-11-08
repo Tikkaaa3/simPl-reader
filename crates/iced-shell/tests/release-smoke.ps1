@@ -130,12 +130,12 @@ function Wait-Title([string]$Expected) {
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Expected '$Expected'; title is '$([ReleaseSmokeNative]::Title($window))'."
 }
-function Open([string]$Path,[string]$Title) {
-    Key 0x4f -Ctrl
+function Add([string]$Path,[string]$Title) {
+    Key 0x4f -Ctrl -Shift
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     while ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 30 }
     Assert-Target
-    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+O did not open the native file picker.' }
+    if ([ReleaseSmokeNative]::GetForegroundWindow() -eq $window) { throw 'Ctrl+Shift+O did not open the native file picker.' }
     Text ([IO.Path]::GetFullPath($Path))
     Key 0x0d
     Wait-Title $Title
@@ -177,7 +177,7 @@ try {
     Start-Sleep -Milliseconds 200
     Size 900 640
     Capture '01-empty-library'
-    Open $txt 'Native reading notes'
+    Add $txt 'Native reading notes'
     Click 160 151 2; Capture '02a-missing-dictionary'
     Key 0x09; Key 0x09; Key 0x0d
     $catalog = Get-Content -Raw -LiteralPath (Join-Path $root 'assets/dictionaries/catalog.json') | ConvertFrom-Json
@@ -193,15 +193,15 @@ try {
     Key 0x77; Capture '04-toolbar-hidden'; Key 0x77
     Key 0x27; Capture '05-next-page'
     Key 0x57 -Ctrl; Wait-Title 'simPl'; Capture '06-library-after-txt'
-    Open $md 'A reading checklist'; Capture '07-markdown'
+    Add $md 'A reading checklist'; Capture '07-markdown'
     Key 0x4b -Ctrl; Text 'notes'; Capture '08-quick-switcher'; Key 0x1b
     Key 0x57 -Ctrl
-    Open (Join-Path $root 'fixtures/book-structure/structured.html') 'A quieter page'; Capture '09-html'
+    Add (Join-Path $root 'fixtures/book-structure/structured.html') 'A quieter page'; Capture '09-html'
     Key 0x57 -Ctrl
-    Open (Join-Path $root 'target/book-milestone2/structured.epub') 'A quieter page'
+    Add (Join-Path $root 'target/book-milestone2/structured.epub') 'A quieter page'
     Key 0x54 -Ctrl; Capture '10-epub-contents'; Key 0x1b
     Key 0x57 -Ctrl
-    Open (Join-Path $root 'target/book-milestone3/fixtures/prose.pdf') 'A quiet reading journey'
+    Add (Join-Path $root 'target/book-milestone3/fixtures/prose.pdf') 'A quiet reading journey'
     Capture '11-pdf-document'
     Key 0x4c -Ctrl; Key 0x41 -Ctrl; Text '2'; Key 0x0d; Capture '12-pdf-page-two'
     Size 540 640; Capture '13-narrow-pdf'
@@ -225,7 +225,7 @@ try {
                 @((Join-Path $root 'target/book-milestone2/structured.epub'),'A quieter page'),
                 @((Join-Path $root 'target/book-milestone3/fixtures/prose.pdf'),'A quiet reading journey')
             )) {
-                Open $document[0] $document[1]
+                Add $document[0] $document[1]
                 Key 0x27
                 Key 0x57 -Ctrl
                 Wait-Title 'simPl'
