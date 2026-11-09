@@ -39,14 +39,14 @@ pub const DARK: Palette = Palette {
 };
 
 pub const LIGHT: Palette = Palette {
-    background: Color::from_rgb8(0xff, 0xff, 0xff),
-    surface: Color::from_rgb8(0xf6, 0xf6, 0xf6),
-    raised: Color::from_rgb8(0xff, 0xff, 0xff),
-    lowest: Color::from_rgb8(0xff, 0xff, 0xff),
+    background: Color::from_rgb8(0xf4, 0xf4, 0xf4),
+    surface: Color::from_rgb8(0xff, 0xff, 0xff),
+    raised: Color::from_rgb8(0xeb, 0xeb, 0xeb),
+    lowest: Color::from_rgb8(0xf4, 0xf4, 0xf4),
     border: Color::from_rgb8(0xe5, 0xe5, 0xe5),
     text: Color::from_rgb8(0x10, 0x10, 0x10),
     secondary: Color::from_rgb8(0x52, 0x52, 0x52),
-    muted: Color::from_rgb8(0x73, 0x73, 0x73),
+    muted: Color::from_rgb8(0x6a, 0x6a, 0x6a),
     accent: Color::from_rgb8(0x09, 0x69, 0xda),
     danger: Color::from_rgb8(0xa3, 0x2b, 0x2b),
     control_border: Color::from_rgb8(0xe2, 0xe2, 0xe2),
@@ -348,6 +348,28 @@ mod tests {
         for theme in &THEMES {
             assert!(luminance(theme.light.surface) > 0.5, "{}", theme.name);
             assert!(luminance(theme.dark.surface) < 0.05, "{}", theme.name);
+        }
+    }
+
+    #[test]
+    fn light_paper_is_never_darker_than_the_desk() {
+        for theme in &THEMES {
+            let paper = luminance(theme.light.surface);
+            let desk = luminance(theme.light.background);
+            assert!(
+                paper >= desk,
+                "{}: paper {paper:.3} on desk {desk:.3}",
+                theme.name
+            );
+        }
+    }
+
+    /// Inputs are filled with `raised`, and their placeholders are small `muted` text.
+    #[test]
+    fn light_placeholders_stay_readable_on_inputs() {
+        for theme in &THEMES {
+            let placeholder = contrast(theme.light.muted, theme.light.raised);
+            assert!(placeholder >= 4.5, "{}: {placeholder:.2}", theme.name);
         }
     }
 
