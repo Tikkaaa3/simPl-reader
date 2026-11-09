@@ -209,6 +209,14 @@ impl Reader {
         self.read_aloud.speaker = Some(speaker);
     }
 
+    /// A session reading from the current page, as Listen starts one, without
+    /// a speaker, so nothing is spoken.
+    #[cfg(test)]
+    pub(super) fn begin_silent_listening(&mut self) {
+        let document = self.reading_document().expect("an open document");
+        self.begin(document, false, Next::Nothing, None);
+    }
+
     /// Identifies the open document so a session ends when it changes.
     fn reading_document(&self) -> Option<String> {
         if let Some(pdf) = &self.pdf {
@@ -1028,7 +1036,7 @@ pub(super) fn ticks() -> impl iced_futures::futures::Stream<Item = ()> {
     )
 }
 
-/// The Read aloud player shown under the toolbar while something is read.
+/// The Read aloud player, a pill over the page while something is read.
 pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Message> {
     let Some(session) = &reader.read_aloud.session else {
         return iced::widget::Space::new().height(0).into();
@@ -1058,8 +1066,7 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
         }),
         text(reader.read_aloud_caption())
             .size(13)
-            .style(ui::secondary_text)
-            .width(Length::Fill),
+            .style(ui::secondary_text),
         hinted_control(
             reader,
             Control::ReadAloudSlower,

@@ -409,11 +409,10 @@ impl Reader {
             || library_ui::banner_visible(self)
     }
 
-    /// Find, the read-aloud player, help, recent documents or notices.
+    /// Help, recent documents or notices. Find, the read-aloud player and the
+    /// drawers float over the page instead, so they never hold the bar.
     fn has_held_panels(&self) -> bool {
-        self.find.is_some()
-            || self.read_aloud.active()
-            || self.error.is_some()
+        self.error.is_some()
             || self.history_notice.is_some()
             || self.show_recent
             || self.show_help
@@ -1378,6 +1377,32 @@ mod tests {
         assert!(reader.has_panels(), "the loading line shows below the bar");
         reader.bar.tick(opened + seconds(2.1));
         assert_eq!(reader.bar.state(), BarState::Hidden);
+    }
+
+    #[test]
+    fn find_listen_and_contents_float_without_holding_the_bar() {
+        let mut reader = super::super::book_preview::full_bar_book(1400.0, 900.0);
+        let opened = Instant::now();
+        reader.sync_bar(opened, Input::default());
+        reader.begin_silent_listening();
+        let _ = update_inner(&mut reader, Message::FindOpen);
+        let _ = update_inner(&mut reader, Message::ToggleContents);
+        assert!(reader.find.is_some() && reader.read_aloud.active() && reader.show_contents);
+        reader.focused = None;
+        reader.sync_bar(opened + seconds(0.5), Input::default());
+        reader.bar.tick(opened + seconds(2.1));
+        assert_eq!(
+            reader.bar.state(),
+            BarState::Hidden,
+            "the bar idles away over open panels that float"
+        );
+        reader.show_help = true;
+        reader.sync_bar(opened + seconds(3.0), Input::default());
+        assert_eq!(
+            reader.bar.state(),
+            BarState::Shown { hide_at: None },
+            "help still hangs below the bar and holds it"
+        );
     }
 
     fn escape() -> Message {

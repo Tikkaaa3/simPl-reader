@@ -5940,6 +5940,71 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
     container(bar).padding([8, 12]).style(ui::panel).into()
 }
 
+/// The find box and the read-aloud pill over the page, between the page
+/// strips' inner edges: the box at the top right below the bar's place, the
+/// pill centred above the progress line. Each keeps its slot while closed.
+/// The wheel over either still scrolls the page.
+fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
+    fn wheel(content: Element<'_, Message>) -> Element<'_, Message> {
+        iced::widget::mouse_area(iced::widget::opaque(content))
+            .on_scroll(Message::ChromeWheel)
+            .into()
+    }
+    const FIND_WIDTH: f32 = 400.0;
+    const GAP: f32 = 8.0;
+    let window = reader.window_size;
+    let drawers = reader.drawers();
+    let area = iced::Rectangle::with_size(Size::new(
+        (window.width - drawers.docked().total()).max(0.0),
+        window.height,
+    ));
+    let strip = page_strips::width(window.width);
+    let inset = page_strips::bottom_inset(reader);
+    let [previous, next] = page_strips::regions(area, strip, inset, drawers.overlaid());
+    let between = (next.x - previous.x - previous.width).max(0.0);
+    let band = progress_line::band(area, strip, inset, drawers.overlaid());
+    let find: Element<'_, Message> = match &reader.find {
+        Some(find) => container(wheel(
+            container(find_bar(reader, find, active))
+                .width(FIND_WIDTH.min(between))
+                .into(),
+        ))
+        .width(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .padding(iced::Padding {
+            top: reading_chrome::HEIGHT + GAP,
+            right: area.width - next.x,
+            ..iced::Padding::ZERO
+        })
+        .into(),
+        None => iced::widget::Space::new().into(),
+    };
+    let pill: Element<'_, Message> = if reader.read_aloud.active() {
+        container(wheel(
+            container(read_aloud::player(reader, active))
+                .max_width(band.width)
+                .into(),
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(iced::Padding {
+            left: band.x,
+            right: area.width - band.x - band.width,
+            bottom: area.height - band.y + GAP,
+            top: 0.0,
+        })
+        .into()
+    } else {
+        iced::widget::Space::new().into()
+    };
+    iced::widget::stack![find, pill]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
 /// Choosing a theme card: the default theme from Settings, the book's own from Aa.
 fn theme_message(target: reading_ui::Target, index: usize) -> Message {
     match target {
@@ -6193,16 +6258,6 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     // This slot is always present, so expanding any panel never replaces the
     // reading scrollable's widget-tree position or its native scroll state.
     let mut auxiliary = column![].spacing(8);
-    if let Some(find) = reader
-        .find
-        .as_ref()
-        .filter(|_| reader.book.is_some() || reader.pdf.is_some())
-    {
-        auxiliary = auxiliary.push(find_bar(reader, find, active));
-    }
-    if reader.read_aloud.active() {
-        auxiliary = auxiliary.push(read_aloud::player(reader, active));
-    }
     if let Some(error) = &reader.error {
         let mut notice = row![
             text(error)
@@ -6408,7 +6463,8 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         let docked = reader.drawers().docked();
         let reading = container(iced::widget::stack![
             content,
-            page_strips::layer(reader, active)
+            page_strips::layer(reader, active),
+            floating(reader, active),
         ])
         .padding(iced::Padding {
             left: docked.left,
@@ -9260,6 +9316,73 @@ mod tests {
         let _ = update(&mut reader, key(key::Named::Escape, key::Code::Escape));
         assert_eq!(reader.focused, None);
         assert_eq!(reader.bar.state(), BarState::Hidden);
+    }
+
+    #[test]
+    fn panels_do_not_move_the_page() {
+        ui::load_test_fonts();
+        let output =
+            std::env::temp_dir().join(format!("simpl-panels-still-{}", std::process::id()));
+        std::fs::create_dir_all(&output).unwrap();
+        let shot = |reader: &mut Reader, name: &str| {
+            let path = output.join(format!("{name}.png"));
+            book_preview::render(reader, &path);
+            ::image::open(&path).unwrap().to_rgba8()
+        };
+        let mut reader = book_preview::full_bar_book(1400.0, 900.0);
+        let plain = shot(&mut reader, "plain");
+        reader.begin_silent_listening();
+        let listening = shot(&mut reader, "listen");
+        let _ = update(&mut reader, Message::ReadAloud(read_aloud::Action::Toggle));
+        assert!(!reader.read_aloud.active());
+        let _ = update(&mut reader, Message::FindOpen);
+        let finding = shot(&mut reader, "find");
+        let _ = update(&mut reader, Message::FindClose);
+        let _ = update(&mut reader, Message::ToggleContents);
+        assert!(reader.show_contents);
+        let contents = shot(&mut reader, "contents");
+        let _ = std::fs::remove_dir_all(&output);
+
+        // Right of the docked contents drawer and left of the find box, and
+        // above the pill: dark ink there is the page's own text.
+        let (left, right) = (341, 880);
+        let first_text_row = |image: &::image::RgbaImage| {
+            (reading_chrome::HEIGHT as u32..image.height())
+                .find(|&y| {
+                    (left..right).any(|x| {
+                        let [r, g, b, _] = image.get_pixel(x, y).0;
+                        u32::from(r) + u32::from(g) + u32::from(b) < 3 * 80
+                    })
+                })
+                .expect("the page shows text")
+        };
+        let changed =
+            |image: &::image::RgbaImage, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>| {
+                ys.clone().any(|y| {
+                    xs.clone()
+                        .any(|x| image.get_pixel(x, y) != plain.get_pixel(x, y))
+                })
+            };
+        assert!(
+            changed(&listening, 0..1400, 780..868),
+            "the pill shows above the line"
+        );
+        assert!(
+            changed(&finding, 880..1300, 52..110),
+            "the find box shows at the top right"
+        );
+        assert!(
+            changed(&contents, 0..340, 44..900),
+            "the drawer shows on the left"
+        );
+        let row = first_text_row(&plain);
+        for (name, image) in [
+            ("Listen", &listening),
+            ("Find", &finding),
+            ("Contents", &contents),
+        ] {
+            assert_eq!(first_text_row(image), row, "{name} moved the page");
+        }
     }
 
     #[test]
