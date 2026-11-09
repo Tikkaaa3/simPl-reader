@@ -17,8 +17,8 @@ and keep your highlights and notes with your books.
   title or author, and resume from Continue Reading.
 - **Two ways to read PDFs.** Keep the original page in Document view or use Book
   view for reconstructed prose and extracted illustrations.
-- **One page at a time.** Visible paper boundaries, previous/next navigation and a
-  page field that can jump across the whole book.
+- **One page at a time.** Visible paper boundaries, a click anywhere along the left
+  or right edge to turn the page, and a page field that can jump across the whole book.
 - **Stable pages.** Zoom changes the size of the page without changing its number
   or the total. Switching PDF views keeps your current source page.
 - **Reading themes.** Pick Default, Soft, Clear or Compact in Settings: each sets the
@@ -147,7 +147,10 @@ file again to repair its library label while reusing the same managed document.
 
 When EPUB or HTML has no source page list, simPl creates a fixed page map on its
 first preparation. The **− / +** controls zoom that map; they do not repaginate it. Select the zoom percentage to toggle **Fit width**, or use **Ctrl+Shift+F**. Fit width follows window and notes-sidebar resizing, and returns to the previous zoom when toggled off.
-Arrow keys turn pages, while vertical scrolling stays within the selected Book page.
+Click anywhere along the left or right edge of the reading area, or press the arrow
+keys, to turn pages; vertical scrolling stays within the selected Book page. The edge
+shows a soft shade and an arrow while the pointer is over it, and the wheel there still
+scrolls the page. The same edges turn pages in PDF Document view.
 
 PDF Book view uses the PDF's existing text layer; it does **not** perform OCR.
 Image-only or complex pages may be better read in Document view. Initial preparation
@@ -158,8 +161,8 @@ Blank source pages remain blank.
 Select text to choose a highlight color or add a note. Right-click a saved
 highlight to change its color, edit its note or remove it. Same-color overlapping
 highlights merge without darkening; different colors can overlap. Right-click a
-page to bookmark it. The bookmarks and notes sidebar opens from the arrow at
-the right edge or with Ctrl+B. Click a note in the sidebar to read its full text;
+page to bookmark it. The bookmarks and notes sidebar opens from **Notes** in the
+reading bar or with Ctrl+B. Click a note in the sidebar to read its full text;
 long notes scroll within the list.
 Bookmarks and highlights are stored per book under
 `%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
