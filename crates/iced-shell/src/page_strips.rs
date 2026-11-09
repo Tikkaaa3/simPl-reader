@@ -221,7 +221,7 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
 /// How far above the reading area's bottom the strips stop: above the PDF
 /// status row, and above the horizontal scrollbar while the page is zoomed
 /// wider than the window. Otherwise they run to the bottom edge.
-fn bottom_inset(reader: &Reader) -> f32 {
+pub(super) fn bottom_inset(reader: &Reader) -> f32 {
     let status = if reader.pdf.is_some() {
         pdf_reader::STATUS_HEIGHT
     } else {

@@ -1894,7 +1894,8 @@ fn a_pdf_strip_turns_the_pdf_page_above_the_status_line() {
 }
 
 /// A point `fraction` of the way along the progress line, in its hover band.
-fn on_the_line(reader: &Reader, fraction: f32, bottom_inset: f32) -> Point {
+fn on_the_line(reader: &Reader, fraction: f32) -> Point {
+    let bottom_inset = page_strips::bottom_inset(reader);
     let window = reader.window_size;
     let strip = page_strips::width(window.width);
     let right = window.width - notes_ui::sidebar_width(reader) - 14.0 - strip;
@@ -1930,12 +1931,12 @@ fn a_press_on_the_progress_line_jumps_to_its_page() {
     let mut reader = strip_book(1280.0, 700.0);
     reader.bar.toggle_pin(std::time::Instant::now());
     let mut ui = Harness::new();
-    let middle = on_the_line(&reader, 0.5, 0.0);
+    let middle = on_the_line(&reader, 0.5);
     assert_eq!(interaction_at(&reader, middle), mouse::Interaction::Pointer);
     let messages = ui.click(&mut reader, middle);
     assert_eq!(progress_jumps(&messages), [7]);
     assert_eq!(page_field(&reader), "7");
-    let end = on_the_line(&reader, 1.0, 0.0) - iced::Vector::new(1.0, 0.0);
+    let end = on_the_line(&reader, 1.0) - iced::Vector::new(1.0, 0.0);
     let _ = ui.click(&mut reader, end);
     assert_eq!(page_field(&reader), "14");
     let above = middle - iced::Vector::new(0.0, 24.0);
@@ -1953,7 +1954,7 @@ fn a_pdf_progress_line_jumps_above_the_status_line() {
     };
     let mut ui = Harness::new();
     let page = |reader: &Reader| reader.pdf.as_ref().unwrap().page_index();
-    let at = on_the_line(&reader, 0.9, pdf_reader::STATUS_HEIGHT);
+    let at = on_the_line(&reader, 0.9);
     let messages = ui.click(&mut reader, at);
     assert_eq!(progress_jumps(&messages), [3]);
     assert_eq!(page(&reader), 2);
@@ -1978,6 +1979,25 @@ fn render_strip_look() {
             at,
         );
         assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+    }
+}
+
+#[test]
+#[ignore = "UX-4 review: writes the progress line at rest and hovered to target/ui-ux-review"]
+fn render_progress_line_look() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        for (width, height) in [(1400.0, 900.0), (540.0, 360.0)] {
+            let mut reader = strip_book(width, height);
+            reader.appearance = appearance;
+            let _ = update(&mut reader, Message::ProgressJump(4));
+            let file = |state: &str| output.join(format!("UX-4-line-{name}-{width}-{state}.png"));
+            render(&mut reader, &file("rest"));
+            let at = on_the_line(&reader, 0.5);
+            render_with_cursor(&mut reader, &file("hover"), at);
+        }
     }
 }
 

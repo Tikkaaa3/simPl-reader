@@ -14,7 +14,6 @@ const HOVERED: f32 = 6.0;
 const LABEL_SIZE: f32 = 11.0;
 const LABEL_LINE: f32 = 14.0;
 const LABEL_PADDING: [f32; 2] = [2.0, 6.0];
-const LABEL_GAP: f32 = 2.0;
 
 /// How far through the open book or PDF the reader is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -109,7 +108,7 @@ pub(super) fn draw(
     let size = Size::new(text_width + 2.0 * padding_x, LABEL_LINE + 2.0 * padding_y);
     let backing = Rectangle {
         x: (band.center_x() - size.width / 2.0).round(),
-        y: track.y - LABEL_GAP - size.height,
+        y: track.y - size.height,
         width: size.width,
         height: size.height,
     };
@@ -119,7 +118,9 @@ pub(super) fn draw(
             border: iced::Border {
                 color: palette.border,
                 width: 1.0,
-                radius: 4.0.into(),
+                // The label stands on the line, so no page text shows
+                // between them.
+                radius: iced::border::Radius::default().top(4.0),
             },
             ..renderer::Quad::default()
         },
