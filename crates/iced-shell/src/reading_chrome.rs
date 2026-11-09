@@ -171,8 +171,8 @@ pub(super) struct Bar {
     pointer: Option<Point>,
     /// The book page field has keyboard focus.
     book_field: bool,
-    /// Keyboard modifiers, for the wheel over the bar.
-    modifiers: keyboard::Modifiers,
+    /// Keyboard modifiers, for the wheel over the bar and the page.
+    pub(super) modifiers: keyboard::Modifiers,
 }
 
 impl Default for Bar {
@@ -1086,7 +1086,12 @@ fn more(reader: &Reader, active: bool) -> Element<'_, Message> {
 pub(super) fn wheel(reader: &mut Reader, delta: mouse::ScrollDelta) -> Task<Message> {
     let modifiers = reader.bar.modifiers;
     if !crate::document_scroll::control_pressed(modifiers) {
-        return forward_wheel(reader, delta, modifiers);
+        // At the page's end the forwarded scroll moves nothing, so the push
+        // toward the next page counts here. A turn replaces the scroll, which
+        // would otherwise move the new page.
+        return reader
+            .overscroll(delta, Instant::now())
+            .unwrap_or_else(|| forward_wheel(reader, delta, modifiers));
     }
     let notches = crate::document_scroll::zoom_notches(delta);
     if notches == 0.0 {
