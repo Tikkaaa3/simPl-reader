@@ -5952,19 +5952,25 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
 /// The narrowest room the find box and the read-aloud pill keep for their
 /// controls.
 const FLOATING_MIN_WIDTH: f32 = 300.0;
+const FLOATING_GAP: f32 = 8.0;
+/// How far above its bottom edge the read-aloud pill reaches, with its row
+/// broken in two beside a narrow drawer.
+const PILL_REACH: f32 = 88.0;
 
-/// The find box and the read-aloud pill over the page, between the page
-/// strips' inner edges: the box at the top right below the bar's place, the
-/// pill centred above the progress line. Each keeps its slot while closed.
-/// The wheel over either still scrolls the page.
-fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
-    fn wheel(content: Element<'_, Message>) -> Element<'_, Message> {
-        iced::widget::mouse_area(iced::widget::opaque(content))
-            .on_scroll(Message::ChromeWheel)
-            .into()
-    }
-    const FIND_WIDTH: f32 = 400.0;
-    const GAP: f32 = 8.0;
+/// Where the find box and the read-aloud pill go, in the reading area's
+/// coordinates.
+struct FloatingLane {
+    /// The reading area's width.
+    width: f32,
+    /// Between the page strips' inner edges while the controls fit there. Two
+    /// drawers in a narrow window leave too little, and the controls then
+    /// cover the strips.
+    lane: std::ops::Range<f32>,
+    /// The pill's bottom edge, just above the progress line.
+    pill_bottom: f32,
+}
+
+fn floating_lane(reader: &Reader) -> FloatingLane {
     let window = reader.window_size;
     let drawers = reader.drawers();
     let area = iced::Rectangle::with_size(Size::new(
@@ -5976,15 +5982,53 @@ fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
     let overlaid = drawers.overlaid();
     let [previous, next] = page_strips::regions(area, strip, inset, overlaid);
     let band = progress_line::band(area, strip, inset, overlaid);
-    // Between the strips while the controls fit there. Two drawers in a
-    // narrow window leave too little, and the controls then cover the strips.
     let between = previous.x + previous.width..next.x;
     let lane = if between.end - between.start >= FLOATING_MIN_WIDTH {
         between
     } else {
-        let start = overlaid.left + GAP;
-        start..(area.width - overlaid.right - GAP).max(start)
+        let start = overlaid.left + FLOATING_GAP;
+        start..(area.width - overlaid.right - FLOATING_GAP).max(start)
     };
+    FloatingLane {
+        width: area.width,
+        lane,
+        pill_bottom: band.y - FLOATING_GAP,
+    }
+}
+
+/// While listening, the band across the lane where the pill sits, in window
+/// coordinates. The pointer there reveals the bar, and the pill with it.
+fn pill_zone(reader: &Reader) -> Option<iced::Rectangle> {
+    if !reader.read_aloud.active() {
+        return None;
+    }
+    let FloatingLane {
+        lane, pill_bottom, ..
+    } = floating_lane(reader);
+    Some(iced::Rectangle {
+        x: reader.drawers().docked().left + lane.start,
+        y: pill_bottom - PILL_REACH,
+        width: lane.end - lane.start,
+        height: PILL_REACH,
+    })
+}
+
+/// The find box and the read-aloud pill over the page: the box at the top
+/// right below the bar's place, the pill centred above the progress line
+/// while the bar shows. Each keeps its slot while closed or hidden. The wheel
+/// over either still scrolls the page.
+fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
+    fn wheel(content: Element<'_, Message>) -> Element<'_, Message> {
+        iced::widget::mouse_area(iced::widget::opaque(content))
+            .on_scroll(Message::ChromeWheel)
+            .into()
+    }
+    const FIND_WIDTH: f32 = 400.0;
+    let FloatingLane {
+        width,
+        lane,
+        pill_bottom,
+    } = floating_lane(reader);
     let find: Element<'_, Message> = match &reader.find {
         Some(find) => container(wheel(
             container(find_bar(reader, find, active))
@@ -5994,18 +6038,21 @@ fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
         .width(Length::Fill)
         .align_x(iced::alignment::Horizontal::Right)
         .padding(iced::Padding {
-            top: reading_chrome::HEIGHT + GAP,
-            right: area.width - lane.end,
+            top: reading_chrome::HEIGHT + FLOATING_GAP,
+            right: width - lane.end,
             ..iced::Padding::ZERO
         })
         .into(),
         None => iced::widget::Space::new().into(),
     };
-    let pill: Element<'_, Message> = if reader.read_aloud.active() {
-        container(wheel(
-            container(read_aloud::player(reader, active))
-                .max_width(lane.end - lane.start)
-                .into(),
+    let pill: Element<'_, Message> = if reader.read_aloud.active() && reader.bar.visible() {
+        container(reading_chrome::fade(
+            reader,
+            wheel(
+                container(read_aloud::player(reader, active))
+                    .max_width(lane.end - lane.start)
+                    .into(),
+            ),
         ))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -6013,8 +6060,8 @@ fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
         .align_y(iced::alignment::Vertical::Bottom)
         .padding(iced::Padding {
             left: lane.start,
-            right: area.width - lane.end,
-            bottom: area.height - band.y + GAP,
+            right: width - lane.end,
+            bottom: reader.window_size.height - pill_bottom,
             top: 0.0,
         })
         .into()

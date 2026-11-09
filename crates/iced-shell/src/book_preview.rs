@@ -2081,6 +2081,117 @@ fn floating_controls_stay_usable_beside_a_drawer() {
     }
 }
 
+/// A listening book whose bar has idled away, and the middle of its Pause
+/// button while the pill showed.
+fn listening_with_hidden_bar() -> (Reader, Point) {
+    let mut reader = full_bar_book(1400.0, 600.0);
+    reader.begin_silent_listening();
+    let pause = bounds_of(&mut reader, Control::ReadAloudPause);
+    hide_bar(&mut reader);
+    (reader, pause.center())
+}
+
+fn paused(reader: &Reader) -> bool {
+    reader.read_aloud.session.as_ref().unwrap().paused
+}
+
+fn move_pointer(reader: &mut Reader, to: Point) {
+    app_event(reader, mouse::Event::CursorMoved { position: to });
+}
+
+#[test]
+fn the_read_aloud_pill_hides_and_shows_with_the_bar() {
+    let (mut reader, pause) = listening_with_hidden_bar();
+    let mut ui = Harness::new();
+    let messages = ui.click(&mut reader, pause);
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, Message::ReadAloud(_))),
+        "a click where the hidden pill was reaches the page: {messages:?}"
+    );
+    assert!(!paused(&reader));
+
+    let _ = update(&mut reader, Message::TogglePinnedBar);
+    assert!(reader.bar.visible());
+    ui.click(&mut reader, pause);
+    assert!(paused(&reader), "the pill shows with the pinned bar");
+
+    let _ = update(&mut reader, Message::TogglePinnedBar);
+    hide_bar(&mut reader);
+    let _ = update(
+        &mut reader,
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Character("U".into()),
+                modified_key: Key::Character("U".into()),
+                physical_key: key::Physical::Code(key::Code::KeyU),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT,
+                text: None,
+                repeat: false,
+            }),
+            window::Id::unique(),
+        ),
+    );
+    assert!(
+        !reader.read_aloud.active(),
+        "Ctrl+Shift+U still stops reading while the pill is hidden"
+    );
+}
+
+#[test]
+fn the_pointer_where_the_pill_sits_reveals_the_bar_and_holds_it() {
+    let (mut reader, pause) = listening_with_hidden_bar();
+    let _ = update(&mut reader, Message::ReadAloud(read_aloud::Action::Toggle));
+    assert!(!reader.read_aloud.active());
+    move_pointer(&mut reader, pause);
+    assert!(
+        !reader.bar.visible(),
+        "without the pill the bottom of the page reveals nothing"
+    );
+
+    let (mut reader, pause) = listening_with_hidden_bar();
+    move_pointer(&mut reader, pause);
+    assert_eq!(
+        reader.bar.state(),
+        reading_chrome::BarState::Shown { hide_at: None }
+    );
+    reader.bar.step_by(std::time::Duration::from_secs(5));
+    assert!(
+        reader.bar.visible(),
+        "the pointer on the pill holds the bar"
+    );
+    let mut ui = Harness::new();
+    ui.click(&mut reader, pause);
+    assert!(paused(&reader), "and Pause takes the click");
+
+    move_pointer(&mut reader, Point::new(700.0, 300.0));
+    reader.bar.step_by(std::time::Duration::from_secs(2));
+    reader.bar.step_by(std::time::Duration::from_secs(1));
+    assert!(
+        !reader.bar.visible(),
+        "leaving the pill lets the bar idle away"
+    );
+}
+
+#[test]
+fn focus_on_the_pill_reveals_the_bar() {
+    let (mut reader, _) = listening_with_hidden_bar();
+    reader.focused = Some(Control::ReadAloudPause);
+    reader.sync_bar(std::time::Instant::now(), reading_chrome::Input::default());
+    assert_eq!(
+        reader.bar.state(),
+        reading_chrome::BarState::Shown { hide_at: None }
+    );
+    reader.bar.step_by(std::time::Duration::from_secs(5));
+    assert!(reader.bar.visible(), "focus on Pause holds the bar");
+    assert!(
+        focused_bounds(&reader).is_some(),
+        "and the focused Pause shows"
+    );
+}
+
 #[test]
 fn strips_reach_the_bottom_unless_the_page_scrolls_sideways() {
     let mut reader = strip_book(1000.0, 600.0);

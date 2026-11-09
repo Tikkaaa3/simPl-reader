@@ -382,13 +382,18 @@ impl Reader {
             .or_else(|| self.book.as_ref().map(|book| book.path.as_path()))
     }
 
-    /// A bar control has keyboard focus, a menu or panel the bar opened is
-    /// open, or a panel hangs below the bar. The transient loading line does
-    /// not hold it, so a slow first layout never stretches the 2 s shown after
-    /// opening.
+    /// A control on the bar or on the read-aloud pill, which shows with it,
+    /// has keyboard focus, a menu or panel the bar opened is open, or a panel
+    /// hangs below the bar. The transient loading line does not hold it, so a
+    /// slow first layout never stretches the 2 s shown after opening.
     pub(super) fn bar_held(&self) -> bool {
-        self.focused.is_some_and(is_bar_control)
-            || self.bar.book_field
+        self.focused.is_some_and(|control| {
+            is_bar_control(control)
+                || matches!(
+                    control,
+                    Control::ReadAloudSlower | Control::ReadAloudFaster | Control::ReadAloudPause
+                )
+        }) || self.bar.book_field
             || self
                 .pdf
                 .as_ref()
@@ -469,9 +474,12 @@ impl Reader {
                 self.bar.close(now);
             }
         }
-        let hovered = input
-            .pointer
-            .map(|pointer| pointer.is_some_and(|point| point.y < HEIGHT.max(REVEAL_ZONE)));
+        let hovered = input.pointer.map(|pointer| {
+            pointer.is_some_and(|point| {
+                point.y < HEIGHT.max(REVEAL_ZONE)
+                    || pill_zone(self).is_some_and(|zone| zone.contains(point))
+            })
+        });
         let held = self.bar_held();
         if self.bar.document.is_none() {
             // The Library header is static: only remember the inputs for the
@@ -847,12 +855,9 @@ pub(super) fn view_at(reader: &Reader, active: bool, fold: Fold) -> Element<'_, 
         chrome::drag_region(bar.into(), Message::Chrome)
     };
     // The wheel over the bar acts on the document under it.
-    mouse_area(Element::new(Fade {
-        content,
-        alpha: reader.bar.alpha(),
-    }))
-    .on_scroll(Message::ChromeWheel)
-    .into()
+    mouse_area(fade(reader, content))
+        .on_scroll(Message::ChromeWheel)
+        .into()
 }
 
 fn icon_button(reader: &Reader, button: Button, hints: bool) -> Element<'static, Message> {
@@ -1118,6 +1123,14 @@ pub(super) fn forward_wheel(
     } else {
         Task::none()
     }
+}
+
+/// `content` fading in and out with the bar.
+pub(super) fn fade<'a>(reader: &Reader, content: Element<'a, Message>) -> Element<'a, Message> {
+    Element::new(Fade {
+        content,
+        alpha: reader.bar.alpha(),
+    })
 }
 
 /// Draws its content with every palette colour at `alpha`, so the bar fades as one.
