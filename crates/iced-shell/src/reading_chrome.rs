@@ -1,5 +1,5 @@
-//! The reading bar: the window tools, Library, page navigation, zoom and the
-//! caption buttons in one bar that floats over the top of a document and hides
+//! The reading bar: the window tools, Library, the page field, zoom, Notes and
+//! the caption buttons in one bar that floats over the top of a document and hides
 //! when idle. [`Bar`] holds the visibility rules; every transition takes an
 //! explicit [`Instant`] so the rules are testable without a clock.
 
@@ -18,15 +18,29 @@ const OPEN_HOLD: Duration = Duration::from_millis(2000);
 const LEAVE_HOLD: Duration = Duration::from_millis(1500);
 const FADE: Duration = Duration::from_millis(150);
 /// Narrowest windows, in logical pixels, whose bar fits on one row with every
-/// optional control shown and room for four-digit page counts. An 860px client
-/// at 125% scale is 688 logical pixels.
-const BOOK_ONE_ROW: f32 = 672.0;
-/// The Document button of a PDF read in Book mode.
-const DOCUMENT_BUTTON: f32 = 100.0;
-const PDF_ONE_ROW: f32 = 680.0;
-/// Below these widths the bar's buttons tighten and Library shows only its arrow.
-const BOOK_COMPACT: f32 = 780.0;
-const PDF_COMPACT: f32 = 900.0;
+/// optional control shown and four-digit page counts: with tight buttons, and
+/// with roomy ones. Below `roomy` the buttons tighten and Library shows only
+/// its arrow; below `one_row` the bar takes two rows. The ignored test
+/// `measure_reading_bar_thresholds` measures them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Thresholds {
+    pub(super) one_row: f32,
+    pub(super) roomy: f32,
+}
+
+const BOOK: Thresholds = Thresholds {
+    one_row: 765.0,
+    roomy: 898.0,
+};
+/// A PDF read in Book mode adds its Document button and has no Contents.
+const PDF_BOOK: Thresholds = Thresholds {
+    one_row: 776.0,
+    roomy: 909.0,
+};
+const PDF: Thresholds = Thresholds {
+    one_row: 793.0,
+    roomy: 973.0,
+};
 /// Space between the bar's groups; compact windows halve it.
 const GROUP_GAP: f32 = 8.0;
 /// Pixels an iced scrollable moves per wheel line.
@@ -255,11 +269,10 @@ pub(super) fn is_bar_control(control: Control) -> bool {
             | Control::BookMode
             | Control::DocumentMode
             | Control::BookPageInput
-            | Control::PreviousBookPage
-            | Control::NextBookPage
             | Control::Contents
             | Control::Find
             | Control::ReadAloud
+            | Control::Notes(notes::Focus::ToggleList)
             | Control::FontDown
             | Control::FitBookWidth
             | Control::FontUp
@@ -365,25 +378,51 @@ impl Reader {
     }
 }
 
+/// How the bar lays out: tight or roomy buttons, on one row or two.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Presentation {
+    pub(super) compact: bool,
+    pub(super) one_row: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Overrides the presentation the window width picks, so a test can
+    /// measure the narrowest width at which each presentation still fits.
+    pub(super) static FORCED: std::cell::Cell<Option<Presentation>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// Narrow windows tighten the reading controls so the bar keeps one row.
 pub(super) fn compact(reader: &Reader) -> bool {
-    let width = reader.window_size.width;
+    #[cfg(test)]
+    if let Some(forced) = FORCED.get() {
+        return forced.compact;
+    }
+    thresholds(reader).is_some_and(|limits| reader.window_size.width < limits.roomy)
+}
+
+/// The thresholds for the open document's bar; the Library has none.
+pub(super) fn thresholds(reader: &Reader) -> Option<Thresholds> {
     if reader.pdf.is_some() {
-        width < PDF_COMPACT
+        Some(PDF)
     } else {
-        reader.book.is_some() && width < BOOK_COMPACT
+        let book = reader.book.as_ref()?;
+        Some(if book.pdf_source.is_some() {
+            PDF_BOOK
+        } else {
+            BOOK
+        })
     }
 }
 
 fn one_row(reader: &Reader) -> bool {
-    let needed = if reader.pdf.is_some() {
-        PDF_ONE_ROW
-    } else if reader.book.as_ref().is_some_and(|b| b.pdf_source.is_some()) {
-        BOOK_ONE_ROW + DOCUMENT_BUTTON
-    } else {
-        BOOK_ONE_ROW
-    };
-    reader.window_size.width >= needed
+    #[cfg(test)]
+    if let Some(forced) = FORCED.get() {
+        return forced.one_row;
+    }
+    thresholds(reader).is_none_or(|limits| reader.window_size.width >= limits.one_row)
 }
 
 /// The height the bar takes when shown, which the reading screen keeps free at its top.
@@ -615,11 +654,12 @@ fn pdf_groups(reader: &Reader, active: bool) -> Groups<'_> {
             .spacing(if compact(reader) { 6 } else { 8 })
             .align_y(iced::Alignment::Center)
             .into(),
-        middle: pdf.navigation(focused, compact(reader)).map(forward),
+        middle: pdf.navigation(focused).map(forward),
         right: row![
             pdf.zoom_controls(focused, compact(reader)).map(forward),
             find_button(reader, active),
             listen_button(reader, active),
+            notes_button(reader, active),
         ]
         .spacing(if compact(reader) { 6 } else { 8 })
         .align_y(iced::Alignment::Center)
@@ -652,13 +692,6 @@ fn book_groups(reader: &Reader, active: bool) -> Groups<'_> {
     let current = book_pages::current(pages, reader.offset)
         .map_or_else(|| "1".to_owned(), |p| p.label.clone());
     let mut navigation = row![
-        hinted_control(
-            reader,
-            Control::PreviousBookPage,
-            "←",
-            "Previous page (Left arrow)",
-            (active && reader.can_turn(false)).then_some(Message::BookPage(false))
-        ),
         ui::watch_focus(
             iced::widget::text_input(
                 if current.is_empty() { "—" } else { "Page" },
@@ -675,13 +708,6 @@ fn book_groups(reader: &Reader, active: bool) -> Groups<'_> {
         text(format!("/ {}", reader.page_total()))
             .size(12)
             .style(ui::muted_text),
-        hinted_control(
-            reader,
-            Control::NextBookPage,
-            "→",
-            "Next page (Right arrow)",
-            (active && reader.can_turn(true)).then_some(Message::BookPage(true))
-        ),
     ]
     .spacing(4)
     .align_y(iced::Alignment::Center);
@@ -698,6 +724,7 @@ fn book_groups(reader: &Reader, active: bool) -> Groups<'_> {
     let right = row![
         find_button(reader, active),
         listen_button(reader, active),
+        notes_button(reader, active),
         hinted_control(
             reader,
             Control::FontDown,

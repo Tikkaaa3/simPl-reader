@@ -52,9 +52,7 @@ fn scroll_to(x: f32, y: f32) -> Task<Message> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusControl {
-    Previous,
     Page,
-    Next,
     ZoomOut,
     ZoomIn,
     ActualSize,
@@ -1269,18 +1267,9 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    /// Previous / page number / next, sized for the centre of the reading bar.
-    /// `compact` uses arrows and tighter buttons for narrow windows.
-    pub fn navigation(&self, focused: Option<FocusControl>, compact: bool) -> Element<'_, Message> {
-        let page = self.anchor().page as usize;
+    /// The page field and the page count, for the centre of the reading bar.
+    pub fn navigation(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         row![
-            focus_button(
-                if compact { "←" } else { "Prev" },
-                (page > 0).then_some(Message::Previous),
-                focused == Some(FocusControl::Previous),
-                false,
-                compact,
-            ),
             ui::watch_focus(
                 text_input("Page", &self.page_input)
                     .id(page_input_id())
@@ -1302,15 +1291,8 @@ impl Reader {
             text(format!("of {}", self.document.pages.len()))
                 .size(13)
                 .style(ui::muted_text),
-            focus_button(
-                if compact { "→" } else { "Next" },
-                (page + 1 < self.document.pages.len()).then_some(Message::Next),
-                focused == Some(FocusControl::Next),
-                false,
-                compact,
-            ),
         ]
-        .spacing(if compact { 4 } else { 7 })
+        .spacing(7)
         .align_y(iced::Alignment::Center)
         .into()
     }

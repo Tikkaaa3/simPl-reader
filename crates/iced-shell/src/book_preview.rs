@@ -1195,16 +1195,12 @@ fn chrome_actions(messages: &[Message]) -> Vec<chrome::Action> {
 #[test]
 fn only_the_bar_background_drags_the_window() {
     let mut reader = reading_bar_book(1280.0);
-    assert!(
-        !reader.can_turn(false),
-        "the first page has no previous page"
-    );
+    reader.zoom = 3.0;
     let mut ui = Harness::new();
-    let previous = bounds_of(&mut reader, Control::PreviousBookPage).center();
-    let next = bounds_of(&mut reader, Control::NextBookPage);
+    let disabled = bounds_of(&mut reader, Control::FontUp).center();
     let field = input_bounds(&reader, iced::advanced::widget::Id::new("book-page"));
-    let total = Point::new((field.x + field.width + next.x) / 2.0, next.center_y());
-    for at in [previous, total] {
+    let total = Point::new(field.x + field.width + 10.0, field.center_y());
+    for at in [disabled, total] {
         let messages = ui.double_press(&mut reader, at);
         assert!(
             chrome_actions(&messages).is_empty(),
@@ -1235,17 +1231,15 @@ fn only_the_bar_background_drags_the_window() {
 #[test]
 fn a_click_on_a_focused_bar_button_still_activates_it() {
     let mut reader = reading_bar_book(1280.0);
-    assert!(reader.can_turn(true));
     let mut ui = Harness::new();
-    reader.focused = Some(Control::NextBookPage);
-    let next = focused_bounds(&reader).unwrap().center();
-    let messages = ui.click(&mut reader, next);
+    reader.focused = Some(Control::Notes(crate::notes::Focus::ToggleList));
+    let notes = focused_bounds(&reader).unwrap().center();
+    ui.click(&mut reader, notes);
     assert_eq!(reader.focused, None, "the press takes keyboard focus away");
-    assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, Message::BookPage(true))),
-        "the focused Next button turns the page"
+    assert_eq!(
+        reader.notes.list,
+        Some(crate::notes::ListTab::default()),
+        "the focused Notes button opens the drawer"
     );
 
     let Some(mut reader) = bar_test_pdf(1280.0) else {
@@ -1264,6 +1258,99 @@ fn a_click_on_a_focused_bar_button_still_activates_it() {
             }
         )),
         "the focused PDF zoom button zooms"
+    );
+}
+
+#[test]
+fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
+    use crate::notes::{Focus, ListTab};
+    use reading_chrome::BarState;
+    let notes = Control::Notes(Focus::ToggleList);
+    let mut reader = reading_bar_book(1000.0);
+    let bar: Vec<Control> = reader
+        .controls()
+        .filter(|control| reading_chrome::is_bar_control(*control))
+        .collect();
+    assert_eq!(
+        bar,
+        [
+            Control::Chrome(chrome::Action::Settings),
+            Control::Chrome(chrome::Action::ToggleAppearance),
+            Control::Chrome(chrome::Action::Search),
+            Control::Close,
+            Control::BookPageInput,
+            Control::Find,
+            Control::ReadAloud,
+            notes,
+            Control::FontDown,
+            Control::FitBookWidth,
+            Control::FontUp,
+            Control::Chrome(chrome::Action::Minimize),
+            Control::Chrome(chrome::Action::Maximize),
+            Control::Chrome(chrome::Action::Close),
+        ]
+    );
+    assert_eq!(
+        notes_ui::sidebar_width(&reader),
+        0.0,
+        "a closed drawer takes no width"
+    );
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    assert_eq!(notes_ui::sidebar_width(&reader), 340.0);
+    assert_eq!(
+        reader
+            .controls()
+            .filter(|control| *control == notes)
+            .count(),
+        1,
+        "Notes is in the focus order once, in the bar"
+    );
+    assert!(!reading_chrome::is_bar_control(Control::Notes(Focus::Tab(
+        ListTab::Bookmarks
+    ))));
+
+    reader.bar.step_by(std::time::Duration::from_secs(3));
+    assert_eq!(reader.bar.state(), BarState::Hidden);
+    let now = std::time::Instant::now();
+    reader.focused = Some(Control::Notes(Focus::Tab(ListTab::Bookmarks)));
+    reader.sync_bar(now, reading_chrome::Input::default());
+    assert_eq!(
+        reader.bar.state(),
+        BarState::Hidden,
+        "drawer rows do not hold the bar"
+    );
+    reader.focused = Some(notes);
+    reader.sync_bar(now, reading_chrome::Input::default());
+    assert_eq!(reader.bar.state(), BarState::Shown { hide_at: None });
+
+    let Some(reader) = bar_test_pdf(1000.0) else {
+        return;
+    };
+    let bar: Vec<Control> = reader
+        .controls()
+        .filter(|control| reading_chrome::is_bar_control(*control))
+        .collect();
+    let listen = bar
+        .iter()
+        .position(|control| *control == Control::ReadAloud);
+    assert_eq!(bar.get(listen.unwrap() + 1), Some(&notes));
+    assert_eq!(
+        bar[3..bar.len() - 3],
+        [
+            Control::Close,
+            Control::BookMode,
+            Control::Pdf(pdf_reader::FocusControl::Page),
+            Control::Pdf(pdf_reader::FocusControl::ZoomOut),
+            Control::Pdf(pdf_reader::FocusControl::ZoomIn),
+            Control::Pdf(pdf_reader::FocusControl::ActualSize),
+            Control::Pdf(pdf_reader::FocusControl::FitWidth),
+            Control::Find,
+            Control::ReadAloud,
+            notes,
+        ]
     );
 }
 
@@ -2179,7 +2266,7 @@ fn render_pdf_book_previews() {
             settle_pagination(&mut reader);
             let _ = reader.adjacent_book_page(false);
             assert_eq!(reader.anchor().row, first);
-            assert!(!reader.controls().any(|c| c == Control::PreviousBookPage));
+            assert!(!reader.can_turn(false));
             let last = reader.pages().last().unwrap().rows.start;
             let _ = reader.rebuild_geometry(Anchor {
                 row: last,
@@ -2188,7 +2275,7 @@ fn render_pdf_book_previews() {
             settle_pagination(&mut reader);
             let _ = reader.adjacent_book_page(true);
             assert_eq!(reader.anchor().row, last);
-            assert!(!reader.controls().any(|c| c == Control::NextBookPage));
+            assert!(!reader.can_turn(true));
             let _ = reader.rebuild_geometry(anchor);
             settle_pagination(&mut reader);
             if name == "wide" {
