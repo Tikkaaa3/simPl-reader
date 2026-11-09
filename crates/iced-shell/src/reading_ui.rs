@@ -1,5 +1,6 @@
 //! Typography is independent of zoom. The library defaults live in the
-//! preferences; a book's own options are saved by its fingerprint.
+//! preferences; a book's own options, its theme among them, are saved by its
+//! fingerprint.
 use super::*;
 use iced::widget::column;
 use reader_document::reading::{self, Font, Options};
@@ -19,6 +20,8 @@ pub(super) enum Action {
     Size(u16),
     Spacing(u16),
     Margin(u16),
+    /// An index into the bundled themes.
+    Theme(usize),
     Reset,
 }
 #[derive(Debug, Default)]
@@ -47,14 +50,40 @@ impl State {
     pub fn settled(&self) -> bool {
         !self.saving && self.pending.is_empty()
     }
+    pub fn book_theme(&self) -> Option<reading::ThemeId> {
+        self.override_.and_then(|options| options.theme)
+    }
 }
 impl Reader {
     pub(super) fn reading_options(&self) -> Options {
         if self.book.as_ref().is_some_and(|b| b.pdf_source.is_some()) {
             Options::default()
         } else {
-            self.reading.options()
+            self.reading.options().without_theme()
         }
+    }
+    /// The theme the open book reads in: its own, else the default theme.
+    pub(super) fn book_theme(&self) -> &'static themes::ReadingTheme {
+        self.reading
+            .book_theme()
+            .map_or(self.default_theme, themes::by_id)
+    }
+    /// What the open book's layout depends on.
+    pub(super) fn look(&self) -> (Options, &'static str) {
+        (self.reading_options(), self.theme.id)
+    }
+    /// Puts the open book's theme in place, and lays the book out again when it
+    /// looks different from `before`.
+    pub(super) fn apply_reading(&mut self, before: (Options, &'static str)) -> Task<Message> {
+        self.theme = self.book_theme();
+        if self.look() == before {
+            return Task::none();
+        }
+        self.adapted.clear();
+        if self.book.is_none() {
+            return Task::none();
+        }
+        self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
     }
     pub(super) fn reading_style(&self, book: &Book) -> BookStyle {
         effective_style(self.theme, book, self.reading_options())
@@ -63,6 +92,13 @@ impl Reader {
         effective_family(self.theme, book, self.reading_options())
     }
     pub(super) fn sync_reading_settings(&mut self) -> Task<Message> {
+        let before = self.look();
+        let load = self.select_reading_book();
+        Task::batch([load, self.apply_reading(before)])
+    }
+    /// Follows the open book: its own options from the save queue, or loaded in
+    /// the background, and the theme they call for. Lays nothing out.
+    pub(super) fn select_reading_book(&mut self) -> Task<Message> {
         let book = self
             .book
             .as_ref()
@@ -76,14 +112,21 @@ impl Reader {
         self.reading.override_ = None;
         self.reading.blocked = false;
         self.reading.loading = book.is_some();
-        let Some(book) = book else {
+        let pending = book.as_ref().and_then(|book| {
+            self.reading
+                .pending
+                .iter()
+                .find(|(key, _)| key == book)
+                .map(|(_, options)| *options)
+        });
+        if let Some(options) = pending {
+            self.reading.override_ = options;
+            self.reading.loading = false;
+        }
+        self.theme = self.book_theme();
+        let Some(book) = book.filter(|_| pending.is_none()) else {
             return Task::none();
         };
-        if let Some((_, options)) = self.reading.pending.iter().find(|(key, _)| key == &book) {
-            self.reading.override_ = *options;
-            self.reading.loading = false;
-            return self.rebuild_geometry(self.anchor());
-        }
         let reply = book.clone();
         let profile = self.profile.epoch;
         Task::perform(async move { reading::load(&book) }, move |result| {
@@ -105,9 +148,9 @@ impl Reader {
         self.reading.loading = false;
         match result {
             Ok(options) => {
+                let before = self.look();
                 self.reading.override_ = options;
-                self.adapted.clear();
-                self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
+                self.apply_reading(before)
             }
             Err(error) => {
                 self.reading.blocked = true;
@@ -120,6 +163,9 @@ impl Reader {
         if !enabled(self, target) {
             return Task::none();
         }
+        if let (Target::Defaults, Action::Theme(index)) = (target, &action) {
+            return self.set_default_theme(*index);
+        }
         if let Action::Picker(picker) = action {
             self.reading.picker = if self.reading.picker == Some((target, picker)) {
                 None
@@ -129,8 +175,9 @@ impl Reader {
             return Task::none();
         }
         self.reading.picker = None;
-        let before = self.reading_options();
-        let mut options = self.reading.options_for(target);
+        let before = self.look();
+        let current = self.reading.options_for(target);
+        let mut options = current;
         let reset = matches!(action, Action::Reset);
         match action {
             Action::Picker(_) => unreachable!(),
@@ -138,17 +185,20 @@ impl Reader {
             Action::Size(value) => options.size = value,
             Action::Spacing(value) => options.spacing = value,
             Action::Margin(value) => options.margin = value,
+            Action::Theme(index) => {
+                let theme = &themes::THEMES[index.min(themes::THEMES.len() - 1)];
+                // The default theme's card means "follow the default theme".
+                options.theme = (theme.id != self.default_theme.id).then(|| theme.key());
+            }
             Action::Reset => options = Options::default(),
         }
         options = options.validated();
+        if options == current && !reset {
+            return Task::none();
+        }
         self.reading.notice = None;
         let save = match (target, self.reading.book.clone()) {
-            (Target::Book, Some(book)) => {
-                self.reading.override_ = (!reset).then_some(options);
-                self.reading.pending.retain(|(key, _)| key != &book);
-                self.reading.pending.push((book, self.reading.override_));
-                self.persist_reading_settings()
-            }
+            (Target::Book, Some(book)) => self.save_book_options(book, (!reset).then_some(options)),
             (Target::Book, None) => return Task::none(),
             (Target::Defaults, _) => {
                 self.reading.defaults = options;
@@ -157,13 +207,27 @@ impl Reader {
             }
         };
         // A default change that this book overrides keeps its layout.
-        let layout = if self.book.is_some() && self.reading_options() != before {
-            self.adapted.clear();
-            self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
-        } else {
-            Task::none()
+        Task::batch([save, self.apply_reading(before)])
+    }
+    fn save_book_options(&mut self, book: String, options: Option<Options>) -> Task<Message> {
+        self.reading.override_ = options;
+        self.reading.pending.retain(|(key, _)| key != &book);
+        self.reading.pending.push((book, options));
+        self.persist_reading_settings()
+    }
+    /// Drops the open book's own theme, keeping its typography, without laying it out.
+    pub(super) fn forget_book_theme(&mut self) -> Task<Message> {
+        let (Some(book), Some(options)) = (self.reading.book.clone(), self.reading.override_)
+        else {
+            return Task::none();
         };
-        Task::batch([save, layout])
+        self.save_book_options(
+            book,
+            Some(Options {
+                theme: None,
+                ..options
+            }),
+        )
     }
     pub(super) fn persist_reading_settings(&mut self) -> Task<Message> {
         if self.reading.saving {
@@ -308,7 +372,7 @@ pub(super) enum Focus {
 }
 /// The defaults can always be edited; a book's own options only once they
 /// have loaded, and only for a reflowable book.
-fn enabled(reader: &Reader, target: Target) -> bool {
+pub(super) fn enabled(reader: &Reader, target: Target) -> bool {
     reader.interactive()
         && match target {
             Target::Defaults => true,

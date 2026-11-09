@@ -840,7 +840,10 @@ impl SearchCorpus {
 #[derive(Debug)]
 struct Reader {
     book: Option<Arc<Book>>,
+    /// The theme in use: the open book's own, else `default_theme`.
     theme: &'static themes::ReadingTheme,
+    /// The theme chosen in Settings, for the library and every book without its own.
+    default_theme: &'static themes::ReadingTheme,
     adapted: Vec<AdaptedLayout>,
     find: Option<Find>,
     find_index: Option<FindIndex>,
@@ -949,6 +952,7 @@ impl Default for Reader {
         Self {
             book: None,
             theme: themes::default_theme(),
+            default_theme: themes::default_theme(),
             adapted: Vec::new(),
             find: None,
             find_index: None,
@@ -1069,7 +1073,7 @@ enum Control {
     ConfirmRemove,
     DismissOverlay,
     SettingsHelp,
-    Theme(usize),
+    Theme(reading_ui::Target, usize),
     Close,
     Back,
     BookMode,
@@ -1213,6 +1217,7 @@ enum Message {
         generation: u64,
         result: Result<Option<book_map::Atlas>, String>,
     },
+    /// Sets the default theme, an index into the bundled themes.
     SetTheme(usize),
     ThemeLayoutReady {
         generation: u64,
@@ -1470,29 +1475,17 @@ impl Reader {
             .and_then(|a| a.section(section))
     }
 
-    /// Switches the reading theme. Pages keep their numbers and boundaries; only the
-    /// look and the way each page is filled change, so the reading place is kept.
-    fn apply_theme(&mut self, theme: &'static themes::ReadingTheme) -> Task<Message> {
-        if self.theme.id == theme.id {
+    /// Changes the default theme and saves it. Pages keep their numbers and boundaries;
+    /// only the look and the way each page is filled change, so the reading place is kept.
+    fn set_default_theme(&mut self, index: usize) -> Task<Message> {
+        let theme = &themes::THEMES[index.min(themes::THEMES.len() - 1)];
+        if self.default_theme.id == theme.id {
             return Task::none();
         }
-        let relayout = self.switch_theme(theme);
+        let before = self.look();
+        self.default_theme = theme;
         self.preferences_dirty = true;
-        Task::batch([self.persist_preferences(), relayout])
-    }
-
-    /// Changes the theme and lays the open book out for it, without saving anything.
-    fn switch_theme(&mut self, theme: &'static themes::ReadingTheme) -> Task<Message> {
-        if self.theme.id == theme.id {
-            return Task::none();
-        }
-        let anchor = self.book.is_some().then(|| self.anchor());
-        self.theme = theme;
-        self.adapted.clear();
-        match anchor {
-            Some(anchor) if self.pagination.is_none() => self.rebuild_geometry(anchor),
-            _ => Task::none(),
-        }
+        Task::batch([self.persist_preferences(), self.apply_reading(before)])
     }
 
     fn reading_width(&self, _window: f32) -> f32 {
@@ -2017,7 +2010,7 @@ impl Reader {
         self.preferences_saving = true;
         let preferences = Preferences {
             appearance: self.appearance,
-            theme: self.theme.id.to_owned(),
+            theme: self.default_theme.id.to_owned(),
             voice: self.read_aloud.voice.clone(),
             speech_rate: self.read_aloud.rate,
             dictionary: self.word_translation.settings,
@@ -2172,7 +2165,7 @@ impl Reader {
             .chain(
                 (0..themes::THEMES.len())
                     .filter(move |_| self.show_settings)
-                    .map(Control::Theme),
+                    .map(|index| Control::Theme(reading_ui::Target::Defaults, index)),
             )
             .chain(
                 primary
@@ -2278,7 +2271,7 @@ impl Reader {
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
             Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
-            Control::Theme(index) => Message::SetTheme(index),
+            Control::Theme(target, index) => theme_message(target, index),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
             Control::Back => Message::Back,
@@ -3673,7 +3666,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             let mut theme_task = Task::none();
             match result {
                 Ok(loaded) if !reader.preferences_dirty => {
+                    let before = reader.look();
                     reader.reading.defaults = loaded.reading.validated();
+                    reader.default_theme = themes::find(&loaded.theme);
                     reader.appearance = loaded.appearance;
                     reader.read_aloud.voice = loaded.voice;
                     reader.read_aloud.rate = loaded.speech_rate;
@@ -3682,13 +3677,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     }
                     reader.word_translation.settings = loaded.dictionary.validated();
                     // A book opened from the command line may already be on screen.
-                    theme_task = reader.switch_theme(themes::find(&loaded.theme));
-                    if reader.book.is_some() {
-                        reader.adapted.clear();
-                        theme_task = reader.rebuild_geometry(
-                            reader.pending_anchor.unwrap_or_else(|| reader.anchor()),
-                        );
-                    }
+                    theme_task = reader.apply_reading(before);
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -3915,6 +3904,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
                 Err(error) => (Err(error), Task::none()),
             };
+            let mut opened_reading = Task::none();
             let content_task = match result {
                 Ok(LoadedDocument::Reflow(book)) => {
                     let same_document = reader
@@ -3956,6 +3946,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             fraction: 0.0,
                         });
                     reader.book = Some(book);
+                    // Before the layout below, so the book opens in its own settings and
+                    // theme rather than in the previous book's.
+                    opened_reading = reader.select_reading_book();
                     reader.error = None;
                     let anchor = if let Some(id) = reader.notes.pending_reveal.take() {
                         reader.refresh_marks();
@@ -4051,6 +4044,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             Task::batch([
                 content_task,
                 notes_task,
+                opened_reading,
                 reading_task,
                 history_task,
                 library_task,
@@ -4145,10 +4139,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             }
         }
         Message::AtlasReady { generation, result } => reader.finish_atlas(generation, result),
-        Message::SetTheme(index) if reader.interactive() => {
-            let theme = &themes::THEMES[index.min(themes::THEMES.len() - 1)];
-            reader.apply_theme(theme)
-        }
+        Message::SetTheme(index) if reader.interactive() => reader.set_default_theme(index),
         Message::ThemeLayoutReady {
             generation,
             section,
@@ -4193,10 +4184,15 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     // Fall back to the default layout rather than leaving the book blank.
                     reader.pagination = None;
                     reader.error = Some(format!("Could not lay out the {theme} theme: {error}"));
-                    reader.theme = themes::default_theme();
+                    let saved = if reader.reading.book_theme().is_some() {
+                        reader.forget_book_theme()
+                    } else {
+                        reader.default_theme = themes::default_theme();
+                        reader.preferences_dirty = true;
+                        reader.persist_preferences()
+                    };
+                    reader.theme = reader.book_theme();
                     reader.adapted.clear();
-                    reader.preferences_dirty = true;
-                    let saved = reader.persist_preferences();
                     Task::batch([saved, reader.rebuild_geometry(anchor)])
                 }
             }
@@ -5788,8 +5784,8 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
         };
         contents = contents
             .push(section("Theme"))
-            .push(theme_picker(reader))
-            .push(note("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme."))
+            .push(theme_picker(reader, reading_ui::Target::Defaults))
+            .push(note("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme. Every book uses this theme until you choose another for it from Aa in its reading bar."))
             .push(rule())
             .push(reading_ui::settings(reader))
             .push(rule())
@@ -5936,19 +5932,36 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
     container(bar).padding([8, 12]).style(ui::panel).into()
 }
 
+/// Choosing a theme card: the default theme from Settings, the book's own from Aa.
+fn theme_message(target: reading_ui::Target, index: usize) -> Message {
+    match target {
+        reading_ui::Target::Defaults => Message::SetTheme(index),
+        reading_ui::Target::Book => Message::Reading(target, reading_ui::Action::Theme(index)),
+    }
+}
+
 /// The bundled reading themes as cards, each previewing its own font and colors.
-fn theme_picker(reader: &Reader) -> Element<'_, Message> {
+/// A book's cards mark the default theme, so a book that differs from it shows.
+fn theme_picker(reader: &Reader, target: reading_ui::Target) -> Element<'_, Message> {
     let card = |index: usize| -> Element<'_, Message> {
         let theme = &themes::THEMES[index];
         let colors = theme.palette(reader.appearance);
         let font = theme.family.map_or(ui::SERIF, iced::Font::with_name);
+        let default = reader.default_theme.id == theme.id;
+        let mut heading = row![
+            text("Aa")
+                .font(font)
+                .size(26)
+                .color(colors.text)
+                .shaping(text::Shaping::Advanced),
+            iced::widget::Space::new().width(Length::Fill),
+        ];
+        if default && target == reading_ui::Target::Book {
+            heading = heading.push(text("Default theme").size(11).color(colors.muted));
+        }
         let sample = container(
             column![
-                text("Aa")
-                    .font(font)
-                    .size(26)
-                    .color(colors.text)
-                    .shaping(text::Shaping::Advanced),
+                heading,
                 text("The quiet hours of reading.")
                     .font(font)
                     .size(13)
@@ -5968,7 +5981,10 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
             },
             ..container::Style::default()
         });
-        let chosen = reader.theme.id == theme.id;
+        let chosen = match target {
+            reading_ui::Target::Defaults => default,
+            reading_ui::Target::Book => reader.theme.id == theme.id,
+        };
         let name = row![
             text(theme.name).font(ui::MEDIUM).size(14),
             iced::widget::Space::new().width(Length::Fill),
@@ -5993,9 +6009,10 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
         .width(Length::Fill);
         container(toned_button(
             reader,
-            Control::Theme(index),
+            Control::Theme(target, index),
             label,
-            Some(Message::SetTheme(index)),
+            (target == reading_ui::Target::Defaults || reading_ui::enabled(reader, target))
+                .then(|| theme_message(target, index)),
             ui::ButtonTone::Surface,
             chosen,
         ))
@@ -8098,9 +8115,13 @@ mod tests {
         let mut reader = themed_reader(10);
         reader.show_settings = true;
         for index in 0..themes::THEMES.len() {
-            assert!(reader.controls().any(|c| c == Control::Theme(index)));
+            assert!(
+                reader
+                    .controls()
+                    .any(|c| c == Control::Theme(reading_ui::Target::Defaults, index))
+            );
         }
-        let _ = reader.activate(Control::Theme(1));
+        let _ = reader.activate(Control::Theme(reading_ui::Target::Defaults, 1));
         assert_eq!(reader.theme.id, "soft");
     }
 

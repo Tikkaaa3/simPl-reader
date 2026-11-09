@@ -1216,6 +1216,7 @@ mod tests {
                 style_runs: Vec::new(),
             }];
             reader.zoom = zoom;
+            reader.default_theme = theme;
             reader.theme = theme;
             reader.viewport = 160.0;
             reader.atlas = None;
