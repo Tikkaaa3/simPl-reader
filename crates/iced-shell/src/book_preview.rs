@@ -2870,6 +2870,83 @@ fn render_book_theme_look() {
 }
 
 #[test]
+#[ignore = "UX-8 review: writes the paper, selected and focused looks to target/ui-ux-review"]
+fn render_ux8_look() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        for (index, theme) in crate::themes::THEMES.iter().enumerate() {
+            let mut reader = full_bar_book(1400.0, 900.0);
+            reader.appearance = appearance;
+            let _ = update(&mut reader, Message::SetTheme(index));
+            settle_theme(&mut reader);
+            render(
+                &mut reader,
+                &output.join(format!("UX-8-reading-{}-{name}.png", theme.id)),
+            );
+        }
+    }
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("UX-8-aa-light.png"));
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    let _ = update(&mut reader, Message::ToggleContents);
+    reader.focused = Some(Control::ContentsEntry(0));
+    render(&mut reader, &output.join("UX-8-contents-light.png"));
+    reader.focused = None;
+    let _ = update(&mut reader, Message::ToggleContents);
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    render(&mut reader, &output.join("UX-8-notes-light.png"));
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        reader.appearance = appearance;
+        reader.show_settings = true;
+        render(
+            &mut reader,
+            &output.join(format!("UX-8-settings-{name}.png")),
+        );
+    }
+
+    let mut reader = Reader {
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let entries = shelf::sample_entries(&[
+        ("Pride and Prejudice", DocumentKind::Epub),
+        ("Frankenstein", DocumentKind::Epub),
+        ("Dream Analysis", DocumentKind::Pdf),
+        ("Let's Go", DocumentKind::Html),
+    ]);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(reader.window_size);
+    for name in ["To read", "Done"] {
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::NewShelf));
+        let _ = reader.shelf.update(shelf::Message::NameInput(name.into()));
+        let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    }
+    for control in [
+        shelf::Control::Sort(shelf::Sort::Title),
+        shelf::Control::Filter(None),
+    ] {
+        let _ = reader.shelf.update(shelf::Message::Activate(control));
+    }
+    render(&mut reader, &output.join("UX-8-library-light.png"));
+}
+
+#[test]
 #[ignore = "Visual QA: set SIMPL_PREVIEW_HTML, SIMPL_PREVIEW_EPUB and SIMPL_PREVIEW_OUTPUT"]
 fn render_book_previews() {
     for bytes in ui::font_data() {
