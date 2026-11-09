@@ -28,6 +28,12 @@ const STATES: &[State] = &[
         still,
         over_right_strip,
     ),
+    (
+        "reading-progress-hover",
+        reading_bar_hidden,
+        still,
+        over_progress_line,
+    ),
     ("settings", settings, still, away),
 ];
 
@@ -96,6 +102,12 @@ fn over_right_strip(reader: &Reader) -> mouse::Cursor {
         size.width - 14.0 - width / 2.0,
         size.height / 2.0,
     ))
+}
+
+/// The pointer rests in the progress line's band, under the page centre.
+fn over_progress_line(reader: &Reader) -> mouse::Cursor {
+    let size = reader.window_size;
+    mouse::Cursor::Available(iced::Point::new(size.width / 2.0, size.height - 12.0))
 }
 
 fn settings() -> Reader {

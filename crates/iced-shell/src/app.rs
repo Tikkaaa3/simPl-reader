@@ -34,6 +34,8 @@ mod notes_ui;
 mod page_strips;
 #[path = "profile_ui.rs"]
 mod profile_ui;
+#[path = "progress_line.rs"]
+mod progress_line;
 #[path = "read_aloud.rs"]
 mod read_aloud;
 #[path = "reading_chrome.rs"]
@@ -1151,6 +1153,8 @@ enum Message {
     ChromeWheel(mouse::ScrollDelta),
     /// The pointer moved onto a page strip that can turn the page, or off both.
     StripHover(Option<page_strips::Side>),
+    /// A press on the progress line, with the page it lands on, from 1.
+    ProgressJump(u32),
     /// The book page field gained or lost keyboard focus.
     BookPageFocus(bool),
     ToggleHelp,
@@ -1984,23 +1988,16 @@ impl Reader {
         self.persist_recent()
     }
     fn capture_progress(&mut self) {
-        if let Some(pdf) = &self.pdf {
-            let position = pdf.position();
-            let total = pdf.document().pages.len() as u32;
-            let fraction = (position.page as f32 + position.within) / total.max(1) as f32;
-            self.shelf
-                .progress(&pdf.document().path, fraction, position.page + 1, total);
-        } else if let Some(book) = &self.book {
-            let pages = self.pages();
-            let Some(page) = book_pages::current(pages, self.offset) else {
-                return;
-            };
-            let total = self.page_total() as u32;
-            let current = page.number + 1;
-            let within = ((self.offset - page.top) / page.height).clamp(0.0, 1.0);
-            let fraction = (page.number as f32 + within) / total.max(1) as f32;
-            self.shelf.progress(&book.path, fraction, current, total);
-        }
+        let Some(progress) = self.progress() else {
+            return;
+        };
+        let path = match (&self.pdf, &self.book) {
+            (Some(pdf), _) => &pdf.document().path,
+            (None, Some(book)) => &book.path,
+            (None, None) => return,
+        };
+        self.shelf
+            .progress(path, progress.fraction, progress.page, progress.total);
     }
 
     fn persist_preferences(&mut self) -> Task<Message> {
@@ -3795,6 +3792,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.strips.hover(side, std::time::Instant::now());
             Task::none()
         }
+        Message::ProgressJump(page) => reader.progress_jump(page),
         Message::BookPageFocus(focused) => {
             reader.book_page_focus(focused);
             Task::none()
@@ -4082,6 +4080,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 | pdf_reader::Message::Previous
                 | pdf_reader::Message::Next
                 | pdf_reader::Message::PageSubmit
+                | pdf_reader::Message::GoTo(_)
                 | pdf_reader::Message::ZoomIn
                 | pdf_reader::Message::ZoomOut
                 | pdf_reader::Message::ActualSize
@@ -6202,6 +6201,8 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     iced::widget::mouse_area(
         container(crate::document_scroll::wrap(
             Message::ZoomBy,
+            (book.epub.as_ref().map_or(0, |chapter| chapter.index) as u64) << 32
+                | u64::from(page.top.to_bits()),
             scrollable(centered)
                 .direction(iced::widget::scrollable::Direction::Both {
                     vertical: ui::scrollbar(),
@@ -6740,6 +6741,93 @@ mod settings_profile;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A three-chapter EPUB like `fixtures/chapters/build_epub.py`, written to
+    /// a temporary file because the EPUB reader opens a path.
+    fn three_chapter_epub() -> Arc<reader_document::epub::Epub> {
+        use std::io::Write as _;
+        let sentence = "The lamp burned low while the house settled into its evening sounds, and the reader turned another page without noticing how late it had become. ";
+        let chapters: Vec<String> = (1..=3)
+            .map(|number| {
+                let paragraphs: String = (1..15)
+                    .map(|index| {
+                        format!("<p>Room {number}, paragraph {index}. {}</p>", sentence.repeat(4))
+                    })
+                    .collect();
+                format!(
+                    r#"<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Room {number}</title></head><body><h1>Room {number}</h1>{paragraphs}</body></html>"#
+                )
+            })
+            .collect();
+        let package = r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-test-three-rooms</dc:identifier><dc:title>Three Rooms</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c1" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="c3" href="chapter-3.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>"#;
+        let path =
+            std::env::temp_dir().join(format!("simpl-three-rooms-{}.epub", std::process::id()));
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        let mut files = vec![
+            ("mimetype".to_owned(), "application/epub+zip".to_owned()),
+            (
+                "META-INF/container.xml".to_owned(),
+                r#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#.to_owned(),
+            ),
+            ("OPS/package.opf".to_owned(), package.to_owned()),
+        ];
+        for (index, chapter) in chapters.into_iter().enumerate() {
+            files.push((format!("OPS/chapter-{}.xhtml", index + 1), chapter));
+        }
+        for (name, contents) in files {
+            zip.start_file(name, stored).unwrap();
+            zip.write_all(contents.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let epub = Arc::new(reader_document::epub::open(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+        epub
+    }
+
+    #[test]
+    fn epub_progress_grows_across_chapters() {
+        let epub = three_chapter_epub();
+        let mut reader = Reader {
+            book: Some(Arc::new(load_epub_chapter(epub.clone(), 0, None).unwrap())),
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        let first_chapter = reader.pages().len();
+        assert!(first_chapter >= 2, "chapter 1 spans pages");
+        let _ = reader.go_to_local_page(first_chapter - 1);
+        let end_of_first = reader.progress().unwrap();
+
+        let _ = update_inner(&mut reader, Message::BookPage(true));
+        assert!(reader.opening.is_some(), "chapter 2 is loading");
+        let request = reader.request;
+        let _ = update_inner(
+            &mut reader,
+            Message::Loaded {
+                request,
+                result: Ok(LoadReply {
+                    document: LoadedDocument::Reflow(Arc::new(
+                        load_epub_chapter(epub, 1, None).unwrap(),
+                    )),
+                    catalog: None,
+                }),
+            },
+        );
+        let start_of_second = reader.progress().unwrap();
+
+        assert_eq!(end_of_first.page as usize, first_chapter);
+        assert_eq!(start_of_second.page, end_of_first.page + 1);
+        assert_eq!(start_of_second.total, reader.page_total() as u32);
+        assert!(
+            start_of_second.fraction > end_of_first.fraction,
+            "{start_of_second:?} after {end_of_first:?}"
+        );
+    }
 
     #[test]
     fn consecutive_source_markers_keep_blank_pages_addressable() {
@@ -9173,11 +9261,19 @@ mod tests {
                 .expect("the page shows text")
         };
         assert_eq!(first_text_row(&shown), first_text_row(&hidden));
+        // The progress line's band labels the line while the bar shows.
+        let band = shown.height() - 24;
         assert!(
-            (bar..shown.height()).all(
+            (bar..band).all(
                 |y| (0..shown.width()).all(|x| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
             ),
-            "everything outside the bar is identical whether it shows or not"
+            "everything between the bar and the progress line is identical whether it shows or not"
+        );
+        assert!(
+            (band..shown.height()).any(
+                |y| (0..shown.width()).any(|x| shown.get_pixel(x, y) != hidden.get_pixel(x, y))
+            ),
+            "the progress label shows with the bar"
         );
         assert!(
             (0..bar).any(

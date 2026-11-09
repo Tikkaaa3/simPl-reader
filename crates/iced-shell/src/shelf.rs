@@ -1267,8 +1267,7 @@ impl Shelf {
         let heading = row![
             label(age(entry.opened_at), 11).style(ui::muted_text),
             Space::new().width(Length::Fill),
-            label(format!("{}%", (entry.progress * 100.0).round() as u32), 11)
-                .style(ui::accent_text)
+            label(format!("{}%", percent(entry.progress)), 11).style(ui::accent_text)
         ]
         .align_y(Alignment::Center);
         let title = clipped(
@@ -1934,6 +1933,11 @@ pub fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// A reading fraction as the whole percent the library shows.
+pub fn percent(fraction: f32) -> u32 {
+    (fraction.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
 fn age(opened: u64) -> String {
