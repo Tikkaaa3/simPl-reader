@@ -29,7 +29,9 @@ As of 2026-11-09:
 | #20 | UX-6 floating panels and contents drawer | Merged |
 | #21 | UX-6 follow-up: drawers dock only when the page fits, and the player hides with the bar | Merged |
 | #22 | The UX-6 record in this plan | Merged |
-| | UX-7 wheel to next page | Next, on the operator's go |
+| #24 | UX-7 wheel to next page | Merged |
+| #25 | The UX-7 record in this plan | This PR |
+| | UX-8 page surface and state styling | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
 
@@ -69,7 +71,7 @@ A milestone's boxes are ticked from its PR's Verification section. A box left op
   - [x] UX-4 after UX-3.
   - [x] UX-5 after UX-4.
   - [x] UX-6 after UX-5.
-  - [ ] UX-7 after UX-6.
+  - [x] UX-7 after UX-6.
   - [ ] UX-8 after UX-7.
   - [ ] UX-9 after UX-8 in the stack. Its owner may build in parallel from UX-1, because it touches only the library.
   - [ ] UX-10 after UX-9.
@@ -648,59 +650,69 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Files.**
 
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/pdf_reader.rs`.
-- [ ] Edit `README.md`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [ ] Edit `crates/iced-shell/src/pdf_reader.rs`. *Not needed. Its only change is one `None` argument for the new wheel callback.*
+- [x] Edit `README.md`. *Also: `document_scroll.rs`, `reading_chrome.rs`, and `book_preview.rs`.*
 
 **Build.**
 
-- [ ] Today `Message::Scroll` (app.rs:4318) clamps the offset inside the page, so the wheel never turns it. Add an overscroll counter to the reader. When the page is at its bottom and wheel-down input adds up to 240px within 700ms, turn to the next page and land at its top. Wheel-up input at the top turns to the previous page and lands at its bottom. Any reverse input resets the counter.
-- [ ] Count line deltas as 60px per line and pixel deltas as given, so a mouse and a touchpad behave alike.
-- [ ] Never turn on Ctrl+wheel, which zooms (document_scroll.rs:555), or during middle-button auto-scroll.
-- [ ] Count the wheel wherever it reaches the page. Since UX-6, a wheel over the bar (reading_chrome.rs:874), a page strip (page_strips.rs:485), the find box, or the read-aloud pill (app.rs:6023) arrives as `Message::ChromeWheel` (app.rs:3785) and is passed on to the page. At the page's end the passed-on wheel moves nothing, so the counter must add the raw delta from these messages too. Otherwise a wheel over the pill at the bottom of a page never turns it.
-- [ ] Apply the same rule in PDF Document view.
+- [x] Today `Message::Scroll` (app.rs:4318) clamps the offset inside the page, so the wheel never turns it. Add an overscroll counter to the reader. When the page is at its bottom and wheel-down input adds up to 240px within 700ms, turn to the next page and land at its top. Wheel-up input at the top turns to the previous page and lands at its bottom. Any reverse input resets the counter.
+- [x] Count line deltas as 60px per line and pixel deltas as given, so a mouse and a touchpad behave alike. *On Windows, winit reports every wheel event in lines, so a touchpad arrives as fractions of a line.*
+- [x] Never turn on Ctrl+wheel, which zooms (document_scroll.rs:555), or during middle-button auto-scroll.
+- [x] Count the wheel wherever it reaches the page. Since UX-6, a wheel over the bar (reading_chrome.rs:874), a page strip (page_strips.rs:485), the find box, or the read-aloud pill (app.rs:6023) arrives as `Message::ChromeWheel` (app.rs:3785) and is passed on to the page. At the page's end the passed-on wheel moves nothing, so the counter must add the raw delta from these messages too. Otherwise a wheel over the pill at the bottom of a page never turns it.
+- [ ] Apply the same rule in PDF Document view. *Not needed. Document view is one continuous scroll of all pages, so the wheel already moves on from one PDF page to the next. Lane 10 shows trunk and head behave the same.*
+
+**As built.** The review changed these from the steps above.
+
+- One push value on the reader and one pure rule serve both wheel sources. The page's scroll wrapper reports each wheel event before the page moves, so the reader sees where the wheel found it.
+- The push window starts at the first counted input. A push also ends when the page changes.
+- A turn from a wheel over the chrome replaces the passed-on scroll, so the new page does not move straight away.
+- Going back across a chapter start lands on the previous chapter's last page at its bottom. Before, it landed at that page's top. The arrow keys, the strips, and Ctrl+Page Up still land at the top.
+- Landing at the bottom is applied after layout settles. A content anchor cannot hold a bottom that lies below the text, which is common on a chapter's last page.
+- A fifth quick notch after a turn scrolls the new page 60px down. The operator merged PR #24 with it as built.
+- The independent review found two paths, and both stay as built. A wheel over the pill during auto-scroll still counts, but auto-scroll alone sends no wheel input, so it never turns a page. Shift with pixel deltas counts, but Windows never sends pixel deltas.
 
 **You see.**
 
-- [ ] Scrolling down past the end of a page goes to the next page after a short push. One small flick at the bottom does not.
+- [x] Scrolling down past the end of a page goes to the next page after a short push. One small flick at the bottom does not. *Four notches turn the page, or twelve 20px touchpad steps.*
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `app.rs` gains `overscroll_turns_after_240px`, `one_notch_does_not_turn`, `reverse_input_resets_overscroll`, and `ctrl_wheel_never_turns`. They drive `Message::Scroll` with literal deltas and assert the page number and offset. Run `cargo test -p iced-shell --locked overscroll`.
-- [ ] `book_preview.rs` gains `overscroll_over_the_pill_turns_the_page`. With Listen on and the bar shown, it wheels over the pill at the bottom of a page and asserts the next page opens. Run `cargo test -p iced-shell --locked overscroll_over`.
+- [x] `app.rs` gains `overscroll_turns_after_240px`, `one_notch_does_not_turn`, `reverse_input_resets_overscroll`, and `ctrl_wheel_never_turns`. They drive `Message::Scroll` with literal deltas and assert the page number and offset. Run `cargo test -p iced-shell --locked overscroll`. *The tests drive the new `Message::PageWheel` and `Message::ChromeWheel`, because `Message::Scroll` carries no delta. Five more cover Shift, the 700ms window, landing at the previous page's bottom, the first and last page, and a chapter start.*
+- [x] `book_preview.rs` gains `overscroll_over_the_pill_turns_the_page`. With Listen on and the bar shown, it wheels over the pill at the bottom of a page and asserts the next page opens. Run `cargo test -p iced-shell --locked overscroll_over`. *Two more drive the real widget tree. One shows the reader's edge check matches the page's own scroll position at zoom 0.6, 0.8, 1.0, and 2.0. The other shows Ctrl+wheel over the page zooms without turning.*
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe. *The session ran them itself on the release build. `ui-drive.ps1` takes about 0.3s per call, too slow for a 700ms push, so the wheel bursts came from one in-process script. Pixel diffs against arrow-key turns proved where each page landed.*
 
-- [ ] Lane 1. Regression lane against trunk. Scroll to the bottom of page 1, then send five wheel notches down at trunk and at head. Save `ux7-regression.png`. Pass when trunk stays on page 1 and head shows the top of page 2.
-- [ ] Lane 2. At the bottom of page 1, send one notch down. Save `ux7-one-notch.png`. Pass when the page stays 1.
-- [ ] Lane 3. At the top of page 3, send five notches up. Save `ux7-up.png`. Pass when page 2 shows at its bottom.
-- [ ] Lane 4. Zoom out until a page fits the window, then send five notches down. Save `ux7-short.png`. Pass when the next page shows.
-- [ ] Lane 5. Send twenty small pixel deltas of 20 down at a page bottom. Save `ux7-touchpad.png`. Pass when the page turns once.
-- [ ] Lane 6. At a page bottom, hold Ctrl and send five notches down. Save `ux7-ctrl.png`. Pass when the zoom changes and the page number does not.
-- [ ] Lane 7. Send notches up on the first page and down on the last page. Save `ux7-ends.png`. Pass when the page number does not change.
-- [ ] Lane 8. Use middle-button auto-scroll to the page bottom and hold it there for 3 seconds. Save `ux7-autoscroll.png`. Pass when the page does not turn.
-- [ ] Lane 9. At the bottom of the last page of chapter 1, send five notches down. Save `ux7-chapter.png`. Pass when chapter 2 opens at its top.
-- [ ] Lane 10. Open the PDF in Document view at a zoom where a page scrolls, then wheel past its end. Save `ux7-pdf.png`. Pass when the next PDF page shows.
+- [x] Lane 1. Regression lane against trunk. Scroll to the bottom of page 1, then send five wheel notches down at trunk and at head. Save `ux7-regression.png`. Pass when trunk stays on page 1 and head shows the top of page 2. *Four notches land on page 2's top, pixel for pixel. The fifth scrolls the new page 60px.*
+- [x] Lane 2. At the bottom of page 1, send one notch down. Save `ux7-one-notch.png`. Pass when the page stays 1. *No pixel of the page changed.*
+- [x] Lane 3. At the top of page 3, send five notches up. Save `ux7-up.png`. Pass when page 2 shows at its bottom. *Four notches match page 2's bottom pixel for pixel.*
+- [x] Lane 4. Zoom out until a page fits the window, then send five notches down. Save `ux7-short.png`. Pass when the next page shows. *At zoom 0.6.*
+- [x] Lane 5. Send twenty small pixel deltas of 20 down at a page bottom. Save `ux7-touchpad.png`. Pass when the page turns once. *Sent as a third of a line each. The rest scrolled page 2 to its bottom.*
+- [x] Lane 6. At a page bottom, hold Ctrl and send five notches down. Save `ux7-ctrl.png`. Pass when the zoom changes and the page number does not.
+- [x] Lane 7. Send notches up on the first page and down on the last page. Save `ux7-ends.png`. Pass when the page number does not change. *Page 1 and page 14 of 14.*
+- [x] Lane 8. Use middle-button auto-scroll to the page bottom and hold it there for 3 seconds. Save `ux7-autoscroll.png`. Pass when the page does not turn.
+- [x] Lane 9. At the bottom of the last page of chapter 1, send five notches down. Save `ux7-chapter.png`. Pass when chapter 2 opens at its top. *Page 8 of 21 in* Three Rooms. *Wheeling back up lands on chapter 1's last page at its bottom, pixel for pixel.*
+- [x] Lane 10. Open the PDF in Document view at a zoom where a page scrolls, then wheel past its end. Save `ux7-pdf.png`. Pass when the next PDF page shows. *Trunk and head both reach page 2 after 36 notches.*
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `reading-page-turn`.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk `reading-page-turn` p95 first.
-- [ ] Rule. Fail when the head p95 exceeds trunk by more than 10 percent.
+- [x] Metric. `reader_frame_ms` p95 for `reading-page-turn`.
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
+- [x] Baseline. Record the trunk `reading-page-turn` p95 first. *11.21 to 11.53ms.*
+- [x] Rule. Fail when the head p95 exceeds trunk by more than 10 percent. *Head was 10.66 to 11.62ms.*
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, and 5 screenshots into `target\ui-ux-review\UX-7-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of reading through three pages with the wheel only. Save it as `target\ui-ux-review\UX-7-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 1, 2, and 5 screenshots into `target\ui-ux-review\UX-7-review-<slug>.png`. *Lane 1 at trunk and at head.*
+- [x] Record a 30 to 60 second video of reading through three pages with the wheel only. Save it as `target\ui-ux-review\UX-7-review.mp4`. *44 seconds, built from captures of the reader window, so the pointer does not show.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-7 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA. *The independent review on gpt-6.1-sol found nothing to change. Its two findings are recorded on PR #24.*
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-7 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #24.*
 
 ## Make the paper the lightest surface and split selected from focused (UX-8)
 
@@ -710,14 +722,16 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 - [ ] Edit `crates/iced-shell/src/book_style.rs`.
 - [ ] Edit `crates/iced-shell/src/themes.rs`.
+- [ ] Edit `crates/reader-layout/src/themes.rs`. Since PR #18 the theme palettes live here, shared with the Android app. No layout code in `reader-layout` reads a palette, so the colors cannot change pagination or page numbers.
 - [ ] Edit `crates/iced-shell/src/ui.rs`.
 - [ ] Edit `crates/iced-shell/src/app.rs`.
 
 **Build.**
 
-- [ ] In every light theme variant, make the paper (`book_style::paper`, book_style.rs:103) at least as light as the desk (`book_style::desk`, :116). Tint the desk slightly instead of greying the paper. Keep the dark variants as they are.
-- [ ] In `ui::button_style` (ui.rs:191), draw selected as a tinted fill with no outline. Draw keyboard focus as the 2px `accent` outline only. Today both draw a blue outline, so a selected tab looks focused.
-- [ ] Centre the paper in the reading area at every width. Measure the gutters on both sides, because the 26px notes edge left with UX-3.
+- [x] Before building, the operator decides where the paper change goes. The paper is each palette's `surface` and the desk its `background`, in `reader-layout/src/themes.rs`. `reader-ffi` (reader.rs:262) hands the same two colors to Android as `paper` and `background`. Changing the shared light palettes changes the Android paper too. A desktop-only change would split one palette into two. *The operator chose the shared palettes on 2026-11-09, so Android gets the same lighter paper. The Android app is not built or checked for UX-8.*
+- [ ] In every light theme variant, make the paper (`book_style::paper`, book_style.rs:17) at least as light as the desk (`book_style::desk`, :30). Tint the desk slightly instead of greying the paper. Keep the dark variants as they are. Today the Default light paper is `#f6f6f6` on a `#ffffff` desk.
+- [ ] In `ui::button_style` (ui.rs:332), draw selected as a tinted fill with no outline. Draw keyboard focus as the 2px `accent` outline only. Today both draw a blue outline, so a selected tab looks focused.
+- [ ] Centre the paper in the reading area at every width. Measure the gutters on both sides, because the 26px notes edge left with UX-3. Since UX-4 the scrollbar floats over the page, yet `paged_book_view` (app.rs:6347) still pads the desk 14px on the right for its rail (app.rs:6423). Measure that first, because it may hold the paper about 7px left of centre.
 
 **You see.**
 
@@ -726,7 +740,7 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `themes.rs` gains `light_paper_is_never_darker_than_the_desk`. It walks every theme's light palette and asserts the paper's relative luminance is at least the desk's. Run `cargo test -p iced-shell --locked light_paper`.
+- [ ] `reader-layout/src/themes.rs` gains `light_paper_is_never_darker_than_the_desk`, beside the palettes it checks. It walks every theme's light palette and asserts the paper's relative luminance is at least the desk's. Run `cargo test -p reader-layout --locked light_paper`.
 - [ ] `ui.rs` gains `selected_has_no_outline_and_focus_does`. It asserts border width 0 for selected and unfocused, and 2 for focused. Run `cargo test -p iced-shell --locked selected_has_no_outline`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
@@ -909,7 +923,7 @@ What stays unproven:
 - The final strip look. The operator picks it at the UX-3 review gate from the three variants rendered in the real reader.
 - Whether a selection drag stalls while the cursor crosses a strip. The levitated cursor gives the page no position there. UX-3 lane 6 checks it.
 - The suspected EPUB progress bug in `capture_progress`. UX-4 writes the test first.
-- The 240px and 700ms overscroll threshold. UX-7 lanes 2 and 5 check it with a mouse and a touchpad pattern. The operator tunes it at review.
+- The 240px and 700ms overscroll threshold. UX-7 lanes 2 and 5 check it with a mouse and a touchpad pattern. The operator tunes it at review. *Both lanes passed, and PR #24 merged with these values.*
 - Whether `subset-icons.py` reproduces the shipped font byte for byte. UX-0 lane 10 checks it.
 
 ## Appendix B. Alternatives rejected
@@ -934,7 +948,7 @@ What stays unproven:
 - Focus can land on a hidden bar control. UX-2. Bar controls stay in the focus order, and focusing one reveals the bar. Lane 5 checks it.
 - A frame subscription that never stops would spin the CPU. UX-2, UX-3, and UX-4. The perf rule on `idle_cpu_ms_per_10s` fails such a head.
 - Wheel forwarding may scroll by a different amount than native scrolling. UX-3. The owner matches the scrollable's own line height.
-- The PDF Document view has its own scroll and selection in `pdf_reader.rs`. UX-3 and UX-7. Lanes 9 and 10 cover it.
+- The PDF Document view has its own scroll and selection in `pdf_reader.rs`. UX-3 and UX-7. Lanes 9 and 10 cover it. *UX-7 needed no PDF change, because Document view scrolls through all pages as one document.*
 - Regenerating the icon font needs network access and `fontTools`. UX-0, UX-3, and UX-5. The script pins the source blob SHA.
 - Ignored preview tests that never set a window style render Mac chrome today, so their output changes. UX-1. The owner reruns `render_reading_comfort_previews` and attaches the new images.
 - The bar may not fit one row at 540px before UX-5 folds controls into overflow. UX-2. Lane 9 checks 860px only, and UX-5 lane 9 checks 540px.
