@@ -49,7 +49,7 @@ against the active document/generation so stale work cannot replace a newer view
   window wide (48 to 128 px); the right one stops at the notes drawer and inside
   the scrollbar rail. They draw nothing until hovered, show nothing on a page
   that cannot turn, and forward the wheel through the bar's wheel path. The
-  ignored test `render_strip_looks` writes the review looks to
+  ignored test `render_strip_look` renders a hovered strip in both themes to
   `target/ui-ux-review`.
 - Managed imports live below `%LOCALAPPDATA%\simPl\documents`. HTML book folders
   use an internal EPUB container, with source-format metadata so the shelf still

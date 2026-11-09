@@ -1,20 +1,22 @@
 //! Full-height strips along the left and right edges of the reading area that
 //! turn the page when pressed. They draw nothing until the pointer is over
-//! one; then it fades in a shade and a chevron. [`Hover`] holds the fade and,
+//! one; then it fades in a full-height shade and a chevron. [`Hover`] holds the fade and,
 //! like the reading bar, takes an explicit [`Instant`] for every transition.
 
 use super::*;
 use iced::Animation;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer, widget};
-use iced::{Background, Border, Color, Radians, Rectangle, gradient, touch};
+use iced::{Background, Radians, Rectangle, gradient, touch};
 use std::time::{Duration, Instant};
 
 const FADE: Duration = Duration::from_millis(150);
 const CHEVRON: f32 = 30.0;
-const CIRCLE: f32 = 48.0;
-/// The shade at the window edge, fading to clear inward.
-const EDGE_SHADE: f32 = 0.07;
-const FLAT_SHADE: f32 = 0.035;
+/// The shade is the theme's text colour: dark on a light page, light on a
+/// dark one. It is strongest at the window edge and keeps a floor at the
+/// strip's inner edge, so the hovered strip reads as one band from top to
+/// bottom rather than a glow around the chevron.
+const EDGE_SHADE: f32 = 0.11;
+const INNER_SHADE: f32 = 0.04;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Side {
@@ -23,35 +25,6 @@ pub(super) enum Side {
 }
 
 const SIDES: [Side; 2] = [Side::Previous, Side::Next];
-
-/// The strip looks from the prototype, rendered side by side at the UX-3
-/// review. The operator picks one; the other two go before merge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) enum Look {
-    /// v0: the edge shade and a bare chevron.
-    Shade,
-    /// v1: the edge shade and a chevron in a faint circle.
-    Circle,
-    /// v2: a flat shade and a bare chevron.
-    Flat,
-}
-
-const LOOK: Look = Look::Circle;
-
-#[cfg(test)]
-thread_local! {
-    pub(super) static REVIEW_LOOK: std::cell::Cell<Option<Look>> =
-        const { std::cell::Cell::new(None) };
-}
-
-fn look() -> Look {
-    #[cfg(test)]
-    if let Some(look) = REVIEW_LOOK.get() {
-        return look;
-    }
-    LOOK
-}
 
 /// What a press on each strip sends. `None` disables that strip: no shade,
 /// no chevron, no hand cursor, and presses fall through to the page.
@@ -228,7 +201,6 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         } else {
             0.0
         },
-        look: look(),
     })
 }
 
@@ -237,7 +209,6 @@ struct Strips {
     alpha: [f32; 2],
     width: f32,
     bottom_inset: f32,
-    look: Look,
 }
 
 #[derive(Default)]
@@ -284,50 +255,23 @@ impl Strips {
     ) {
         use iced::advanced::Renderer as _;
         use iced::advanced::text::Renderer as _;
-        let shade = match self.look {
-            Look::Shade | Look::Circle => {
-                let edge = Color::from_rgba(0.0, 0.0, 0.0, EDGE_SHADE * alpha);
-                let angle = match side {
-                    Side::Previous => Radians(-std::f32::consts::FRAC_PI_2),
-                    Side::Next => Radians(std::f32::consts::FRAC_PI_2),
-                };
-                Background::Gradient(
-                    gradient::Linear::new(angle)
-                        .add_stop(0.0, Color::TRANSPARENT)
-                        .add_stop(1.0, edge)
-                        .into(),
-                )
-            }
-            Look::Flat => Color::from_rgba(0.0, 0.0, 0.0, FLAT_SHADE * alpha).into(),
+        let palette = ui::palette(theme);
+        let angle = match side {
+            Side::Previous => Radians(-std::f32::consts::FRAC_PI_2),
+            Side::Next => Radians(std::f32::consts::FRAC_PI_2),
         };
         renderer.fill_quad(
             renderer::Quad {
                 bounds: region,
                 ..renderer::Quad::default()
             },
-            shade,
+            Background::Gradient(
+                gradient::Linear::new(angle)
+                    .add_stop(0.0, palette.text.scale_alpha(INNER_SHADE * alpha))
+                    .add_stop(1.0, palette.text.scale_alpha(EDGE_SHADE * alpha))
+                    .into(),
+            ),
         );
-        let center = region.center();
-        let palette = ui::palette(theme);
-        if self.look == Look::Circle {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: Rectangle {
-                        x: center.x - CIRCLE / 2.0,
-                        y: center.y - CIRCLE / 2.0,
-                        width: CIRCLE,
-                        height: CIRCLE,
-                    },
-                    border: Border {
-                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.08 * alpha),
-                        width: 1.0,
-                        radius: (CIRCLE / 2.0).into(),
-                    },
-                    ..renderer::Quad::default()
-                },
-                palette.surface.scale_alpha(0.7 * alpha),
-            );
-        }
         renderer.fill_text(
             iced::advanced::Text {
                 content: match side {
@@ -344,7 +288,7 @@ impl Strips {
                 shaping: iced::advanced::text::Shaping::Basic,
                 wrapping: iced::advanced::text::Wrapping::None,
             },
-            center,
+            region.center(),
             palette.text.scale_alpha(0.75 * alpha),
             region,
         );

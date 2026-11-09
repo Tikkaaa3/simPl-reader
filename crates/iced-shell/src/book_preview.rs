@@ -1786,15 +1786,14 @@ fn a_strip_that_cant_turn_draws_nothing_on_hover() {
     let darkened = |x| i32::from(red(&idle, x)) - i32::from(red(&hovered, x));
     let outer = 1000.0 - 14.0 - 2.0;
     let inner = outer - page_strips::width(1000.0) + 4.0;
+    let (outer, inner) = (darkened(outer), darkened(inner));
     assert!(
-        darkened(outer) >= 12,
-        "the shade is darkest at the window edge: {}",
-        darkened(outer)
+        outer >= 20,
+        "the shade is darkest at the window edge: {outer}"
     );
     assert!(
-        darkened(inner) <= 3,
-        "and clear at the strip's inner edge: {}",
-        darkened(inner)
+        (5..=outer - 8).contains(&inner),
+        "and lighter but still visible at the strip's inner edge, so the band          reads from top to bottom: {inner} against {outer}"
     );
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -1870,18 +1869,14 @@ fn a_pdf_strip_turns_the_pdf_page_above_the_status_line() {
 }
 
 #[test]
-#[ignore = "UX-3 review: writes the three strip looks to target/ui-ux-review"]
-fn render_strip_looks() {
+#[ignore = "UX-3 review: writes a hovered strip in both themes to target/ui-ux-review"]
+fn render_strip_look() {
     ui::load_test_fonts();
     let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
     std::fs::create_dir_all(&output).unwrap();
-    for (name, look) in [
-        ("v0", page_strips::Look::Shade),
-        ("v1", page_strips::Look::Circle),
-        ("v2", page_strips::Look::Flat),
-    ] {
-        page_strips::REVIEW_LOOK.set(Some(look));
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
         let mut reader = strip_book(1400.0, 900.0);
+        reader.appearance = appearance;
         let at = right_strip(&reader, 450.0);
         render_with_cursor(
             &mut reader,
@@ -1889,7 +1884,6 @@ fn render_strip_looks() {
             at,
         );
         assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
-        page_strips::REVIEW_LOOK.set(None);
     }
 }
 
