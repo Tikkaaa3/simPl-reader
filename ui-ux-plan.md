@@ -24,7 +24,9 @@ As of 2026-11-09:
 | #11 | UX-3 page-turn strips | Merged |
 | #12 | This plan | Merged |
 | #14 | UX-4 progress line and idle scrollbar | Merged |
-| | UX-5 icon bar and **Aa** panel | Next |
+| #17 | UX-5 icon bar and **Aa** panel | Merged |
+| #18 | A theme for each book, with a default theme in Settings, added after UX-5 | Merged |
+| | UX-6 floating panels and contents drawer | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
 
@@ -62,7 +64,7 @@ A milestone's boxes are ticked from its PR's Verification section. A box left op
   - [x] UX-2 after UX-1.
   - [x] UX-3 after UX-2.
   - [x] UX-4 after UX-3.
-  - [ ] UX-5 after UX-4.
+  - [x] UX-5 after UX-4.
   - [ ] UX-6 after UX-5.
   - [ ] UX-7 after UX-6.
   - [ ] UX-8 after UX-7.
@@ -465,63 +467,92 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Files.**
 
-- [ ] Create `crates/iced-shell/src/reading_panel.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/reading_ui.rs`.
-- [ ] Edit `crates/iced-shell/src/pdf_reader.rs`.
-- [ ] Edit `scripts/subset-icons.py` and `assets/fonts/MaterialSymbolsOutlined-Subset.ttf`.
-- [ ] Edit `README.md`.
+- [x] Create `crates/iced-shell/src/reading_panel.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [x] Edit `crates/iced-shell/src/reading_ui.rs`.
+- [x] Edit `crates/iced-shell/src/pdf_reader.rs`.
+- [x] Edit `scripts/subset-icons.py` and `assets/fonts/MaterialSymbolsOutlined-Subset.ttf`.
+- [x] Edit `README.md`. *Also edited: `reading_chrome.rs`, `chrome.rs`, `reader_profile.rs`, `book_preview.rs`, `promotion_preview.rs`, `release_audit.rs`, and `assets/licenses/Material-Symbols-CHANGES.txt`.*
 
 **Build.**
 
-- [ ] Make every bar control a 32px icon button with a tooltip that names the action and its shortcut. The bar holds **Library**, the book title in muted text, the page field, **Contents**, **Find**, **Listen**, **Notes**, **Aa**, the light and dark toggle, **Search**, and **Settings**. No two buttons share a glyph. Add the needed codepoints to `subset-icons.py` and regenerate the font.
-- [ ] Add an **Aa** panel that drops down from its button. It holds the theme cards, text size, font, line spacing, side margins, zoom with **Fit width**, and **Use reading defaults**. Move the per-book controls from `reading_ui::settings` (reading_ui.rs:363) into it. In PDF views it shows only zoom and **Fit width**.
-- [ ] Delete the toolbar's zoom buttons (`Control::FontDown`, `FitBookWidth`, `FontUp`), the PDF `zoom_controls` in the bar (pdf_reader.rs:1289), and `appearance_button` (app.rs:6201). Keep Ctrl+plus, Ctrl+minus, Ctrl+0, and Ctrl+Shift+F.
-- [ ] Keep the bar shown while the **Aa** panel is open. Escape closes the panel and returns focus to **Aa**.
-- [ ] Fit the bar on one row down to the 540px minimum width. Hide the book title first, then fold **Search** and **Settings** into an overflow button.
+- [x] Make every bar control a 32px icon button with a tooltip that names the action and its shortcut. The bar holds **Library**, the book title in muted text, the page field, **Contents**, **Find**, **Listen**, **Notes**, **Aa**, the light and dark toggle, **Search**, and **Settings**. No two buttons share a glyph. Add the needed codepoints to `subset-icons.py` and regenerate the font.
+- [x] Add an **Aa** panel that drops down from its button. It holds the theme cards, text size, font, line spacing, side margins, zoom with **Fit width**, and **Use reading defaults**. Move the per-book controls from `reading_ui::settings` (reading_ui.rs:363) into it. In PDF views it shows only zoom and **Fit width**.
+- [x] Delete the toolbar's zoom buttons (`Control::FontDown`, `FitBookWidth`, `FontUp`), the PDF `zoom_controls` in the bar (pdf_reader.rs:1289), and `appearance_button` (app.rs:6201). Keep Ctrl+plus, Ctrl+minus, Ctrl+0, and Ctrl+Shift+F.
+- [x] Keep the bar shown while the **Aa** panel is open. Escape closes the panel and returns focus to **Aa**.
+- [x] Fit the bar on one row down to the 540px minimum width. Hide the book title first, then fold **Search** and **Settings** into an overflow button. *The light and dark toggle folds with them, into a **More** menu.*
+
+**As built.** The review changed these from the steps above.
+
+- One table of bar items in `reading_chrome.rs` drives both drawing and keyboard order. Each item has a fold level, and the widths where items fold are measured by the ignored test `measure_reading_bar_folds`.
+- The light and dark toggle folds into **More** with **Search** and **Settings**, because folding only those two left the book bar 25px too wide at 540px. The toggle no longer sits where the Library header has it, and the UX-2 test for that position is gone. The operator accepted this and will review the whole UI later.
+- Settings edits the library-wide reading defaults even while a book is open. Its session **Book zoom** row moved to **Aa**.
+- A press outside an open menu only closes it, and does not also turn a page or start a selection. The wheel still scrolls the page.
+- The independent review found three bugs, each fixed with a test that fails without the fix. Changing a default that the open book overrides blanked its pages. A menu stayed open over a newly dropped document. Escape from a picker left focus on a removed choice.
 
 **You see.**
 
-- [ ] The bar is one row of quiet icons with tooltips.
-- [ ] **Aa** opens a panel where text size, font, spacing, margins, theme, and zoom change the open book.
+- [x] The bar is one row of quiet icons with tooltips.
+- [x] **Aa** opens a panel where text size, font, spacing, margins, theme, and zoom change the open book. *Until #18 the theme cards changed the theme for every book. See the next section.*
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `reading_panel.rs` gains `aa_panel_changes_the_open_book_only`. It raises the text size through the panel messages and asserts the book override changed while the library default did not. Run `cargo test -p iced-shell --locked aa_panel`.
-- [ ] `app.rs` gains `every_bar_control_has_a_tooltip`. It walks the bar controls and asserts a non-empty tooltip for each. Run `cargo test -p iced-shell --locked bar_control`.
+- [x] `reading_panel.rs` gains `aa_panel_changes_the_open_book_only`. It raises the text size through the panel messages and asserts the book override changed while the library default did not. Run `cargo test -p iced-shell --locked aa_panel`.
+- [x] `app.rs` gains `every_bar_control_has_a_tooltip`. It walks the bar controls and asserts a non-empty tooltip for each. Run `cargo test -p iced-shell --locked bar_control`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Capture the bar at trunk and head, then hover each head icon. Save `ux5-regression.png`. Pass when trunk shows text pills and every head icon shows a tooltip with an action name.
-- [ ] Lane 2. Open **Aa**, press text size plus twice, close the book, and reopen it. Save `ux5-size.png`. Pass when the text is larger after reopening.
-- [ ] Lane 3. Pick the Soft theme in **Aa**. Save `ux5-theme.png`. Pass when the page uses Spectral on warm paper.
-- [ ] Lane 4. In **Aa**, press zoom plus, then **Fit width**. Save `ux5-zoom.png`. Pass when the page grows and then fits the window width.
-- [ ] Lane 5. Open the PDF in Document view and open **Aa**. Save `ux5-pdf.png`. Pass when only zoom and **Fit width** are enabled.
-- [ ] Lane 6. Tab into the **Aa** panel, then press Escape. Save `ux5-keyboard.png`. Pass when focus moves through the panel controls and Escape returns focus to **Aa**.
-- [ ] Lane 7. Open **Aa** and wait 5 seconds without moving. Save `ux5-hold.png`. Pass when the bar and panel are still shown.
-- [ ] Lane 8. Press Ctrl+plus twice and Ctrl+0. Save `ux5-shortcuts.png`. Pass when the zoom grows and returns to 100 percent.
-- [ ] Lane 9. Resize to 540x360 and reveal the bar. Save `ux5-narrow.png`. Pass when the bar is one row with no overlap.
-- [ ] Lane 10. Press Ctrl+W, open Settings, and raise the default text size. Open a book that has no override. Save `ux5-defaults.png`. Pass when that book uses the new default.
+- [x] Lane 1. Regression lane against trunk. Capture the bar at trunk and head, then hover each head icon. Save `ux5-regression.png`. Pass when trunk shows text pills and every head icon shows a tooltip with an action name.
+- [x] Lane 2. Open **Aa**, press text size plus twice, close the book, and reopen it. Save `ux5-size.png`. Pass when the text is larger after reopening.
+- [x] Lane 3. Pick the Soft theme in **Aa**. Save `ux5-theme.png`. Pass when the page uses Spectral on warm paper.
+- [x] Lane 4. In **Aa**, press zoom plus, then **Fit width**. Save `ux5-zoom.png`. Pass when the page grows and then fits the window width. *In two sessions a scripted click on zoom plus or minus did not register. It worked in about ten other tries and in a headless click test. Shots of the failures showed the button not hovered, which fits the operator moving the real mouse during the lane. The operator accepted this for now.*
+- [x] Lane 5. Open the PDF in Document view and open **Aa**. Save `ux5-pdf.png`. Pass when only zoom and **Fit width** are enabled.
+- [x] Lane 6. Tab into the **Aa** panel, then press Escape. Save `ux5-keyboard.png`. Pass when focus moves through the panel controls and Escape returns focus to **Aa**.
+- [x] Lane 7. Open **Aa** and wait 5 seconds without moving. Save `ux5-hold.png`. Pass when the bar and panel are still shown.
+- [x] Lane 8. Press Ctrl+plus twice and Ctrl+0. Save `ux5-shortcuts.png`. Pass when the zoom grows and returns to 100 percent. *100, 120, then 100 percent.*
+- [x] Lane 9. Resize to 540x360 and reveal the bar. Save `ux5-narrow.png`. Pass when the bar is one row with no overlap.
+- [x] Lane 10. Press Ctrl+W, open Settings, and raise the default text size. Open a book that has no override. Save `ux5-defaults.png`. Pass when that book uses the new default.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `reading-bar-reveal` and `settings`. Trunk has no **Aa** panel, so a new state `reading-aa-open` gets an absolute budget.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk p95 values first.
-- [ ] Rule. Fail when a head p95 exceeds trunk by more than 10 percent. Fail when `reading-aa-open` p95 exceeds 33ms.
+- [x] Metric. `reader_frame_ms` p95 for `reading-bar-reveal` and `settings`. Trunk has no **Aa** panel, so a new state `reading-aa-open` gets an absolute budget.
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
+- [x] Baseline. Record the trunk p95 values first.
+- [x] Rule. Fail when a head p95 exceeds trunk by more than 10 percent. Fail when `reading-aa-open` p95 exceeds 33ms. *`reading-bar-reveal` was at or below trunk in all three rounds, `settings` within 4 percent, and `reading-aa-open` at most 8.5ms.*
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, 5, and 9 screenshots into `target\ui-ux-review\UX-5-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of the icon bar, the tooltips, and the **Aa** panel. Save it as `target\ui-ux-review\UX-5-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 1, 2, 5, and 9 screenshots into `target\ui-ux-review\UX-5-review-<slug>.png`.
+- [x] Record a 30 to 60 second video of the icon bar, the tooltips, and the **Aa** panel. Save it as `target\ui-ux-review\UX-5-review.mp4`. *55 seconds.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-5 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-5 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #17.*
+
+## Give each book its own theme, with a default theme in Settings (#18)
+
+The operator asked for this at the UX-5 review. It was not in the original plan. UX-5 put theme cards in both Settings and **Aa**, and both changed one theme for every book.
+
+**As built.**
+
+- `reading::Options` in `reader-document` gains `theme: Option<ThemeId>`. A book's own theme is saved with its other per-book reading settings. `None` means the book follows the default theme. Old files load with no theme, and an unknown theme id loads as none with the other settings kept.
+- Settings' theme cards set the default theme. The Library and every book without its own theme use it.
+- **Aa**'s theme cards set the open book's theme. The card for the default theme is tagged **Default theme**, and picking it makes the book follow the default again while it keeps its typography.
+- **Use reading defaults** in **Aa** drops all of the book's own settings, its theme among them. The book then follows the default theme and the typography defaults again.
+- One rule picks the theme in use: the open book's own theme, else the default. PDFs, and PDFs in Book view, always use the default. A book is laid out again only when its look changes, so a book with its own theme opens straight in that theme.
+- Android keeps a desktop theme stored for a book when it saves that book's options. The four built-in themes are unchanged.
+- A book's own settings are one saved copy of every field. Any **Aa** change, a theme included, means the book stops following later changes to the typography defaults until **Use reading defaults** is pressed. The operator likes this behaviour and keeps it.
+- The independent review found that a settings reply from an earlier open of the same book could undo a theme chosen since. It was fixed, with `a_late_settings_reply_cannot_undo_a_theme_choice`.
+
+**Verified.**
+
+- [x] The gate ran with the two atlas tests failing as on `main`.
+- [x] Live on the release build. A book given Soft in **Aa** reopens in Soft, and its settings file records `"theme":"soft"`. The Library returns to the default theme. A default changed to Clear in Settings themes another book Clear and leaves the Soft book alone. **Use reading defaults** returns the Soft book to Clear. Polling the window's pixels while reopening the Soft book showed no frame in the default theme.
+- [x] Review cards in `target\ui-ux-review\theme-*.png`, from `render_book_theme_look`.
 
 ## Float the panels and move contents to a left drawer (UX-6)
 
