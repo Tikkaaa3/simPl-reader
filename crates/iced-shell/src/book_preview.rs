@@ -1233,15 +1233,15 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
         ]
     );
     assert_eq!(
-        notes_ui::sidebar_width(&reader),
-        0.0,
+        reader.document_view_size().width,
+        1000.0,
         "a closed drawer takes no width"
     );
     let _ = update(
         &mut reader,
         Message::Notes(crate::notes::Action::ToggleList),
     );
-    assert_eq!(notes_ui::sidebar_width(&reader), 340.0);
+    assert_eq!(reader.document_view_size().width, 660.0);
     assert_eq!(
         reader
             .controls()
@@ -1462,9 +1462,16 @@ fn hide_bar(reader: &mut Reader) {
     assert!(!reader.bar.visible(), "the bar has faded out");
 }
 
+/// Where the right strip ends: inside the scrollbar rail beside a docked notes
+/// drawer, or at an overlaid one's edge.
+fn right_strip_end(reader: &Reader) -> f32 {
+    let drawers = reader.drawers();
+    reader.window_size.width - (drawers.docked().right + 14.0).max(drawers.overlaid().right)
+}
+
 /// A point at height `y` in the middle of the right strip.
 fn right_strip(reader: &Reader, y: f32) -> Point {
-    let right = reader.window_size.width - notes_ui::sidebar_width(reader) - 14.0;
+    let right = right_strip_end(reader);
     Point::new(
         right - page_strips::width(reader.window_size.width) / 2.0,
         y,
@@ -1494,7 +1501,7 @@ fn page_turns(messages: &[Message]) -> Vec<bool> {
 }
 
 /// The cursor the window shows at `at`.
-fn interaction_at(reader: &Reader, at: Point) -> mouse::Interaction {
+pub(super) fn interaction_at(reader: &Reader, at: Point) -> mouse::Interaction {
     let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
     let size = reader.window_size;
     let mut element = view(reader);
@@ -1818,7 +1825,7 @@ fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
         &mut reader,
         Message::Notes(crate::notes::Action::ToggleList),
     );
-    assert_eq!(notes_ui::sidebar_width(&reader), 340.0);
+    assert_eq!(reader.document_view_size().width, 660.0);
     let strip_right = 1000.0 - 340.0 - 14.0;
     let strip_left = strip_right - page_strips::width(1000.0);
     assert_eq!(strip_left, 576.0);
@@ -1840,6 +1847,30 @@ fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
             usize::from(turns),
             "a click at x={x}"
         );
+    }
+}
+
+#[test]
+fn the_left_strip_turns_back_beside_the_contents_drawer() {
+    for window in [1400.0, 860.0] {
+        let mut reader = full_bar_book(window, 700.0);
+        let _ = reader.go_to_local_page(2);
+        let _ = update(&mut reader, Message::ToggleContents);
+        assert!(reader.show_contents);
+        let drawer = drawers::width(window);
+        let mut ui = Harness::new();
+        let inside = ui.click(&mut reader, Point::new(drawer - 10.0, 350.0));
+        assert!(
+            page_turns(&inside).is_empty(),
+            "a click in the drawer at {window} stays there"
+        );
+        let beside = ui.click(&mut reader, Point::new(drawer + 10.0, 350.0));
+        assert_eq!(
+            page_turns(&beside),
+            [false],
+            "a click just right of the drawer at {window} turns back"
+        );
+        assert_eq!(page_field(&reader), "2");
     }
 }
 
@@ -1911,7 +1942,7 @@ fn on_the_line(reader: &Reader, fraction: f32) -> Point {
     let bottom_inset = page_strips::bottom_inset(reader);
     let window = reader.window_size;
     let strip = page_strips::width(window.width);
-    let right = window.width - notes_ui::sidebar_width(reader) - 14.0 - strip;
+    let right = right_strip_end(reader) - strip;
     Point::new(
         strip + (right - strip) * fraction,
         window.height - bottom_inset - 12.0,
@@ -2127,10 +2158,7 @@ fn a_strip_that_moves_under_a_resting_pointer_drops_its_shade() {
         &mut reader,
         Message::Notes(crate::notes::Action::ToggleList),
     );
-    assert!(
-        at.x > 1000.0 - notes_ui::sidebar_width(&reader),
-        "the pointer is over the drawer now"
-    );
+    assert!(at.x > 1000.0 - 340.0, "the pointer is over the drawer now");
     let redraw = ui.send(
         &mut reader,
         iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
@@ -2220,7 +2248,7 @@ fn render_reading_bar_previews() {
 
 /// A book with contents and a passage to go back to, so its bar shows every
 /// button, in a `width` x `height` window.
-fn full_bar_book(width: f32, height: f32) -> Reader {
+pub(super) fn full_bar_book(width: f32, height: f32) -> Reader {
     let mut source = Arc::try_unwrap(super::tests::book("The Quiet Hours")).unwrap();
     source.items[0] = Item::Heading {
         id: "paragraph-0".into(),

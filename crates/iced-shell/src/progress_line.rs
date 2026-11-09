@@ -43,8 +43,13 @@ pub(super) fn page_at(fraction: f32, total: u32) -> u32 {
 
 /// The bottom band between the page strips, over the reading area `bounds`
 /// as the strips see it.
-pub(super) fn band(bounds: Rectangle, strip_width: f32, bottom_inset: f32) -> Rectangle {
-    let [previous, next] = page_strips::regions(bounds, strip_width, bottom_inset);
+pub(super) fn band(
+    bounds: Rectangle,
+    strip_width: f32,
+    bottom_inset: f32,
+    covered: drawers::Edges,
+) -> Rectangle {
+    let [previous, next] = page_strips::regions(bounds, strip_width, bottom_inset, covered);
     let left = previous.x + previous.width;
     let height = BAND.min(previous.height);
     Rectangle {
@@ -196,19 +201,38 @@ mod tests {
 
     #[test]
     fn progress_line_runs_between_the_strips() {
-        // Window width, reading area width (the window less the notes drawer),
-        // bottom inset, then the strips' inner edges and the band's top.
-        for (window, area, inset, left, right, top) in [
-            (860.0, 860.0, 0.0, 60.0, 786.0, 676.0),
-            (860.0, 550.4, 0.0, 60.0, 476.4, 676.0),
-            (1400.0, 1400.0, 0.0, 98.0, 1288.0, 676.0),
-            (1400.0, 1060.0, 0.0, 98.0, 948.0, 676.0),
-            (860.0, 860.0, pdf_reader::STATUS_HEIGHT, 60.0, 786.0, 650.0),
+        let none = drawers::Edges::default();
+        let left_drawer = drawers::Edges {
+            left: 300.0,
+            right: 0.0,
+        };
+        let right_drawer = drawers::Edges {
+            left: 0.0,
+            right: 300.0,
+        };
+        // Window width, reading area width (the window less any docked
+        // drawer), the overlaid drawers, bottom inset, then the strips' inner
+        // edges and the band's top.
+        for (window, area, covered, inset, left, right, top) in [
+            (860.0, 860.0, none, 0.0, 60.0, 786.0, 676.0),
+            (860.0, 860.0, right_drawer, 0.0, 60.0, 500.0, 676.0),
+            (860.0, 860.0, left_drawer, 0.0, 360.0, 786.0, 676.0),
+            (1400.0, 1400.0, none, 0.0, 98.0, 1288.0, 676.0),
+            (1400.0, 1060.0, none, 0.0, 98.0, 948.0, 676.0),
+            (
+                860.0,
+                860.0,
+                none,
+                pdf_reader::STATUS_HEIGHT,
+                60.0,
+                786.0,
+                650.0,
+            ),
         ] {
             let bounds = Rectangle::new(Point::ORIGIN, Size::new(area, 700.0));
             let strip = page_strips::width(window);
-            let [previous, next] = page_strips::regions(bounds, strip, inset);
-            let band = band(bounds, strip, inset);
+            let [previous, next] = page_strips::regions(bounds, strip, inset, covered);
+            let band = band(bounds, strip, inset, covered);
             assert_eq!(band.x, previous.x + previous.width, "meets the left strip");
             assert_eq!(band.x + band.width, next.x, "meets the right strip");
             let width = right - left;

@@ -409,11 +409,10 @@ impl Reader {
             || library_ui::banner_visible(self)
     }
 
-    /// Find, the read-aloud player, contents, help, recent documents or notices.
+    /// Find, the read-aloud player, help, recent documents or notices.
     fn has_held_panels(&self) -> bool {
         self.find.is_some()
             || self.read_aloud.active()
-            || (self.show_contents && !self.contents().is_empty())
             || self.error.is_some()
             || self.history_notice.is_some()
             || self.show_recent

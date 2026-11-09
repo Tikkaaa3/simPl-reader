@@ -183,21 +183,30 @@ pub(super) fn width(window_width: f32) -> f32 {
     (window_width * 0.07).clamp(48.0, 128.0).round()
 }
 
-/// The strips over the reading area `bounds`. The right one stops short of
-/// the scrollbar rail, and both stop `bottom_inset` above the bottom.
-pub(super) fn regions(bounds: Rectangle, width: f32, bottom_inset: f32) -> [Rectangle; 2] {
-    let inner = (bounds.width - crate::document_scroll::RAIL_WIDTH).max(0.0);
-    let width = width.min(inner / 2.0);
+/// The strips over the reading area `bounds`, beside the drawers that cover
+/// its sides. The right one stops short of the scrollbar rail, and both stop
+/// `bottom_inset` above the bottom.
+pub(super) fn regions(
+    bounds: Rectangle,
+    width: f32,
+    bottom_inset: f32,
+    covered: drawers::Edges,
+) -> [Rectangle; 2] {
+    let left = covered.left.min(bounds.width);
+    let right = (bounds.width - crate::document_scroll::RAIL_WIDTH)
+        .min(bounds.width - covered.right)
+        .max(left);
+    let width = width.min((right - left) / 2.0);
     let height = (bounds.height - bottom_inset).max(0.0);
     [
         Rectangle {
-            x: bounds.x,
+            x: bounds.x + left,
             y: bounds.y,
             width,
             height,
         },
         Rectangle {
-            x: bounds.x + inner - width,
+            x: bounds.x + right - width,
             y: bounds.y,
             width,
             height,
@@ -212,6 +221,7 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         alpha: SIDES.map(|side| reader.strips.alpha(side)),
         width: width(reader.window_size.width),
         bottom_inset: bottom_inset(reader),
+        covered: reader.drawers().overlaid(),
         progress: reader.progress(),
         jumps: active,
         labelled: reader.bar.visible(),
@@ -240,6 +250,8 @@ struct Strips {
     alpha: [f32; 2],
     width: f32,
     bottom_inset: f32,
+    /// The overlaid drawers' widths along each side.
+    covered: drawers::Edges,
     progress: Option<Progress>,
     /// A press on the line jumps; otherwise it only shows the position.
     jumps: bool,
@@ -291,7 +303,7 @@ impl Strips {
     }
 
     fn zone_at_point(&self, bounds: Rectangle, point: iced::Point) -> Option<Zone> {
-        let regions = regions(bounds, self.width, self.bottom_inset);
+        let regions = regions(bounds, self.width, self.bottom_inset, self.covered);
         let strip = SIDES.into_iter().zip(regions).find_map(|(side, region)| {
             (region.contains(point) && self.turns.get(side).is_some()).then_some(Zone::Strip(side))
         });
@@ -302,7 +314,7 @@ impl Strips {
     }
 
     fn band(&self, bounds: Rectangle) -> Rectangle {
-        progress_line::band(bounds, self.width, self.bottom_inset)
+        progress_line::band(bounds, self.width, self.bottom_inset, self.covered)
     }
 
     /// What a press at `point` sends.
@@ -514,7 +526,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let regions = regions(bounds, self.width, self.bottom_inset);
+        let regions = regions(bounds, self.width, self.bottom_inset, self.covered);
         for ((side, region), alpha) in SIDES.into_iter().zip(regions).zip(self.alpha) {
             if alpha > 0.0 && self.turns.get(side).is_some() {
                 self.draw_strip(renderer, theme, side, region, alpha);
@@ -557,21 +569,76 @@ mod tests {
     fn strip_regions_stop_inside_the_rail_and_above_the_bottom_inset() {
         let bounds = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(660.0, 800.0));
         assert_eq!(
-            regions(bounds, 70.0, 0.0),
+            regions(bounds, 70.0, 0.0, UNCOVERED),
             [
                 Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(70.0, 800.0)),
                 Rectangle::new(Point::new(576.0, 0.0), iced::Size::new(70.0, 800.0)),
             ]
         );
-        let [_, next] = regions(bounds, 70.0, pdf_reader::STATUS_HEIGHT);
+        let [_, next] = regions(bounds, 70.0, pdf_reader::STATUS_HEIGHT, UNCOVERED);
         assert_eq!(next.height, 800.0 - pdf_reader::STATUS_HEIGHT);
         let narrow = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(100.0, 800.0));
-        let [previous, next] = regions(narrow, 70.0, 0.0);
+        let [previous, next] = regions(narrow, 70.0, 0.0, UNCOVERED);
         assert_eq!(
             (previous.width, next.x),
             (43.0, 43.0),
             "strips never overlap"
         );
+    }
+
+    const UNCOVERED: drawers::Edges = drawers::Edges {
+        left: 0.0,
+        right: 0.0,
+    };
+
+    #[test]
+    fn strips_stay_beside_overlaid_drawers() {
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(860.0, 800.0));
+        let covered = drawers::Edges {
+            left: 300.0,
+            right: 250.0,
+        };
+        assert_eq!(
+            regions(bounds, 60.0, 0.0, covered),
+            [
+                Rectangle::new(Point::new(300.0, 0.0), iced::Size::new(60.0, 800.0)),
+                Rectangle::new(Point::new(550.0, 0.0), iced::Size::new(60.0, 800.0)),
+            ]
+        );
+        let crowded = drawers::Edges {
+            left: 500.0,
+            right: 300.0,
+        };
+        let [previous, next] = regions(bounds, 60.0, 0.0, crowded);
+        assert_eq!(
+            (previous.x, previous.width, next.x),
+            (500.0, 30.0, 530.0),
+            "strips share what the drawers leave"
+        );
+    }
+
+    #[test]
+    fn left_strip_follows_the_contents_drawer() {
+        for window in [1400.0, 860.0] {
+            let mut reader = book_preview::full_bar_book(window, 700.0);
+            let _ = reader.go_to_local_page(1);
+            let _ = update(&mut reader, Message::ToggleContents);
+            let drawer = drawers::width(window);
+            let strip = width(window);
+            for (x, pointer) in [
+                (drawer - 1.0, false),
+                (drawer + 1.0, true),
+                (drawer + strip - 1.0, true),
+                (drawer + strip + 1.0, false),
+            ] {
+                assert_eq!(
+                    book_preview::interaction_at(&reader, Point::new(x, 350.0))
+                        == mouse::Interaction::Pointer,
+                    pointer,
+                    "x={x} at {window}"
+                );
+            }
+        }
     }
 
     #[test]
