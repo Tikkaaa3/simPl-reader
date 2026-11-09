@@ -26,7 +26,9 @@ As of 2026-11-09:
 | #14 | UX-4 progress line and idle scrollbar | Merged |
 | #17 | UX-5 icon bar and **Aa** panel | Merged |
 | #18 | A theme for each book, with a default theme in Settings, added after UX-5 | Merged |
-| | UX-6 floating panels and contents drawer | Next, on the operator's go |
+| #20 | UX-6 floating panels and contents drawer | Merged |
+| #21 | UX-6 follow-up: drawers dock only when the page fits, and the player hides with the bar | Waiting for the operator's review |
+| | UX-7 wheel to next page | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
 
@@ -65,7 +67,7 @@ A milestone's boxes are ticked from its PR's Verification section. A box left op
   - [x] UX-3 after UX-2.
   - [x] UX-4 after UX-3.
   - [x] UX-5 after UX-4.
-  - [ ] UX-6 after UX-5.
+  - [x] UX-6 after UX-5.
   - [ ] UX-7 after UX-6.
   - [ ] UX-8 after UX-7.
   - [ ] UX-9 after UX-8 in the stack. Its owner may build in parallel from UX-1, because it touches only the library.
@@ -560,62 +562,84 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Files.**
 
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/read_aloud.rs`.
-- [ ] Edit `crates/iced-shell/src/notes_ui.rs`.
-- [ ] Edit `crates/iced-shell/src/page_strips.rs`.
-- [ ] Edit `README.md`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [x] Edit `crates/iced-shell/src/read_aloud.rs`.
+- [x] Edit `crates/iced-shell/src/notes_ui.rs`.
+- [x] Edit `crates/iced-shell/src/page_strips.rs`.
+- [x] Edit `README.md`. *Also: a new `drawers.rs`, and edits to `progress_line.rs`, `reading_chrome.rs`, `reading_ui.rs`, `reader_profile.rs`, and `book_preview.rs`.*
 
 **Build.**
 
-- [ ] Draw the read-aloud player (`read_aloud::player`, read_aloud.rs:1063) as a floating pill centred above the progress line, as a `stack!` layer.
-- [ ] Draw the find bar (`find_bar`, app.rs:6019) as a floating box at the top right, below the bar's position.
-- [ ] Move the EPUB contents list (app.rs:6590) into a left drawer with the same width rule as `sidebar_width`. **Contents** and Ctrl+T toggle it. Escape closes it.
-- [ ] Below 900px window width, both drawers overlay the page instead of narrowing it.
-- [ ] Move the left strip to the right edge of the contents drawer while the drawer is open.
-- [ ] Keep errors, help, and notices in the `auxiliary` column. They are rare, and moving them is out of scope.
+- [x] Draw the read-aloud player (`read_aloud::player`, read_aloud.rs:1063) as a floating pill centred above the progress line, as a `stack!` layer.
+- [x] Draw the find bar (`find_bar`, app.rs:6019) as a floating box at the top right, below the bar's position.
+- [x] Move the EPUB contents list (app.rs:6590) into a left drawer with the same width rule as `sidebar_width`. **Contents** and Ctrl+T toggle it. Escape closes it.
+- [x] Below 900px window width, both drawers overlay the page instead of narrowing it. *PR #21 replaces this width with a rule based on whether the page fits.*
+- [x] Move the left strip to the right edge of the contents drawer while the drawer is open.
+- [x] Keep errors, help, and notices in the `auxiliary` column. They are rare, and moving them is out of scope.
+
+**As built.** The review changed these from the steps above.
+
+- One drawer model in `drawers.rs` covers contents on the left and notes on the right. It says, for each side, whether the open drawer narrows the page or covers it, so that both can never happen at once. `sidebar_width` and the two copies of the contents height are gone.
+- Find, Listen, and Contents no longer keep the bar shown. The bar idles away while you listen or search.
+- The find box and the pill stay between the page-turn strips. Where that leaves them less than 300px, they cover the strips instead.
+- Choosing a chapter keeps a drawer beside the page open, and closes one that covers the page. Links, Back, and Ctrl+Page Down follow the same rule.
+- Pause and the speed label have fixed widths, so the pill's buttons stay still under the pointer when Pause becomes Resume.
+- At 900px, two drawers beside the page left it 252px wide, with no room for the find box or the pill. PR #20 therefore kept both drawers open together only from 1256px. Narrower, opening one closed the other.
+- Two independent reviews each found one bug, and each is fixed with a test. Floating controls had no room with both drawers open. A resize that kept both drawers still cleared focus in Contents.
+
+**Follow-up after the review.** The operator asked for two more changes at the UX-6 review. PR #21 builds them, and waits for the operator's review.
+
+- A drawer sits beside the page only when the whole page still fits. Otherwise it covers the page. In PR #20, a drawer beside the page could leave it narrower than its paper, and the page then scrolled sideways. That happened between 900 and 1106px with one drawer, and between 1256 and 1446px with two.
+  - At zoom 1 with the default margins, one drawer sits beside the page from 1106px, and two drawers stay open together from 1446px. Narrower, opening one drawer closes the other. Zooming in or narrowing the window closes contents and keeps notes.
+  - With fit width on, a drawer sits beside the page while it leaves the page at least 576px.
+  - A PDF at fit width keeps notes beside the page. A PDF zoomed wider than the room left gets notes over the page.
+  - The desk's side padding now narrows from 32 to 16px before the page has to scroll. Before, the page scrolled sideways between 780 and 797px even with no drawer open, and a drawer flipped back over the page between 1120 and 1137px.
+- The listening pill shows and hides with the reading bar. In PR #20 it stayed on screen and could cover the line being read.
+  - Moving the pointer to where the pill sits shows the bar and the pill, and keeps them shown while the pointer stays. So does focus on a pill button.
+  - Starting to listen shows both for the 2 seconds a newly opened document gets.
+  - The independent review found that a focused or hovered pill kept the bar shown after reading stopped. It is fixed with a test.
 
 **You see.**
 
-- [ ] Listen, Find, and Contents open without moving the page.
+- [x] Listen, Find, and Contents open without moving the page. *A drawer beside the page centres the page again in the space left, about 170px to the right at 1400px. Nothing moves up or down.*
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `app.rs` gains `panels_do_not_move_the_page`. It renders a book with Listen, Find, and Contents each open and asserts the first text row keeps its y. Run `cargo test -p iced-shell --locked panels_do_not_move`.
-- [ ] `page_strips.rs` gains `left_strip_follows_the_contents_drawer`. It asserts that the left strip starts at the drawer width when the drawer is open. Run `cargo test -p iced-shell --locked left_strip_follows`.
+- [x] `app.rs` gains `panels_do_not_move_the_page`. It renders a book with Listen, Find, and Contents each open and asserts the first text row keeps its y. Run `cargo test -p iced-shell --locked panels_do_not_move`.
+- [x] `page_strips.rs` gains `left_strip_follows_the_contents_drawer`. It asserts that the left strip starts at the drawer width when the drawer is open. Run `cargo test -p iced-shell --locked left_strip_follows`.
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe. *The session ran them itself on the release build, and measured page movement with pixel diffs.*
 
-- [ ] Lane 1. Regression lane against trunk. Start Listen at trunk and at head. Save `ux6-regression.png`. Pass when trunk moves the page down and head shows a pill at the bottom with the page unmoved.
-- [ ] Lane 2. Press Ctrl+F, type `garden`, and press Enter. Save `ux6-find.png`. Pass when the find box shows at the top right, a match is highlighted, and the page did not move for the box.
-- [ ] Lane 3. Press Ctrl+T, click chapter 2, then press Escape. Save `ux6-contents.png`. Pass when a left drawer opens, chapter 2 opens, and Escape closes the drawer.
-- [ ] Lane 4. Open the contents drawer and click the left strip on page 3. Save `ux6-left-strip.png`. Pass when the strip sits right of the drawer and the page turns to 2.
-- [ ] Lane 5. At 1100px width, open both drawers. Save `ux6-both.png`. Pass when the page fits between the drawers with no overlap.
-- [ ] Lane 6. Use the pill's pause, slower, and faster buttons, then click the right strip. Save `ux6-player.png`. Pass when speech pauses and resumes, the speed label changes, and the page turns.
-- [ ] Lane 7. At 860px width, open the contents drawer. Save `ux6-overlay.png`. Pass when the drawer overlays the page and the page keeps its width.
-- [ ] Lane 8. Open the contents drawer and press Tab five times. Save `ux6-focus.png`. Pass when focus moves through the drawer entries.
-- [ ] Lane 9. Open Find, then move to the top edge. Save `ux6-stacking.png`. Pass when the bar and the find box do not overlap.
-- [ ] Lane 10. Delete the open book's file from the lane profile and reopen it. Save `ux6-error.png`. Pass when the error notice with **Locate** still shows.
+- [x] Lane 1. Regression lane against trunk. Start Listen at trunk and at head. Save `ux6-regression.png`. Pass when trunk moves the page down and head shows a pill at the bottom with the page unmoved. *Trunk does not move the page down. It covers the top of the page with a full-width band. On head, only the pill and the highlight on the spoken word change.*
+- [x] Lane 2. Press Ctrl+F, type `garden`, and press Enter. Save `ux6-find.png`. Pass when the find box shows at the top right, a match is highlighted, and the page did not move for the box. *Opening Find changes only the box's own pixels. All 20 matches showed a visible highlight.*
+- [x] Lane 3. Press Ctrl+T, click chapter 2, then press Escape. Save `ux6-contents.png`. Pass when a left drawer opens, chapter 2 opens, and Escape closes the drawer. *Escape returns focus to **Contents**.*
+- [x] Lane 4. Open the contents drawer and click the left strip on page 3. Save `ux6-left-strip.png`. Pass when the strip sits right of the drawer and the page turns to 2. *The strip spans 340 to 438px. A click inside the drawer does not turn the page.*
+- [ ] Lane 5. At 1100px width, open both drawers. Save `ux6-both.png`. Pass when the page fits between the drawers with no overlap. *Failed as written. Two drawers beside the page left 420px, and the 766px page scrolled sideways. PR #20 then kept one drawer at 1100px, and the follow-up changes the rule again.*
+- [x] Lane 6. Use the pill's pause, slower, and faster buttons, then click the right strip. Save `ux6-player.png`. Pass when speech pauses and resumes, the speed label changes, and the page turns. *The speed went 1.0×, 0.9×, then 1.1×, and speech went on to page 2. The buttons moved when Pause became Resume, which is fixed.*
+- [x] Lane 7. At 860px width, open the contents drawer. Save `ux6-overlay.png`. Pass when the drawer overlays the page and the page keeps its width. *Only the drawer and the strip beside it change.*
+- [x] Lane 8. Open the contents drawer and press Tab five times. Save `ux6-focus.png`. Pass when focus moves through the drawer entries. *Through the three entries, then on to the bar.*
+- [x] Lane 9. Open Find, then move to the top edge. Save `ux6-stacking.png`. Pass when the bar and the find box do not overlap. *The bar spans 0 to 44px and the box 52 to 102px. With Find open, the bar idled away first.*
+- [x] Lane 10. Delete the open book's file from the lane profile and reopen it. Save `ux6-error.png`. Pass when the error notice with **Locate** still shows.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `reading-idle`. Trunk renders panels in the column, so new states `reading-listen` and `reading-contents` get absolute budgets.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk `reading-idle` p95 first.
-- [ ] Rule. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when `reading-listen` or `reading-contents` p95 exceeds 33ms.
+- [x] Metric. `reader_frame_ms` p95 for `reading-idle`. Trunk renders panels in the column, so new states `reading-listen` and `reading-contents` get absolute budgets.
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
+- [x] Baseline. Record the trunk `reading-idle` p95 first. *8.99 to 9.05ms.*
+- [x] Rule. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when `reading-listen` or `reading-contents` p95 exceeds 33ms. *Head `reading-idle` was 8.46 to 8.82ms. `reading-listen` peaked at 8.92ms and `reading-contents` at 9.76ms.*
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, 3, and 7 screenshots into `target\ui-ux-review\UX-6-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of Listen, Find, and the contents drawer. Save it as `target\ui-ux-review\UX-6-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 1, 2, 3, and 7 screenshots into `target\ui-ux-review\UX-6-review-<slug>.png`. *Also two shots with both drawers open, at 1100 and 1300px.*
+- [x] Record a 30 to 60 second video of Listen, Find, and the contents drawer. Save it as `target\ui-ux-review\UX-6-review.mp4`. *48 seconds. Another app's window covered the screen recordings, so the video is built from captures of the reader window itself, and the pointer does not show.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-6 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-6 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #20.*
 
 ## Continue to the next page when the wheel passes the end (UX-7)
 
