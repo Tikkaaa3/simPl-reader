@@ -1831,6 +1831,31 @@ fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
 }
 
 #[test]
+fn strips_reach_the_bottom_unless_the_page_scrolls_sideways() {
+    let mut reader = strip_book(1000.0, 600.0);
+    // Below the window's own resize border, which takes the last few pixels.
+    let bottom = 600.0 - 10.0;
+    assert!(!scrolls_sideways(&reader));
+    assert_eq!(
+        interaction_at(&reader, right_strip(&reader, bottom)),
+        mouse::Interaction::Pointer,
+        "the strip runs to the bottom edge"
+    );
+    reader.zoom = 3.0;
+    assert!(scrolls_sideways(&reader));
+    assert_ne!(
+        interaction_at(&reader, right_strip(&reader, bottom)),
+        mouse::Interaction::Pointer,
+        "the horizontal scrollbar keeps its strip of the bottom"
+    );
+    assert_eq!(
+        interaction_at(&reader, right_strip(&reader, 600.0 - 15.0)),
+        mouse::Interaction::Pointer,
+        "and the strip stops just above it"
+    );
+}
+
+#[test]
 fn a_pdf_strip_turns_the_pdf_page_above_the_status_line() {
     let Some(mut reader) = test_pdf(
         crate::pdf_reader::tests::pages_pdf(3),
@@ -1840,7 +1865,7 @@ fn a_pdf_strip_turns_the_pdf_page_above_the_status_line() {
     };
     let mut ui = Harness::new();
     let page = |reader: &Reader| reader.pdf.as_ref().unwrap().page_index();
-    let bottom = 700.0 - pdf_reader::STATUS_HEIGHT - 14.0;
+    let bottom = 700.0 - pdf_reader::STATUS_HEIGHT;
     let at = right_strip(&reader, bottom - 1.0);
     let messages = ui.click(&mut reader, at);
     assert_eq!(page_turns(&messages), [true]);

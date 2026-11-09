@@ -14,9 +14,23 @@ const CHEVRON: f32 = 30.0;
 /// The shade is the theme's text colour: dark on a light page, light on a
 /// dark one. It is strongest at the window edge and keeps a floor at the
 /// strip's inner edge, so the hovered strip reads as one band from top to
-/// bottom rather than a glow around the chevron.
-const EDGE_SHADE: f32 = 0.11;
-const INNER_SHADE: f32 = 0.04;
+/// bottom rather than a glow around the chevron. Light text on a dark page
+/// stands out more than dark text on a light one, so the dark shade is
+/// lighter.
+const LIGHT_SHADE: Shade = Shade {
+    edge: 0.15,
+    inner: 0.055,
+};
+const DARK_SHADE: Shade = Shade {
+    edge: 0.07,
+    inner: 0.025,
+};
+
+/// The shade's opacity at the window edge and at the strip's inner edge.
+struct Shade {
+    edge: f32,
+    inner: f32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Side {
@@ -168,12 +182,11 @@ pub(super) fn width(window_width: f32) -> f32 {
 }
 
 /// The strips over the reading area `bounds`. The right one stops short of
-/// the scrollbar rail, and both stop above the horizontal scrollbar and
-/// whatever `bottom_inset` adds below it.
+/// the scrollbar rail, and both stop `bottom_inset` above the bottom.
 fn regions(bounds: Rectangle, width: f32, bottom_inset: f32) -> [Rectangle; 2] {
     let inner = (bounds.width - crate::document_scroll::RAIL_WIDTH).max(0.0);
     let width = width.min(inner / 2.0);
-    let height = (bounds.height - crate::document_scroll::RAIL_WIDTH - bottom_inset).max(0.0);
+    let height = (bounds.height - bottom_inset).max(0.0);
     [
         Rectangle {
             x: bounds.x,
@@ -196,12 +209,25 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         turns: Turns::of(reader, active),
         alpha: SIDES.map(|side| reader.strips.alpha(side)),
         width: width(reader.window_size.width),
-        bottom_inset: if reader.pdf.is_some() {
-            pdf_reader::STATUS_HEIGHT
-        } else {
-            0.0
-        },
+        bottom_inset: bottom_inset(reader),
     })
+}
+
+/// How far above the reading area's bottom the strips stop: above the PDF
+/// status row, and above the horizontal scrollbar while the page is zoomed
+/// wider than the window. Otherwise they run to the bottom edge.
+fn bottom_inset(reader: &Reader) -> f32 {
+    let status = if reader.pdf.is_some() {
+        pdf_reader::STATUS_HEIGHT
+    } else {
+        0.0
+    };
+    let scrollbar = if super::scrolls_sideways(reader) {
+        crate::document_scroll::RAIL_WIDTH
+    } else {
+        0.0
+    };
+    status + scrollbar
 }
 
 struct Strips {
@@ -256,6 +282,11 @@ impl Strips {
         use iced::advanced::Renderer as _;
         use iced::advanced::text::Renderer as _;
         let palette = ui::palette(theme);
+        let shade = if theme.extended_palette().is_dark {
+            DARK_SHADE
+        } else {
+            LIGHT_SHADE
+        };
         let angle = match side {
             Side::Previous => Radians(-std::f32::consts::FRAC_PI_2),
             Side::Next => Radians(std::f32::consts::FRAC_PI_2),
@@ -267,8 +298,8 @@ impl Strips {
             },
             Background::Gradient(
                 gradient::Linear::new(angle)
-                    .add_stop(0.0, palette.text.scale_alpha(INNER_SHADE * alpha))
-                    .add_stop(1.0, palette.text.scale_alpha(EDGE_SHADE * alpha))
+                    .add_stop(0.0, palette.text.scale_alpha(shade.inner * alpha))
+                    .add_stop(1.0, palette.text.scale_alpha(shade.edge * alpha))
                     .into(),
             ),
         );
@@ -456,17 +487,17 @@ mod tests {
     }
 
     #[test]
-    fn strip_regions_stop_inside_the_rail_and_above_the_scrollbar() {
+    fn strip_regions_stop_inside_the_rail_and_above_the_bottom_inset() {
         let bounds = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(660.0, 800.0));
         assert_eq!(
             regions(bounds, 70.0, 0.0),
             [
-                Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(70.0, 786.0)),
-                Rectangle::new(Point::new(576.0, 0.0), iced::Size::new(70.0, 786.0)),
+                Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(70.0, 800.0)),
+                Rectangle::new(Point::new(576.0, 0.0), iced::Size::new(70.0, 800.0)),
             ]
         );
         let [_, next] = regions(bounds, 70.0, pdf_reader::STATUS_HEIGHT);
-        assert_eq!(next.height, 800.0 - 14.0 - pdf_reader::STATUS_HEIGHT);
+        assert_eq!(next.height, 800.0 - pdf_reader::STATUS_HEIGHT);
         let narrow = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(100.0, 800.0));
         let [previous, next] = regions(narrow, 70.0, 0.0);
         assert_eq!(

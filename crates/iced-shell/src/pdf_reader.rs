@@ -336,6 +336,12 @@ impl Reader {
         Size::new(page.width * scale, page.height * scale)
     }
 
+    /// Whether a page is wider than the viewport, so a horizontal scrollbar
+    /// shows along its bottom.
+    pub(crate) fn scrolls_sideways(&self) -> bool {
+        self.content_width > self.viewport.width + 0.5
+    }
+
     fn rebuild(&mut self) {
         let mut width = self.viewport.width;
         let heights = self

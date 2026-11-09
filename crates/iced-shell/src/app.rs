@@ -6095,6 +6095,29 @@ fn notes_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     .into()
 }
 
+/// The book's reading area width, and the width its zoomed paper needs with
+/// the desk around it. The page scrolls sideways when the second is wider.
+fn book_desk_widths(reader: &Reader) -> (f32, f32) {
+    let margin = reader.reading_options().margin as f32;
+    let paper_width = reader.width + margin * 2.0;
+    let available = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
+    let side_padding = MINIMAL.side_padding(available);
+    (
+        available,
+        paper_width * reader.zoom + 14.0 + side_padding * 2.0,
+    )
+}
+
+/// Whether the open book or PDF is zoomed wider than the reading area, so a
+/// horizontal scrollbar shows along its bottom.
+fn scrolls_sideways(reader: &Reader) -> bool {
+    if let Some(pdf) = &reader.pdf {
+        return pdf.scrolls_sideways();
+    }
+    let (available, desk) = book_desk_widths(reader);
+    desk > available
+}
+
 fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Message> {
     if reader.pagination.is_some() {
         return container(text("Preparing pages…").size(14).style(ui::muted_text))
@@ -6166,10 +6189,9 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
             notes_ui::ribbon(reader, paper_width)
         ]);
     }
-    let available_width = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
-    let side_padding = MINIMAL.side_padding(available_width);
+    let (available_width, desk_width) = book_desk_widths(reader);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
-        .center_x(available_width.max(paper_width * reader.zoom + 14.0 + side_padding * 2.0))
+        .center_x(available_width.max(desk_width))
         .padding(iced::Padding {
             right: 14.0,
             ..Default::default()
