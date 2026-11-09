@@ -722,13 +722,13 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 - [ ] Edit `crates/iced-shell/src/book_style.rs`.
 - [ ] Edit `crates/iced-shell/src/themes.rs`.
-- [ ] Edit `crates/reader-layout/src/themes.rs`. Since PR #18 the theme palettes live here, shared with the Android app.
+- [ ] Edit `crates/reader-layout/src/themes.rs`. Since PR #18 the theme palettes live here, shared with the Android app. No layout code in `reader-layout` reads a palette, so the colors cannot change pagination or page numbers.
 - [ ] Edit `crates/iced-shell/src/ui.rs`.
 - [ ] Edit `crates/iced-shell/src/app.rs`.
 
 **Build.**
 
-- [ ] Before building, the operator decides where the paper change goes. The paper is each palette's `surface` and the desk its `background`, in `reader-layout/src/themes.rs`. `reader-ffi` (reader.rs:262) hands the same two colors to Android as `paper` and `background`. Changing the shared light palettes changes the Android paper too. A desktop-only change would split one palette into two.
+- [x] Before building, the operator decides where the paper change goes. The paper is each palette's `surface` and the desk its `background`, in `reader-layout/src/themes.rs`. `reader-ffi` (reader.rs:262) hands the same two colors to Android as `paper` and `background`. Changing the shared light palettes changes the Android paper too. A desktop-only change would split one palette into two. *The operator chose the shared palettes on 2026-11-09, so Android gets the same lighter paper. The Android app is not built or checked for UX-8.*
 - [ ] In every light theme variant, make the paper (`book_style::paper`, book_style.rs:17) at least as light as the desk (`book_style::desk`, :30). Tint the desk slightly instead of greying the paper. Keep the dark variants as they are. Today the Default light paper is `#f6f6f6` on a `#ffffff` desk.
 - [ ] In `ui::button_style` (ui.rs:332), draw selected as a tinted fill with no outline. Draw keyboard focus as the 2px `accent` outline only. Today both draw a blue outline, so a selected tab looks focused.
 - [ ] Centre the paper in the reading area at every width. Measure the gutters on both sides, because the 26px notes edge left with UX-3. Since UX-4 the scrollbar floats over the page, yet `paged_book_view` (app.rs:6347) still pads the desk 14px on the right for its rail (app.rs:6423). Measure that first, because it may hold the paper about 7px left of centre.
@@ -740,7 +740,7 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `themes.rs` gains `light_paper_is_never_darker_than_the_desk`. It walks every theme's light palette and asserts the paper's relative luminance is at least the desk's. Run `cargo test -p iced-shell --locked light_paper`.
+- [ ] `reader-layout/src/themes.rs` gains `light_paper_is_never_darker_than_the_desk`, beside the palettes it checks. It walks every theme's light palette and asserts the paper's relative luminance is at least the desk's. Run `cargo test -p reader-layout --locked light_paper`.
 - [ ] `ui.rs` gains `selected_has_no_outline_and_focus_does`. It asserts border width 0 for selected and unfocused, and 2 for focused. Run `cargo test -p iced-shell --locked selected_has_no_outline`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
