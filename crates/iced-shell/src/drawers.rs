@@ -172,11 +172,25 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'_, Message> {
     .into()
 }
 
+/// The heading the reader is in: the last one at or before `row`.
+pub(super) fn current_heading(
+    contents: &[reader_document::epub::TocEntry],
+    row: usize,
+) -> Option<usize> {
+    contents.iter().rposition(|entry| entry.chapter <= row)
+}
+
 fn contents(reader: &Reader, active: bool) -> Element<'_, Message> {
     let contents = reader.contents();
     if !reader.show_contents || contents.is_empty() {
         return Space::new().width(0).into();
     }
+    let epub_chapter = reader
+        .book
+        .as_ref()
+        .and_then(|book| book.epub.as_ref())
+        .map(|chapter| chapter.index);
+    let heading = current_heading(contents, reader.anchor().row);
     let range = reader.contents_range();
     let (start, end) = (range.start, range.end);
     let mut entries = column![Space::new().height(start as f32 * CONTENT_ROW_HEIGHT)];
@@ -194,13 +208,9 @@ fn contents(reader: &Reader, active: bool) -> Element<'_, Message> {
                     fragment: entry.fragment.clone(),
                 }),
                 ui::ButtonTone::Subtle,
-                reader
-                    .book
-                    .as_ref()
-                    .and_then(|b| b.epub.as_ref())
-                    .map_or(entry.chapter <= reader.anchor().row, |c| {
-                        entry.chapter == c.index
-                    }),
+                epub_chapter.map_or(heading == Some(start + relative), |chapter| {
+                    entry.chapter == chapter
+                }),
             ))
             .height(CONTENT_ROW_HEIGHT)
             .width(Length::Fill)

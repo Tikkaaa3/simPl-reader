@@ -2644,6 +2644,51 @@ pub(super) fn full_bar_book(width: f32, height: f32) -> Reader {
 }
 
 #[test]
+fn contents_marks_only_the_heading_the_reader_is_in() {
+    ui::load_test_fonts();
+    let mut source = Arc::try_unwrap(super::tests::book("Three Headings")).unwrap();
+    for (row, label) in [(0, "One"), (4, "Two"), (8, "Three")] {
+        source.items[row] = Item::Heading {
+            id: format!("paragraph-{row}"),
+            text: label.into(),
+            level: 1,
+        };
+    }
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 6,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let _ = update(&mut reader, Message::ToggleContents);
+    assert_eq!(reader.anchor().row, 6);
+    let entries: Vec<_> = (0..3)
+        .map(|index| bounds_of(&mut reader, Control::ContentsEntry(index)))
+        .collect();
+    let output = std::env::temp_dir().join(format!("simpl-contents-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("contents.png"));
+    let image = ::image::open(output.join("contents.png"))
+        .unwrap()
+        .to_rgba8();
+    let _ = std::fs::remove_dir_all(&output);
+    let fills: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            image
+                .get_pixel(entry.x as u32 + 2, entry.center_y() as u32)
+                .0
+        })
+        .collect();
+    let (paper, tint) = ([255, 255, 255, 255], [220, 234, 250, 255]);
+    assert_eq!(fills, [paper, tint, paper]);
+}
+
+#[test]
 fn selected_sort_and_shelf_chip_are_tinted_without_an_outline() {
     use reader_document::recent::DocumentKind;
     ui::load_test_fonts();

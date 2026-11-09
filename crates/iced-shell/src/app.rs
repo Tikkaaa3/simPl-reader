@@ -1490,12 +1490,9 @@ impl Reader {
                 .section(chapter.index)
                 .map(|c| c.title.clone())
         } else {
-            let row = self.anchor().row;
-            self.contents()
-                .iter()
-                .rev()
-                .find(|c| c.chapter <= row)
-                .map(|c| c.label.clone())
+            let contents = self.contents();
+            drawers::current_heading(contents, self.anchor().row)
+                .map(|index| contents[index].label.clone())
         };
         Some(match section.filter(|s| s != &book.title) {
             Some(section) => format!("{} ~ {section}", book.title),
