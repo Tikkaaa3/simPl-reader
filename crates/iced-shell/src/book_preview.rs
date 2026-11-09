@@ -4220,6 +4220,30 @@ fn overscroll_at_the_scrollable_bottom_turns_the_page() {
     }
 }
 
+#[test]
+fn ctrl_wheel_at_the_page_bottom_zooms_without_turning() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let generation = reader.generation;
+    let _ = update(&mut reader, Message::LayoutReady(generation));
+    let mut ui = Harness::new();
+    let page = Point::new(640.0, 350.0);
+    for _ in 0..40 {
+        if reader.at_page_end(true) {
+            break;
+        }
+        ui.send_all(&mut reader, &wheel_notches(1), page);
+    }
+    assert!(reader.at_page_end(true));
+    let mut events = vec![iced::Event::Keyboard(keyboard::Event::ModifiersChanged(
+        keyboard::Modifiers::CTRL,
+    ))];
+    events.extend(wheel_notches(5));
+    let messages = ui.send_all(&mut reader, &events, page);
+    assert_eq!(wheels(&messages), (0, 0), "the page reports no wheel");
+    assert_eq!(reader.active_page().unwrap().number, 0);
+    assert_eq!((reader.zoom * 100.0).round(), 62.0);
+}
+
 /// A listening book with its bar pinned, scrolled to the bottom of page 1,
 /// and the middle of the read-aloud pill's Pause button.
 fn listening_at_the_page_bottom() -> (Reader, Point) {

@@ -1089,8 +1089,9 @@ pub(super) fn wheel(reader: &mut Reader, delta: mouse::ScrollDelta) -> Task<Mess
         // At the page's end the forwarded scroll moves nothing, so the push
         // toward the next page counts here. A turn replaces the scroll, which
         // would otherwise move the new page.
+        let shift = crate::document_scroll::shift_pressed(modifiers);
         return reader
-            .overscroll(delta, Instant::now())
+            .overscroll(wheel_offset(delta, shift).y, Instant::now())
             .unwrap_or_else(|| forward_wheel(reader, delta, modifiers));
     }
     let notches = crate::document_scroll::zoom_notches(delta);

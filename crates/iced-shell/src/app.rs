@@ -1701,19 +1701,15 @@ impl Reader {
         }
     }
 
-    /// Counts a wheel `delta` that reached the page toward turning it, and
+    /// Counts a wheel movement that reached the page toward turning it, and
     /// returns the turn once the push past the page's end is long enough.
-    fn overscroll(&mut self, delta: mouse::ScrollDelta, now: Instant) -> Option<Task<Message>> {
-        let modifiers = self.bar.modifiers;
-        if crate::document_scroll::control_pressed(modifiers)
-            || self.pending_anchor.is_some()
-            || !self.interactive()
-        {
+    /// `dy` is how far the wheel scrolls the page down. Callers never pass a
+    /// Ctrl+wheel, which zooms instead.
+    fn overscroll(&mut self, dy: f32, now: Instant) -> Option<Task<Message>> {
+        if self.pending_anchor.is_some() || !self.interactive() {
             self.overscroll = None;
             return None;
         }
-        let dy =
-            reading_chrome::wheel_offset(delta, crate::document_scroll::shift_pressed(modifiers)).y;
         let next = dy > 0.0;
         let at_edge = self.can_turn(next) && self.at_page_end(next);
         let (overscroll, turn) = push(self.overscroll, dy, at_edge, now, self.generation);
@@ -3912,9 +3908,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ChromeWheel(delta) => reading_chrome::wheel(reader, delta),
-        Message::PageWheel(delta) => reader
-            .overscroll(delta, Instant::now())
-            .unwrap_or_else(Task::none),
+        Message::PageWheel(delta) => {
+            // Shift as the page's scrollable sees it, from keyboard events.
+            let dy = reading_chrome::wheel_offset(delta, reader.bar.modifiers.shift()).y;
+            reader
+                .overscroll(dy, Instant::now())
+                .unwrap_or_else(Task::none)
+        }
         Message::StripHover(side) => {
             reader.strips.hover(side, std::time::Instant::now());
             Task::none()
@@ -9878,21 +9878,20 @@ mod tests {
     fn overscroll_push_expires_after_700ms() {
         let mut reader = overscroll_book(0);
         scrolled(&mut reader, 9999.0);
-        let notch = mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 };
         let start = Instant::now();
         for _ in 0..3 {
-            assert!(reader.overscroll(notch, start).is_none());
+            assert!(reader.overscroll(60.0, start).is_none());
         }
         let late = start + Duration::from_millis(701);
         assert!(
-            reader.overscroll(notch, late).is_none(),
+            reader.overscroll(60.0, late).is_none(),
             "a late notch starts a new push"
         );
-        assert!(reader.overscroll(notch, late).is_none());
-        assert!(reader.overscroll(notch, late).is_none());
+        assert!(reader.overscroll(60.0, late).is_none());
+        assert!(reader.overscroll(60.0, late).is_none());
         assert!(
             reader
-                .overscroll(notch, late + Duration::from_millis(700))
+                .overscroll(60.0, late + Duration::from_millis(700))
                 .is_some()
         );
         assert_eq!(page_and_offset(&reader), (1, 0.0));
@@ -9929,18 +9928,42 @@ mod tests {
                 ),
             );
         };
+        let notch = Message::ChromeWheel(mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 });
         let mut reader = overscroll_book(0);
         scrolled(&mut reader, 9999.0);
         modifiers(&mut reader, keyboard::Modifiers::CTRL);
         for _ in 0..5 {
-            wheel_lines(&mut reader, 1.0);
+            let _ = update(&mut reader, notch.clone());
         }
-        assert_eq!(page_and_offset(&reader), (0, 818.08));
+        assert_eq!(reader.active_page().unwrap().number, 0);
+        assert_eq!((reader.zoom * 100.0).round(), 62.0, "it zooms out instead");
+
         modifiers(&mut reader, keyboard::Modifiers::empty());
+        laid_out(&mut reader);
+        scrolled(&mut reader, 9999.0);
         for _ in 0..4 {
-            wheel_lines(&mut reader, 1.0);
+            let _ = update(&mut reader, notch.clone());
         }
         assert_eq!(page_and_offset(&reader), (1, 0.0));
+    }
+
+    #[test]
+    fn shift_wheel_never_turns() {
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        let _ = update(
+            &mut reader,
+            Message::Event(
+                iced::Event::Keyboard(keyboard::Event::ModifiersChanged(
+                    keyboard::Modifiers::SHIFT,
+                )),
+                window::Id::unique(),
+            ),
+        );
+        for _ in 0..5 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        assert_eq!(page_and_offset(&reader), (0, 818.08), "it scrolls sideways");
     }
 
     #[test]
