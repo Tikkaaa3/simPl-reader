@@ -1095,7 +1095,12 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
     if let Some(notice) = &session.notice {
         bar = bar.push(text(notice).size(11).style(ui::muted_text));
     }
-    container(bar).padding([8, 12]).style(ui::panel).into()
+    // Beside an overlaid drawer in a narrow window the pill has less room
+    // than its row needs; the row then breaks rather than losing Pause.
+    container(bar.wrap().vertical_spacing(4))
+        .padding([8, 12])
+        .style(ui::panel)
+        .into()
 }
 
 /// The Read aloud section of the settings panel.

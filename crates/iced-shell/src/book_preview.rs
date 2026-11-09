@@ -1875,6 +1875,29 @@ fn the_left_strip_turns_back_beside_the_contents_drawer() {
 }
 
 #[test]
+fn the_pill_keeps_its_buttons_between_the_strips_beside_a_narrow_drawer() {
+    let mut reader = full_bar_book(540.0, 500.0);
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    reader.begin_silent_listening();
+    let strip = page_strips::width(540.0);
+    let (left, right) = (strip, 540.0 - 230.0 - strip);
+    for control in [
+        Control::ReadAloudSlower,
+        Control::ReadAloudFaster,
+        Control::ReadAloudPause,
+    ] {
+        let button = bounds_of(&mut reader, control);
+        assert!(
+            left <= button.x && button.x + button.width <= right && button.width >= 24.0,
+            "{control:?} at {button:?} shows whole between {left} and {right}"
+        );
+    }
+}
+
+#[test]
 fn strips_reach_the_bottom_unless_the_page_scrolls_sideways() {
     let mut reader = strip_book(1000.0, 600.0);
     // Below the window's own resize border, which takes the last few pixels.
