@@ -53,6 +53,7 @@ impl From<LayoutOptions> for Options {
             size: value.size,
             margin: value.margin,
             spacing: value.spacing,
+            theme: None,
         }
         .validated()
     }

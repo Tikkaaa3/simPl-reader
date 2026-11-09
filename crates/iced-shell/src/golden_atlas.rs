@@ -21,6 +21,7 @@ fn options(font: &str, size: u16, margin: u16, spacing: u16) -> reader_document:
         size,
         spacing,
         margin,
+        theme: None,
     }
 }
 
