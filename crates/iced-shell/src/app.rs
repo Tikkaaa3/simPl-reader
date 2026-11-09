@@ -6910,10 +6910,8 @@ mod settings_profile;
 mod tests {
     use super::*;
 
-    /// A three-chapter EPUB like `fixtures/chapters/build_epub.py`, written to
-    /// a temporary file because the EPUB reader opens a path.
+    /// A three-chapter EPUB like `fixtures/chapters/build_epub.py`.
     fn three_chapter_epub() -> Arc<reader_document::epub::Epub> {
-        use std::io::Write as _;
         let sentence = "The lamp burned low while the house settled into its evening sounds, and the reader turned another page without noticing how late it had become. ";
         let chapters: Vec<String> = (1..=3)
             .map(|number| {
@@ -6928,23 +6926,30 @@ mod tests {
             })
             .collect();
         let package = r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-test-three-rooms</dc:identifier><dc:title>Three Rooms</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c1" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="c3" href="chapter-3.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>"#;
-        let path =
-            std::env::temp_dir().join(format!("simpl-three-rooms-{}.epub", std::process::id()));
+        let mut files = vec![("OPS/package.opf".to_owned(), package.to_owned())];
+        for (index, chapter) in chapters.into_iter().enumerate() {
+            files.push((format!("OPS/chapter-{}.xhtml", index + 1), chapter));
+        }
+        epub_of("three-rooms", files)
+    }
+
+    /// Opens an EPUB of `files`, each an archive path and its text, behind
+    /// the mimetype and a container that points at `OPS/package.opf`. It is
+    /// written to a temporary file because the EPUB reader opens a path.
+    fn epub_of(name: &str, files: Vec<(String, String)>) -> Arc<reader_document::epub::Epub> {
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!("simpl-{name}-{}.epub", std::process::id()));
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         let stored = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        let mut files = vec![
+        let container = [
             ("mimetype".to_owned(), "application/epub+zip".to_owned()),
             (
                 "META-INF/container.xml".to_owned(),
                 r#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#.to_owned(),
             ),
-            ("OPS/package.opf".to_owned(), package.to_owned()),
         ];
-        for (index, chapter) in chapters.into_iter().enumerate() {
-            files.push((format!("OPS/chapter-{}.xhtml", index + 1), chapter));
-        }
-        for (name, contents) in files {
+        for (name, contents) in container.into_iter().chain(files) {
             zip.start_file(name, stored).unwrap();
             zip.write_all(contents.as_bytes()).unwrap();
         }
@@ -6952,6 +6957,48 @@ mod tests {
         let epub = Arc::new(reader_document::epub::open(&path).unwrap());
         let _ = std::fs::remove_file(&path);
         epub
+    }
+
+    /// An EPUB with one XHTML file per body, `file-0.xhtml` onwards, and a
+    /// navigation document that lists `entries`, each an href and a label.
+    pub(super) fn nav_epub(
+        name: &str,
+        bodies: &[String],
+        entries: &[(String, String)],
+    ) -> Arc<reader_document::epub::Epub> {
+        let manifest: String = (0..bodies.len())
+            .map(|file| {
+                format!(
+                    r#"<item id="f{file}" href="file-{file}.xhtml" media-type="application/xhtml+xml"/>"#
+                )
+            })
+            .collect();
+        let spine: String = (0..bodies.len())
+            .map(|file| format!(r#"<itemref idref="f{file}"/>"#))
+            .collect();
+        let package = format!(
+            r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-test-{name}</dc:identifier><dc:title>{name}</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>{manifest}</manifest><spine>{spine}</spine></package>"#
+        );
+        let list: String = entries
+            .iter()
+            .map(|(href, label)| format!(r#"<li><a href="{href}">{label}</a></li>"#))
+            .collect();
+        let nav = format!(
+            r#"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>{list}</ol></nav></body></html>"#
+        );
+        let mut files = vec![
+            ("OPS/package.opf".to_owned(), package),
+            ("OPS/nav.xhtml".to_owned(), nav),
+        ];
+        files.extend(bodies.iter().enumerate().map(|(file, body)| {
+            (
+                format!("OPS/file-{file}.xhtml"),
+                format!(
+                    r#"<html xmlns="http://www.w3.org/1999/xhtml"><head><title>File {file}</title></head><body>{body}</body></html>"#
+                ),
+            )
+        }));
+        epub_of(name, files)
     }
 
     #[test]
