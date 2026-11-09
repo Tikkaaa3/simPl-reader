@@ -749,8 +749,7 @@ fn menu_controls(reader: &Reader, menu: Menu) -> Vec<Control> {
 /// Where keyboard focus goes back to after a panel `control` opened closes:
 /// the control, or More while the bar keeps it folded away.
 pub(super) fn return_focus(reader: &Reader, control: Control) -> Control {
-    let folded = folds(reader).is_some()
-        && fold(reader) == Fold::Overflow
+    let folded = fold(reader) == Fold::Overflow
         && overflow(reader, true)
             .iter()
             .any(|button| button.control == control);
