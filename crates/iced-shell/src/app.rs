@@ -40,6 +40,8 @@ mod progress_line;
 mod read_aloud;
 #[path = "reading_chrome.rs"]
 mod reading_chrome;
+#[path = "reading_panel.rs"]
+mod reading_panel;
 #[path = "reading_ui.rs"]
 mod reading_ui;
 #[path = "word_translation.rs"]
@@ -889,6 +891,7 @@ struct Reader {
     pending_open: Option<OpenAs>,
     show_recent: bool,
     bar: reading_chrome::Bar,
+    menu: Option<reading_chrome::Menu>,
     strips: page_strips::Hover,
     show_help: bool,
     focused: Option<Control>,
@@ -997,6 +1000,7 @@ impl Default for Reader {
             show_recent: false,
             show_help: false,
             bar: Default::default(),
+            menu: None,
             strips: Default::default(),
             focused: None,
             focus_generation: 0,
@@ -1049,8 +1053,9 @@ enum CloseAction {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
-    Reading(reading_ui::Focus),
-    FitBookWidth,
+    Reading(reading_ui::Target, reading_ui::Focus),
+    Zoom(reading_panel::Zoom),
+    Menu(reading_chrome::Menu),
     Fullscreen,
     Profile(profile_ui::Focus),
     Library(library_ui::Focus),
@@ -1063,18 +1068,14 @@ enum Control {
     RemoveLibrary(usize),
     ConfirmRemove,
     DismissOverlay,
-    SettingsFontDown,
-    SettingsFontUp,
     SettingsHelp,
-    SettingsTheme(usize),
+    Theme(usize),
     Close,
-    FontDown,
-    FontUp,
     Back,
     BookMode,
     DocumentMode,
     BookLink(usize, usize),
-    Pdf(pdf_reader::FocusControl),
+    PdfPage,
     BookPageInput,
     Contents,
     ContentsEntry(usize),
@@ -1102,7 +1103,7 @@ enum Control {
 
 #[derive(Clone, Debug)]
 enum Message {
-    Reading(reading_ui::Action),
+    Reading(reading_ui::Target, reading_ui::Action),
     ReadingLoaded {
         profile: u64,
         book: String,
@@ -1146,6 +1147,10 @@ enum Message {
     TogglePinnedBar,
     /// The pointer entered the band that reveals the hidden reading bar.
     RevealBar,
+    /// A bar button opens its menu, or closes it when it is open.
+    ToggleMenu(reading_chrome::Menu),
+    /// A press below the bar outside the open menu's card.
+    CloseMenu,
     /// A frame while the reading bar or a page strip has a deadline or a fade.
     ReadingFrame(std::time::Instant),
     /// The wheel turned over the reading bar or a page strip; it acts on the
@@ -2098,7 +2103,6 @@ impl Reader {
         let has_document = book.is_some() || self.pdf.is_some();
         let history = self.show_recent && !overlay;
         let reading = has_document && !overlay;
-        let pdf = self.pdf.as_ref();
         let finding = self.find.is_some() && has_document && !overlay;
         let has_matches = self.find.as_ref().is_some_and(|find| find.count() > 0);
         let primary = [
@@ -2124,37 +2128,25 @@ impl Reader {
             history.then_some(Control::HideRecent),
         ];
         // Header focus follows the visual order of chrome::view and the reading bar.
-        let title_bar = [
-            Some(Control::Chrome(chrome::Action::Settings)),
-            Some(Control::Chrome(chrome::Action::ToggleAppearance)),
-            Some(Control::Chrome(chrome::Action::Search)),
-            has_document.then_some(Control::Close),
-            (book.is_some() && !self.returns.is_empty()).then_some(Control::Back),
-            pdf.is_some_and(|p| p.document().can_copy)
-                .then_some(Control::BookMode),
-            book.is_some_and(|b| b.pdf_source.is_some())
-                .then_some(Control::DocumentMode),
-            book.is_some().then_some(Control::BookPageInput),
-            (has_document && !self.contents().is_empty()).then_some(Control::Contents),
-            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::Page)),
-            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomOut)),
-            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomIn)),
-            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ActualSize)),
-            pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::FitWidth)),
-            has_document.then_some(Control::Find),
-            has_document.then_some(Control::ReadAloud),
-            has_document.then_some(Control::Notes(notes::Focus::ToggleList)),
-            (book.is_some() && self.zoom > 0.25).then_some(Control::FontDown),
-            book.is_some().then_some(Control::FitBookWidth),
-            (book.is_some() && self.zoom < 3.0).then_some(Control::FontUp),
-            (!self.fullscreen).then_some(Control::Chrome(chrome::Action::Minimize)),
-            (!self.fullscreen).then_some(Control::Chrome(chrome::Action::Maximize)),
-            (!self.fullscreen).then_some(Control::Chrome(chrome::Action::Close)),
-        ];
+        let title_bar = if has_document {
+            reading_chrome::controls(self)
+        } else if self.fullscreen {
+            Vec::new()
+        } else {
+            [
+                chrome::Action::Settings,
+                chrome::Action::ToggleAppearance,
+                chrome::Action::Search,
+                chrome::Action::Minimize,
+                chrome::Action::Maximize,
+                chrome::Action::Close,
+            ]
+            .map(Control::Chrome)
+            .to_vec()
+        };
         title_bar
             .into_iter()
-            .flatten()
-            .filter(move |_| !overlay && (has_document || !self.fullscreen))
+            .filter(move |_| !overlay)
             .map(Some)
             .chain([
                 self.show_search.then_some(Control::SearchInput),
@@ -2162,8 +2154,6 @@ impl Reader {
                 self.confirm_remove
                     .is_some()
                     .then_some(Control::ConfirmRemove),
-                (self.show_settings && self.zoom > 0.25).then_some(Control::SettingsFontDown),
-                (self.show_settings && self.zoom < 3.0).then_some(Control::SettingsFontUp),
                 (self.show_settings && self.read_aloud.rate > crate::speech::MIN_RATE)
                     .then_some(Control::ReadAloudSlower),
                 (self.show_settings && self.read_aloud.rate < crate::speech::MAX_RATE)
@@ -2172,14 +2162,17 @@ impl Reader {
                 self.show_settings.then_some(Control::Fullscreen),
             ])
             .flatten()
-            .chain(reading_ui::controls(self))
+            .chain(
+                reading_ui::controls(self, reading_ui::Target::Defaults)
+                    .filter(move |_| self.show_settings),
+            )
             .chain(self.dictionary_controls())
             .chain(library_ui::controls(self))
             .chain(profile_ui::controls(self).filter(move |_| self.show_settings))
             .chain(
                 (0..themes::THEMES.len())
                     .filter(move |_| self.show_settings)
-                    .map(Control::SettingsTheme),
+                    .map(Control::Theme),
             )
             .chain(
                 primary
@@ -2260,8 +2253,14 @@ impl Reader {
             return Task::none();
         }
         let message = match control {
-            Control::Reading(focus) => Message::Reading(reading_ui::focus_action(self, focus)),
-            Control::FitBookWidth => Message::FitBookWidth,
+            Control::Reading(target, focus) => {
+                Message::Reading(target, reading_ui::focus_action(self, target, focus))
+            }
+            Control::Zoom(zoom) => match reading_panel::message(self, zoom) {
+                Some(message) => message,
+                None => return Task::none(),
+            },
+            Control::Menu(menu) => Message::ToggleMenu(menu),
             Control::Fullscreen => Message::ToggleFullscreen,
             Control::Profile(focus) => return self.profile_focus(focus),
             Control::Library(focus) => return self.library_focus(focus),
@@ -2279,9 +2278,7 @@ impl Reader {
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
             Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
-            Control::SettingsTheme(index) => Message::SetTheme(index),
-            Control::FontDown | Control::SettingsFontDown => Message::Zoom(self.zoom - 0.1),
-            Control::FontUp | Control::SettingsFontUp => Message::Zoom(self.zoom + 0.1),
+            Control::Theme(index) => Message::SetTheme(index),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
             Control::Back => Message::Back,
@@ -2301,22 +2298,8 @@ impl Reader {
                 };
                 Message::FollowLink(href)
             }
-            Control::Pdf(action) => {
-                if action == pdf_reader::FocusControl::Page {
-                    return iced::widget::operation::focus(pdf_reader::page_input_id());
-                }
-                let Some(pdf) = &self.pdf else {
-                    return Task::none();
-                };
-                let document = pdf.document().id;
-                let message = match action {
-                    pdf_reader::FocusControl::ZoomOut => pdf_reader::Message::ZoomOut,
-                    pdf_reader::FocusControl::ZoomIn => pdf_reader::Message::ZoomIn,
-                    pdf_reader::FocusControl::ActualSize => pdf_reader::Message::ActualSize,
-                    pdf_reader::FocusControl::FitWidth => pdf_reader::Message::FitWidth,
-                    pdf_reader::FocusControl::Page => unreachable!(),
-                };
-                return update_inner(self, Message::Pdf { document, message });
+            Control::PdfPage => {
+                return iced::widget::operation::focus(pdf_reader::page_input_id());
             }
             Control::BookPageInput => {
                 return iced::widget::operation::focus(iced::advanced::widget::Id::new(
@@ -3285,7 +3268,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.word_translation.reset();
     }
     match message {
-        Message::Reading(action) => reader.reading_action(action),
+        Message::Reading(target, action) => reader.reading_action(target, action),
         Message::ReadingLoaded {
             profile,
             book,
@@ -3393,7 +3376,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        // More holds only window tools, so choosing any of them closes it.
         Message::Chrome(action) => match action {
+            _ if reader.menu == Some(reading_chrome::Menu::More) => {
+                reader.menu = None;
+                update_inner(reader, Message::Chrome(action))
+            }
             chrome::Action::ToggleAppearance => update_inner(reader, Message::ToggleAppearance),
             chrome::Action::Close => reader.close(CloseAction::Window),
             chrome::Action::Search if reader.interactive() => {
@@ -3405,7 +3393,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 reader.focused = Some(if reader.show_search {
                     Control::SearchInput
                 } else {
-                    Control::Chrome(chrome::Action::Search)
+                    reading_chrome::return_focus(reader, Control::Chrome(chrome::Action::Search))
                 });
                 if reader.show_search {
                     iced::widget::operation::focus(search_id())
@@ -3424,7 +3412,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 reader.focused = Some(if reader.show_settings {
                     Control::DismissOverlay
                 } else {
-                    Control::Chrome(chrome::Action::Settings)
+                    reading_chrome::return_focus(reader, Control::Chrome(chrome::Action::Settings))
                 });
                 if reader.show_settings {
                     Task::batch([
@@ -3780,6 +3768,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::RevealBar => {
             reader.bar.hover(std::time::Instant::now(), true);
+            Task::none()
+        }
+        Message::ToggleMenu(menu) => {
+            reader.menu = (reader.menu != Some(menu)).then_some(menu);
+            reader.reading.picker = None;
+            Task::none()
+        }
+        Message::CloseMenu => {
+            reader.menu = None;
+            reader.reading.picker = None;
             Task::none()
         }
         Message::ReadingFrame(at) => {
@@ -4398,7 +4396,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     }
                 }
             }
-            if reader.show_settings
+            if (reader.show_settings || reader.menu == Some(reading_chrome::Menu::Aa))
                 && reader.reading.picker.is_some()
                 && matches!(
                     &event,
@@ -4498,6 +4496,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 && reader.interactive()
             {
                 match key.as_ref() {
+                    Key::Named(key::Named::Escape) if !repeat && reader.menu.is_some() => {
+                        reader.focused = reader.menu.take().map(Control::Menu);
+                        return iced::advanced::widget::operate(
+                            iced::advanced::widget::operation::focusable::unfocus(),
+                        );
+                    }
                     Key::Named(key::Named::Escape) if !repeat && reader.notes.popup.is_some() => {
                         reader.notes.popup = None;
                         reader.focused = None;
@@ -4639,7 +4643,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                                 iced::widget::operation::focus(search_id())
                             }
                             Some(Control::FindInput) => iced::widget::operation::focus(find_id()),
-                            Some(Control::Pdf(pdf_reader::FocusControl::Page)) => {
+                            Some(Control::PdfPage) => {
                                 iced::widget::operation::focus(pdf_reader::page_input_id())
                             }
                             _ => unfocus,
@@ -4736,7 +4740,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && value.eq_ignore_ascii_case("l")
                             && reader.pdf.is_some() =>
                     {
-                        reader.focused = Some(Control::Pdf(pdf_reader::FocusControl::Page));
+                        reader.focused = Some(Control::PdfPage);
                         return Task::batch([
                             restore_viewport(reader),
                             iced::widget::operation::focus(pdf_reader::page_input_id()),
@@ -5425,9 +5429,8 @@ fn toned_button<'a>(
     selected: bool,
 ) -> Element<'a, Message> {
     let focused = reader.focused == Some(control);
-    let compact = reading_chrome::compact(reader);
     let button = iced::widget::button(label)
-        .padding([7, if compact { 7 } else { 11 }])
+        .padding([7, 11])
         .on_press_maybe(message)
         .style(move |theme, status| ui::button_style(theme, status, tone, focused, selected))
         .into();
@@ -5783,18 +5786,6 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
             .push(theme_picker(reader))
             .push(note("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme."))
             .push(rule())
-            .push(column![
-                row![
-                    text("Book zoom").font(ui::MEDIUM).size(13), Space::new().width(Length::Fill),
-                    control_button(reader, Control::SettingsFontDown, text("−").size(14),
-                        (reader.zoom > 0.25).then_some(Message::Zoom(reader.zoom - 0.1))),
-                    text(format!("{:.0}%", reader.zoom * 100.0)).size(12).style(ui::muted_text),
-                    control_button(reader, Control::SettingsFontUp, text("+").size(14),
-                        (reader.zoom < 3.0).then_some(Message::Zoom(reader.zoom + 0.1))),
-                ].spacing(12).align_y(iced::Alignment::Center),
-                note("Scales Book pages without changing their boundaries or total count. Applies during this session."),
-            ].spacing(6))
-            .push(rule())
             .push(reading_ui::settings(reader))
             .push(rule())
             .push(control_button(reader, Control::Fullscreen, text(if reader.fullscreen { "Exit fullscreen (F11)" } else { "Fullscreen (F11)" }).size(12), Some(Message::ToggleFullscreen)))
@@ -5997,7 +5988,7 @@ fn theme_picker(reader: &Reader) -> Element<'_, Message> {
         .width(Length::Fill);
         container(toned_button(
             reader,
-            Control::SettingsTheme(index),
+            Control::Theme(index),
             label,
             Some(Message::SetTheme(index)),
             ui::ButtonTone::Surface,
@@ -6027,65 +6018,6 @@ fn hinted_control<'a>(
     iced::widget::tooltip(
         control_button(reader, control, label, message),
         text(hint).size(12),
-        iced::widget::tooltip::Position::Bottom,
-    )
-    .gap(4)
-    .padding(6)
-    .style(ui::panel)
-    .into()
-}
-
-fn find_button(reader: &Reader, active: bool) -> Element<'static, Message> {
-    hinted_control(
-        reader,
-        Control::Find,
-        text("Find").font(ui::MEDIUM).size(13),
-        "Find in document (Ctrl+F)",
-        active.then_some(Message::FindOpen),
-    )
-}
-
-fn listen_button(reader: &Reader, active: bool) -> Element<'static, Message> {
-    iced::widget::tooltip(
-        toned_button(
-            reader,
-            Control::ReadAloud,
-            text("Listen").font(ui::MEDIUM).size(13),
-            active.then_some(Message::ReadAloud(read_aloud::Action::Toggle)),
-            ui::ButtonTone::Surface,
-            reader.read_aloud.active(),
-        ),
-        text(if reader.read_aloud.active() {
-            "Stop reading aloud (Ctrl+Shift+U)"
-        } else {
-            "Read aloud the selection or from this page (Ctrl+Shift+U)"
-        })
-        .size(12),
-        iced::widget::tooltip::Position::Bottom,
-    )
-    .gap(4)
-    .padding(6)
-    .style(ui::panel)
-    .into()
-}
-
-fn notes_button(reader: &Reader, active: bool) -> Element<'static, Message> {
-    let open = reader.notes.list.is_some();
-    iced::widget::tooltip(
-        toned_button(
-            reader,
-            Control::Notes(notes::Focus::ToggleList),
-            text("Notes").font(ui::MEDIUM).size(13),
-            active.then_some(Message::Notes(notes::Action::ToggleList)),
-            ui::ButtonTone::Surface,
-            open,
-        ),
-        text(if open {
-            "Hide bookmarks and notes (Ctrl+B)"
-        } else {
-            "Show bookmarks and notes (Ctrl+B)"
-        })
-        .size(12),
         iced::widget::tooltip::Position::Bottom,
     )
     .gap(4)
@@ -6507,7 +6439,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             // The sidebar starts below the bar's height whether or not the bar
             // shows, so the bar never covers its tabs and it never moves.
             container(notes_ui::sidebar(reader, active)).padding(iced::Padding {
-                top: reading_chrome::height(reader),
+                top: reading_chrome::HEIGHT,
                 ..iced::Padding::ZERO
             }),
         ]
@@ -6522,7 +6454,11 @@ fn view(reader: &Reader) -> Element<'_, Message> {
                 }),
             ));
         }
-        iced::widget::stack![reading, top].into()
+        let layers = iced::widget::stack![reading, top];
+        match reading_chrome::menu(reader, active) {
+            Some(menu) => layers.push(menu).into(),
+            None => layers.into(),
+        }
     } else {
         let header: Element<'_, Message> = if reader.fullscreen {
             iced::widget::Space::new().height(0).into()
@@ -7367,17 +7303,14 @@ mod tests {
         assert_eq!(reader.width, book_map::TEXT);
         assert_eq!(reader.saved_position().unwrap().1.item_id, "paragraph-5");
         let _ = update_inner(&mut reader, Message::TogglePinnedBar);
-        assert!(
-            reader
-                .controls()
-                .any(|control| control == Control::Chrome(chrome::Action::ToggleAppearance))
-        );
-        assert!(
-            reader
-                .controls()
-                .any(|control| control == Control::FitBookWidth),
-            "a pinned bar keeps every control"
-        );
+        for menu in [reading_chrome::Menu::Aa, reading_chrome::Menu::More] {
+            assert!(
+                reader
+                    .controls()
+                    .any(|control| control == Control::Menu(menu)),
+                "a pinned bar keeps {menu:?} at 540"
+            );
+        }
     }
 
     pub(super) fn book(title: &str) -> Arc<Book> {
@@ -7524,7 +7457,7 @@ mod tests {
         assert_eq!(reader.find.as_ref().unwrap().count(), 0);
     }
 
-    /// The three bars whose fit the width thresholds are measured from: a book
+    /// The three bars whose fold widths are measured from: a book
     /// with Back and Contents, a PDF, and a PDF read in Book mode, each with
     /// a four-digit page count. `None` for the PDFs when PDFium is missing.
     fn bar_fit_readers() -> (Reader, Option<(Reader, Reader)>) {
@@ -7614,83 +7547,66 @@ mod tests {
         (book_reader, Some((pdf_reader, pdf_book)))
     }
 
-    /// Asserts that `reader`'s bar fits on either side of its thresholds in
-    /// the presentation each width picks, and that the thresholds are tight:
-    /// one pixel less does not fit that presentation on one row.
-    fn assert_thresholds(reader: &mut Reader) {
-        let reading_chrome::Thresholds { one_row, roomy } =
-            reading_chrome::thresholds(reader).unwrap();
-        assert_bar_fits(
-            reader,
-            &[
-                540.0,
-                one_row - 1.0,
-                one_row,
-                one_row + 1.0,
-                roomy - 1.0,
-                roomy,
-                roomy + 1.0,
-                1280.0,
-            ],
-        );
-        reader.window_size.width = one_row - 1.0;
-        assert_eq!(
-            reading_chrome::height(reader),
-            87.0,
-            "two rows below {one_row}"
-        );
-        reader.window_size.width = one_row;
-        assert_eq!(reading_chrome::height(reader), 44.0, "one row at {one_row}");
-        for (presentation, width) in [(true, one_row - 1.0), (false, roomy - 1.0)] {
-            reading_chrome::FORCED.set(Some(reading_chrome::Presentation {
-                compact: presentation,
-                one_row: true,
-            }));
-            let fits = bar_fits(reader, width);
-            reading_chrome::FORCED.set(None);
+    /// The book title hides rather than get narrower than this.
+    const TITLE_MIN: f32 = 120.0;
+
+    /// Asserts that each fold width is where the bar changes fold, that the
+    /// fold each width picks fits, and that the widths are tight: one pixel
+    /// less does not fit the wider fold.
+    fn assert_folds(reader: &mut Reader) {
+        use reading_chrome::Fold;
+        let reading_chrome::Folds { title, overflow } = reading_chrome::folds(reader).unwrap();
+        for (width, fold) in [
+            (1280.0, Fold::All),
+            (title, Fold::All),
+            (title - 1.0, Fold::NoTitle),
+            (overflow, Fold::NoTitle),
+            (overflow - 1.0, Fold::Overflow),
+            (540.0, Fold::Overflow),
+        ] {
+            reader.window_size.width = width;
+            assert_eq!(reading_chrome::fold(reader), fold, "at {width}");
+            if let Err(problem) = bar_fits(reader, width, fold) {
+                panic!("{problem}");
+            }
+        }
+        for (fold, width) in [(Fold::All, title - 1.0), (Fold::NoTitle, overflow - 1.0)] {
             assert!(
-                fits.is_err(),
-                "compact={presentation} still fits one row at {width}, so its threshold is loose"
+                bar_fits(reader, width, fold).is_err(),
+                "{fold:?} still fits at {width}, so its width is loose"
             );
         }
     }
 
     #[test]
-    fn reading_bar_controls_fit_without_overlapping() {
+    fn the_reading_bar_keeps_one_row_down_to_the_narrowest_window() {
         let (mut book, pdfs) = bar_fit_readers();
-        assert_thresholds(&mut book);
-        // An 860px client at 125% scale.
-        assert_bar_fits(&mut book, &[688.0]);
-        assert_eq!(reading_chrome::height(&book), 87.0, "two rows at 688");
+        assert_folds(&mut book);
         let Some((mut pdf, mut pdf_book)) = pdfs else {
             return;
         };
-        assert_thresholds(&mut pdf);
-        assert_thresholds(&mut pdf_book);
+        assert_folds(&mut pdf);
+        assert_folds(&mut pdf_book);
     }
 
-    /// Measures the narrowest width from which a presentation fits at every
-    /// larger width up to 1280.
-    fn narrowest_fit(reader: &mut Reader, compact: bool) -> f32 {
-        reading_chrome::FORCED.set(Some(reading_chrome::Presentation {
-            compact,
-            one_row: true,
-        }));
+    /// The narrowest width from which `fold` fits at every larger width up
+    /// to 1280.
+    fn narrowest_fit(reader: &mut Reader, fold: reading_chrome::Fold) -> f32 {
         let mut width = 1280.0;
         let problem = loop {
-            match bar_fits(reader, width - 1.0) {
+            match bar_fits(reader, width - 1.0, fold) {
                 Ok(()) => width -= 1.0,
                 Err(problem) => break problem,
             }
         };
-        reading_chrome::FORCED.set(None);
-        println!("bar_threshold compact={compact} first misfit: {problem}");
+        println!("bar_fold {fold:?} first misfit: {problem}");
         width
     }
 
     #[test]
-    #[ignore = "Reading bar threshold sweep: --ignored --nocapture"]
-    fn measure_reading_bar_thresholds() {
+    #[ignore = "Reading bar fold sweep: --ignored --nocapture"]
+    fn measure_reading_bar_folds() {
+        use reading_chrome::Fold;
         let (mut book, pdfs) = bar_fit_readers();
         let (mut pdf, mut pdf_book) = pdfs.expect("the sweep needs PDFium");
         let mut results = Vec::new();
@@ -7699,42 +7615,33 @@ mod tests {
             ("pdf", &mut pdf),
             ("pdf-book", &mut pdf_book),
         ] {
-            let measured = reading_chrome::Thresholds {
-                one_row: narrowest_fit(reader, true),
-                roomy: narrowest_fit(reader, false),
+            let measured = reading_chrome::Folds {
+                title: narrowest_fit(reader, Fold::All),
+                overflow: narrowest_fit(reader, Fold::NoTitle),
             };
-            println!("bar_threshold {name} {measured:?}");
-            results.push((name, Some(measured), reading_chrome::thresholds(reader)));
+            let folded = narrowest_fit(reader, Fold::Overflow);
+            println!("bar_fold {name} {measured:?}, folded from {folded}");
+            results.push((
+                name,
+                measured,
+                folded,
+                reading_chrome::folds(reader).unwrap(),
+            ));
         }
-        for (name, measured, frozen) in results {
+        for (name, measured, folded, frozen) in results {
+            assert!(folded <= 540.0, "{name} needs {folded} folded");
             assert_eq!(measured, frozen, "{name}");
         }
     }
 
-    fn assert_bar_fits(reader: &mut Reader, widths: &[f32]) {
-        for &width in widths {
-            if let Err(problem) = bar_fits(reader, width) {
-                panic!("{problem}");
-            }
-        }
-    }
-
-    /// Lays the bar out at `width` and reports the first bar control that is
-    /// narrower than it would be with room to spare, leaves the bar, or
-    /// overlaps another. A row squeezes its last children first, so a bar
-    /// that does not fit shows it on a control before any text wraps.
-    fn bar_fits(reader: &mut Reader, width: f32) -> Result<(), String> {
-        reader.window_size.width = width;
-        let presentation = reading_chrome::Presentation {
-            compact: reading_chrome::compact(reader),
-            one_row: reading_chrome::height(reader) == 44.0,
-        };
-        let forced = reading_chrome::FORCED.replace(Some(presentation));
-        let roomy = control_bounds(reader, 4000.0);
-        reading_chrome::FORCED.set(forced);
-        let roomy = roomy?;
-        let placed = control_bounds(reader, width)?;
-        let height = reading_chrome::height(reader);
+    /// Lays the bar out at `width` with `fold` and reports the first bar
+    /// control that is narrower than it would be with room to spare, leaves
+    /// the bar, or overlaps another, or a title narrower than [`TITLE_MIN`].
+    /// A row squeezes its last children first, so a bar that does not fit
+    /// shows it on a control before any text wraps.
+    fn bar_fits(reader: &mut Reader, width: f32, fold: reading_chrome::Fold) -> Result<(), String> {
+        let (roomy, _) = control_bounds(reader, 4000.0, fold)?;
+        let (placed, title) = control_bounds(reader, width, fold)?;
         for (index, (control, bounds)) in placed.iter().enumerate() {
             let natural = roomy
                 .iter()
@@ -7749,7 +7656,7 @@ mod tests {
             if !(bounds.x >= 0.0
                 && bounds.x + bounds.width <= width + 0.5
                 && bounds.y >= 0.0
-                && bounds.y + bounds.height <= height)
+                && bounds.y + bounds.height <= reading_chrome::HEIGHT)
             {
                 return Err(format!("{control:?} at {width}: {bounds:?}"));
             }
@@ -7763,74 +7670,189 @@ mod tests {
                 ));
             }
         }
+        if fold == reading_chrome::Fold::All {
+            let title = title.expect("the bar shows the title");
+            if title.width < TITLE_MIN {
+                return Err(format!("the title gets {} at {width}", title.width));
+            }
+        }
         Ok(())
     }
 
-    /// The bounds of every bar control, each laid out focused in turn, at
-    /// `width`; an error when the bar is not the height it reserves.
+    /// The bounds of every bar button, each laid out focused in turn, and of
+    /// the title's room, at `width` with `fold`; an error when the bar is not
+    /// the height it reserves.
+    #[allow(clippy::type_complexity)]
     fn control_bounds(
         reader: &mut Reader,
         width: f32,
-    ) -> Result<Vec<(Control, iced::Rectangle)>, String> {
+        fold: reading_chrome::Fold,
+    ) -> Result<(Vec<(Control, iced::Rectangle)>, Option<iced::Rectangle>), String> {
         use iced::advanced::{
             Layout, layout,
             widget::{Id, Operation, Tree},
         };
         #[derive(Default)]
-        struct FocusBounds(Option<iced::Rectangle>);
-        impl Operation for FocusBounds {
+        struct Bounds {
+            focused: Option<iced::Rectangle>,
+            title: Option<iced::Rectangle>,
+        }
+        impl Operation for Bounds {
             fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
                 visit(self);
             }
             fn container(&mut self, id: Option<&Id>, bounds: iced::Rectangle) {
                 if id == Some(&Id::new(ui::FOCUSED_CONTROL)) {
-                    self.0 = Some(bounds);
+                    self.focused = Some(bounds);
+                } else if id == Some(&Id::new(reading_chrome::TITLE_ID)) {
+                    self.title = Some(bounds);
                 }
             }
         }
         let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
         let window = reader.window_size.width;
         reader.window_size.width = width;
-        let height = reading_chrome::height(reader);
-        let controls: Vec<Control> = reader
-            .controls()
-            .filter(|control| reading_chrome::is_bar_control(*control))
+        let mut controls: Vec<Control> = reading_chrome::items_at(reader, true, fold)
+            .into_iter()
+            .filter_map(|item| match item {
+                reading_chrome::Item::Button(button) => Some(button.control),
+                _ => None,
+            })
             .collect();
-        assert!(controls.contains(&Control::Chrome(chrome::Action::Close)));
+        controls.extend(
+            [
+                chrome::Action::Minimize,
+                chrome::Action::Maximize,
+                chrome::Action::Close,
+            ]
+            .map(Control::Chrome),
+        );
         let focused = reader.focused;
         let mut placed = Vec::new();
+        let mut title = None;
         let mut result = Ok(());
         for control in controls {
             reader.focused = Some(control);
-            let mut bar = reading_chrome::view(reader, true);
+            let mut bar = reading_chrome::view_at(reader, true, fold);
             let mut tree = Tree::new(&bar);
             let node = bar.as_widget_mut().layout(
                 &mut tree,
                 &renderer,
                 &layout::Limits::new(Size::ZERO, Size::new(width, 800.0)),
             );
-            if node.bounds().height != height {
+            if node.bounds().height != reading_chrome::HEIGHT {
                 result = Err(format!(
-                    "bar height {} at {width}, expected {height}",
-                    node.bounds().height
+                    "bar height {} at {width}, expected {}",
+                    node.bounds().height,
+                    reading_chrome::HEIGHT
                 ));
                 break;
             }
-            let mut bounds = FocusBounds::default();
+            let mut bounds = Bounds::default();
             bar.as_widget_mut()
                 .operate(&mut tree, Layout::new(&node), &renderer, &mut bounds);
-            match bounds.0 {
-                Some(bounds) => placed.push((control, bounds)),
-                // The page fields show focus through iced's own text input focus.
-                None => assert!(matches!(
-                    control,
-                    Control::BookPageInput | Control::Pdf(pdf_reader::FocusControl::Page)
-                )),
-            }
+            placed.push((
+                control,
+                bounds
+                    .focused
+                    .expect("a focused bar button marks its bounds"),
+            ));
+            title = bounds.title;
         }
         reader.focused = focused;
         reader.window_size.width = window;
-        result.map(|()| placed)
+        result.map(|()| (placed, title))
+    }
+
+    #[test]
+    fn every_bar_control_has_a_tooltip() {
+        let (mut book, pdfs) = bar_fit_readers();
+        let buttons = |reader: &Reader| -> Vec<reading_chrome::Button> {
+            reading_chrome::items(reader, true)
+                .into_iter()
+                .filter_map(|item| match item {
+                    reading_chrome::Item::Button(button) => Some(*button),
+                    _ => None,
+                })
+                .collect()
+        };
+        book.window_size.width = 1280.0;
+        assert_eq!(
+            buttons(&book)
+                .iter()
+                .map(|button| button.glyph)
+                .collect::<Vec<_>>(),
+            [
+                "\u{e02f}", "\u{e5c4}", "\u{e8de}", "\u{e880}", "\u{f01f}", "\u{e98b}", "\u{f6f1}",
+                "\u{e51c}", "\u{e8b6}", "\u{e8b8}",
+            ],
+            "Library, Back, Contents, Find, Listen, Notes, Aa, dark mode, Search, Settings"
+        );
+        let find = buttons(&book)
+            .into_iter()
+            .find(|button| button.control == Control::Find)
+            .unwrap();
+        assert_eq!(find.tooltip(), "Find in document (Ctrl+F)");
+        let mut readers = vec![("book", book)];
+        if let Some((pdf, pdf_book)) = pdfs {
+            readers.extend([("pdf", pdf), ("pdf-book", pdf_book)]);
+        }
+        for (name, mut reader) in readers {
+            for width in [1280.0, 540.0] {
+                reader.window_size.width = width;
+                let buttons = buttons(&reader);
+                for button in &buttons {
+                    assert!(
+                        button.tooltip().starts_with(button.label) && !button.label.is_empty(),
+                        "{name} at {width}: {:?} has no tooltip",
+                        button.control
+                    );
+                }
+                let mut glyphs: Vec<_> = buttons.iter().map(|button| button.glyph).collect();
+                glyphs.sort_unstable();
+                glyphs.dedup();
+                assert_eq!(
+                    glyphs.len(),
+                    buttons.len(),
+                    "{name} at {width}: two buttons share a glyph"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_aa_panel_offers_only_zoom_in_pdf_views() {
+        use reading_panel::Zoom;
+        let (mut book, pdfs) = bar_fit_readers();
+        let _ = book.sync_reading_settings();
+        let _ = book.reading_loaded(book.book.as_ref().unwrap().fingerprint.clone(), Ok(None));
+        book.menu = Some(reading_chrome::Menu::Aa);
+        assert!(
+            book.controls().any(|control| control
+                == Control::Reading(reading_ui::Target::Book, reading_ui::Focus::SizeUp)),
+            "a book's panel offers its typography"
+        );
+        let Some((mut pdf, mut pdf_book)) = pdfs else {
+            return;
+        };
+        for reader in [&mut pdf, &mut pdf_book] {
+            reader.menu = Some(reading_chrome::Menu::Aa);
+            assert_eq!(
+                reading_panel::controls(reader),
+                [
+                    Control::Zoom(Zoom::Out),
+                    Control::Zoom(Zoom::In),
+                    Control::Zoom(Zoom::Fit)
+                ]
+            );
+        }
+        let before = pdf.pdf.as_ref().unwrap().zoom_percent();
+        let _ = pdf.activate(Control::Zoom(Zoom::In));
+        assert_eq!(
+            pdf.pdf.as_ref().unwrap().zoom_percent().round(),
+            (before * 1.25).round(),
+            "the panel zooms the PDF in Document view"
+        );
     }
 
     #[test]
@@ -8071,13 +8093,9 @@ mod tests {
         let mut reader = themed_reader(10);
         reader.show_settings = true;
         for index in 0..themes::THEMES.len() {
-            assert!(
-                reader
-                    .controls()
-                    .any(|c| c == Control::SettingsTheme(index))
-            );
+            assert!(reader.controls().any(|c| c == Control::Theme(index)));
         }
-        let _ = reader.activate(Control::SettingsTheme(1));
+        let _ = reader.activate(Control::Theme(1));
         assert_eq!(reader.theme.id, "soft");
     }
 
@@ -9142,7 +9160,7 @@ mod tests {
         use reading_chrome::BarState;
         let mut reader = Reader {
             book: Some(book("reading")),
-            focused: Some(Control::FontUp),
+            focused: Some(Control::Find),
             show_help: true,
             ..Reader::default()
         };
@@ -9155,12 +9173,8 @@ mod tests {
         let _ = update(&mut reader, f8());
         assert_eq!(reader.bar.state(), BarState::Pinned);
         assert!(reader.show_help, "pinning closes no panel");
-        assert_eq!(reader.focused, Some(Control::FontUp));
-        assert!(
-            reader
-                .controls()
-                .any(|control| control == Control::FontUp || control == Control::Close)
-        );
+        assert_eq!(reader.focused, Some(Control::Find));
+        assert!(reader.controls().any(|control| control == Control::Find));
         let pinned = reader.saved_position().unwrap().1;
         assert_eq!(pinned.item_id, original.item_id);
         assert_eq!(pinned.within, original.within);
@@ -9211,8 +9225,8 @@ mod tests {
         let _ = update(&mut reader, key(key::Named::Tab, key::Code::Tab));
         assert_eq!(
             reader.focused,
-            Some(Control::Chrome(chrome::Action::Settings)),
-            "Tab lands on the bar's first control"
+            Some(Control::Close),
+            "Tab lands on the bar's first control, Library"
         );
         assert_eq!(reader.bar.state(), BarState::Shown { hide_at: None });
         let _ = update(&mut reader, key(key::Named::Escape, key::Code::Escape));
@@ -9248,7 +9262,7 @@ mod tests {
         let shown = ::image::open(&shown).unwrap().to_rgba8();
         let hidden = ::image::open(&hidden).unwrap().to_rgba8();
         let _ = std::fs::remove_dir_all(&output);
-        let bar = reading_chrome::height(&reader) as u32;
+        let bar = reading_chrome::HEIGHT as u32;
         // Text is the only dark ink on the light paper and desk.
         let first_text_row = |image: &::image::RgbaImage| {
             (bar..image.height())

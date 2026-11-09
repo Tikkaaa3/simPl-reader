@@ -68,11 +68,12 @@ fn button_style(theme: &Theme, status: button::Status, focused: bool) -> button:
     }
 }
 
-fn hint(
-    content: impl Into<Element<'static, Action>>,
-    caption: &'static str,
+/// A header control's tooltip, below it in the raised tone.
+pub(crate) fn hint<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    caption: impl text::IntoFragment<'a>,
     enabled: bool,
-) -> Element<'static, Action> {
+) -> Element<'a, M> {
     if !enabled {
         return content.into();
     }
@@ -183,11 +184,11 @@ pub struct Controls {
 }
 
 /// Space between the window's left edge and the first header tool.
-pub const TOOLS_EDGE: f32 = 24.0;
+const TOOLS_EDGE: f32 = 24.0;
 /// Width of the Settings, appearance and Search tools.
-pub const TOOLS_WIDTH: f32 = 3.0 * 32.0 + 2.0 * 8.0;
+const TOOLS_WIDTH: f32 = 3.0 * 32.0 + 2.0 * 8.0;
 /// Width of the three caption buttons and their right edge.
-pub const CAPTIONS_WIDTH: f32 = 3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE;
+const CAPTIONS_WIDTH: f32 = 3.0 * CAPTION + 2.0 * CAPTION_GAP + CAPTION_EDGE;
 
 /// Minimize, maximize or restore, and close, ending `CAPTION_EDGE` from the right.
 pub fn captions(focused: Option<Action>, controls: Controls) -> Element<'static, Action> {
@@ -235,10 +236,9 @@ pub fn captions(focused: Option<Action>, controls: Controls) -> Element<'static,
     .into()
 }
 
-/// Settings, the light and dark toggle, and Search. The Library header and the
-/// reading bar both start this row `TOOLS_EDGE` from the left, so the toggle
-/// keeps one position across screens.
-pub fn tools(
+/// Settings, the light and dark toggle, and Search, `TOOLS_EDGE` from the left
+/// of the Library header.
+fn tools(
     focused: Option<Action>,
     hints: bool,
     appearance: reader_document::preferences::Appearance,

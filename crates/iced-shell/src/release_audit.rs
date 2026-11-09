@@ -261,9 +261,15 @@ fn production_backup_restore_and_export() {
     let original = "A book is a place to think. Café, İstanbul, 日本語 and 한국어.\n\n".repeat(120);
     std::fs::write(&source, &original).unwrap();
     let mut reader = boot();
-    send(&mut reader, Message::Reading(reading_ui::Action::Size(22)));
+    send(
+        &mut reader,
+        Message::Reading(reading_ui::Target::Defaults, reading_ui::Action::Size(22)),
+    );
     opened(&mut reader, source.clone());
-    send(&mut reader, Message::Reading(reading_ui::Action::Size(26)));
+    send(
+        &mut reader,
+        Message::Reading(reading_ui::Target::Book, reading_ui::Action::Size(26)),
+    );
     settle_theme(&mut reader);
     let book = reader.book.as_ref().unwrap();
     let fingerprint = book.fingerprint.clone();
@@ -347,7 +353,10 @@ fn production_backup_restore_and_export() {
     .unwrap();
     // Change the real profile, then exercise the same reviewed restore task and
     // application reload used by the Settings confirmation button.
-    send(&mut reader, Message::Reading(reading_ui::Action::Size(30)));
+    send(
+        &mut reader,
+        Message::Reading(reading_ui::Target::Defaults, reading_ui::Action::Size(30)),
+    );
     let other = output.join("later.txt");
     std::fs::write(&other, "A later book outside the saved snapshot.").unwrap();
     opened(&mut reader, other);

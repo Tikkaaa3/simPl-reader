@@ -1,7 +1,8 @@
-//! The reading bar: the window tools, Library, the page field, zoom, Notes and
-//! the caption buttons in one bar that floats over the top of a document and hides
-//! when idle. [`Bar`] holds the visibility rules; every transition takes an
-//! explicit [`Instant`] so the rules are testable without a clock.
+//! The reading bar: one row of icon buttons that floats over the top of a
+//! document and hides when idle. [`Bar`] holds the visibility rules; every
+//! transition takes an explicit [`Instant`] so the rules are testable without
+//! a clock. [`items`] lists what the bar holds, in order: the view draws that
+//! list and the keyboard visits it in the same order.
 
 use super::*;
 use iced::Animation;
@@ -10,41 +11,136 @@ use iced::widget::{Space, column, mouse_area, opaque};
 use iced::{Point, Rectangle, Vector};
 use std::time::{Duration, Instant};
 
-/// Height of one row of the bar.
+/// Height of the bar's row; a 1px hairline sits under it.
 const ROW: f32 = 43.0;
+/// The height the bar takes when shown.
+pub(super) const HEIGHT: f32 = ROW + 1.0;
 /// The pointer reveals the bar anywhere in this band at the top of the window.
 pub(super) const REVEAL_ZONE: f32 = 48.0;
 const OPEN_HOLD: Duration = Duration::from_millis(2000);
 const LEAVE_HOLD: Duration = Duration::from_millis(1500);
 const FADE: Duration = Duration::from_millis(150);
-/// Narrowest windows, in logical pixels, whose bar fits on one row with every
-/// optional control shown and four-digit page counts: with tight buttons, and
-/// with roomy ones. Below `roomy` the buttons tighten and Library shows only
-/// its arrow; below `one_row` the bar takes two rows. The ignored test
-/// `measure_reading_bar_thresholds` measures them.
+const BUTTON: f32 = 32.0;
+const GLYPH: f32 = 20.0;
+/// Space between neighbouring controls.
+const GAP: f32 = 4.0;
+/// Space between the window's edges and the bar's outermost controls.
+const EDGE: f32 = 8.0;
+pub(super) const TITLE_ID: &str = "reading-bar-title";
+/// Narrowest windows, in logical pixels, at which the bar fits its one row
+/// with every optional control shown and four-digit page counts. Below
+/// `title` the book title hides; below `overflow` the light and dark toggle,
+/// Search and Settings fold into More. The ignored test
+/// `measure_reading_bar_folds` measures them.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Thresholds {
-    pub(super) one_row: f32,
-    pub(super) roomy: f32,
+pub(super) struct Folds {
+    pub(super) title: f32,
+    pub(super) overflow: f32,
 }
 
-const BOOK: Thresholds = Thresholds {
-    one_row: 765.0,
-    roomy: 898.0,
+const BOOK: Folds = Folds {
+    title: 722.0,
+    overflow: 601.0,
 };
 /// A PDF read in Book mode adds its Document button and has no Contents.
-const PDF_BOOK: Thresholds = Thresholds {
-    one_row: 776.0,
-    roomy: 909.0,
+const PDF_BOOK: Folds = Folds {
+    title: 722.0,
+    overflow: 601.0,
 };
-const PDF: Thresholds = Thresholds {
-    one_row: 793.0,
-    roomy: 973.0,
+const PDF: Folds = Folds {
+    title: 707.0,
+    overflow: 587.0,
 };
-/// Space between the bar's groups; compact windows halve it.
-const GROUP_GAP: f32 = 8.0;
 /// Pixels an iced scrollable moves per wheel line.
 const WHEEL_LINE: f32 = 60.0;
+
+/// Material Symbols glyphs, one per action.
+mod glyph {
+    pub(super) const LIBRARY: &str = "\u{e02f}";
+    pub(super) const BACK: &str = "\u{e5c4}";
+    pub(super) const BOOK_MODE: &str = "\u{ea19}";
+    pub(super) const DOCUMENT_MODE: &str = "\u{e415}";
+    pub(super) const CONTENTS: &str = "\u{e8de}";
+    pub(super) const FIND: &str = "\u{e880}";
+    pub(super) const LISTEN: &str = "\u{f01f}";
+    pub(super) const STOP: &str = "\u{ef71}";
+    pub(super) const NOTES: &str = "\u{e98b}";
+    pub(super) const AA: &str = "\u{f6f1}";
+    pub(super) const DARK: &str = "\u{e51c}";
+    pub(super) const LIGHT: &str = "\u{e518}";
+    pub(super) const SEARCH: &str = "\u{e8b6}";
+    pub(super) const SETTINGS: &str = "\u{e8b8}";
+    pub(super) const MORE: &str = "\u{e5d4}";
+}
+
+/// How much a narrow window folds away from the bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Fold {
+    All,
+    NoTitle,
+    Overflow,
+}
+
+/// A card that drops from a bar button. At most one is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Menu {
+    Aa,
+    More,
+}
+
+/// One icon button of the bar, described as data.
+#[derive(Clone, Debug)]
+pub(super) struct Button {
+    pub(super) control: Control,
+    pub(super) glyph: &'static str,
+    /// The action, as the tooltip names it.
+    pub(super) label: &'static str,
+    pub(super) shortcut: Option<&'static str>,
+    /// `None` draws the button disabled and leaves it out of the focus order.
+    pub(super) message: Option<Message>,
+    /// The panel or mode the button controls is on.
+    pub(super) selected: bool,
+    /// The button moves into More when the bar folds.
+    pub(super) folds: bool,
+}
+
+impl Button {
+    fn new(
+        control: Control,
+        glyph: &'static str,
+        label: &'static str,
+        shortcut: Option<&'static str>,
+        message: Option<Message>,
+    ) -> Self {
+        Self {
+            control,
+            glyph,
+            label,
+            shortcut,
+            message,
+            selected: false,
+            folds: false,
+        }
+    }
+
+    pub(super) fn tooltip(&self) -> String {
+        match self.shortcut {
+            Some(shortcut) => format!("{} ({shortcut})", self.label),
+            None => self.label.to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum Item {
+    Button(Box<Button>),
+    /// The room the controls leave, with the book title in it while it fits.
+    Fill {
+        title: Option<String>,
+    },
+    /// The page field and the page count.
+    Pages,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BarState {
@@ -273,10 +369,8 @@ pub(super) fn is_bar_control(control: Control) -> bool {
             | Control::Find
             | Control::ReadAloud
             | Control::Notes(notes::Focus::ToggleList)
-            | Control::FontDown
-            | Control::FitBookWidth
-            | Control::FontUp
-            | Control::Pdf(_)
+            | Control::Menu(_)
+            | Control::PdfPage
     )
 }
 
@@ -288,9 +382,10 @@ impl Reader {
             .or_else(|| self.book.as_ref().map(|book| book.path.as_path()))
     }
 
-    /// A bar control has keyboard focus, a panel the bar opened is open, or a
-    /// panel hangs below the bar. The transient loading line does not hold it,
-    /// so a slow first layout never stretches the 2 s shown after opening.
+    /// A bar control has keyboard focus, a menu or panel the bar opened is
+    /// open, or a panel hangs below the bar. The transient loading line does
+    /// not hold it, so a slow first layout never stretches the 2 s shown after
+    /// opening.
     pub(super) fn bar_held(&self) -> bool {
         self.focused.is_some_and(is_bar_control)
             || self.bar.book_field
@@ -298,6 +393,7 @@ impl Reader {
                 .pdf
                 .as_ref()
                 .is_some_and(pdf_reader::Reader::page_focused)
+            || self.menu.is_some()
             || self.show_settings
             || self.show_search
             || self.has_held_panels()
@@ -344,9 +440,22 @@ impl Reader {
             && self.notes.editor.is_none()
     }
 
+    /// A menu closes with its document, behind a modal, and when a wider
+    /// window brings More's buttons back to the bar.
+    fn settle_menu(&mut self) {
+        let modal = self.show_settings || self.show_search || self.confirm_remove.is_some();
+        if self.document_path().is_none()
+            || modal
+            || (self.menu == Some(Menu::More) && fold(self) != Fold::Overflow)
+        {
+            self.menu = None;
+        }
+    }
+
     /// Applies what one message changed: an opened or closed document, the
     /// pointer, and whatever holds the bar.
     pub(super) fn sync_bar(&mut self, now: Instant, input: Input) {
+        self.settle_menu();
         if let Some(modifiers) = input.modifiers {
             self.bar.modifiers = modifiers;
         }
@@ -358,14 +467,9 @@ impl Reader {
                 self.bar.close(now);
             }
         }
-        let zone = if self.bar.visible() {
-            height(self).max(REVEAL_ZONE)
-        } else {
-            REVEAL_ZONE
-        };
         let hovered = input
             .pointer
-            .map(|pointer| pointer.is_some_and(|point| point.y < zone));
+            .map(|pointer| pointer.is_some_and(|point| point.y < HEIGHT.max(REVEAL_ZONE)));
         let held = self.bar_held();
         if self.bar.document.is_none() {
             // The Library header is static: only remember the inputs for the
@@ -381,33 +485,8 @@ impl Reader {
     }
 }
 
-/// How the bar lays out: tight or roomy buttons, on one row or two.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Presentation {
-    pub(super) compact: bool,
-    pub(super) one_row: bool,
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Overrides the presentation the window width picks, so a test can
-    /// measure the narrowest width at which each presentation still fits.
-    pub(super) static FORCED: std::cell::Cell<Option<Presentation>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Narrow windows tighten the reading controls so the bar keeps one row.
-pub(super) fn compact(reader: &Reader) -> bool {
-    #[cfg(test)]
-    if let Some(forced) = FORCED.get() {
-        return forced.compact;
-    }
-    thresholds(reader).is_some_and(|limits| reader.window_size.width < limits.roomy)
-}
-
-/// The thresholds for the open document's bar; the Library has none.
-pub(super) fn thresholds(reader: &Reader) -> Option<Thresholds> {
+/// The fold widths for the open document's bar; the Library has none.
+pub(super) fn folds(reader: &Reader) -> Option<Folds> {
     if reader.pdf.is_some() {
         Some(PDF)
     } else {
@@ -420,20 +499,265 @@ pub(super) fn thresholds(reader: &Reader) -> Option<Thresholds> {
     }
 }
 
-fn one_row(reader: &Reader) -> bool {
-    #[cfg(test)]
-    if let Some(forced) = FORCED.get() {
-        return forced.one_row;
-    }
-    thresholds(reader).is_none_or(|limits| reader.window_size.width >= limits.one_row)
+pub(super) fn fold(reader: &Reader) -> Fold {
+    folds(reader).map_or(Fold::All, |folds| {
+        let width = reader.window_size.width;
+        if width >= folds.title {
+            Fold::All
+        } else if width >= folds.overflow {
+            Fold::NoTitle
+        } else {
+            Fold::Overflow
+        }
+    })
 }
 
-/// The height the bar takes when shown, which the reading screen keeps free at its top.
-pub(super) fn height(reader: &Reader) -> f32 {
-    if one_row(reader) {
-        ROW + 1.0
+/// What the bar holds at the window's width, in order.
+pub(super) fn items(reader: &Reader, active: bool) -> Vec<Item> {
+    items_at(reader, active, fold(reader))
+}
+
+pub(super) fn items_at(reader: &Reader, active: bool, fold: Fold) -> Vec<Item> {
+    let book = reader.book.as_ref();
+    let mut items = vec![Button::new(
+        Control::Close,
+        glyph::LIBRARY,
+        "Library",
+        Some("Ctrl+W"),
+        active.then_some(Message::Close(CloseAction::Document)),
+    )];
+    if book.is_some() && !reader.returns.is_empty() {
+        items.push(Button::new(
+            Control::Back,
+            glyph::BACK,
+            "Back to the previous passage",
+            Some("Alt+Left"),
+            active.then_some(Message::Back),
+        ));
+    }
+    if let Some(pdf) = &reader.pdf {
+        items.push(Button::new(
+            Control::BookMode,
+            glyph::BOOK_MODE,
+            "Read this PDF in Book mode",
+            None,
+            (active && pdf.document().can_copy).then_some(Message::BookMode),
+        ));
+    }
+    if book.is_some_and(|book| book.pdf_source.is_some()) {
+        items.push(Button::new(
+            Control::DocumentMode,
+            glyph::DOCUMENT_MODE,
+            "Show the original PDF",
+            None,
+            active.then_some(Message::DocumentMode { source_page: true }),
+        ));
+    }
+    let left = items.len();
+    if !reader.contents().is_empty() {
+        items.push(Button {
+            selected: reader.show_contents,
+            ..Button::new(
+                Control::Contents,
+                glyph::CONTENTS,
+                "Contents",
+                Some("Ctrl+T"),
+                active.then_some(Message::ToggleContents),
+            )
+        });
+    }
+    let listening = reader.read_aloud.active();
+    let appearance = reader.appearance;
+    items.extend([
+        Button::new(
+            Control::Find,
+            glyph::FIND,
+            "Find in document",
+            Some("Ctrl+F"),
+            active.then_some(Message::FindOpen),
+        ),
+        Button {
+            selected: listening,
+            ..Button::new(
+                Control::ReadAloud,
+                if listening {
+                    glyph::STOP
+                } else {
+                    glyph::LISTEN
+                },
+                if listening {
+                    "Stop reading aloud"
+                } else {
+                    "Read aloud the selection or from this page"
+                },
+                Some("Ctrl+Shift+U"),
+                active.then_some(Message::ReadAloud(read_aloud::Action::Toggle)),
+            )
+        },
+        Button {
+            selected: reader.notes.list.is_some(),
+            ..Button::new(
+                Control::Notes(notes::Focus::ToggleList),
+                glyph::NOTES,
+                if reader.notes.list.is_some() {
+                    "Hide bookmarks and notes"
+                } else {
+                    "Show bookmarks and notes"
+                },
+                Some("Ctrl+B"),
+                active.then_some(Message::Notes(notes::Action::ToggleList)),
+            )
+        },
+        Button {
+            selected: reader.menu == Some(Menu::Aa),
+            ..Button::new(
+                Control::Menu(Menu::Aa),
+                glyph::AA,
+                "Text, theme and zoom",
+                None,
+                active.then_some(Message::ToggleMenu(Menu::Aa)),
+            )
+        },
+        Button {
+            folds: true,
+            ..Button::new(
+                Control::Chrome(chrome::Action::ToggleAppearance),
+                if appearance == Appearance::Dark {
+                    glyph::LIGHT
+                } else {
+                    glyph::DARK
+                },
+                appearance.toggle_label(),
+                None,
+                Some(Message::Chrome(chrome::Action::ToggleAppearance)),
+            )
+        },
+        Button {
+            folds: true,
+            ..Button::new(
+                Control::Chrome(chrome::Action::Search),
+                glyph::SEARCH,
+                "Search or switch",
+                Some("Ctrl+K"),
+                Some(Message::Chrome(chrome::Action::Search)),
+            )
+        },
+        Button {
+            folds: true,
+            ..Button::new(
+                Control::Chrome(chrome::Action::Settings),
+                glyph::SETTINGS,
+                "Settings",
+                None,
+                Some(Message::Chrome(chrome::Action::Settings)),
+            )
+        },
+    ]);
+    if fold == Fold::Overflow {
+        items.retain(|button| !button.folds);
+        items.push(Button {
+            selected: reader.menu == Some(Menu::More),
+            ..Button::new(
+                Control::Menu(Menu::More),
+                glyph::MORE,
+                "More",
+                None,
+                active.then_some(Message::ToggleMenu(Menu::More)),
+            )
+        });
+    }
+    let mut items: Vec<Item> = items
+        .into_iter()
+        .map(|button| Item::Button(Box::new(button)))
+        .collect();
+    let title = reader
+        .pdf
+        .as_ref()
+        .map(|pdf| pdf.document().title.clone())
+        .or_else(|| book.map(|book| book.title.clone()));
+    items.splice(
+        left..left,
+        [
+            Item::Fill {
+                title: title.filter(|_| fold == Fold::All),
+            },
+            Item::Pages,
+        ],
+    );
+    items
+}
+
+/// The buttons More holds once the bar folds.
+pub(super) fn overflow(reader: &Reader, active: bool) -> Vec<Button> {
+    items_at(reader, active, Fold::All)
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Button(button) if button.folds => Some(*button),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The bar's controls in keyboard order: its items, an open menu's controls
+/// right after the button that opened it, then the caption buttons.
+pub(super) fn controls(reader: &Reader) -> Vec<Control> {
+    let mut controls = Vec::new();
+    for item in items(reader, true) {
+        match item {
+            Item::Button(button) => {
+                if button.message.is_some() {
+                    controls.push(button.control);
+                }
+                if let Control::Menu(menu) = button.control
+                    && reader.menu == Some(menu)
+                {
+                    controls.extend(menu_controls(reader, menu));
+                }
+            }
+            Item::Pages => controls.push(if reader.pdf.is_some() {
+                Control::PdfPage
+            } else {
+                Control::BookPageInput
+            }),
+            Item::Fill { .. } => {}
+        }
+    }
+    if !reader.fullscreen {
+        controls.extend(
+            [
+                chrome::Action::Minimize,
+                chrome::Action::Maximize,
+                chrome::Action::Close,
+            ]
+            .map(Control::Chrome),
+        );
+    }
+    controls
+}
+
+fn menu_controls(reader: &Reader, menu: Menu) -> Vec<Control> {
+    match menu {
+        Menu::Aa => reading_panel::controls(reader),
+        Menu::More => overflow(reader, true)
+            .into_iter()
+            .filter(|button| button.message.is_some())
+            .map(|button| button.control)
+            .collect(),
+    }
+}
+
+/// Where keyboard focus goes back to after a panel `control` opened closes:
+/// the control, or More while the bar keeps it folded away.
+pub(super) fn return_focus(reader: &Reader, control: Control) -> Control {
+    let folded = folds(reader).is_some()
+        && fold(reader) == Fold::Overflow
+        && overflow(reader, true)
+            .iter()
+            .any(|button| button.control == control);
+    if folded {
+        Control::Menu(Menu::More)
     } else {
-        2.0 * ROW + 1.0
+        control
     }
 }
 
@@ -441,34 +765,44 @@ pub(super) fn height(reader: &Reader) -> f32 {
 /// reveals it. The band reports no mouse interaction, so the page under it
 /// keeps its hover and clicks.
 pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
+    view_at(reader, active, fold(reader))
+}
+
+pub(super) fn view_at(reader: &Reader, active: bool, fold: Fold) -> Element<'_, Message> {
     if !reader.bar.visible() {
         return mouse_area(Space::new().width(Length::Fill).height(REVEAL_ZONE))
             .on_enter(Message::RevealBar)
             .into();
     }
-    let focused = reader.focused.and_then(|control| match control {
-        Control::Chrome(action) => Some(action),
-        _ => None,
-    });
     let hints = reader.chrome_tooltips();
-    let gap = if compact(reader) {
-        GROUP_GAP / 2.0
-    } else {
-        GROUP_GAP
-    };
-    // Controls and labels are never a drag surface, even when disabled; only
-    // the bar's empty background moves the window.
-    let tools = container(opaque(
-        chrome::tools(focused, hints, reader.appearance).map(Message::Chrome),
-    ))
-    .padding(iced::Padding {
-        left: chrome::TOOLS_EDGE,
-        right: gap,
-        ..iced::Padding::ZERO
-    });
+    let mut left = row![].spacing(GAP).align_y(iced::Alignment::Center);
+    let mut right = row![].spacing(GAP).align_y(iced::Alignment::Center);
+    let mut fill: Element<'_, Message> = Space::new().width(Length::Fill).into();
+    let mut past_fill = false;
+    for item in items_at(reader, active, fold) {
+        match item {
+            Item::Button(button) => {
+                let button = icon_button(reader, *button, hints);
+                if past_fill {
+                    right = right.push(button);
+                } else {
+                    left = left.push(button);
+                }
+            }
+            Item::Fill { title } => {
+                past_fill = true;
+                fill = title_view(title);
+            }
+            Item::Pages => right = right.push(pages(reader)),
+        }
+    }
     let captions: Element<'_, Message> = if reader.fullscreen {
-        Space::new().width(GROUP_GAP).into()
+        Space::new().width(EDGE).into()
     } else {
+        let focused = reader.focused.and_then(|control| match control {
+            Control::Chrome(action) => Some(action),
+            _ => None,
+        });
         container(opaque(
             chrome::captions(
                 focused,
@@ -480,50 +814,23 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
             .map(Message::Chrome),
         ))
         .padding(iced::Padding {
-            left: gap,
+            left: 2.0 * GAP,
             ..iced::Padding::ZERO
         })
         .into()
     };
-    let groups = if reader.pdf.is_some() {
-        pdf_groups(reader, active)
-    } else {
-        book_groups(reader, active)
-    };
-    let groups = Groups {
-        left: opaque(groups.left),
-        middle: opaque(groups.middle),
-        right: opaque(groups.right),
-    };
-    let fill = || Space::new().width(Length::Fill);
-    let rows: Element<'_, Message> = if one_row(reader) {
+    // Controls and labels are never a drag surface, even when disabled; only
+    // the bar's empty background and the title move the window.
+    let bar = container(column![
         row![
-            tools,
-            groups.left,
-            fill(),
-            container(groups.middle).padding([0.0, gap]),
-            fill(),
-            groups.right,
-            captions,
+            Space::new().width(EDGE),
+            opaque(left),
+            fill,
+            opaque(right),
+            captions
         ]
         .height(ROW)
-        .align_y(iced::Alignment::Center)
-        .into()
-    } else {
-        column![
-            row![tools, groups.left, fill(), captions]
-                .height(ROW)
-                .align_y(iced::Alignment::Center),
-            row![groups.middle, fill(), groups.right]
-                .spacing(GROUP_GAP)
-                .height(ROW)
-                .padding([0.0, chrome::TOOLS_EDGE])
-                .align_y(iced::Alignment::Center),
-        ]
-        .into()
-    };
-    let bar = container(column![
-        rows,
+        .align_y(iced::Alignment::Center),
         container(Space::new().width(Length::Fill).height(1)).style(|theme| container::Style {
             background: Some(ui::palette(theme).border.into()),
             ..container::Style::default()
@@ -545,6 +852,211 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
     }))
     .on_scroll(Message::ChromeWheel)
     .into()
+}
+
+fn icon_button(reader: &Reader, button: Button, hints: bool) -> Element<'static, Message> {
+    let focused = reader.focused == Some(button.control);
+    let selected = button.selected;
+    // An open menu's card sits where its button's tooltip would.
+    let open = matches!(button.control, Control::Menu(menu) if reader.menu == Some(menu));
+    let control = iced::widget::button(
+        container(
+            text(button.glyph)
+                .font(ui::ICONS)
+                .size(GLYPH)
+                .line_height(1.0),
+        )
+        .center(Length::Fill),
+    )
+    .width(BUTTON)
+    .height(BUTTON)
+    .padding(0)
+    .on_press_maybe(button.message.clone())
+    .style(move |theme, status| icon_style(theme, status, focused, selected));
+    let control: Element<'static, Message> = if focused {
+        container(control)
+            .id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL))
+            .into()
+    } else {
+        control.into()
+    };
+    chrome::hint(control, button.tooltip(), hints && !open)
+}
+
+fn icon_style(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+    focused: bool,
+    selected: bool,
+) -> iced::widget::button::Style {
+    use iced::widget::button::Status;
+    let palette = ui::palette(theme);
+    let hovered = matches!(status, Status::Hovered | Status::Pressed);
+    let disabled = matches!(status, Status::Disabled);
+    iced::widget::button::Style {
+        background: if selected && !disabled {
+            Some(palette.accent.scale_alpha(0.14).into())
+        } else if hovered {
+            Some(palette.raised.into())
+        } else {
+            None
+        },
+        text_color: if disabled {
+            palette.muted
+        } else if selected {
+            palette.accent
+        } else if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        },
+        border: iced::Border {
+            color: if focused {
+                palette.accent
+            } else {
+                iced::Color::TRANSPARENT
+            },
+            width: if focused { 2.0 } else { 0.0 },
+            radius: 6.0.into(),
+        },
+        ..iced::widget::button::Style::default()
+    }
+}
+
+fn title_view(title: Option<String>) -> Element<'static, Message> {
+    let content: Element<'static, Message> = match title {
+        Some(title) => text(title)
+            .size(13)
+            .wrapping(iced::widget::text::Wrapping::None)
+            .style(ui::muted_text)
+            .into(),
+        None => Space::new().into(),
+    };
+    container(content)
+        .id(iced::advanced::widget::Id::new(TITLE_ID))
+        .width(Length::Fill)
+        .padding([0.0, 3.0 * GAP])
+        .clip(true)
+        .into()
+}
+
+/// The page field and the page count.
+fn pages(reader: &Reader) -> Element<'_, Message> {
+    let field: Element<'_, Message> = if let Some(pdf) = &reader.pdf {
+        let document = pdf.document().id;
+        pdf.navigation(reader.focused == Some(Control::PdfPage))
+            .map(move |message| Message::Pdf { document, message })
+    } else {
+        let current = book_pages::current(reader.pages(), reader.offset)
+            .map_or_else(|| "1".to_owned(), |page| page.label.clone());
+        row![
+            ui::watch_focus(
+                iced::widget::text_input(
+                    if current.is_empty() { "—" } else { "Page" },
+                    reader.page_input.as_deref().unwrap_or(&current),
+                )
+                .id(iced::advanced::widget::Id::new("book-page"))
+                .on_input(Message::PageInput)
+                .on_submit(Message::PageSubmit)
+                .width(56)
+                .size(13)
+                .style(ui::input_style),
+                Message::BookPageFocus,
+            ),
+            text(format!("/ {}", reader.page_total()))
+                .size(12)
+                .style(ui::muted_text),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
+    container(field)
+        .padding(iced::Padding {
+            right: 2.0 * GAP,
+            ..iced::Padding::ZERO
+        })
+        .into()
+}
+
+/// The open menu's card, right-aligned under the bar, over a layer that
+/// closes it on a press anywhere else below the bar. That layer reports no
+/// mouse interaction, so the page under it keeps its hover and its wheel.
+pub(super) fn menu(reader: &Reader, active: bool) -> Option<Element<'_, Message>> {
+    let menu = reader.menu?;
+    let (content, width) = match menu {
+        Menu::Aa => (reading_panel::view(reader, active), reading_panel::WIDTH),
+        Menu::More => (more(reader, active), 240.0),
+    };
+    let card = container(
+        iced::widget::scrollable(container(content).padding(iced::Padding {
+            right: 10.0,
+            ..iced::Padding::ZERO
+        }))
+        .id(iced::advanced::widget::Id::new("reading-bar-menu"))
+        .direction(ui::vertical_scrollbar())
+        .style(ui::scroll_style)
+        .height(Length::Shrink),
+    )
+    .padding(iced::Padding {
+        top: 12.0,
+        right: 2.0,
+        bottom: 12.0,
+        left: 12.0,
+    })
+    .width(width.min(reader.window_size.width - 2.0 * EDGE))
+    .max_height((reader.window_size.height - HEIGHT - 2.0 * EDGE).max(120.0))
+    .style(ui::panel);
+    Some(
+        column![
+            Space::new().height(HEIGHT),
+            iced::widget::stack![
+                mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::CloseMenu),
+                container(opaque(card))
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .padding(iced::Padding {
+                        top: EDGE,
+                        right: EDGE,
+                        ..iced::Padding::ZERO
+                    }),
+            ]
+        ]
+        .into(),
+    )
+}
+
+/// More's rows: the folded buttons with their names and shortcuts.
+fn more(reader: &Reader, active: bool) -> Element<'_, Message> {
+    let rows = overflow(reader, active).into_iter().map(|button| {
+        let focused = reader.focused == Some(button.control);
+        let label = row![
+            text(button.glyph).font(ui::ICONS).size(18).line_height(1.0),
+            text(button.label).size(13),
+            Space::new().width(Length::Fill),
+            text(button.shortcut.unwrap_or_default())
+                .size(12)
+                .style(ui::muted_text),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
+        let row = iced::widget::button(label)
+            .width(Length::Fill)
+            .padding([7, 10])
+            .on_press_maybe(button.message)
+            .style(move |theme, status| {
+                ui::button_style(theme, status, ui::ButtonTone::Subtle, focused, false)
+            });
+        if focused {
+            container(row)
+                .id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL))
+                .into()
+        } else {
+            row.into()
+        }
+    });
+    column(rows).spacing(2).into()
 }
 
 /// The wheel over the bar or a page strip behaves as it does over the page:
@@ -604,164 +1116,6 @@ pub(super) fn forward_wheel(
         iced::widget::operation::scroll_by(scroll_id(), offset)
     } else {
         Task::none()
-    }
-}
-
-struct Groups<'a> {
-    left: Element<'a, Message>,
-    middle: Element<'a, Message>,
-    right: Element<'a, Message>,
-}
-
-fn library_button(reader: &Reader, active: bool) -> Element<'static, Message> {
-    let arrow = text("←").font(ui::SANS).size(16);
-    if compact(reader) {
-        hinted_control(
-            reader,
-            Control::Close,
-            arrow,
-            "Library (Ctrl+W)",
-            active.then_some(Message::Close(CloseAction::Document)),
-        )
-    } else {
-        control_button(
-            reader,
-            Control::Close,
-            row![arrow, text("Library").font(ui::MEDIUM).size(13)]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-            active.then_some(Message::Close(CloseAction::Document)),
-        )
-    }
-}
-
-fn pdf_groups(reader: &Reader, active: bool) -> Groups<'_> {
-    let pdf = reader.pdf.as_ref().unwrap();
-    let id = pdf.document().id;
-    let mode = hinted_control(
-        reader,
-        Control::BookMode,
-        text("Book").font(ui::MEDIUM).size(13),
-        "Read this PDF in Book mode",
-        (active && pdf.document().can_copy).then_some(Message::BookMode),
-    );
-    let focused = reader.focused.and_then(|control| match control {
-        Control::Pdf(control) => Some(control),
-        _ => None,
-    });
-    let forward = move |message| Message::Pdf {
-        document: id,
-        message,
-    };
-    Groups {
-        left: row![library_button(reader, active), mode]
-            .spacing(if compact(reader) { 6 } else { 8 })
-            .align_y(iced::Alignment::Center)
-            .into(),
-        middle: pdf.navigation(focused).map(forward),
-        right: row![
-            pdf.zoom_controls(focused, compact(reader)).map(forward),
-            find_button(reader, active),
-            listen_button(reader, active),
-            notes_button(reader, active),
-        ]
-        .spacing(if compact(reader) { 6 } else { 8 })
-        .align_y(iced::Alignment::Center)
-        .into(),
-    }
-}
-
-fn book_groups(reader: &Reader, active: bool) -> Groups<'_> {
-    let mut left = row![library_button(reader, active)]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-    if !reader.returns.is_empty() {
-        left = left.push(hinted_control(
-            reader,
-            Control::Back,
-            text("↶").size(16),
-            "Back to previous passage (Alt+Left)",
-            active.then_some(Message::Back),
-        ));
-    }
-    if reader.book.as_ref().is_some_and(|b| b.pdf_source.is_some()) {
-        left = left.push(control_button(
-            reader,
-            Control::DocumentMode,
-            text("Document").font(ui::MEDIUM).size(13),
-            active.then_some(Message::DocumentMode { source_page: true }),
-        ));
-    }
-    let pages = reader.pages();
-    let current = book_pages::current(pages, reader.offset)
-        .map_or_else(|| "1".to_owned(), |p| p.label.clone());
-    let mut navigation = row![
-        ui::watch_focus(
-            iced::widget::text_input(
-                if current.is_empty() { "—" } else { "Page" },
-                reader.page_input.as_deref().unwrap_or(&current),
-            )
-            .id(iced::advanced::widget::Id::new("book-page"))
-            .on_input(Message::PageInput)
-            .on_submit(Message::PageSubmit)
-            .width(64)
-            .size(13)
-            .style(ui::input_style),
-            Message::BookPageFocus,
-        ),
-        text(format!("/ {}", reader.page_total()))
-            .size(12)
-            .style(ui::muted_text),
-    ]
-    .spacing(4)
-    .align_y(iced::Alignment::Center);
-    if !reader.contents().is_empty() {
-        navigation = navigation.push(toned_button(
-            reader,
-            Control::Contents,
-            text("Contents").font(ui::MEDIUM).size(13),
-            active.then_some(Message::ToggleContents),
-            ui::ButtonTone::Surface,
-            reader.show_contents,
-        ));
-    }
-    let right = row![
-        find_button(reader, active),
-        listen_button(reader, active),
-        notes_button(reader, active),
-        hinted_control(
-            reader,
-            Control::FontDown,
-            text("−").size(16),
-            "Zoom out",
-            (active && reader.zoom > 0.25).then_some(Message::Zoom(reader.zoom - 0.1))
-        ),
-        hinted_control(
-            reader,
-            Control::FitBookWidth,
-            text(if reader.fit_width {
-                "Fit".to_owned()
-            } else {
-                format!("{:.0}%", reader.zoom * 100.0)
-            })
-            .size(12),
-            "Fit width / restore zoom (Ctrl+Shift+F)",
-            active.then_some(Message::FitBookWidth)
-        ),
-        hinted_control(
-            reader,
-            Control::FontUp,
-            text("+").size(16),
-            "Zoom in",
-            (active && reader.zoom < 3.0).then_some(Message::Zoom(reader.zoom + 0.1))
-        ),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center);
-    Groups {
-        left: left.into(),
-        middle: navigation.into(),
-        right: right.into(),
     }
 }
 
@@ -1022,6 +1376,87 @@ mod tests {
         assert!(reader.has_panels(), "the loading line shows below the bar");
         reader.bar.tick(opened + seconds(2.1));
         assert_eq!(reader.bar.state(), BarState::Hidden);
+    }
+
+    fn escape() -> Message {
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            }),
+            iced::window::Id::unique(),
+        )
+    }
+
+    #[test]
+    fn an_open_menu_holds_the_bar_and_escape_returns_to_its_button() {
+        let mut reader = Reader {
+            book: Some(super::super::tests::book("bar-menu")),
+            ..Reader::default()
+        };
+        let opened = Instant::now();
+        reader.sync_bar(opened, Input::default());
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::Aa));
+        reader.sync_bar(opened + seconds(0.5), Input::default());
+        reader.bar.tick(opened + seconds(30.0));
+        assert_eq!(
+            reader.bar.state(),
+            BarState::Shown { hide_at: None },
+            "the open panel holds the bar past its hide deadline"
+        );
+
+        let _ = update_inner(&mut reader, escape());
+        assert_eq!(reader.menu, None);
+        assert_eq!(reader.focused, Some(Control::Menu(Menu::Aa)));
+        let _ = update_inner(&mut reader, escape());
+        assert_eq!(reader.focused, None, "a second Escape leaves the bar");
+    }
+
+    #[test]
+    fn opening_a_menu_closes_the_other_and_closing_the_book_closes_both() {
+        let mut reader = Reader {
+            book: Some(super::super::tests::book("bar-menus")),
+            window_size: Size::new(540.0, 600.0),
+            ..Reader::default()
+        };
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::More));
+        assert_eq!(reader.menu, Some(Menu::More));
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::Aa));
+        assert_eq!(reader.menu, Some(Menu::Aa));
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::Aa));
+        assert_eq!(reader.menu, None, "its button closes it again");
+
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::More));
+        let _ = update_inner(
+            &mut reader,
+            Message::Chrome(chrome::Action::ToggleAppearance),
+        );
+        assert_eq!(reader.menu, None, "choosing an item in More closes it");
+        assert_eq!(reader.appearance, Appearance::Dark);
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::More));
+        let _ = update_inner(&mut reader, Message::Chrome(chrome::Action::Settings));
+        assert!(reader.show_settings && reader.menu.is_none());
+        let _ = update_inner(&mut reader, Message::Chrome(chrome::Action::Settings));
+        assert_eq!(
+            reader.focused,
+            Some(Control::Menu(Menu::More)),
+            "closing Settings returns focus to More, which holds it"
+        );
+
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::More));
+        reader.window_size.width = 1280.0;
+        reader.sync_bar(Instant::now(), Input::default());
+        assert_eq!(reader.menu, None, "a wide bar has nothing in More");
+
+        let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::Aa));
+        reader.book = None;
+        reader.sync_bar(Instant::now(), Input::default());
+        assert_eq!(reader.menu, None, "closing the book closes the panel");
     }
 
     #[test]
