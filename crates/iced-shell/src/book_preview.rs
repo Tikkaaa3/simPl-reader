@@ -575,17 +575,33 @@ fn render_frame(reader: &mut Reader, output: &Path, scale: f32, cursor: mouse::C
         &bounds,
     );
     renderer.reset(bounds);
+    let style = renderer::Style {
+        text_color: theme.palette().text,
+    };
     element.as_widget().draw(
         &tree,
         &mut renderer,
         &theme,
-        &renderer::Style {
-            text_color: theme.palette().text,
-        },
+        &style,
         Layout::new(&node),
         cursor,
         &bounds,
     );
+    // Tooltips and menus are overlays, drawn above the tree as the runtime does.
+    if let Some(mut overlay) = element.as_widget_mut().overlay(
+        &mut tree,
+        Layout::new(&node),
+        &renderer,
+        &bounds,
+        iced::Vector::ZERO,
+    ) {
+        let layout = overlay.as_overlay_mut().layout(&renderer, size);
+        renderer.with_layer(bounds, |renderer| {
+            overlay
+                .as_overlay()
+                .draw(renderer, &theme, &style, Layout::new(&layout), cursor);
+        });
+    }
     let physical = Size::new(
         (size.width * scale).round() as u32,
         (size.height * scale).round() as u32,
@@ -2200,6 +2216,71 @@ fn render_reading_bar_previews() {
         };
         render(&mut reader, &output.join(format!("bar-pdf-{width}.png")));
     }
+}
+
+/// A book with contents and a passage to go back to, so its bar shows every
+/// button, in a `width` x `height` window.
+fn full_bar_book(width: f32, height: f32) -> Reader {
+    let mut source = Arc::try_unwrap(super::tests::book("The Quiet Hours")).unwrap();
+    source.items[0] = Item::Heading {
+        id: "paragraph-0".into(),
+        text: "Chapter One".into(),
+        level: 1,
+    };
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(width, height),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    reader.returns.push(ReturnLocation {
+        chapter: None,
+        item_id: "paragraph-2".into(),
+        within: 0.0,
+    });
+    let _ = reader.sync_reading_settings();
+    let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+    let _ = reader.reading_loaded(fingerprint, Ok(None));
+    reader
+}
+
+#[test]
+#[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
+fn render_ux5_bar_look() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        for (width, height) in [(1400.0, 900.0), (540.0, 360.0)] {
+            let mut reader = full_bar_book(width, height);
+            reader.appearance = appearance;
+            render(
+                &mut reader,
+                &output.join(format!("UX-5-bar-{name}-{width}.png")),
+            );
+        }
+    }
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let find = bounds_of(&mut reader, Control::Find).center();
+    render_with_cursor(&mut reader, &output.join("UX-5-tooltip.png"), find);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("UX-5-aa-book.png"));
+    let mut reader = full_bar_book(540.0, 600.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::More));
+    render(&mut reader, &output.join("UX-5-more-540.png"));
+    let Some(mut reader) = test_pdf(
+        crate::pdf_reader::tests::tall_pdf(),
+        Size::new(1400.0, 900.0),
+    ) else {
+        return;
+    };
+    render(&mut reader, &output.join("UX-5-bar-pdf-1400.png"));
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("UX-5-aa-pdf.png"));
 }
 
 #[test]
