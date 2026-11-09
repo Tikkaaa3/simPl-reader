@@ -1366,6 +1366,23 @@ fn the_notes_sidebar_starts_below_the_bar() {
 }
 
 #[test]
+fn the_library_banner_shows_while_reading_and_holds_the_bar() {
+    let mut reader = reading_bar_book(1280.0);
+    reader.library.notice = Some("Your library moved.".into());
+    assert!(reader.bar_held(), "an actionable notice holds the bar");
+    let dismiss = bounds_of(&mut reader, Control::Library(library_ui::Focus::Dismiss));
+    assert!(
+        dismiss.y >= reading_chrome::height(&reader),
+        "the banner hangs below the bar, at y={}",
+        dismiss.y
+    );
+    let mut ui = Harness::new();
+    ui.click(&mut reader, dismiss.center());
+    assert_eq!(reader.library.notice, None, "Dismiss clears the notice");
+    assert!(!reader.bar_held());
+}
+
+#[test]
 #[ignore = "Reading bar QA: set SIMPL_PREVIEW_OUTPUT"]
 fn render_reading_bar_previews() {
     ui::load_test_fonts();

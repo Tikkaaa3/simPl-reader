@@ -295,7 +295,8 @@ impl Reader {
         self.has_held_panels() || self.opening.is_some() || self.pagination.is_some()
     }
 
-    /// Find, the read-aloud player, contents, help, recent documents or notices.
+    /// Find, the read-aloud player, contents, help, recent documents, the
+    /// library banner or notices.
     fn has_held_panels(&self) -> bool {
         self.find.is_some()
             || self.read_aloud.active()
@@ -306,6 +307,7 @@ impl Reader {
             || self.show_help
             || self.preferences_notice.is_some()
             || self.shelf.notice.is_some()
+            || library_ui::banner_visible(self)
             || self.saving
     }
 

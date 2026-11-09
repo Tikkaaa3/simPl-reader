@@ -685,7 +685,7 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
     content.into()
 }
 
-fn banner_visible(reader: &Reader) -> bool {
+pub(super) fn banner_visible(reader: &Reader) -> bool {
     let state = &reader.library;
     state.moving().is_some()
         || state.notice.is_some()
