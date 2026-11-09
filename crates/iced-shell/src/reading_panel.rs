@@ -332,6 +332,30 @@ mod tests {
     }
 
     #[test]
+    fn a_late_settings_reply_cannot_undo_a_theme_choice() {
+        let mut reader = Reader::default();
+        open(&mut reader, "A");
+        close(&mut reader);
+        open(&mut reader, "B");
+        close(&mut reader);
+        open(&mut reader, "A");
+        settle_pagination(&mut reader);
+        stored(&mut reader, None);
+        aa(&mut reader, Control::Theme(Target::Book, 1));
+        assert_eq!(reader.theme.id, "soft");
+        stored(&mut reader, None);
+        settle_theme(&mut reader);
+        assert_eq!(
+            reader.theme.id, "soft",
+            "the reply from the first open is stale"
+        );
+        assert_eq!(
+            reader.reading.book_theme(),
+            Some(reader_document::reading::ThemeId::Soft)
+        );
+    }
+
+    #[test]
     fn the_default_themes_card_makes_a_book_follow_the_default_again() {
         let mut reader = aa_book_with_size_22();
         aa(&mut reader, Control::Theme(Target::Book, 3));

@@ -142,7 +142,9 @@ impl Reader {
         book: String,
         result: Result<Option<Options>, String>,
     ) -> Task<Message> {
-        if self.reading.book.as_ref() != Some(&book) {
+        // Once this open has its settings, a later reply is from an earlier
+        // open of the same book and would undo changes made since.
+        if self.reading.book.as_ref() != Some(&book) || !self.reading.loading {
             return Task::none();
         }
         self.reading.loading = false;
