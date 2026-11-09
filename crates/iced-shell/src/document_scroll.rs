@@ -25,12 +25,17 @@ const FADE: Duration = Duration::from_millis(150);
 const FRAME: Duration = Duration::from_millis(16);
 
 /// `zoom` receives Ctrl+wheel movement in notches; positive values zoom in.
+/// `place` names what is scrolled, such as the page on screen. A new place
+/// shows the rail as a scroll does, because a page turn from the top of one
+/// page to the top of a page of the same height moves nothing else.
 pub fn wrap<'a, Message: 'a>(
     zoom: impl Fn(f32) -> Message + 'a,
+    place: u64,
     scrollable: iced::widget::Scrollable<'a, Message>,
 ) -> Element<'a, Message> {
     Element::new(DocumentScroll {
         zoom: Box::new(zoom),
+        place,
         content: scrollable
             .auto_scroll(true)
             .style(|theme, status| {
@@ -55,6 +60,7 @@ pub fn wrap<'a, Message: 'a>(
 
 struct DocumentScroll<'a, Message> {
     zoom: Box<dyn Fn(f32) -> Message + 'a>,
+    place: u64,
     content: Element<'a, Message>,
 }
 
@@ -226,6 +232,7 @@ struct State {
     visibility: Visibility,
     /// The time of the event being handled; `draw` has no clock of its own.
     now: Option<Instant>,
+    place: Option<u64>,
 }
 
 impl State {
@@ -355,6 +362,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
         };
         let state = tree.state.downcast_mut::<State>();
         state.now = Some(now);
+        if state.place.replace(self.place) != Some(self.place) {
+            state.visibility.moved(now);
+        }
         let was_engaged = state.engaged();
         self.handle(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
@@ -818,6 +828,7 @@ mod tests {
         let size = Size::new(800.0, 700.0);
         let mut element = wrap(
             |_| (),
+            0,
             iced::widget::scrollable(iced::widget::Space::new().height(10_000.0))
                 .height(Length::Fill),
         );
@@ -864,5 +875,55 @@ mod tests {
         assert!(captured, "the hidden rail takes the press");
         assert_eq!(state.grabbed_at, Some(10.0), "the press grabs the thumb");
         assert_eq!(state.alpha(), 1.0, "the thumb shows for the drag");
+    }
+
+    #[test]
+    fn a_new_place_shows_the_hidden_rail() {
+        let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+        let size = Size::new(800.0, 700.0);
+        let page = |place| {
+            wrap(
+                |_| (),
+                place,
+                iced::widget::scrollable(iced::widget::Space::new().height(10_000.0))
+                    .height(Length::Fill),
+            )
+        };
+        let redraw = |element: &mut Element<'_, ()>, tree: &mut widget::Tree, now| {
+            let node =
+                element
+                    .as_widget_mut()
+                    .layout(tree, &renderer, &layout::Limits::new(size, size));
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            element.as_widget_mut().update(
+                tree,
+                &Event::Window(iced::window::Event::RedrawRequested(now)),
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(size),
+            );
+            tree.state.downcast_ref::<State>().alpha()
+        };
+        let opened = Instant::now();
+        let hidden = opened + IDLE_DELAY + FADE;
+        let mut first = page(3);
+        let mut tree = widget::Tree::new(&first);
+        redraw(&mut first, &mut tree, opened);
+        assert_eq!(redraw(&mut first, &mut tree, hidden), 0.0);
+        let mut next = page(4);
+        tree.diff(&next);
+        assert_eq!(
+            redraw(&mut next, &mut tree, hidden),
+            1.0,
+            "a page turn with the same offset and height shows the rail"
+        );
+        assert_eq!(
+            redraw(&mut next, &mut tree, hidden + IDLE_DELAY + FADE),
+            0.0
+        );
     }
 }

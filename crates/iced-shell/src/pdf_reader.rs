@@ -1426,6 +1426,7 @@ impl Reader {
         let generation = self.generation;
         content = content.push(crate::document_scroll::wrap(
             Message::ZoomBy,
+            0,
             scrollable(visible)
                 .id(scroll_id())
                 .direction(scrollable::Direction::Both {

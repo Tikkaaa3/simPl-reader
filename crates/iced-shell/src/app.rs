@@ -6201,6 +6201,8 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     iced::widget::mouse_area(
         container(crate::document_scroll::wrap(
             Message::ZoomBy,
+            (book.epub.as_ref().map_or(0, |chapter| chapter.index) as u64) << 32
+                | u64::from(page.top.to_bits()),
             scrollable(centered)
                 .direction(iced::widget::scrollable::Direction::Both {
                     vertical: ui::scrollbar(),
