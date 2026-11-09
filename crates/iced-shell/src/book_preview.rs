@@ -1906,13 +1906,24 @@ fn a_window_without_room_for_both_drawers_keeps_one() {
     assert!(reader.show_contents && reader.notes.list.is_some());
     let id = window::Id::unique();
     reader.window = Some(id);
-    let _ = update(
-        &mut reader,
-        Message::Event(
-            iced::Event::Window(window::Event::Resized(Size::new(1000.0, 600.0))),
-            id,
-        ),
+    let resize = |reader: &mut Reader, width: f32| {
+        let _ = update(
+            reader,
+            Message::Event(
+                iced::Event::Window(window::Event::Resized(Size::new(width, 600.0))),
+                id,
+            ),
+        );
+    };
+    reader.focused = Some(Control::ContentsEntry(0));
+    resize(&mut reader, 1390.0);
+    assert_eq!(
+        reader.focused,
+        Some(Control::ContentsEntry(0)),
+        "a resize that keeps both drawers keeps focus in contents"
     );
+    resize(&mut reader, 1000.0);
+    assert_eq!(reader.focused, None, "closing contents drops focus from it");
     assert!(
         !reader.show_contents && reader.notes.list.is_some(),
         "shrinking to 1000 keeps the notes drawer"

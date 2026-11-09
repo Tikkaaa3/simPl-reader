@@ -113,7 +113,7 @@ impl Reader {
         let drawers = self.drawers();
         if drawers.open.left > 0.0 && drawers.open.right > 0.0 {
             self.make_room_for(Side::Right);
-            if matches!(self.focused, Some(Control::ContentsEntry(_))) {
+            if !self.show_contents && matches!(self.focused, Some(Control::ContentsEntry(_))) {
                 self.focused = None;
             }
         }
