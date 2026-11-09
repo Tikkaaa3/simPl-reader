@@ -6415,11 +6415,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     let available_width = reader.document_view_size().width;
     let desk_width = book_desk_width(reader, available_width);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
-        .center_x(available_width.max(desk_width))
-        .padding(iced::Padding {
-            right: 14.0,
-            ..Default::default()
-        });
+        .center_x(available_width.max(desk_width));
     let generation = reader.generation;
     // A right click on text opens the note menu from the paragraph; a click on
     // the desk or margins reaches this area instead.

@@ -8,10 +8,16 @@ struct PaperViewport {
     bounds: Rectangle,
     content: Rectangle,
     offset: iced::Vector,
+    paper: Rectangle,
 }
 impl iced::advanced::widget::Operation for PaperViewport {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
         operate(self);
+    }
+    fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle) {
+        if id == Some(&iced_shell::selection::reading_paper_id()) {
+            self.paper = bounds;
+        }
     }
     fn scrollable(
         &mut self,
@@ -2641,6 +2647,38 @@ pub(super) fn full_bar_book(width: f32, height: f32) -> Reader {
     let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
     let _ = reader.reading_loaded(fingerprint, Ok(None));
     reader
+}
+
+#[test]
+fn paper_is_centred_in_the_reading_area() {
+    ui::load_test_fonts();
+    let contents = Message::ToggleContents;
+    let notes = Message::Notes(crate::notes::Action::ToggleList);
+    for (width, drawer, name) in [
+        (1400.0, None, "no drawer"),
+        (860.0, None, "no drawer"),
+        (1400.0, Some(notes), "notes docked"),
+        (1400.0, Some(contents), "contents docked"),
+    ] {
+        let mut reader = full_bar_book(width, 900.0);
+        if let Some(drawer) = drawer {
+            let _ = update(&mut reader, drawer);
+            settle_pagination(&mut reader);
+            assert!(reader.drawers().docked().total() > 0.0, "{name} at {width}");
+        }
+        let viewport = paper_viewport(&reader);
+        let (area, paper) = (viewport.bounds, viewport.paper);
+        assert!(
+            paper.width > 0.0,
+            "{name} at {width}: the paper is laid out"
+        );
+        let left = paper.x - area.x;
+        let right = area.x + area.width - (paper.x + paper.width);
+        assert!(
+            (left - right).abs() <= 0.5,
+            "{name} at {width}: gutters {left} and {right}"
+        );
+    }
 }
 
 #[test]
