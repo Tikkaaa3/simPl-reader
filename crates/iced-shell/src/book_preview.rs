@@ -1875,25 +1875,90 @@ fn the_left_strip_turns_back_beside_the_contents_drawer() {
 }
 
 #[test]
-fn the_pill_keeps_its_buttons_between_the_strips_beside_a_narrow_drawer() {
-    let mut reader = full_bar_book(540.0, 500.0);
+fn a_window_without_room_for_both_drawers_keeps_one() {
+    for (width, both) in [(1256.0, true), (1100.0, false), (860.0, false)] {
+        let mut reader = full_bar_book(width, 600.0);
+        let _ = update(&mut reader, Message::ToggleContents);
+        let _ = update(
+            &mut reader,
+            Message::Notes(crate::notes::Action::ToggleList),
+        );
+        assert!(reader.notes.list.is_some(), "at {width} notes open");
+        assert_eq!(
+            reader.show_contents, both,
+            "at {width} contents stays open beside notes"
+        );
+        if !both {
+            let _ = update(&mut reader, Message::ToggleContents);
+            assert!(reader.show_contents, "at {width} contents opens again");
+            assert!(
+                reader.notes.list.is_none(),
+                "at {width} and contents closes notes"
+            );
+        }
+    }
+    let mut reader = full_bar_book(1400.0, 600.0);
+    let _ = update(&mut reader, Message::ToggleContents);
     let _ = update(
         &mut reader,
         Message::Notes(crate::notes::Action::ToggleList),
     );
-    reader.begin_silent_listening();
-    let strip = page_strips::width(540.0);
-    let (left, right) = (strip, 540.0 - 230.0 - strip);
-    for control in [
-        Control::ReadAloudSlower,
-        Control::ReadAloudFaster,
-        Control::ReadAloudPause,
-    ] {
-        let button = bounds_of(&mut reader, control);
+    assert!(reader.show_contents && reader.notes.list.is_some());
+    let id = window::Id::unique();
+    reader.window = Some(id);
+    let _ = update(
+        &mut reader,
+        Message::Event(
+            iced::Event::Window(window::Event::Resized(Size::new(1000.0, 600.0))),
+            id,
+        ),
+    );
+    assert!(
+        !reader.show_contents && reader.notes.list.is_some(),
+        "shrinking to 1000 keeps the notes drawer"
+    );
+}
+
+#[test]
+fn floating_controls_stay_usable_beside_a_drawer() {
+    // 900 docks a drawer beside a 576px page; 540 lays one over the page.
+    for (width, contents) in [(900.0, true), (900.0, false), (540.0, true), (540.0, false)] {
+        let mut reader = full_bar_book(width, 600.0);
+        if contents {
+            let _ = update(&mut reader, Message::ToggleContents);
+        } else {
+            let _ = update(
+                &mut reader,
+                Message::Notes(crate::notes::Action::ToggleList),
+            );
+        }
+        let _ = update(&mut reader, Message::FindOpen);
+        reader.begin_silent_listening();
+        let drawer = drawers::width(width);
+        let (left, right) = if contents {
+            (drawer, width)
+        } else {
+            (0.0, width - drawer)
+        };
+        let input = bounds_of(&mut reader, Control::FindInput);
         assert!(
-            left <= button.x && button.x + button.width <= right && button.width >= 24.0,
-            "{control:?} at {button:?} shows whole between {left} and {right}"
+            input.width >= 100.0,
+            "at {width} the find input keeps room to type, got {input:?}"
         );
+        for control in [
+            Control::FindPrevious,
+            Control::FindNext,
+            Control::FindClose,
+            Control::ReadAloudSlower,
+            Control::ReadAloudFaster,
+            Control::ReadAloudPause,
+        ] {
+            let button = bounds_of(&mut reader, control);
+            assert!(
+                left <= button.x && button.x + button.width <= right && button.width >= 24.0,
+                "at {width} {control:?} at {button:?} shows whole between the drawers {left} and {right}"
+            );
+        }
     }
 }
 

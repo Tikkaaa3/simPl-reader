@@ -170,9 +170,10 @@ highlights merge without darkening; different colors can overlap. Right-click a
 page to bookmark it. The bookmarks and notes sidebar opens from the **Notes** icon
 in the reading bar or with Ctrl+B. Click a note in the sidebar to read its full text;
 long notes scroll within the list. The **Contents** icon or Ctrl+T opens the book's
-contents in a drawer on the left. In a window 900 pixels wide or more, both drawers
+contents in a drawer on the left. In a window 900 pixels wide or more, the drawers
 sit beside the page; in a narrower one they open over it, and choosing a chapter
-closes the contents drawer.
+closes the contents drawer. Both drawers stay open together from 1256 pixels; in a
+narrower window, opening one closes the other.
 Bookmarks and highlights are stored per book under
 `%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
 

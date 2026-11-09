@@ -17,6 +17,19 @@ pub(super) fn width(window_width: f32) -> f32 {
     (window_width * 0.36).clamp(230.0, 340.0)
 }
 
+/// Both drawers stay open together only where the page keeps the width one
+/// drawer leaves it at the overlay width, so from 1256px.
+fn both_fit(window_width: f32) -> bool {
+    window_width - 2.0 * width(window_width) >= OVERLAY_BELOW - width(OVERLAY_BELOW)
+}
+
+/// The page's left or right side, where a drawer opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Side {
+    Left,
+    Right,
+}
+
 /// Widths along the page's left and right sides.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Edges {
@@ -82,6 +95,28 @@ impl Reader {
             (self.window_size.width - self.drawers().docked().total()).max(1.0),
             self.window_size.height,
         )
+    }
+
+    /// Opening one drawer closes the other in a window without room for both.
+    pub(super) fn make_room_for(&mut self, opened: Side) {
+        if both_fit(self.window_size.width) {
+            return;
+        }
+        match opened {
+            Side::Left => self.notes.list = None,
+            Side::Right => self.show_contents = false,
+        }
+    }
+
+    /// A window shrunk below the room for both drawers keeps the notes drawer.
+    pub(super) fn fit_drawers_to_window(&mut self) {
+        let drawers = self.drawers();
+        if drawers.open.left > 0.0 && drawers.open.right > 0.0 {
+            self.make_room_for(Side::Right);
+            if matches!(self.focused, Some(Control::ContentsEntry(_))) {
+                self.focused = None;
+            }
+        }
     }
 
     /// Going somewhere in the book closes an overlaid contents drawer, which

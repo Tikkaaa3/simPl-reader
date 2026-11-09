@@ -720,6 +720,9 @@ impl Reader {
                 } else {
                     Some(ListTab::default())
                 };
+                if self.notes.list.is_some() {
+                    self.make_room_for(drawers::Side::Right);
+                }
                 self.focused = None;
                 let size = self.document_view_size();
                 match &mut self.pdf {

@@ -4117,6 +4117,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ToggleContents if reader.interactive() => {
             if !reader.contents().is_empty() {
                 reader.show_contents = !reader.show_contents;
+                if reader.show_contents {
+                    reader.make_room_for(drawers::Side::Left);
+                }
                 reader.contents_offset = 0.0;
                 reader.focused = if reader.show_contents && !reader.contents_range().is_empty() {
                     Some(Control::ContentsEntry(0))
@@ -4833,6 +4836,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         + (size.height - reader.window_size.height) / reader.zoom)
                         .max(1.0);
                     reader.window_size = size;
+                    reader.fit_drawers_to_window();
                     let view_size = reader.document_view_size();
                     let task = if let Some(pdf) = &mut reader.pdf {
                         forward_pdf(
@@ -5940,6 +5944,10 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
     container(bar).padding([8, 12]).style(ui::panel).into()
 }
 
+/// The narrowest room the find box and the read-aloud pill keep for their
+/// controls.
+const FLOATING_MIN_WIDTH: f32 = 300.0;
+
 /// The find box and the read-aloud pill over the page, between the page
 /// strips' inner edges: the box at the top right below the bar's place, the
 /// pill centred above the progress line. Each keeps its slot while closed.
@@ -5960,20 +5968,29 @@ fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
     ));
     let strip = page_strips::width(window.width);
     let inset = page_strips::bottom_inset(reader);
-    let [previous, next] = page_strips::regions(area, strip, inset, drawers.overlaid());
-    let between = (next.x - previous.x - previous.width).max(0.0);
-    let band = progress_line::band(area, strip, inset, drawers.overlaid());
+    let overlaid = drawers.overlaid();
+    let [previous, next] = page_strips::regions(area, strip, inset, overlaid);
+    let band = progress_line::band(area, strip, inset, overlaid);
+    // Between the strips while the controls fit there. Two drawers in a
+    // narrow window leave too little, and the controls then cover the strips.
+    let between = previous.x + previous.width..next.x;
+    let lane = if between.end - between.start >= FLOATING_MIN_WIDTH {
+        between
+    } else {
+        let start = overlaid.left + GAP;
+        start..(area.width - overlaid.right - GAP).max(start)
+    };
     let find: Element<'_, Message> = match &reader.find {
         Some(find) => container(wheel(
             container(find_bar(reader, find, active))
-                .width(FIND_WIDTH.min(between))
+                .width(FIND_WIDTH.min(lane.end - lane.start))
                 .into(),
         ))
         .width(Length::Fill)
         .align_x(iced::alignment::Horizontal::Right)
         .padding(iced::Padding {
             top: reading_chrome::HEIGHT + GAP,
-            right: area.width - next.x,
+            right: area.width - lane.end,
             ..iced::Padding::ZERO
         })
         .into(),
@@ -5982,7 +5999,7 @@ fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
     let pill: Element<'_, Message> = if reader.read_aloud.active() {
         container(wheel(
             container(read_aloud::player(reader, active))
-                .max_width(band.width)
+                .max_width(lane.end - lane.start)
                 .into(),
         ))
         .width(Length::Fill)
@@ -5990,8 +6007,8 @@ fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
         .align_x(iced::alignment::Horizontal::Center)
         .align_y(iced::alignment::Vertical::Bottom)
         .padding(iced::Padding {
-            left: band.x,
-            right: area.width - band.x - band.width,
+            left: lane.start,
+            right: area.width - lane.end,
             bottom: area.height - band.y + GAP,
             top: 0.0,
         })
