@@ -137,6 +137,10 @@ fn run_case(name: &str, reader: Reader, scale: f32, profile: bool) {
     let mut times = Vec::new();
     let mut damage_counts = Vec::new();
     let mut previous_layers = None::<Vec<iced_tiny_skia::Layer>>;
+    // Every frame shares one instant, so the reader's timed fades (such as
+    // the idle scrollbar) cannot change between frames however slowly a
+    // loaded test machine draws them.
+    let clock = Instant::now();
     for frame in 0..if profile { 70 } else { 6 } {
         let started = Instant::now();
         let mut element = view(&reader);
@@ -167,7 +171,7 @@ fn run_case(name: &str, reader: Reader, scale: f32, profile: bool) {
         let mut messages = Vec::new();
         element.as_widget_mut().update(
             &mut tree,
-            &iced::Event::Window(window::Event::RedrawRequested(Instant::now())),
+            &iced::Event::Window(window::Event::RedrawRequested(clock)),
             Layout::new(&node),
             mouse::Cursor::Available(Point::new(800.0, 400.0)),
             &renderer,
