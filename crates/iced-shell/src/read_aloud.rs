@@ -1538,6 +1538,7 @@ mod tests {
                 epub: None,
                 pdf_source: None,
                 contents: std::sync::OnceLock::new(),
+                contents_rows: std::sync::OnceLock::new(),
             })),
             ..Default::default()
         };

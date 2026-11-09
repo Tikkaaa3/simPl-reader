@@ -2805,6 +2805,249 @@ fn contents_marks_only_the_heading_the_reader_is_in() {
     assert_eq!(fills, [paper, tint, paper]);
 }
 
+/// A short "Two Wings", as `fixtures/chapters/build_epub.py` writes it: a
+/// chapter file with two sections, a file that continues the chapter with no
+/// contents entry of its own, and a file whose second entry points at an
+/// anchor that is not there.
+fn two_wings() -> Arc<reader_document::epub::Epub> {
+    let sentence = "The lamp burned low while the house settled into its evening sounds. ";
+    let paragraphs = |name: &str| -> String {
+        (1..=4)
+            .map(|index| format!("<p>{name}, paragraph {index}. {}</p>", sentence.repeat(12)))
+            .collect()
+    };
+    let bodies = [
+        format!(
+            r#"<h1>The east wing</h1>{}<h2 id="hall">The long hall</h2>{}<h2 id="gallery">The gallery</h2>{}"#,
+            paragraphs("East wing"),
+            paragraphs("Long hall"),
+            paragraphs("Gallery")
+        ),
+        paragraphs("East wing continued"),
+        format!("<h1>The west wing</h1>{}", paragraphs("West wing")),
+    ];
+    let entries = [
+        ("file-0.xhtml", "The east wing"),
+        ("file-0.xhtml#hall", "The long hall"),
+        ("file-0.xhtml#gallery", "The gallery"),
+        ("file-2.xhtml", "The west wing"),
+        ("file-2.xhtml#missing", "A room that is not there"),
+    ]
+    .map(|(href, label)| (href.to_owned(), label.to_owned()));
+    super::tests::nav_epub("two-wings", &bodies, &entries)
+}
+
+/// Two Wings open at `row` of `file`, with the contents drawer docked.
+fn two_wings_at(file: usize, row: usize) -> Reader {
+    let mut reader = Reader {
+        book: Some(Arc::new(
+            load_epub_chapter(two_wings(), file, None).unwrap(),
+        )),
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor { row, fraction: 0.0 });
+    settle_pagination(&mut reader);
+    let _ = update(&mut reader, Message::ToggleContents);
+    assert!(reader.show_contents);
+    assert_eq!(reader.anchor().row, row, "file {file}");
+    reader
+}
+
+#[test]
+fn epub_contents_mark_the_entry_the_reader_is_in() {
+    // The east wing's rows: its heading 0, the long hall 5, the gallery 10.
+    for (file, row, current, what) in [
+        (0, 0, Some(0), "the top of the chapter"),
+        (0, 4, Some(0), "the chapter's own text"),
+        (0, 5, Some(1), "the long hall's heading"),
+        (0, 12, Some(2), "inside the gallery"),
+        (1, 0, Some(2), "a file with no entry continues the last one"),
+        (1, 3, Some(2), "further into that file"),
+        (2, 0, Some(3), "the west wing"),
+        (2, 4, Some(3), "past where a missing anchor would be"),
+    ] {
+        let reader = two_wings_at(file, row);
+        assert_eq!(reader.current_contents_entry(), current, "{what}");
+    }
+}
+
+/// Lets the view settle where the scrollable stops it, as the next frames
+/// of the app would.
+fn settle_scroll(reader: &mut Reader) {
+    settle_pagination(reader);
+    let generation = reader.generation;
+    let _ = update(reader, Message::LayoutReady(generation));
+    let viewport = paper_viewport(reader);
+    let page_top = reader.active_page().unwrap().top;
+    let offset = (reader.local_offset() * reader.zoom)
+        .min((viewport.content.height - viewport.bounds.height).max(0.0));
+    let _ = update(
+        reader,
+        Message::Scroll {
+            generation,
+            page_top,
+            offset,
+            viewport: viewport.bounds.height,
+        },
+    );
+}
+
+#[test]
+fn a_contents_entry_stays_current_after_jumping_to_it() {
+    let jump = |reader: &mut Reader, fragment: Option<&str>| {
+        let _ = update(
+            reader,
+            Message::EpubChapter {
+                index: 0,
+                fragment: fragment.map(str::to_owned),
+            },
+        );
+        settle_scroll(reader);
+    };
+
+    let body = format!(
+        r#"<h1>Chapter</h1><h2 id="section">Section</h2><p>{}</p>"#,
+        "A few words. ".repeat(30)
+    );
+    let entries = [
+        ("file-0.xhtml", "Chapter"),
+        ("file-0.xhtml#section", "Section"),
+    ]
+    .map(|(href, label)| (href.to_owned(), label.to_owned()));
+    let mut reader = Reader {
+        book: Some(Arc::new(
+            load_epub_chapter(
+                super::tests::nav_epub("adjacent", &[body], &entries),
+                0,
+                None,
+            )
+            .unwrap(),
+        )),
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_scroll(&mut reader);
+    assert_eq!(reader.current_contents_entry(), Some(0));
+    for (fragment, current) in [(Some("section"), Some(1)), (None, Some(0))] {
+        jump(&mut reader, fragment);
+        assert_eq!(
+            reader.anchor().row,
+            0,
+            "both headings lie on one page that cannot scroll"
+        );
+        assert_eq!(reader.current_contents_entry(), current, "{fragment:?}");
+    }
+    jump(&mut reader, Some("section"));
+    let top = reader.anchor();
+    let _ = reader.rebuild_geometry(top);
+    settle_scroll(&mut reader);
+    assert_eq!(
+        reader.current_contents_entry(),
+        Some(1),
+        "laying the same view out again, as a new font does, is not a move"
+    );
+
+    let mut reader = two_wings_at(0, 0);
+    let _ = update(&mut reader, Message::Zoom(0.4));
+    jump(&mut reader, Some("hall"));
+    let generation = reader.generation;
+    let page_top = reader.active_page().unwrap().top;
+    for (offset, current, what) in [
+        (
+            0.0,
+            Some(1),
+            "a shorter window lets the page scroll, and the view stays put",
+        ),
+        (10.0, Some(0), "scrolling is a move"),
+    ] {
+        let _ = update(
+            &mut reader,
+            Message::Scroll {
+                generation,
+                page_top,
+                offset,
+                viewport: 100.0,
+            },
+        );
+        assert_eq!(reader.anchor().row, 4);
+        assert_eq!(reader.current_contents_entry(), current, "{what}");
+    }
+
+    let mut reader = two_wings_at(0, 0);
+    let _ = update(&mut reader, Message::Zoom(0.4));
+    jump(&mut reader, Some("hall"));
+    assert_eq!(
+        (
+            reader.anchor().row,
+            reader.active_page().unwrap().rows.clone()
+        ),
+        (4, 4..6),
+        "the long hall's heading, row 5, is below the top of a page that cannot scroll"
+    );
+    assert_eq!(reader.current_contents_entry(), Some(1));
+    for next in [true, false] {
+        let _ = update(&mut reader, Message::BookPage(next));
+        settle_scroll(&mut reader);
+    }
+    assert_eq!(reader.active_page().unwrap().rows.clone(), 4..6);
+    assert_eq!(
+        reader.current_contents_entry(),
+        Some(0),
+        "back on the page after reading on, its top is still in the chapter's own text"
+    );
+}
+#[test]
+fn epub_contents_follow_the_book_when_the_list_is_out_of_order() {
+    let bodies = ["Cover", "One", "Two"].map(|name| format!("<p>{name}.</p>"));
+    let entries = [
+        ("file-1.xhtml", "One"),
+        ("file-2.xhtml", "Two"),
+        ("file-0.xhtml", "Cover"),
+    ]
+    .map(|(href, label)| (href.to_owned(), label.to_owned()));
+    let epub = super::tests::nav_epub("cover-last", &bodies, &entries);
+    for (file, current) in [(0, Some(2)), (1, Some(0)), (2, Some(1))] {
+        let reader = Reader {
+            book: Some(Arc::new(
+                load_epub_chapter(epub.clone(), file, None).unwrap(),
+            )),
+            ..Reader::default()
+        };
+        assert_eq!(reader.current_contents_entry(), current, "file {file}");
+    }
+}
+
+#[test]
+fn epub_contents_tint_only_the_section_the_reader_is_in() {
+    ui::load_test_fonts();
+    let mut reader = two_wings_at(0, 12);
+    let entries: Vec<_> = (0..5)
+        .map(|index| bounds_of(&mut reader, Control::ContentsEntry(index)))
+        .collect();
+    let output = std::env::temp_dir().join(format!("simpl-wings-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("contents.png"));
+    let image = ::image::open(output.join("contents.png"))
+        .unwrap()
+        .to_rgba8();
+    let _ = std::fs::remove_dir_all(&output);
+    let fills: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            image
+                .get_pixel(entry.x as u32 + 2, entry.center_y() as u32)
+                .0
+        })
+        .collect();
+    let (paper, tint) = ([255, 255, 255, 255], [220, 234, 250, 255]);
+    assert_eq!(fills, [paper, paper, tint, paper, paper]);
+}
+
 #[test]
 fn selected_sort_and_shelf_chip_are_tinted_without_an_outline() {
     use reader_document::recent::DocumentKind;

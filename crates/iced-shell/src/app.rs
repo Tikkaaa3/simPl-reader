@@ -681,6 +681,15 @@ struct Anchor {
     fraction: f32,
 }
 
+/// Where a jump or a newly opened book was asked to arrive.
+#[derive(Clone, Copy, Debug)]
+struct Arrival {
+    anchor: Anchor,
+    /// The view's offset when it was last seen there. A resize or a
+    /// zoom can change how far the page scrolls without moving the view.
+    settled: Option<f32>,
+}
+
 #[derive(Clone, Debug)]
 struct ReturnLocation {
     chapter: Option<usize>,
@@ -991,6 +1000,10 @@ struct Reader {
     heights: virtual_reader::HeightIndex,
     measurements: virtual_reader::Measurements,
     pending_anchor: Option<Anchor>,
+    /// Where the reader last jumped to. Until the view moves, the contents
+    /// take it as the reader's place: a page may end before a heading low on
+    /// it reaches the top of the view.
+    arrival: Option<Arrival>,
     /// The generation of a page turned back to by the wheel, which shows its
     /// bottom once laid out. No content anchor can pin a bottom below the text.
     bottom_landing: Option<u64>,
@@ -1105,6 +1118,7 @@ impl Default for Reader {
             heights: virtual_reader::HeightIndex::new(Vec::new()),
             measurements: Default::default(),
             pending_anchor: None,
+            arrival: None,
             bottom_landing: None,
             overscroll: None,
             pagination: None,
@@ -1745,6 +1759,37 @@ impl Reader {
         }
     }
 
+    /// Lays the book out to show `anchor`, and remembers it as the arrival.
+    fn arrive_at(&mut self, anchor: Anchor) -> Task<Message> {
+        self.arrival = Some(Arrival {
+            anchor,
+            settled: None,
+        });
+        self.rebuild_geometry(anchor)
+    }
+
+    /// Drops the arrival once the view has settled anywhere else.
+    fn forget_arrival_once_moved(&mut self) {
+        let Some(arrival) = self.arrival else {
+            return;
+        };
+        if self.pending_anchor.is_some() || self.heights.is_empty() {
+            return;
+        }
+        let offset = self.offset;
+        let near = |other: f32| (offset - other).abs() <= 1.0;
+        self.arrival = if near(self.offset_for(arrival.anchor)) {
+            Some(Arrival {
+                settled: Some(offset),
+                ..arrival
+            })
+        } else if arrival.settled.is_some_and(near) {
+            Some(arrival)
+        } else {
+            None
+        };
+    }
+
     fn offset_for(&self, anchor: Anchor) -> f32 {
         if self.heights.is_empty() {
             return 0.0;
@@ -1849,6 +1894,7 @@ impl Reader {
         self.heights = virtual_reader::HeightIndex::new(Vec::new());
         self.measurements.lock().clear();
         self.pending_anchor = None;
+        self.arrival = None;
         self.offset = 0.0;
         self.generation = self.generation.wrapping_add(1);
         self.show_contents = false;
@@ -2618,7 +2664,7 @@ impl Reader {
             self.close_overlaid_contents();
             self.selection.clear();
             self.focused = None;
-            return self.rebuild_geometry(Anchor { row, fraction: 0.0 });
+            return self.arrive_at(Anchor { row, fraction: 0.0 });
         }
         let target = if let Some(chapter) = &book.epub {
             chapter
@@ -2657,7 +2703,7 @@ impl Reader {
         {
             self.focused = None;
             self.selection.clear();
-            return self.rebuild_geometry(Anchor {
+            return self.arrive_at(Anchor {
                 row: index,
                 fraction: 0.0,
             });
@@ -2697,7 +2743,7 @@ impl Reader {
             self.selection.clear();
             self.focused = None;
             self.error = None;
-            return self.rebuild_geometry(anchor);
+            return self.arrive_at(anchor);
         }
         let Some(chapter) = &book.epub else {
             return Task::none();
@@ -3324,6 +3370,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
+    reader.forget_arrival_once_moved();
     let task = Task::batch([task, reader.drain_inbox()]);
     let now = std::time::Instant::now();
     reader.sync_bar(now, input);
@@ -4129,7 +4176,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         reader.reset_find();
                         reader.adapted.clear();
                     }
-                    let task = reader.rebuild_geometry(anchor);
+                    let task = reader.arrive_at(anchor);
                     match end {
                         Some(landing) if reader.pagination.is_some() => {
                             reader.pagination_end = Some(landing);
@@ -7668,6 +7715,7 @@ mod tests {
             epub: None,
             pdf_source: None,
             contents: OnceLock::new(),
+            contents_rows: OnceLock::new(),
         })
     }
 

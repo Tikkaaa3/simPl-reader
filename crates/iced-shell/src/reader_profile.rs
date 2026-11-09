@@ -242,6 +242,12 @@ fn profile_reader_frames() {
         let (median, p95) = frame_times(setup(), step, cursor);
         println!("reader_frame_ms state={name} median={median:.2} p95={p95:.2}");
     }
+    let book = load_epub_chapter(long_epub(), OPEN, None).unwrap();
+    let started = Instant::now();
+    let rows = drawers::epub_rows(&book, book.epub.as_ref().unwrap());
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(rows.iter().flatten().count(), 450);
+    println!("reader_contents_rows_ms={elapsed:.3}");
 }
 
 fn frame_times(

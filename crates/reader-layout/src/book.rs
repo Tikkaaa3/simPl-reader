@@ -52,6 +52,9 @@ pub struct Book {
     pub epub: Option<EpubChapter>,
     pub pdf_source: Option<PdfBook>,
     pub contents: OnceLock<Vec<reader_document::epub::TocEntry>>,
+    /// For an EPUB file, the row in it each entry of the book's contents
+    /// points at, or `None`. Built by the reader the first time it needs it.
+    pub contents_rows: OnceLock<Vec<Option<usize>>>,
 }
 
 pub fn display_book(
@@ -103,6 +106,7 @@ pub fn display_book(
         epub,
         pdf_source: None,
         contents: OnceLock::new(),
+        contents_rows: OnceLock::new(),
     }
 }
 
@@ -225,6 +229,7 @@ pub fn pdf_book(
         restored,
         epub: None,
         contents: OnceLock::new(),
+        contents_rows: OnceLock::new(),
         pdf_source: Some(PdfBook {
             document,
             conversion,
