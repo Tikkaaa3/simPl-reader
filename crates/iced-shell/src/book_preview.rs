@@ -3710,3 +3710,17 @@ fn render_release_audit_shelves() {
         }
     }
 }
+
+#[test]
+fn aa_zoom_buttons_zoom_the_book() {
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    let mut ui = Harness::new();
+    let plus = bounds_of(&mut reader, Control::Zoom(reading_panel::Zoom::In)).center();
+    let messages = ui.click(&mut reader, plus);
+    assert!(
+        messages.iter().any(|m| matches!(m, Message::Zoom(_))),
+        "the press sends a zoom: {messages:?}"
+    );
+    assert_eq!((reader.zoom * 100.0).round(), 110.0);
+}
