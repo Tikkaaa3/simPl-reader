@@ -23,7 +23,8 @@ As of 2026-11-09:
 | #6 | UX-2 floating bar | Merged |
 | #11 | UX-3 page-turn strips | Merged |
 | #12 | This plan | Merged |
-| | UX-4 progress line and idle scrollbar | Next |
+| #14 | UX-4 progress line and idle scrollbar | Merged |
+| | UX-5 icon bar and **Aa** panel | Next |
 
 How the program actually runs, where it differs from the checklist below:
 
@@ -60,7 +61,7 @@ A milestone's boxes are ticked from its PR's Verification section. A box left op
   - [x] UX-1 after UX-0.
   - [x] UX-2 after UX-1.
   - [x] UX-3 after UX-2.
-  - [ ] UX-4 after UX-3.
+  - [x] UX-4 after UX-3.
   - [ ] UX-5 after UX-4.
   - [ ] UX-6 after UX-5.
   - [ ] UX-7 after UX-6.
@@ -379,22 +380,22 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Files.**
 
-- [ ] Create `crates/iced-shell/src/progress_line.rs`.
-- [ ] Edit `crates/iced-shell/src/document_scroll.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/reader_profile.rs`.
-- [ ] Edit `README.md`.
+- [x] Create `crates/iced-shell/src/progress_line.rs`.
+- [x] Edit `crates/iced-shell/src/document_scroll.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [x] Edit `crates/iced-shell/src/reader_profile.rs`.
+- [x] Edit `README.md`. *Also edited: `page_strips.rs`, `pdf_reader.rs`, `notes_ui.rs`, `shelf.rs`, `book_preview.rs`, and `Cargo.toml` for the test-only `zip` dependency.*
 
 **Build.**
 
-- [ ] Check the progress formula in `capture_progress` (app.rs:1986) first. An explorer suspects that EPUB progress mixes a per-chapter page number with a whole-book total. Write the failing test before any fix, and fix it only if the test fails.
-- [ ] Draw a 2px line along the bottom edge of the reading area as a `stack!` layer. Fill it with `accent` up to the progress fraction over a `border` track. It shows at all times in a book.
-  - [ ] The line runs only between the page-turn strips. It starts at the left strip's inner edge and ends at the right strip's inner edge (`page_strips::width`, and the right strip ends at the notes drawer). The strips keep the full height, and the line and its hover area never overlap them.
-  - [ ] It stops where the strips stop: above the PDF status row, and above the horizontal scrollbar while a page is zoomed wider than the window. Reuse `page_strips::bottom_inset`.
-- [ ] On hover over the bottom 24px between the strips, grow the line to 6px and show `Page 4 of 14 · 21%` in 11px muted text above it. The label also shows while the bar is shown.
-- [ ] Clicking the line jumps to the page at that fraction, through the same path as the page field.
-- [ ] Add the state `reading-progress-hover` to `profile_reader_frames`.
-- [ ] Hide the document scrollbar while you read. The operator asked for this at the UX-3 review: a scrollbar that shows all the time is noise, and the progress line now keeps your place. `document_scroll.rs` draws its own 14px rail and thumb (`draw`, about line 500), so the change stays in that widget.
+- [x] Check the progress formula in `capture_progress` (app.rs:1986) first. An explorer suspects that EPUB progress mixes a per-chapter page number with a whole-book total. Write the failing test before any fix, and fix it only if the test fails. *It passed before any change. Page numbers are already global, so the formula needed no fix.*
+- [x] Draw a 2px line along the bottom edge of the reading area as a `stack!` layer. Fill it with `accent` up to the progress fraction over a `border` track. It shows at all times in a book.
+  - [x] The line runs only between the page-turn strips. It starts at the left strip's inner edge and ends at the right strip's inner edge (`page_strips::width`, and the right strip ends at the notes drawer). The strips keep the full height, and the line and its hover area never overlap them.
+  - [x] It stops where the strips stop: above the PDF status row, and above the horizontal scrollbar while a page is zoomed wider than the window. Reuse `page_strips::bottom_inset`.
+- [x] On hover over the bottom 24px between the strips, grow the line to 6px and show `Page 4 of 14 · 21%` in 11px muted text above it. The label also shows while the bar is shown.
+- [x] Clicking the line jumps to the page at that fraction, through the same path as the page field. *The press resolves the global page number, never a publisher label, then takes the page field's path.*
+- [x] Add the state `reading-progress-hover` to `profile_reader_frames`.
+- [x] Hide the document scrollbar while you read. The operator asked for this at the UX-3 review: a scrollbar that shows all the time is noise, and the progress line now keeps your place. `document_scroll.rs` draws its own 14px rail and thumb (`draw`, about line 500), so the change stays in that widget.
   - The thumb, and the rail's background fill under it, fade out over 150ms one second after the last scroll. While hidden, nothing is drawn, so the desk runs to the window edge.
   - They fade back in on any scroll movement: wheel, touchpad, keyboard, a page turn, a find jump, a page-field jump and middle-button autoscroll. They also show while the pointer is over the 14px rail and for the whole of a thumb drag.
   - The rail stays a live hit target while hidden. A press on it grabs or pages exactly as today, and the hand-over to the right page-turn strip is unchanged.
@@ -402,54 +403,61 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
   - Leave the horizontal scrollbar as it is. It shows only while a page is zoomed wider than the window, and the strips already stop above it then.
   - Leave the library, Settings and panel scrollbars as they are. They are thin `ui::scrollbar` bars owned by iced.
 
+**As built.** The review changed these from the steps above.
+
+- The line is a third zone of the page-strip widget, not a second overlay, so presses, taps, the wheel, and right and middle buttons follow the strips' rules over it. It grows with no fade. Its label is centred on the line on an opaque backing.
+- One `Progress` value feeds the line and the Continue Reading card, and both round the percent through `shelf::percent`.
+- `document_scroll::wrap` takes a place key for the page on screen. A new place counts as scroll movement, because a turn from the top of one page to the top of a page of the same height changes neither the offset nor the height. The independent review found this case.
+- The scrollbar also shows for a second when a document opens or the window resizes, because the content height changes.
+
 **You see.**
 
-- [ ] With the bar hidden, a thin accent line at the bottom shows how far through the book you are.
-- [ ] Hovering the bottom edge shows the page and percent.
-- [ ] While you read, there is no scrollbar on the right. It appears as soon as you scroll or point at the right edge, and fades about a second after you stop.
+- [x] With the bar hidden, a thin accent line at the bottom shows how far through the book you are.
+- [x] Hovering the bottom edge shows the page and percent.
+- [x] While you read, there is no scrollbar on the right. It appears as soon as you scroll or point at the right edge, and fades about a second after you stop.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `app.rs` gains `epub_progress_grows_across_chapters`. It builds a three-chapter book in the test, because the demo books have one chapter each. It records progress at the last page of chapter 1 and the first page of chapter 2, and asserts the second is larger. Run `cargo test -p iced-shell --locked epub_progress`.
-- [ ] `progress_line.rs` gains `progress_line_runs_between_the_strips`. It asserts that the line's ends meet the strips' inner edges at 860 and 1400 window widths, with and without the notes drawer, and above the PDF status row. Run `cargo test -p iced-shell --locked progress_line_runs`.
-- [ ] `progress_line.rs` gains `click_fraction_maps_to_page`. It asserts that fraction 0.5 of 14 pages maps to page 7 and that fraction 1.0 maps to page 14. Run `cargo test -p iced-shell --locked click_fraction`.
-- [ ] `document_scroll.rs` gains `idle_scrollbar_hides_and_returns`. It asserts that the thumb shows after a scroll, is hidden one second plus the fade later with no redraw requested, shows again while the pointer is over the rail, and that a press on the hidden rail still starts a thumb drag. Run `cargo test -p iced-shell --locked idle_scrollbar`.
+- [x] `app.rs` gains `epub_progress_grows_across_chapters`. It builds a three-chapter book in the test, because the demo books have one chapter each. It records progress at the last page of chapter 1 and the first page of chapter 2, and asserts the second is larger. Run `cargo test -p iced-shell --locked epub_progress`.
+- [x] `progress_line.rs` gains `progress_line_runs_between_the_strips`. It asserts that the line's ends meet the strips' inner edges at 860 and 1400 window widths, with and without the notes drawer, and above the PDF status row. Run `cargo test -p iced-shell --locked progress_line_runs`.
+- [x] `progress_line.rs` gains `click_fraction_maps_to_page`. It asserts that fraction 0.5 of 14 pages maps to page 7 and that fraction 1.0 maps to page 14. Run `cargo test -p iced-shell --locked click_fraction`.
+- [x] `document_scroll.rs` gains `idle_scrollbar_hides_and_returns`. It asserts that the thumb shows after a scroll, is hidden one second plus the fade later with no redraw requested, shows again while the pointer is over the rail, and that a press on the hidden rail still starts a thumb drag. Run `cargo test -p iced-shell --locked idle_scrollbar`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Twelve lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Open page 4 at trunk and at head, and let the bar hide on both. F8 pins the bar since UX-2, so do not press it. Save `ux4-regression.png`. Pass when trunk shows no position and head shows a line filled to between 21 and 29 percent of its width.
-- [ ] Lane 2. Hover the bottom 24px at the page centre. Save `ux4-hover.png`. Pass when the line grows, the label reads `Page 4 of 14` with a percent, and the line's ends stop at the strips' inner edges.
-- [ ] Lane 3. Click the line at 50 percent of its width. Save `ux4-jump.png`. Pass when the page field reads 7 or 8.
-- [ ] Lane 4. Open `Three Rooms.epub`, built by `python -I fixtures/chapters/build_epub.py`. Read the percent on the last page of chapter 1 and the first page of chapter 2. Save `ux4-chapters.png`. Pass when the second percent is larger.
-- [ ] Lane 5. Note the percent, press Ctrl+W, and read the Continue Reading card. Save `ux4-library.png`. Pass when the card percent equals the line percent.
-- [ ] Lane 6. Switch to dark appearance. Save `ux4-dark.png`. Pass when the filled part and the track are both visible.
-- [ ] Lane 7. Press F11. Save `ux4-fullscreen.png`. Pass when the line shows in fullscreen.
-- [ ] Lane 8. Open the PDF in Document view. Save `ux4-pdf.png`. Pass when the line shows the page fraction.
-- [ ] Lane 9. Hover the bottom edge, then move away for 2 seconds. Save `ux4-no-jump.png`. Pass when the label is gone and the page text has the same y position as before the hover.
-- [ ] Lane 10. Resize to 540x360 and hover the bottom edge. Save `ux4-narrow.png`. Pass when the label fits on one line inside the window.
-- [ ] Lane 11. Read for 3 seconds without moving the pointer. Save `ux4-scrollbar-idle.png`. Wheel down once and save `ux4-scrollbar-scroll.png` within 300ms. Pass when the first shows no scrollbar on the right and the second shows the thumb, in both light and dark appearance.
-- [ ] Lane 12. With the scrollbar hidden, press on the rail where the thumb sits and drag down 200px. Save `ux4-scrollbar-drag.png` mid-drag. Pass when the page scrolled, the thumb showed for the whole drag, and it hid again about a second after the release.
+- [x] Lane 1. Regression lane against trunk. Open page 4 at trunk and at head, and let the bar hide on both. F8 pins the bar since UX-2, so do not press it. Save `ux4-regression.png`. Pass when trunk shows no position and head shows a line filled to between 21 and 29 percent of its width.
+- [x] Lane 2. Hover the bottom 24px at the page centre. Save `ux4-hover.png`. Pass when the line grows, the label reads `Page 4 of 14` with a percent, and the line's ends stop at the strips' inner edges.
+- [x] Lane 3. Click the line at 50 percent of its width. Save `ux4-jump.png`. Pass when the page field reads 7 or 8.
+- [x] Lane 4. Open `Three Rooms.epub`, built by `python -I fixtures/chapters/build_epub.py`. Read the percent on the last page of chapter 1 and the first page of chapter 2. Save `ux4-chapters.png`. Pass when the second percent is larger.
+- [x] Lane 5. Note the percent, press Ctrl+W, and read the Continue Reading card. Save `ux4-library.png`. Pass when the card percent equals the line percent. *Continue Reading needs a library entry, and a document opened from the command line gets none. The book was added with **Add document**, moved to page 9, and both read 58%.*
+- [x] Lane 6. Switch to dark appearance. Save `ux4-dark.png`. Pass when the filled part and the track are both visible.
+- [x] Lane 7. Press F11. Save `ux4-fullscreen.png`. Pass when the line shows in fullscreen.
+- [x] Lane 8. Open the PDF in Document view. Save `ux4-pdf.png`. Pass when the line shows the page fraction.
+- [x] Lane 9. Hover the bottom edge, then move away for 2 seconds. Save `ux4-no-jump.png`. Pass when the label is gone and the page text has the same y position as before the hover.
+- [x] Lane 10. Resize to 540x360 and hover the bottom edge. Save `ux4-narrow.png`. Pass when the label fits on one line inside the window. *At 540x360 the page scrolls sideways, so the band sits above the horizontal scrollbar.*
+- [x] Lane 11. Read for 3 seconds without moving the pointer. Save `ux4-scrollbar-idle.png`. Wheel down once and save `ux4-scrollbar-scroll.png` within 300ms. Pass when the first shows no scrollbar on the right and the second shows the thumb, in both light and dark appearance.
+- [x] Lane 12. With the scrollbar hidden, press on the rail where the thumb sits and drag down 200px. Save `ux4-scrollbar-drag.png` mid-drag. Pass when the page scrolled, the thumb showed for the whole drag, and it hid again about a second after the release. *It hid about 1.5 seconds after the pointer left the rail. While the pointer rests on the rail, the scrollbar stays shown.*
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `reading-idle`. Trunk has no line, so `reading-progress-hover` gets an absolute budget.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk `reading-idle` p95 first.
-- [ ] Rule. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when `reading-progress-hover` p95 exceeds 33ms.
-- [ ] Rule. Fail when `idle_cpu_ms_per_10s` after the scrollbar has faded out is above trunk's.
+- [x] Metric. `reader_frame_ms` p95 for `reading-idle`. Trunk has no line, so `reading-progress-hover` gets an absolute budget.
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
+- [x] Baseline. Record the trunk `reading-idle` p95 first.
+- [x] Rule. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when `reading-progress-hover` p95 exceeds 33ms.
+- [x] Rule. Fail when `idle_cpu_ms_per_10s` after the scrollbar has faded out is above trunk's. *Trunk 0 and head 0 in three alternating rounds. A first probe ran the wheel after the hold, because `ui-drive.ps1` orders Hold before Wheel, and so measured the fade itself.*
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, 6, and 11 screenshots into `target\ui-ux-review\UX-4-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of reading with the line, hovering it, jumping by click, and the scrollbar fading out and back in on scroll and on a rail hover. Save it as `target\ui-ux-review\UX-4-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 1, 2, 6, and 11 screenshots into `target\ui-ux-review\UX-4-review-<slug>.png`.
+- [x] Record a 30 to 60 second video of reading with the line, hovering it, jumping by click, and the scrollbar fading out and back in on scroll and on a rail hover. Save it as `target\ui-ux-review\UX-4-review.mp4`.
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-4 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-4 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #14.*
 
 ## Replace text pills with icons and an Aa panel (UX-5)
 
