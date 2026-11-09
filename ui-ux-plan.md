@@ -27,7 +27,8 @@ As of 2026-11-09:
 | #17 | UX-5 icon bar and **Aa** panel | Merged |
 | #18 | A theme for each book, with a default theme in Settings, added after UX-5 | Merged |
 | #20 | UX-6 floating panels and contents drawer | Merged |
-| #21 | UX-6 follow-up: drawers dock only when the page fits, and the player hides with the bar | Waiting for the operator's review |
+| #21 | UX-6 follow-up: drawers dock only when the page fits, and the player hides with the bar | Merged |
+| #22 | The UX-6 record in this plan | Merged |
 | | UX-7 wheel to next page | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
@@ -587,7 +588,7 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 - At 900px, two drawers beside the page left it 252px wide, with no room for the find box or the pill. PR #20 therefore kept both drawers open together only from 1256px. Narrower, opening one closed the other.
 - Two independent reviews each found one bug, and each is fixed with a test. Floating controls had no room with both drawers open. A resize that kept both drawers still cleared focus in Contents.
 
-**Follow-up after the review.** The operator asked for two more changes at the UX-6 review. PR #21 builds them, and waits for the operator's review.
+**Follow-up after the review.** The operator asked for two more changes at the UX-6 review. PR #21 built them, and it is merged.
 
 - A drawer sits beside the page only when the whole page still fits. Otherwise it covers the page. In PR #20, a drawer beside the page could leave it narrower than its paper, and the page then scrolled sideways. That happened between 900 and 1106px with one drawer, and between 1256 and 1446px with two.
   - At zoom 1 with the default margins, one drawer sits beside the page from 1106px, and two drawers stay open together from 1446px. Narrower, opening one drawer closes the other. Zooming in or narrowing the window closes contents and keeps notes.
@@ -653,9 +654,10 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Build.**
 
-- [ ] Today `Message::Scroll` (app.rs:4398) clamps the offset inside the page, so the wheel never turns it. Add an overscroll counter to the reader. When the page is at its bottom and wheel-down input adds up to 240px within 700ms, turn to the next page and land at its top. Wheel-up input at the top turns to the previous page and lands at its bottom. Any reverse input resets the counter.
+- [ ] Today `Message::Scroll` (app.rs:4318) clamps the offset inside the page, so the wheel never turns it. Add an overscroll counter to the reader. When the page is at its bottom and wheel-down input adds up to 240px within 700ms, turn to the next page and land at its top. Wheel-up input at the top turns to the previous page and lands at its bottom. Any reverse input resets the counter.
 - [ ] Count line deltas as 60px per line and pixel deltas as given, so a mouse and a touchpad behave alike.
-- [ ] Never turn on Ctrl+wheel, which zooms (document_scroll.rs:272), or during middle-button auto-scroll.
+- [ ] Never turn on Ctrl+wheel, which zooms (document_scroll.rs:555), or during middle-button auto-scroll.
+- [ ] Count the wheel wherever it reaches the page. Since UX-6, a wheel over the bar (reading_chrome.rs:874), a page strip (page_strips.rs:485), the find box, or the read-aloud pill (app.rs:6023) arrives as `Message::ChromeWheel` (app.rs:3785) and is passed on to the page. At the page's end the passed-on wheel moves nothing, so the counter must add the raw delta from these messages too. Otherwise a wheel over the pill at the bottom of a page never turns it.
 - [ ] Apply the same rule in PDF Document view.
 
 **You see.**
@@ -665,6 +667,7 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] `app.rs` gains `overscroll_turns_after_240px`, `one_notch_does_not_turn`, `reverse_input_resets_overscroll`, and `ctrl_wheel_never_turns`. They drive `Message::Scroll` with literal deltas and assert the page number and offset. Run `cargo test -p iced-shell --locked overscroll`.
+- [ ] `book_preview.rs` gains `overscroll_over_the_pill_turns_the_page`. With Listen on and the bar shown, it wheels over the pill at the bottom of a page and asserts the next page opens. Run `cargo test -p iced-shell --locked overscroll_over`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
