@@ -50,11 +50,12 @@ fn scroll_to(x: f32, y: f32) -> Task<Message> {
     ))
 }
 
+/// The status line under the pages, which the page strips stop above.
+pub(crate) const STATUS_HEIGHT: f32 = 26.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusControl {
-    Previous,
     Page,
-    Next,
     ZoomOut,
     ZoomIn,
     ActualSize,
@@ -333,6 +334,12 @@ impl Reader {
         let page = &self.document.pages[index];
         let scale = self.scale_for(page.width);
         Size::new(page.width * scale, page.height * scale)
+    }
+
+    /// Whether a page is wider than the viewport, so a horizontal scrollbar
+    /// shows along its bottom.
+    pub(crate) fn scrolls_sideways(&self) -> bool {
+        self.content_width > self.viewport.width + 0.5
     }
 
     fn rebuild(&mut self) {
@@ -1269,18 +1276,19 @@ impl Reader {
         Task::batch([scroll_to(self.offset.x, self.offset.y), self.request_next()])
     }
 
-    /// Previous / page number / next, sized for the centre of the reading bar.
-    /// `compact` uses arrows and tighter buttons for narrow windows.
-    pub fn navigation(&self, focused: Option<FocusControl>, compact: bool) -> Element<'_, Message> {
+    /// Whether there is a page before (`next` false) or after the current one.
+    pub(crate) fn can_turn(&self, next: bool) -> bool {
         let page = self.anchor().page as usize;
+        if next {
+            page + 1 < self.document.pages.len()
+        } else {
+            page > 0
+        }
+    }
+
+    /// The page field and the page count, for the centre of the reading bar.
+    pub fn navigation(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
         row![
-            focus_button(
-                if compact { "←" } else { "Prev" },
-                (page > 0).then_some(Message::Previous),
-                focused == Some(FocusControl::Previous),
-                false,
-                compact,
-            ),
             ui::watch_focus(
                 text_input("Page", &self.page_input)
                     .id(page_input_id())
@@ -1302,15 +1310,8 @@ impl Reader {
             text(format!("of {}", self.document.pages.len()))
                 .size(13)
                 .style(ui::muted_text),
-            focus_button(
-                if compact { "→" } else { "Next" },
-                (page + 1 < self.document.pages.len()).then_some(Message::Next),
-                focused == Some(FocusControl::Next),
-                false,
-                compact,
-            ),
         ]
-        .spacing(if compact { 4 } else { 7 })
+        .spacing(7)
         .align_y(iced::Alignment::Center)
         .into()
     }
@@ -1473,7 +1474,9 @@ impl Reader {
         content = content.push(
             container(text(status).size(12).style(status_style))
                 .width(Length::Fill)
-                .padding([5, 14])
+                .height(STATUS_HEIGHT)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding([0, 14])
                 .style(ui::header),
         );
         container(content)
@@ -1527,6 +1530,51 @@ pub(crate) mod tests {
     }
 
     /// One tall page with a line of text near its bottom.
+    /// `count` tall pages, each with a line of text at its top.
+    pub(crate) fn pages_pdf(count: usize) -> Vec<u8> {
+        let kids: Vec<String> = (0..count)
+            .map(|page| format!("{} 0 R", 4 + page * 2))
+            .collect();
+        let mut objects = vec![
+            "<</Type/Catalog/Pages 2 0 R>>".to_owned(),
+            format!("<</Type/Pages/Kids[{}]/Count {count}>>", kids.join(" ")),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_owned(),
+        ];
+        for page in 0..count {
+            let content = format!(
+                "BT /F1 18 Tf 20 2950 Td (Page {} begins here.) Tj ET",
+                page + 1
+            );
+            objects.push(format!(
+                "<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 3000]/Contents {} 0 R/Resources<</Font<</F1 3 0 R>>>>>>",
+                5 + page * 2
+            ));
+            objects.push(format!(
+                "<</Length {}>>\nstream\n{content}\nendstream",
+                content.len()
+            ));
+        }
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{body}\nendobj\n", index + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(
+            format!(
+                "trailer\n<</Root 1 0 R/Size {}>>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        pdf
+    }
+
     pub(crate) fn tall_pdf() -> Vec<u8> {
         let content = "BT /F1 18 Tf 20 300 Td (The old Lighthouse keeper) Tj ET";
         let objects = [

@@ -15,6 +15,7 @@ The active UI is Iced 0.14 with tiny-skia and softbuffer. WGPU is disabled.
 | `book_pages`, `book_map` | Single-page boundaries and persistent global page maps |
 | `virtual_reader`, `selection` | Visible content, height indexes and source-aware selection |
 | `pdf_reader`, `pdf_page`, `document_scroll` | Original PDF rendering and navigation |
+| `reading_chrome`, `page_strips` | The floating reading bar and the page-turn edge strips |
 | `speech`, `read_aloud` | Offline Windows SAPI voices, playback and page/chapter following |
 | `book_preview` | Opt-in production-widget rendering to PNG for visual QA |
 
@@ -26,7 +27,7 @@ against the active document/generation so stale work cannot replace a newer view
 ## Pagination and persistence
 
 - Book view mounts one physical page at a time. Vertical scrolling stays in that
-  page; previous/next and the global page field change the page.
+  page; the edge strips, the arrow keys and the global page field change the page.
 - PDF Book preserves source page counts and boundaries. Explicit view switches
   use the current page; reopening restores the saved Book position.
 - Its page atlas starts from inexpensive height estimates and corrects the
@@ -41,7 +42,15 @@ against the active document/generation so stale work cannot replace a newer view
   opening, while the pointer is in the top 48 px, while one of its controls has
   focus or a panel is open, and hides 1.5 s after that. F8 pins it. The wheel
   over the bar scrolls the page. Its controls stay in the keyboard focus order
-  while hidden; focusing one reveals the bar.
+  while hidden; focusing one reveals the bar. Its width thresholds are measured
+  by the ignored test `measure_reading_bar_thresholds`.
+- Full-height strips along the left and right edges of the reading area
+  (`page_strips.rs`) turn the page on press, never on release. Each is 7% of the
+  window wide (48 to 128 px); the right one stops at the notes drawer and inside
+  the scrollbar rail. They draw nothing until hovered, show nothing on a page
+  that cannot turn, and forward the wheel through the bar's wheel path. The
+  ignored test `render_strip_look` renders a hovered strip in both themes to
+  `target/ui-ux-review`.
 - Managed imports live below `%LOCALAPPDATA%\simPl\documents`. HTML book folders
   use an internal EPUB container, with source-format metadata so the shelf still
   identifies them as HTML. Removal is restricted to owned copies.

@@ -30,6 +30,8 @@ mod book_zoom;
 mod library_ui;
 #[path = "notes_ui.rs"]
 mod notes_ui;
+#[path = "page_strips.rs"]
+mod page_strips;
 #[path = "profile_ui.rs"]
 mod profile_ui;
 #[path = "read_aloud.rs"]
@@ -885,6 +887,7 @@ struct Reader {
     pending_open: Option<OpenAs>,
     show_recent: bool,
     bar: reading_chrome::Bar,
+    strips: page_strips::Hover,
     show_help: bool,
     focused: Option<Control>,
     focus_generation: u64,
@@ -992,6 +995,7 @@ impl Default for Reader {
             show_recent: false,
             show_help: false,
             bar: Default::default(),
+            strips: Default::default(),
             focused: None,
             focus_generation: 0,
             focus_pending: false,
@@ -1070,8 +1074,6 @@ enum Control {
     BookLink(usize, usize),
     Pdf(pdf_reader::FocusControl),
     BookPageInput,
-    PreviousBookPage,
-    NextBookPage,
     Contents,
     ContentsEntry(usize),
     Find,
@@ -1142,9 +1144,13 @@ enum Message {
     TogglePinnedBar,
     /// The pointer entered the band that reveals the hidden reading bar.
     RevealBar,
-    BarFrame(std::time::Instant),
-    /// The wheel turned over the reading bar; it acts on the document under it.
-    BarWheel(mouse::ScrollDelta),
+    /// A frame while the reading bar or a page strip has a deadline or a fade.
+    ReadingFrame(std::time::Instant),
+    /// The wheel turned over the reading bar or a page strip; it acts on the
+    /// document under it.
+    ChromeWheel(mouse::ScrollDelta),
+    /// The pointer moved onto a page strip that can turn the page, or off both.
+    StripHover(Option<page_strips::Side>),
     /// The book page field gained or lost keyboard focus.
     BookPageFocus(bool),
     ToggleHelp,
@@ -2094,7 +2100,6 @@ impl Reader {
         let overlay = self.show_search || self.show_settings || self.confirm_remove.is_some();
         let has_document = book.is_some() || self.pdf.is_some();
         let history = self.show_recent && !overlay;
-        let pdf_page = self.pdf.as_ref().map(pdf_reader::Reader::page_index);
         let reading = has_document && !overlay;
         let pdf = self.pdf.as_ref();
         let finding = self.find.is_some() && has_document && !overlay;
@@ -2132,23 +2137,16 @@ impl Reader {
                 .then_some(Control::BookMode),
             book.is_some_and(|b| b.pdf_source.is_some())
                 .then_some(Control::DocumentMode),
-            (book.is_some() && self.can_turn(false)).then_some(Control::PreviousBookPage),
             book.is_some().then_some(Control::BookPageInput),
-            (book.is_some() && self.can_turn(true)).then_some(Control::NextBookPage),
             (has_document && !self.contents().is_empty()).then_some(Control::Contents),
-            pdf_page
-                .filter(|page| *page > 0)
-                .map(|_| Control::Pdf(pdf_reader::FocusControl::Previous)),
             pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::Page)),
-            pdf_page
-                .filter(|page| pdf.is_some_and(|pdf| *page + 1 < pdf.document().pages.len()))
-                .map(|_| Control::Pdf(pdf_reader::FocusControl::Next)),
             pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomOut)),
             pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ZoomIn)),
             pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::ActualSize)),
             pdf.map(|_| Control::Pdf(pdf_reader::FocusControl::FitWidth)),
             has_document.then_some(Control::Find),
             has_document.then_some(Control::ReadAloud),
+            has_document.then_some(Control::Notes(notes::Focus::ToggleList)),
             (book.is_some() && self.zoom > 0.25).then_some(Control::FontDown),
             book.is_some().then_some(Control::FitBookWidth),
             (book.is_some() && self.zoom < 3.0).then_some(Control::FontUp),
@@ -2315,8 +2313,6 @@ impl Reader {
                 };
                 let document = pdf.document().id;
                 let message = match action {
-                    pdf_reader::FocusControl::Previous => pdf_reader::Message::Previous,
-                    pdf_reader::FocusControl::Next => pdf_reader::Message::Next,
                     pdf_reader::FocusControl::ZoomOut => pdf_reader::Message::ZoomOut,
                     pdf_reader::FocusControl::ZoomIn => pdf_reader::Message::ZoomIn,
                     pdf_reader::FocusControl::ActualSize => pdf_reader::Message::ActualSize,
@@ -2350,8 +2346,6 @@ impl Reader {
             Control::FindPrevious => Message::FindStep(false),
             Control::FindNext => Message::FindStep(true),
             Control::FindClose => Message::FindClose,
-            Control::PreviousBookPage => return self.adjacent_book_page(false),
-            Control::NextBookPage => return self.adjacent_book_page(true),
             Control::Contents => Message::ToggleContents,
             Control::ContentsEntry(index) => {
                 let contents = self.contents();
@@ -3234,7 +3228,9 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     );
     let task = update_inner(reader, message);
     let task = Task::batch([task, reader.drain_inbox()]);
-    reader.sync_bar(std::time::Instant::now(), input);
+    let now = std::time::Instant::now();
+    reader.sync_bar(now, input);
+    reader.sync_strips(now);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
             || previous_pdf_page
@@ -3789,11 +3785,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.bar.hover(std::time::Instant::now(), true);
             Task::none()
         }
-        Message::BarFrame(at) => {
+        Message::ReadingFrame(at) => {
             reader.bar.tick(at);
+            reader.strips.tick(at);
             Task::none()
         }
-        Message::BarWheel(delta) => reading_chrome::wheel(reader, delta),
+        Message::ChromeWheel(delta) => reading_chrome::wheel(reader, delta),
+        Message::StripHover(side) => {
+            reader.strips.hover(side, std::time::Instant::now());
+            Task::none()
+        }
         Message::BookPageFocus(focused) => {
             reader.book_page_focus(focused);
             Task::none()
@@ -6069,6 +6070,54 @@ fn listen_button(reader: &Reader, active: bool) -> Element<'static, Message> {
     .into()
 }
 
+fn notes_button(reader: &Reader, active: bool) -> Element<'static, Message> {
+    let open = reader.notes.list.is_some();
+    iced::widget::tooltip(
+        toned_button(
+            reader,
+            Control::Notes(notes::Focus::ToggleList),
+            text("Notes").font(ui::MEDIUM).size(13),
+            active.then_some(Message::Notes(notes::Action::ToggleList)),
+            ui::ButtonTone::Surface,
+            open,
+        ),
+        text(if open {
+            "Hide bookmarks and notes (Ctrl+B)"
+        } else {
+            "Show bookmarks and notes (Ctrl+B)"
+        })
+        .size(12),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .padding(6)
+    .style(ui::panel)
+    .into()
+}
+
+/// The book's reading area width, and the width its zoomed paper needs with
+/// the desk around it. The page scrolls sideways when the second is wider.
+fn book_desk_widths(reader: &Reader) -> (f32, f32) {
+    let margin = reader.reading_options().margin as f32;
+    let paper_width = reader.width + margin * 2.0;
+    let available = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
+    let side_padding = MINIMAL.side_padding(available);
+    (
+        available,
+        paper_width * reader.zoom + 14.0 + side_padding * 2.0,
+    )
+}
+
+/// Whether the open book or PDF is zoomed wider than the reading area, so a
+/// horizontal scrollbar shows along its bottom.
+fn scrolls_sideways(reader: &Reader) -> bool {
+    if let Some(pdf) = &reader.pdf {
+        return pdf.scrolls_sideways();
+    }
+    let (available, desk) = book_desk_widths(reader);
+    desk > available
+}
+
 fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Message> {
     if reader.pagination.is_some() {
         return container(text("Preparing pages…").size(14).style(ui::muted_text))
@@ -6140,10 +6189,9 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
             notes_ui::ribbon(reader, paper_width)
         ]);
     }
-    let available_width = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
-    let side_padding = MINIMAL.side_padding(available_width);
+    let (available_width, desk_width) = book_desk_widths(reader);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
-        .center_x(available_width.max(paper_width * reader.zoom + 14.0 + side_padding * 2.0))
+        .center_x(available_width.max(desk_width))
         .padding(iced::Padding {
             right: 14.0,
             ..Default::default()
@@ -6449,7 +6497,12 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         // panels it holds open float above it, so the page never moves when
         // they show or hide.
         let reading = row![
-            container(content).width(Length::Fill).height(Length::Fill),
+            container(iced::widget::stack![
+                content,
+                page_strips::layer(reader, active)
+            ])
+            .width(Length::Fill)
+            .height(Length::Fill),
             // The sidebar starts below the bar's height whether or not the bar
             // shows, so the bar never covers its tabs and it never moves.
             container(notes_ui::sidebar(reader, active)).padding(iced::Padding {
@@ -6586,8 +6639,8 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
         subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
     }
     subscriptions.push(Subscription::run(instance::forwarded).map(Message::Forwarded));
-    if reader.bar.needs_frames() {
-        subscriptions.push(window::frames().map(Message::BarFrame));
+    if reader.bar.needs_frames() || reader.strips.needs_frames() {
+        subscriptions.push(window::frames().map(Message::ReadingFrame));
     }
     Subscription::batch(subscriptions)
 }
@@ -7383,37 +7436,41 @@ mod tests {
         assert_eq!(reader.find.as_ref().unwrap().count(), 0);
     }
 
-    #[test]
-    fn reading_bar_controls_fit_without_overlapping() {
+    /// The three bars whose fit the width thresholds are measured from: a book
+    /// with Back and Contents, a PDF, and a PDF read in Book mode, each with
+    /// a four-digit page count. `None` for the PDFs when PDFium is missing.
+    fn bar_fit_readers() -> (Reader, Option<(Reader, Reader)>) {
         ui::load_test_fonts();
-        let mut source = Arc::try_unwrap(book("bar-layout")).unwrap();
-        source.items[0] = Item::Heading {
-            id: "paragraph-0".into(),
-            text: "Chapter One".into(),
-            level: 1,
+        let headed = |name| {
+            let mut source = Arc::try_unwrap(book(name)).unwrap();
+            source.items[0] = Item::Heading {
+                id: "paragraph-0".into(),
+                text: "Chapter One".into(),
+                level: 1,
+            };
+            source
         };
-        let mut reader = Reader {
-            book: Some(Arc::new(source)),
-            ..Reader::default()
+        let open = |source: Book| {
+            let mut reader = Reader {
+                book: Some(Arc::new(source)),
+                ..Reader::default()
+            };
+            let _ = reader.rebuild_geometry(Anchor {
+                row: 0,
+                fraction: 0.0,
+            });
+            settle_pagination(&mut reader);
+            assert!(!reader.contents().is_empty());
+            Arc::make_mut(reader.atlas.as_mut().unwrap()).total = 9999;
+            reader.returns.push(ReturnLocation {
+                chapter: None,
+                item_id: "paragraph-2".into(),
+                within: 0.0,
+            });
+            reader
         };
-        let _ = reader.rebuild_geometry(Anchor {
-            row: 0,
-            fraction: 0.0,
-        });
-        settle_pagination(&mut reader);
-        assert!(!reader.contents().is_empty());
-        reader.returns.push(ReturnLocation {
-            chapter: None,
-            item_id: "paragraph-2".into(),
-            within: 0.0,
-        });
-        assert_bar_fits(
-            &mut reader,
-            &[540.0, 671.0, 672.0, 688.0, 779.0, 780.0, 860.0, 1280.0],
-        );
-        // An 860px client at 125% scale.
-        reader.window_size.width = 688.0;
-        assert_eq!(reading_chrome::height(&reader), 44.0, "one row at 688");
+        let book_reader = open(headed("bar-layout"));
+
         use crate::pdf_reader::tests::{complete, tall_pdf};
         let dll = std::env::current_exe()
             .unwrap()
@@ -7425,30 +7482,28 @@ mod tests {
                 std::env::var_os("SIMPL_REQUIRE_PDFIUM").is_none(),
                 "SIMPL_REQUIRE_PDFIUM is set but pdfium.dll is not beside the test executable"
             );
-            println!("SKIPPED the PDF bar: pdfium.dll is not beside the test executable");
-            return;
+            println!("SKIPPED the PDF bars: pdfium.dll is not beside the test executable");
+            return (book_reader, None);
         }
         let path =
             std::env::temp_dir().join(format!("simpl-bar-layout-{}.pdf", std::process::id()));
         std::fs::write(&path, tall_pdf()).unwrap();
-        let document = complete(reader_pdf::open(path.clone())).unwrap();
+        let mut document = Arc::try_unwrap(complete(reader_pdf::open(path.clone())).unwrap())
+            .expect("a just-opened PDF has one owner");
         let _ = std::fs::remove_file(path);
+        document.pages = document.pages.iter().cycle().take(1000).cloned().collect();
+        let document = Arc::new(document);
         let (pdf, _) =
             pdf_reader::Reader::new(document.clone(), None, Size::new(1280.0, 800.0), 1.0);
         let original_position = pdf.position();
-        let mut reader = Reader {
+        let pdf_reader = Reader {
             pdf: Some(pdf),
             ..Reader::default()
         };
-        assert_bar_fits(
-            &mut reader,
-            &[540.0, 679.0, 680.0, 688.0, 860.0, 899.0, 900.0, 1280.0],
-        );
-        reader.window_size.width = 688.0;
-        assert_eq!(reading_chrome::height(&reader), 44.0, "one row at 688");
-
-        // A PDF read in Book mode adds the Document button.
-        let mut source = Arc::try_unwrap(book("bar-layout-pdf-book")).unwrap();
+        // Paginated as a plain book: an empty conversion has no pages to lay out.
+        let mut pdf_book = open(headed("bar-layout-pdf-book"));
+        let mut source =
+            Arc::try_unwrap(pdf_book.book.take().unwrap()).expect("a settled book has one owner");
         source.pdf_source = Some(reader_layout::book::PdfBook {
             document,
             conversion: reader_pdf::book::Conversion {
@@ -7462,30 +7517,173 @@ mod tests {
             original_position,
             illustration_pages: std::collections::HashSet::new(),
         });
-        let mut reader = Reader {
-            book: Some(Arc::new(source)),
-            ..Reader::default()
-        };
-        reader.returns.push(ReturnLocation {
-            chapter: None,
-            item_id: "paragraph-2".into(),
-            within: 0.0,
-        });
+        pdf_book.book = Some(Arc::new(source));
         assert!(
-            reader
+            pdf_book
                 .controls()
                 .any(|control| control == Control::DocumentMode)
         );
-        assert_bar_fits(&mut reader, &[540.0, 771.0, 772.0, 860.0, 1280.0]);
-        reader.window_size.width = 772.0;
-        assert_eq!(
-            reading_chrome::height(&reader),
-            44.0,
-            "one row at the narrowest Book-mode width"
+        (book_reader, Some((pdf_reader, pdf_book)))
+    }
+
+    /// Asserts that `reader`'s bar fits on either side of its thresholds in
+    /// the presentation each width picks, and that the thresholds are tight:
+    /// one pixel less does not fit that presentation on one row.
+    fn assert_thresholds(reader: &mut Reader) {
+        let reading_chrome::Thresholds { one_row, roomy } =
+            reading_chrome::thresholds(reader).unwrap();
+        assert_bar_fits(
+            reader,
+            &[
+                540.0,
+                one_row - 1.0,
+                one_row,
+                one_row + 1.0,
+                roomy - 1.0,
+                roomy,
+                roomy + 1.0,
+                1280.0,
+            ],
         );
+        reader.window_size.width = one_row - 1.0;
+        assert_eq!(
+            reading_chrome::height(reader),
+            87.0,
+            "two rows below {one_row}"
+        );
+        reader.window_size.width = one_row;
+        assert_eq!(reading_chrome::height(reader), 44.0, "one row at {one_row}");
+        for (presentation, width) in [(true, one_row - 1.0), (false, roomy - 1.0)] {
+            reading_chrome::FORCED.set(Some(reading_chrome::Presentation {
+                compact: presentation,
+                one_row: true,
+            }));
+            let fits = bar_fits(reader, width);
+            reading_chrome::FORCED.set(None);
+            assert!(
+                fits.is_err(),
+                "compact={presentation} still fits one row at {width}, so its threshold is loose"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_bar_controls_fit_without_overlapping() {
+        let (mut book, pdfs) = bar_fit_readers();
+        assert_thresholds(&mut book);
+        // An 860px client at 125% scale.
+        assert_bar_fits(&mut book, &[688.0]);
+        assert_eq!(reading_chrome::height(&book), 87.0, "two rows at 688");
+        let Some((mut pdf, mut pdf_book)) = pdfs else {
+            return;
+        };
+        assert_thresholds(&mut pdf);
+        assert_thresholds(&mut pdf_book);
+    }
+
+    /// Measures the narrowest width from which a presentation fits at every
+    /// larger width up to 1280.
+    fn narrowest_fit(reader: &mut Reader, compact: bool) -> f32 {
+        reading_chrome::FORCED.set(Some(reading_chrome::Presentation {
+            compact,
+            one_row: true,
+        }));
+        let mut width = 1280.0;
+        let problem = loop {
+            match bar_fits(reader, width - 1.0) {
+                Ok(()) => width -= 1.0,
+                Err(problem) => break problem,
+            }
+        };
+        reading_chrome::FORCED.set(None);
+        println!("bar_threshold compact={compact} first misfit: {problem}");
+        width
+    }
+
+    #[test]
+    #[ignore = "Reading bar threshold sweep: --ignored --nocapture"]
+    fn measure_reading_bar_thresholds() {
+        let (mut book, pdfs) = bar_fit_readers();
+        let (mut pdf, mut pdf_book) = pdfs.expect("the sweep needs PDFium");
+        let mut results = Vec::new();
+        for (name, reader) in [
+            ("book", &mut book),
+            ("pdf", &mut pdf),
+            ("pdf-book", &mut pdf_book),
+        ] {
+            let measured = reading_chrome::Thresholds {
+                one_row: narrowest_fit(reader, true),
+                roomy: narrowest_fit(reader, false),
+            };
+            println!("bar_threshold {name} {measured:?}");
+            results.push((name, Some(measured), reading_chrome::thresholds(reader)));
+        }
+        for (name, measured, frozen) in results {
+            assert_eq!(measured, frozen, "{name}");
+        }
     }
 
     fn assert_bar_fits(reader: &mut Reader, widths: &[f32]) {
+        for &width in widths {
+            if let Err(problem) = bar_fits(reader, width) {
+                panic!("{problem}");
+            }
+        }
+    }
+
+    /// Lays the bar out at `width` and reports the first bar control that is
+    /// narrower than it would be with room to spare, leaves the bar, or
+    /// overlaps another. A row squeezes its last children first, so a bar
+    /// that does not fit shows it on a control before any text wraps.
+    fn bar_fits(reader: &mut Reader, width: f32) -> Result<(), String> {
+        reader.window_size.width = width;
+        let presentation = reading_chrome::Presentation {
+            compact: reading_chrome::compact(reader),
+            one_row: reading_chrome::height(reader) == 44.0,
+        };
+        let forced = reading_chrome::FORCED.replace(Some(presentation));
+        let roomy = control_bounds(reader, 4000.0);
+        reading_chrome::FORCED.set(forced);
+        let roomy = roomy?;
+        let placed = control_bounds(reader, width)?;
+        let height = reading_chrome::height(reader);
+        for (index, (control, bounds)) in placed.iter().enumerate() {
+            let natural = roomy
+                .iter()
+                .find(|(other, _)| other == control)
+                .map_or(0.0, |(_, bounds)| bounds.width);
+            if bounds.width < natural - 0.5 {
+                return Err(format!(
+                    "{control:?} squeezed to {} of {natural} at {width}",
+                    bounds.width
+                ));
+            }
+            if !(bounds.x >= 0.0
+                && bounds.x + bounds.width <= width + 0.5
+                && bounds.y >= 0.0
+                && bounds.y + bounds.height <= height)
+            {
+                return Err(format!("{control:?} at {width}: {bounds:?}"));
+            }
+            if let Some((other, overlapped)) = placed[..index].iter().find(|(_, placed)| {
+                bounds
+                    .intersection(placed)
+                    .is_some_and(|area| area.width > 0.5 && area.height > 0.5)
+            }) {
+                return Err(format!(
+                    "{control:?} {bounds:?} overlaps {other:?} {overlapped:?} at {width}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The bounds of every bar control, each laid out focused in turn, at
+    /// `width`; an error when the bar is not the height it reserves.
+    fn control_bounds(
+        reader: &mut Reader,
+        width: f32,
+    ) -> Result<Vec<(Control, iced::Rectangle)>, String> {
         use iced::advanced::{
             Layout, layout,
             widget::{Id, Operation, Tree},
@@ -7503,55 +7701,48 @@ mod tests {
             }
         }
         let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
-        for &width in widths {
-            reader.window_size.width = width;
-            let height = reading_chrome::height(reader);
-            let mut placed: Vec<(Control, iced::Rectangle)> = Vec::new();
-            let controls: Vec<Control> = reader
-                .controls()
-                .filter(|control| reading_chrome::is_bar_control(*control))
-                .collect();
-            assert!(controls.contains(&Control::Chrome(chrome::Action::Close)));
-            for control in controls {
-                reader.focused = Some(control);
-                let mut bar = reading_chrome::view(reader, true);
-                let mut tree = Tree::new(&bar);
-                let node = bar.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &layout::Limits::new(Size::ZERO, Size::new(width, 800.0)),
-                );
-                assert_eq!(node.bounds().height, height, "bar height at {width}");
-                let mut bounds = FocusBounds::default();
-                bar.as_widget_mut()
-                    .operate(&mut tree, Layout::new(&node), &renderer, &mut bounds);
-                let Some(bounds) = bounds.0 else {
-                    // The page fields show focus through iced's own text input focus.
-                    assert!(matches!(
-                        control,
-                        Control::BookPageInput | Control::Pdf(pdf_reader::FocusControl::Page)
-                    ));
-                    continue;
-                };
-                assert!(
-                    bounds.x >= 0.0
-                        && bounds.x + bounds.width <= width + 0.5
-                        && bounds.y >= 0.0
-                        && bounds.y + bounds.height <= height,
-                    "{control:?} at {width}: {bounds:?}"
-                );
-                for (other, placed) in &placed {
-                    let overlap = bounds
-                        .intersection(placed)
-                        .is_some_and(|area| area.width > 0.5 && area.height > 0.5);
-                    assert!(
-                        !overlap,
-                        "{control:?} {bounds:?} overlaps {other:?} {placed:?} at {width}"
-                    );
-                }
-                placed.push((control, bounds));
+        let window = reader.window_size.width;
+        reader.window_size.width = width;
+        let height = reading_chrome::height(reader);
+        let controls: Vec<Control> = reader
+            .controls()
+            .filter(|control| reading_chrome::is_bar_control(*control))
+            .collect();
+        assert!(controls.contains(&Control::Chrome(chrome::Action::Close)));
+        let focused = reader.focused;
+        let mut placed = Vec::new();
+        let mut result = Ok(());
+        for control in controls {
+            reader.focused = Some(control);
+            let mut bar = reading_chrome::view(reader, true);
+            let mut tree = Tree::new(&bar);
+            let node = bar.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(width, 800.0)),
+            );
+            if node.bounds().height != height {
+                result = Err(format!(
+                    "bar height {} at {width}, expected {height}",
+                    node.bounds().height
+                ));
+                break;
+            }
+            let mut bounds = FocusBounds::default();
+            bar.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut bounds);
+            match bounds.0 {
+                Some(bounds) => placed.push((control, bounds)),
+                // The page fields show focus through iced's own text input focus.
+                None => assert!(matches!(
+                    control,
+                    Control::BookPageInput | Control::Pdf(pdf_reader::FocusControl::Page)
+                )),
             }
         }
+        reader.focused = focused;
+        reader.window_size.width = window;
+        result.map(|()| placed)
     }
 
     #[test]

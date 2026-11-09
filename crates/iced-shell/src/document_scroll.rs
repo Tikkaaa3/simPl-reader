@@ -8,7 +8,7 @@ use iced::{Border, Element, Event, Length, Point, Rectangle, Size, Vector};
 
 use crate::ui;
 
-const RAIL_WIDTH: f32 = 14.0;
+pub(crate) const RAIL_WIDTH: f32 = 14.0;
 const THUMB_WIDTH: f32 = 8.0;
 const MIN_THUMB: f32 = 40.0;
 /// Pixel scroll deltas (precision touchpads) per wheel notch.

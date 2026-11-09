@@ -2,9 +2,9 @@
 //! them, and the pop-up menu, note editor and list that show them. The rules
 //! live in `crate::notes`; storage is `reader_document::annotations`.
 //!
-//! Nothing here adds a toolbar control. Highlights start from a selection or a
-//! right click, bookmarks from Ctrl+D or a right click, and the right sidebar
-//! opens with Ctrl+B or its edge toggle.
+//! Highlights start from a selection or a right click, bookmarks from Ctrl+D
+//! or a right click, and the right sidebar opens with Ctrl+B or the reading
+//! bar's Notes button.
 
 use super::*;
 use crate::notes::{self, Action, Entry, Focus, ListTab, Popup, PopupItem, Target};
@@ -23,7 +23,7 @@ pub(super) fn note_editor_id() -> iced::advanced::widget::Id {
 const RIBBON: iced::Color = iced::Color::from_rgb(0.78, 0.20, 0.17);
 
 pub(super) fn sidebar_width(reader: &Reader) -> f32 {
-    26.0 + if reader.notes.list.is_some() {
+    if reader.notes.list.is_some() {
         (reader.window_size.width * 0.36).clamp(230.0, 340.0)
     } else {
         0.0
@@ -997,7 +997,7 @@ impl Reader {
 
     /// The keyboard-focusable note controls that are on screen.
     pub(super) fn notes_controls(&self) -> Vec<Control> {
-        let mut controls: Vec<Control> = vec![Control::Notes(Focus::ToggleList)];
+        let mut controls: Vec<Control> = Vec::new();
         controls.extend(
             self.notes
                 .popup
@@ -1464,70 +1464,11 @@ pub(super) fn ribbon<'a>(reader: &Reader, paper_width: f32) -> Element<'a, Messa
     .into()
 }
 
-/// The reader-side drawer. Its edge toggle remains visible when the drawer is closed.
+/// The reader-side drawer, which takes no width while it is closed.
 pub(super) fn sidebar(reader: &Reader, active: bool) -> Element<'_, Message> {
-    let open = reader.notes.list.is_some();
-    let focus = reader.focused == Some(Control::Notes(Focus::ToggleList));
-    let toggle = iced::widget::button(
-        container(text(if open { "›" } else { "‹" }).size(20).line_height(1.0)).center(20),
-    )
-    .padding(0)
-    .width(20)
-    .height(56)
-    .on_press_maybe(active.then_some(Message::Notes(Action::ToggleList)))
-    .style(move |theme, status| {
-        let palette = ui::palette(theme);
-        let hovered = matches!(
-            status,
-            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
-        );
-        iced::widget::button::Style {
-            text_color: if focus || hovered || open {
-                palette.accent
-            } else {
-                palette.secondary
-            },
-            background: Some(
-                if hovered {
-                    palette.raised
-                } else {
-                    palette.surface
-                }
-                .into(),
-            ),
-            border: iced::Border {
-                color: if focus {
-                    palette.accent
-                } else {
-                    palette.border
-                },
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            ..Default::default()
-        }
-    });
-    let toggle: Element<'_, Message> = tooltip(
-        toggle,
-        text(if open {
-            "Hide bookmarks and notes"
-        } else {
-            "Show bookmarks and notes"
-        })
-        .size(12),
-        tooltip::Position::Left,
-    )
-    .into();
-    let edge = container(toggle)
-        .width(26)
-        .height(Length::Fill)
-        .center_x(26)
-        .center_y(Length::Fill);
     match reader.notes.list {
-        Some(tab) => row![edge, list_panel(reader, active, tab)]
-            .height(Length::Fill)
-            .into(),
-        None => edge.into(),
+        Some(tab) => list_panel(reader, active, tab),
+        None => Space::new().width(0).into(),
     }
 }
 
