@@ -6192,10 +6192,16 @@ fn hinted_control<'a>(
 
 /// The width the book's zoomed paper needs with the desk around it in a
 /// reading area `available` wide. The page scrolls sideways when it is wider.
+/// The desk's wide padding gives way to the narrow one before the page has to
+/// scroll, so a page that fits at some width also fits at every wider one.
 fn book_desk_width(reader: &Reader, available: f32) -> f32 {
     let margin = reader.reading_options().margin as f32;
-    let paper_width = reader.width + margin * 2.0;
-    paper_width * reader.zoom + 14.0 + MINIMAL.side_padding(available) * 2.0
+    let paper = (reader.width + margin * 2.0) * reader.zoom + 14.0;
+    let narrow = MINIMAL.side_padding(0.0);
+    let padding = MINIMAL
+        .side_padding(available)
+        .min(((available - paper) / 2.0).max(narrow));
+    paper + padding * 2.0
 }
 
 /// Whether the open book or PDF is zoomed wider than the reading area, so a

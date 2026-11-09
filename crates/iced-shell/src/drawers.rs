@@ -270,6 +270,20 @@ mod tests {
                 "at {window}"
             );
         }
+        for window in (1106..=1700).map(|window| window as f32) {
+            assert_eq!(
+                drawers(window, true, false).docked().left,
+                width(window),
+                "one drawer stays docked at every width from 1106, so at {window}"
+            );
+        }
+        for window in (1446..=1700).map(|window| window as f32) {
+            assert_eq!(
+                drawers(window, true, true).docked().total(),
+                2.0 * width(window),
+                "two drawers stay docked at every width from 1446, so at {window}"
+            );
+        }
         assert_eq!(
             drawers(1446.0, true, true).docked(),
             Edges {
