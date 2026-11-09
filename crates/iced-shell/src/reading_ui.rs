@@ -1,7 +1,16 @@
-//! Typography is independent of zoom and saved by document fingerprint.
+//! Typography is independent of zoom. The library defaults live in the
+//! preferences; a book's own options are saved by its fingerprint.
 use super::*;
 use iced::widget::column;
 use reader_document::reading::{self, Font, Options};
+
+/// Whose options a control edits: the library defaults, from Settings, or the
+/// open book's own, from its Aa panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Target {
+    Defaults,
+    Book,
+}
 
 #[derive(Clone, Debug)]
 pub(super) enum Action {
@@ -23,11 +32,17 @@ pub(super) struct State {
     pending: Vec<(String, Option<Options>)>,
     flight: Option<(String, Option<Options>)>,
     pub notice: Option<String>,
-    pub picker: Option<Picker>,
+    pub picker: Option<(Target, Picker)>,
 }
 impl State {
     pub fn options(&self) -> Options {
         self.override_.unwrap_or(self.defaults).validated()
+    }
+    fn options_for(&self, target: Target) -> Options {
+        match target {
+            Target::Defaults => self.defaults.validated(),
+            Target::Book => self.options(),
+        }
     }
     pub fn settled(&self) -> bool {
         !self.saving && self.pending.is_empty()
@@ -101,25 +116,21 @@ impl Reader {
             }
         }
     }
-    pub(super) fn reading_action(&mut self, action: Action) -> Task<Message> {
-        if !self.interactive()
-            || self.reading.loading
-            || self.reading.blocked
-            || self.book.as_ref().is_some_and(|b| b.pdf_source.is_some())
-            || self.pdf.is_some()
-        {
+    pub(super) fn reading_action(&mut self, target: Target, action: Action) -> Task<Message> {
+        if !enabled(self, target) {
             return Task::none();
         }
         if let Action::Picker(picker) = action {
-            self.reading.picker = if self.reading.picker == Some(picker) {
+            self.reading.picker = if self.reading.picker == Some((target, picker)) {
                 None
             } else {
-                Some(picker)
+                Some((target, picker))
             };
             return Task::none();
         }
         self.reading.picker = None;
-        let mut options = self.reading.options();
+        let before = self.reading_options();
+        let mut options = self.reading.options_for(target);
         let reset = matches!(action, Action::Reset);
         match action {
             Action::Picker(_) => unreachable!(),
@@ -131,18 +142,23 @@ impl Reader {
         }
         options = options.validated();
         self.reading.notice = None;
-        let save = if let Some(book) = self.reading.book.clone() {
-            self.reading.override_ = (!reset).then_some(options);
-            self.reading.pending.retain(|(key, _)| key != &book);
-            self.reading.pending.push((book, self.reading.override_));
-            self.persist_reading_settings()
-        } else {
-            self.reading.defaults = options;
-            self.preferences_dirty = true;
-            self.persist_preferences()
+        let save = match (target, self.reading.book.clone()) {
+            (Target::Book, Some(book)) => {
+                self.reading.override_ = (!reset).then_some(options);
+                self.reading.pending.retain(|(key, _)| key != &book);
+                self.reading.pending.push((book, self.reading.override_));
+                self.persist_reading_settings()
+            }
+            (Target::Book, None) => return Task::none(),
+            (Target::Defaults, _) => {
+                self.reading.defaults = options;
+                self.preferences_dirty = true;
+                self.persist_preferences()
+            }
         };
-        self.adapted.clear();
-        let layout = if self.book.is_some() {
+        // A default change that this book overrides keeps its layout.
+        let layout = if self.book.is_some() && self.reading_options() != before {
+            self.adapted.clear();
             self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
         } else {
             Task::none()
@@ -290,22 +306,37 @@ pub(super) enum Focus {
     Margin(u16),
     Reset,
 }
-fn enabled(reader: &Reader) -> bool {
+/// The defaults can always be edited; a book's own options only once they
+/// have loaded, and only for a reflowable book.
+fn enabled(reader: &Reader, target: Target) -> bool {
     reader.interactive()
-        && !reader.reading.loading
-        && !reader.reading.blocked
-        && reader.pdf.is_none()
-        && reader.book.as_ref().is_none_or(|b| b.pdf_source.is_none())
+        && match target {
+            Target::Defaults => true,
+            Target::Book => {
+                !reader.reading.loading
+                    && !reader.reading.blocked
+                    && reader.reading.book.is_some()
+                    && reader.pdf.is_none()
+                    && reader.book.as_ref().is_some_and(|b| b.pdf_source.is_none())
+            }
+        }
 }
 const SPACING: [u16; 8] = [0, 110, 120, 140, 160, 180, 200, 220];
 const MARGINS: [u16; 7] = [16, 24, 32, 48, 64, 80, 96];
 const FONTS: [Font; 4] = [Font::Theme, Font::Literata, Font::Spectral, Font::FiraSans];
-pub(super) fn controls(reader: &Reader) -> impl Iterator<Item = Control> + Clone + '_ {
-    let options = reader.reading.options();
+pub(super) fn controls(
+    reader: &Reader,
+    target: Target,
+) -> impl Iterator<Item = Control> + Clone + '_ {
+    let options = reader.reading.options_for(target);
+    let picker = reader
+        .reading
+        .picker
+        .and_then(|(owner, picker)| (owner == target).then_some(picker));
     [
-        Some(Focus::Picker(Picker::Font)),
         (options.size > 12).then_some(Focus::SizeDown),
         (options.size < 36).then_some(Focus::SizeUp),
+        Some(Focus::Picker(Picker::Font)),
         Some(Focus::Picker(Picker::Spacing)),
         Some(Focus::Picker(Picker::Margin)),
         Some(Focus::Reset),
@@ -315,26 +346,26 @@ pub(super) fn controls(reader: &Reader) -> impl Iterator<Item = Control> + Clone
     .chain(
         FONTS
             .into_iter()
-            .filter(move |_| reader.reading.picker == Some(Picker::Font))
+            .filter(move |_| picker == Some(Picker::Font))
             .map(Focus::Font),
     )
     .chain(
         SPACING
             .into_iter()
-            .filter(move |_| reader.reading.picker == Some(Picker::Spacing))
+            .filter(move |_| picker == Some(Picker::Spacing))
             .map(Focus::Spacing),
     )
     .chain(
         MARGINS
             .into_iter()
-            .filter(move |_| reader.reading.picker == Some(Picker::Margin))
+            .filter(move |_| picker == Some(Picker::Margin))
             .map(Focus::Margin),
     )
-    .filter(move |_| reader.show_settings && enabled(reader))
-    .map(Control::Reading)
+    .filter(move |_| enabled(reader, target))
+    .map(move |focus| Control::Reading(target, focus))
 }
-pub(super) fn focus_action(reader: &Reader, focus: Focus) -> Action {
-    let options = reader.reading.options();
+pub(super) fn focus_action(reader: &Reader, target: Target, focus: Focus) -> Action {
+    let options = reader.reading.options_for(target);
     match focus {
         Focus::Picker(picker) => Action::Picker(picker),
         Focus::Font(font) => Action::Font(font),
@@ -347,37 +378,66 @@ pub(super) fn focus_action(reader: &Reader, focus: Focus) -> Action {
 }
 fn setting_button<'a>(
     reader: &Reader,
+    target: Target,
     focus: Focus,
     label: String,
     selected: bool,
 ) -> Element<'a, Message> {
     toned_button(
         reader,
-        Control::Reading(focus),
+        Control::Reading(target, focus),
         text(label).size(12),
-        enabled(reader).then_some(Message::Reading(focus_action(reader, focus))),
+        enabled(reader, target)
+            .then(|| Message::Reading(target, focus_action(reader, target, focus))),
         ui::ButtonTone::Surface,
         selected,
     )
 }
+/// The Settings section: the library defaults, which every book without its
+/// own options follows.
 pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
-    let options = reader.reading.options();
-    let label = if reader.reading.book.is_some() {
-        "Reading settings — this book"
-    } else {
-        "Reading defaults"
-    };
-    let mut content = column![text(label).font(ui::MEDIUM).size(13)].spacing(8);
-    if enabled(reader) {
+    let mut content = column![
+        text("Reading defaults").font(ui::MEDIUM).size(13),
+        typography(reader, Target::Defaults),
+        text("Font, text size, spacing and margins change independently of zoom. Page numbers and annotations stay stable. A book follows these defaults until you change it from Aa in its reading bar.")
+            .size(12)
+            .style(ui::muted_text),
+    ]
+    .spacing(8);
+    if let Some(notice) = &reader.reading.notice {
+        content = content.push(text(notice).size(12).style(ui::secondary_text));
+    }
+    content.into()
+}
+/// Font, text size, line spacing, side margins and the reset for `target`.
+pub(super) fn typography(reader: &Reader, target: Target) -> Element<'_, Message> {
+    let options = reader.reading.options_for(target);
+    let picker = reader
+        .reading
+        .picker
+        .and_then(|(owner, picker)| (owner == target).then_some(picker));
+    let setting_button =
+        |focus, label, selected| setting_button(reader, target, focus, label, selected);
+    let mut content = column![].spacing(8);
+    if enabled(reader, target) {
         content = content
+            .push(
+                row![
+                    text("Text size").size(12).width(Length::Fill),
+                    setting_button(Focus::SizeDown, "−".into(), false),
+                    text(format!("{}", options.size)).size(12),
+                    setting_button(Focus::SizeUp, "+".into(), false)
+                ]
+                .spacing(12)
+                .align_y(iced::Alignment::Center),
+            )
             .push(
                 row![
                     text("Font").size(12).width(Length::Fill),
                     setting_button(
-                        reader,
                         Focus::Picker(Picker::Font),
                         format!("{} ▾", options.font),
-                        reader.reading.picker == Some(Picker::Font)
+                        picker == Some(Picker::Font)
                     )
                 ]
                 .spacing(8)
@@ -385,22 +445,11 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
             )
             .push(
                 row![
-                    text("Text size").size(12).width(Length::Fill),
-                    setting_button(reader, Focus::SizeDown, "−".into(), false),
-                    text(format!("{}", options.size)).size(12),
-                    setting_button(reader, Focus::SizeUp, "+".into(), false)
-                ]
-                .spacing(12)
-                .align_y(iced::Alignment::Center),
-            )
-            .push(
-                row![
                     text("Line spacing").size(12).width(Length::Fill),
                     setting_button(
-                        reader,
                         Focus::Picker(Picker::Spacing),
                         format!("{} ▾", Spacing(options.spacing)),
-                        reader.reading.picker == Some(Picker::Spacing)
+                        picker == Some(Picker::Spacing)
                     )
                 ]
                 .spacing(8)
@@ -410,16 +459,15 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
                 row![
                     text("Side margins").size(12).width(Length::Fill),
                     setting_button(
-                        reader,
                         Focus::Picker(Picker::Margin),
                         format!("{} px ▾", options.margin),
-                        reader.reading.picker == Some(Picker::Margin)
+                        picker == Some(Picker::Margin)
                     )
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
             );
-        let choices: Vec<(Focus, String, bool)> = match reader.reading.picker {
+        let choices: Vec<(Focus, String, bool)> = match picker {
             Some(Picker::Font) => FONTS
                 .into_iter()
                 .map(|v| (Focus::Font(v), v.to_string(), v == options.font))
@@ -445,7 +493,7 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
             for pair in choices.chunks(2) {
                 let mut line = row![].spacing(6);
                 for (focus, label, selected) in pair {
-                    line = line.push(setting_button(reader, *focus, label.clone(), *selected));
+                    line = line.push(setting_button(*focus, label.clone(), *selected));
                 }
                 grid = grid.push(line);
             }
@@ -457,12 +505,10 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
             );
         }
         content = content.push(setting_button(
-            reader,
             Focus::Reset,
-            if reader.reading.book.is_some() {
-                "Use reading defaults"
-            } else {
-                "Reset reading defaults"
+            match target {
+                Target::Defaults => "Reset reading defaults",
+                Target::Book => "Use reading defaults",
             }
             .into(),
             false,
@@ -477,10 +523,6 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
             .size(12)
             .style(ui::muted_text),
         );
-    }
-    content=content.push(text("Font, text size, spacing and margins change independently of zoom. Page numbers and annotations stay stable. Changes here are saved for the open book; changes in the library set defaults for other books.").size(12).style(ui::muted_text));
-    if let Some(notice) = &reader.reading.notice {
-        content = content.push(text(notice).size(12).style(ui::secondary_text));
     }
     content.into()
 }
@@ -524,7 +566,7 @@ mod tests {
             Action::Spacing(200),
             Action::Margin(80),
         ] {
-            let _ = reader.reading_action(action);
+            let _ = reader.reading_action(Target::Book, action);
             settle_theme(&mut reader);
             assert_eq!(
                 serde_json::to_vec(&**reader.atlas.as_ref().unwrap()).unwrap(),
@@ -562,7 +604,7 @@ mod tests {
         let flight = reader.reading.flight.clone().unwrap();
         let _ = reader.reading_saved(Ok(flight));
         assert!(reader.reading.settled());
-        let _ = reader.reading_action(Action::Reset);
+        let _ = reader.reading_action(Target::Book, Action::Reset);
         settle_theme(&mut reader);
         assert_eq!(reader.reading.options(), defaults);
         assert!(!reader.needs_adaptation());
@@ -581,15 +623,42 @@ mod tests {
         );
         assert_eq!(reader.generation, generation);
         assert_eq!(reader.font_size, 20.0);
-        let _ = reader.reading_action(Action::Size(26));
+        let _ = reader.reading_action(Target::Book, Action::Size(26));
         let _ = reader.reading_saved(Err("disk unavailable".into()));
         assert!(reader.reading.settled());
         assert!(reader.error.as_ref().unwrap().contains("disk unavailable"));
         reader.book = None;
         let _ = reader.sync_reading_settings();
-        let _ = reader.reading_action(Action::Font(Font::Spectral));
+        let _ = reader.reading_action(Target::Book, Action::Font(Font::Spectral));
+        assert_eq!(
+            reader.reading.defaults.font,
+            Font::Theme,
+            "with no book open there is no book to change"
+        );
+        let _ = reader.reading_action(Target::Defaults, Action::Font(Font::Spectral));
         assert_eq!(reader.reading.defaults.font, Font::Spectral);
         assert!(reader.preferences_saving);
+    }
+    #[test]
+    fn settings_change_the_defaults_that_a_book_without_its_own_follows() {
+        let mut reader = reader();
+        reader.show_settings = true;
+        let size_up = Control::Reading(Target::Defaults, Focus::SizeUp);
+        assert!(reader.controls().any(|control| control == size_up));
+        let _ = reader.activate(size_up);
+        settle_theme(&mut reader);
+        assert_eq!(reader.reading.defaults.size, 21);
+        assert_eq!(reader.reading.options().size, 21);
+        assert_eq!(
+            reader.font_size, 21.0,
+            "the open book reads at the new default"
+        );
+
+        let _ = reader.reading_action(Target::Book, Action::Size(30));
+        let _ = reader.reading_action(Target::Defaults, Action::Size(24));
+        settle_theme(&mut reader);
+        assert_eq!(reader.reading.defaults.size, 24);
+        assert_eq!(reader.font_size, 30.0, "a book with its own size keeps it");
     }
     #[test]
     fn fit_width_tracks_resizing_and_explicit_zoom_does_not_cancel_pagination() {
@@ -662,10 +731,10 @@ mod tests {
         ] {
             reader.window_size = Size::new(width, 800.0);
             reader.appearance = appearance;
-            let _ = reader.reading_action(Action::Font(Font::Spectral));
-            let _ = reader.reading_action(Action::Size(24));
-            let _ = reader.reading_action(Action::Spacing(180));
-            let _ = reader.reading_action(Action::Margin(64));
+            let _ = reader.reading_action(Target::Book, Action::Font(Font::Spectral));
+            let _ = reader.reading_action(Target::Book, Action::Size(24));
+            let _ = reader.reading_action(Target::Book, Action::Spacing(180));
+            let _ = reader.reading_action(Target::Book, Action::Margin(64));
             settle_theme(&mut reader);
             if reader.fit_width {
                 let _ = reader.refit_book();
@@ -677,7 +746,10 @@ mod tests {
                 &output.join(format!("reading-{name}.png")),
             );
             reader.show_settings = true;
-            reader.focused = Some(Control::Reading(Focus::Picker(Picker::Font)));
+            reader.focused = Some(Control::Reading(
+                Target::Defaults,
+                Focus::Picker(Picker::Font),
+            ));
             super::super::book_preview::render(
                 &mut reader,
                 &output.join(format!("settings-{name}.png")),

@@ -575,17 +575,33 @@ fn render_frame(reader: &mut Reader, output: &Path, scale: f32, cursor: mouse::C
         &bounds,
     );
     renderer.reset(bounds);
+    let style = renderer::Style {
+        text_color: theme.palette().text,
+    };
     element.as_widget().draw(
         &tree,
         &mut renderer,
         &theme,
-        &renderer::Style {
-            text_color: theme.palette().text,
-        },
+        &style,
         Layout::new(&node),
         cursor,
         &bounds,
     );
+    // Tooltips and menus are overlays, drawn above the tree as the runtime does.
+    if let Some(mut overlay) = element.as_widget_mut().overlay(
+        &mut tree,
+        Layout::new(&node),
+        &renderer,
+        &bounds,
+        iced::Vector::ZERO,
+    ) {
+        let layout = overlay.as_overlay_mut().layout(&renderer, size);
+        renderer.with_layer(bounds, |renderer| {
+            overlay
+                .as_overlay()
+                .draw(renderer, &theme, &style, Layout::new(&layout), cursor);
+        });
+    }
     let physical = Size::new(
         (size.width * scale).round() as u32,
         (size.height * scale).round() as u32,
@@ -781,38 +797,6 @@ fn render_annotation_views() {
     assert!(reader.page_is_bookmarked());
     let _ = reader.notes_action(notes::Action::ToggleBookmark);
     assert!(!reader.page_is_bookmarked());
-}
-
-#[test]
-fn appearance_toggle_keeps_its_position_across_screens() {
-    ui::load_test_fonts();
-    let toggle = Some(Control::Chrome(chrome::Action::ToggleAppearance));
-    let library = focused_bounds(&Reader {
-        focused: toggle,
-        ..Reader::default()
-    })
-    .expect("the Library header shows the toggle");
-    for (fullscreen, width) in [(false, 1280.0), (false, 860.0), (true, 1280.0)] {
-        let mut reader = Reader {
-            book: Some(super::tests::book("toggle")),
-            window_size: Size::new(width, 800.0),
-            fullscreen,
-            focused: toggle,
-            ..Reader::default()
-        };
-        let _ = reader.rebuild_geometry(Anchor {
-            row: 0,
-            fraction: 0.0,
-        });
-        settle_pagination(&mut reader);
-        let reading = focused_bounds(&reader).expect("the reading bar shows the toggle");
-        assert!(
-            (reading.x - library.x).abs() <= 2.0,
-            "toggle at x={} while reading ({width}, fullscreen {fullscreen}), x={} on the Library",
-            reading.x,
-            library.x
-        );
-    }
 }
 
 #[test]
@@ -1158,9 +1142,10 @@ fn chrome_actions(messages: &[Message]) -> Vec<chrome::Action> {
 #[test]
 fn only_the_bar_background_drags_the_window() {
     let mut reader = reading_bar_book(1280.0);
-    reader.zoom = 3.0;
     let mut ui = Harness::new();
-    let disabled = bounds_of(&mut reader, Control::FontUp).center();
+    // While a save runs the document's controls are disabled.
+    reader.saving = true;
+    let disabled = bounds_of(&mut reader, Control::Find).center();
     let field = input_bounds(&reader, iced::advanced::widget::Id::new("book-page"));
     let total = Point::new(field.x + field.width + 10.0, field.center_y());
     for at in [disabled, total] {
@@ -1170,6 +1155,7 @@ fn only_the_bar_background_drags_the_window() {
             "a press at {at:?} on a control or label never drags or maximizes"
         );
     }
+    reader.saving = false;
     let library = bounds_of(&mut reader, Control::Close);
     let background = Point::new(library.x + library.width + 40.0, library.center_y());
     assert_eq!(
@@ -1209,18 +1195,13 @@ fn a_click_on_a_focused_bar_button_still_activates_it() {
         return;
     };
     let mut ui = Harness::new();
-    reader.focused = Some(Control::Pdf(pdf_reader::FocusControl::ZoomIn));
-    let zoom_in = focused_bounds(&reader).unwrap().center();
-    let messages = ui.click(&mut reader, zoom_in);
-    assert!(
-        messages.iter().any(|message| matches!(
-            message,
-            Message::Pdf {
-                message: pdf_reader::Message::ZoomIn,
-                ..
-            }
-        )),
-        "the focused PDF zoom button zooms"
+    reader.focused = Some(Control::Menu(reading_chrome::Menu::Aa));
+    let aa = focused_bounds(&reader).unwrap().center();
+    ui.click(&mut reader, aa);
+    assert_eq!(
+        reader.menu,
+        Some(reading_chrome::Menu::Aa),
+        "the focused Aa button opens its panel"
     );
 }
 
@@ -1237,17 +1218,15 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
     assert_eq!(
         bar,
         [
-            Control::Chrome(chrome::Action::Settings),
-            Control::Chrome(chrome::Action::ToggleAppearance),
-            Control::Chrome(chrome::Action::Search),
             Control::Close,
             Control::BookPageInput,
             Control::Find,
             Control::ReadAloud,
             notes,
-            Control::FontDown,
-            Control::FitBookWidth,
-            Control::FontUp,
+            Control::Menu(reading_chrome::Menu::Aa),
+            Control::Chrome(chrome::Action::ToggleAppearance),
+            Control::Chrome(chrome::Action::Search),
+            Control::Chrome(chrome::Action::Settings),
             Control::Chrome(chrome::Action::Minimize),
             Control::Chrome(chrome::Action::Maximize),
             Control::Chrome(chrome::Action::Close),
@@ -1301,18 +1280,18 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
         .position(|control| *control == Control::ReadAloud);
     assert_eq!(bar.get(listen.unwrap() + 1), Some(&notes));
     assert_eq!(
-        bar[3..bar.len() - 3],
+        bar[..bar.len() - 3],
         [
             Control::Close,
             Control::BookMode,
-            Control::Pdf(pdf_reader::FocusControl::Page),
-            Control::Pdf(pdf_reader::FocusControl::ZoomOut),
-            Control::Pdf(pdf_reader::FocusControl::ZoomIn),
-            Control::Pdf(pdf_reader::FocusControl::ActualSize),
-            Control::Pdf(pdf_reader::FocusControl::FitWidth),
+            Control::PdfPage,
             Control::Find,
             Control::ReadAloud,
             notes,
+            Control::Menu(reading_chrome::Menu::Aa),
+            Control::Chrome(chrome::Action::ToggleAppearance),
+            Control::Chrome(chrome::Action::Search),
+            Control::Chrome(chrome::Action::Settings),
         ]
     );
 }
@@ -1401,9 +1380,9 @@ fn the_notes_sidebar_starts_below_the_bar() {
         let tab = Control::Notes(crate::notes::Focus::Tab(crate::notes::ListTab::Bookmarks));
         let shown = bounds_of(&mut reader, tab);
         assert!(
-            shown.y >= reading_chrome::height(&reader),
+            shown.y >= reading_chrome::HEIGHT,
             "the bar ({}px at {width}) covers the sidebar tabs at y={}",
-            reading_chrome::height(&reader),
+            reading_chrome::HEIGHT,
             shown.y
         );
         reader.bar = reading_chrome::Bar::hidden();
@@ -1413,6 +1392,40 @@ fn the_notes_sidebar_starts_below_the_bar() {
             "the sidebar never moves"
         );
     }
+}
+
+#[test]
+fn a_press_on_the_page_closes_the_menu_and_the_wheel_still_scrolls_it() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    assert!(reader.bar.visible(), "opening the panel shows the bar");
+    let page = Point::new(400.0, 400.0);
+    let (direct, _, _) = wheel_at(&reader, page);
+    assert_eq!(
+        direct, 60.0,
+        "the wheel beside the open panel scrolls the page"
+    );
+
+    let mut ui = Harness::new();
+    let card_corner = Point::new(
+        1280.0 - 8.0 - reading_panel::WIDTH + 16.0,
+        reading_chrome::HEIGHT + 8.0 + 16.0,
+    );
+    let inside = ui.click(&mut reader, card_corner);
+    assert!(
+        !inside
+            .iter()
+            .any(|message| matches!(message, Message::CloseMenu)),
+        "a press inside the card keeps it open"
+    );
+    assert_eq!(reader.menu, Some(reading_chrome::Menu::Aa));
+    let outside = ui.click(&mut reader, page);
+    assert!(
+        outside
+            .iter()
+            .any(|message| matches!(message, Message::CloseMenu))
+    );
+    assert_eq!(reader.menu, None, "a press on the page closes the panel");
 }
 
 /// A book of long paragraphs over many pages, open on its first page in a
@@ -2008,7 +2021,7 @@ fn the_library_banner_shows_while_reading_without_holding_the_bar() {
     assert!(!reader.bar_held());
     let dismiss = bounds_of(&mut reader, Control::Library(library_ui::Focus::Dismiss));
     assert!(
-        dismiss.y >= reading_chrome::height(&reader),
+        dismiss.y >= reading_chrome::HEIGHT,
         "the banner hangs below the bar, at y={}",
         dismiss.y
     );
@@ -2205,6 +2218,71 @@ fn render_reading_bar_previews() {
     }
 }
 
+/// A book with contents and a passage to go back to, so its bar shows every
+/// button, in a `width` x `height` window.
+fn full_bar_book(width: f32, height: f32) -> Reader {
+    let mut source = Arc::try_unwrap(super::tests::book("The Quiet Hours")).unwrap();
+    source.items[0] = Item::Heading {
+        id: "paragraph-0".into(),
+        text: "Chapter One".into(),
+        level: 1,
+    };
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(width, height),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    reader.returns.push(ReturnLocation {
+        chapter: None,
+        item_id: "paragraph-2".into(),
+        within: 0.0,
+    });
+    let _ = reader.sync_reading_settings();
+    let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+    let _ = reader.reading_loaded(fingerprint, Ok(None));
+    reader
+}
+
+#[test]
+#[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
+fn render_ux5_bar_look() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        for (width, height) in [(1400.0, 900.0), (540.0, 360.0)] {
+            let mut reader = full_bar_book(width, height);
+            reader.appearance = appearance;
+            render(
+                &mut reader,
+                &output.join(format!("UX-5-bar-{name}-{width}.png")),
+            );
+        }
+    }
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let find = bounds_of(&mut reader, Control::Find).center();
+    render_with_cursor(&mut reader, &output.join("UX-5-tooltip.png"), find);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("UX-5-aa-book.png"));
+    let mut reader = full_bar_book(540.0, 600.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::More));
+    render(&mut reader, &output.join("UX-5-more-540.png"));
+    let Some(mut reader) = test_pdf(
+        crate::pdf_reader::tests::tall_pdf(),
+        Size::new(1400.0, 900.0),
+    ) else {
+        return;
+    };
+    render(&mut reader, &output.join("UX-5-bar-pdf-1400.png"));
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("UX-5-aa-pdf.png"));
+}
+
 #[test]
 #[ignore = "Visual QA: set SIMPL_PREVIEW_HTML, SIMPL_PREVIEW_EPUB and SIMPL_PREVIEW_OUTPUT"]
 fn render_book_previews() {
@@ -2282,7 +2360,7 @@ fn render_book_previews() {
                     appearance,
                     font_size,
                     window_size: Size::new(width, 800.0),
-                    focused: Some(Control::FontUp),
+                    focused: Some(Control::Find),
                     ..Reader::default()
                 };
                 let _ = reader.rebuild_geometry(Anchor {
@@ -3631,4 +3709,18 @@ fn render_release_audit_shelves() {
             }
         }
     }
+}
+
+#[test]
+fn aa_zoom_buttons_zoom_the_book() {
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    let mut ui = Harness::new();
+    let plus = bounds_of(&mut reader, Control::Zoom(reading_panel::Zoom::In)).center();
+    let messages = ui.click(&mut reader, plus);
+    assert!(
+        messages.iter().any(|m| matches!(m, Message::Zoom(_))),
+        "the press sends a zoom: {messages:?}"
+    );
+    assert_eq!((reader.zoom * 100.0).round(), 110.0);
 }

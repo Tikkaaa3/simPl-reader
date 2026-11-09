@@ -9,12 +9,12 @@ use std::sync::Arc;
 
 use iced::advanced::widget::{operate, operation::scrollable::AbsoluteOffset};
 use iced::keyboard::{self, Key, key};
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Point, Size, Task, mouse, window};
 use reader_document::position::{PdfReadingPosition, PdfZoom};
 use reader_pdf::{Document, Selection, TextLayer, TextPoint};
 
-use crate::ui::{self, ButtonTone};
+use crate::ui;
 use iced_shell::virtual_reader::{HeightIndex, LayoutReports, VisibleRows};
 use pdf_page::Page;
 
@@ -52,37 +52,6 @@ fn scroll_to(x: f32, y: f32) -> Task<Message> {
 
 /// The status line under the pages, which the page strips stop above.
 pub(crate) const STATUS_HEIGHT: f32 = 26.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FocusControl {
-    Page,
-    ZoomOut,
-    ZoomIn,
-    ActualSize,
-    FitWidth,
-}
-
-fn focus_button<'a>(
-    label: &'a str,
-    action: Option<Message>,
-    focused: bool,
-    selected: bool,
-    compact: bool,
-) -> Element<'a, Message> {
-    let control = button(text(label).font(ui::MEDIUM))
-        .padding([7, if compact { 7 } else { 10 }])
-        .on_press_maybe(action)
-        .style(move |theme, status| {
-            ui::button_style(theme, status, ButtonTone::Surface, focused, selected)
-        });
-    if focused {
-        container(control)
-            .id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL))
-            .into()
-    } else {
-        control.into()
-    }
-}
 
 #[derive(Debug)]
 struct CachedPage {
@@ -1289,8 +1258,17 @@ impl Reader {
         }
     }
 
-    /// The page field and the page count, for the centre of the reading bar.
-    pub fn navigation(&self, focused: Option<FocusControl>) -> Element<'_, Message> {
+    /// The size the pages show at, in percent of their natural size.
+    pub fn zoom_percent(&self) -> f32 {
+        self.effective_scale() * 100.0
+    }
+
+    pub fn fits_width(&self) -> bool {
+        self.zoom == PdfZoom::FitWidth
+    }
+
+    /// The page field and the page count, for the reading bar.
+    pub fn navigation(&self, focused: bool) -> Element<'_, Message> {
         row![
             ui::watch_focus(
                 text_input("Page", &self.page_input)
@@ -1302,7 +1280,7 @@ impl Reader {
                     .width(65)
                     .style(move |theme, status| {
                         let mut style = ui::input_style(theme, status);
-                        if focused == Some(FocusControl::Page) {
+                        if focused {
                             style.border.color = ui::palette(theme).accent;
                             style.border.width = 2.0;
                         }
@@ -1315,54 +1293,6 @@ impl Reader {
                 .style(ui::muted_text),
         ]
         .spacing(7)
-        .align_y(iced::Alignment::Center)
-        .into()
-    }
-
-    /// Zoom and fit controls, sized for the right side of the reading bar.
-    pub fn zoom_controls(
-        &self,
-        focused: Option<FocusControl>,
-        compact: bool,
-    ) -> Element<'_, Message> {
-        // Show the size in use; Fit width stays marked on its own button.
-        let zoom_label = format!("{:.0}%", self.effective_scale() * 100.0);
-        row![
-            focus_button(
-                "−",
-                Some(Message::ZoomOut),
-                focused == Some(FocusControl::ZoomOut),
-                false,
-                compact,
-            ),
-            text(zoom_label).size(13).style(ui::muted_text),
-            focus_button(
-                "+",
-                Some(Message::ZoomIn),
-                focused == Some(FocusControl::ZoomIn),
-                false,
-                compact,
-            ),
-            focus_button(
-                "100%",
-                Some(Message::ActualSize),
-                focused == Some(FocusControl::ActualSize),
-                self.zoom == PdfZoom::Scale(1.0),
-                compact,
-            ),
-            focus_button(
-                if compact || self.size.width < 520.0 {
-                    "Fit"
-                } else {
-                    "Fit width"
-                },
-                Some(Message::FitWidth),
-                focused == Some(FocusControl::FitWidth),
-                self.zoom == PdfZoom::FitWidth,
-                compact,
-            ),
-        ]
-        .spacing(if compact { 4 } else { 7 })
         .align_y(iced::Alignment::Center)
         .into()
     }

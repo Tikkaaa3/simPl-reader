@@ -213,7 +213,10 @@ fn render_promotion_gallery() {
     send(&mut reader, Message::Chrome(chrome::Action::Settings));
     reader.focused = None;
     capture(&mut reader, &output, "theme-settings");
-    reader.focused = Some(Control::Reading(reading_ui::Focus::Reset));
+    reader.focused = Some(Control::Reading(
+        reading_ui::Target::Defaults,
+        reading_ui::Focus::Reset,
+    ));
     capture(&mut reader, &output, "reading-settings");
     send(
         &mut reader,
