@@ -1153,6 +1153,8 @@ enum Message {
     ChromeWheel(mouse::ScrollDelta),
     /// The pointer moved onto a page strip that can turn the page, or off both.
     StripHover(Option<page_strips::Side>),
+    /// A press on the progress line, with the page it lands on, from 1.
+    ProgressJump(u32),
     /// The book page field gained or lost keyboard focus.
     BookPageFocus(bool),
     ToggleHelp,
@@ -3790,6 +3792,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.strips.hover(side, std::time::Instant::now());
             Task::none()
         }
+        Message::ProgressJump(page) => reader.progress_jump(page),
         Message::BookPageFocus(focused) => {
             reader.book_page_focus(focused);
             Task::none()
@@ -4077,6 +4080,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 | pdf_reader::Message::Previous
                 | pdf_reader::Message::Next
                 | pdf_reader::Message::PageSubmit
+                | pdf_reader::Message::GoTo(_)
                 | pdf_reader::Message::ZoomIn
                 | pdf_reader::Message::ZoomOut
                 | pdf_reader::Message::ActualSize

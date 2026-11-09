@@ -2,7 +2,9 @@
 //! turn the page when pressed. They draw nothing until the pointer is over
 //! one; then it fades in a full-height shade and a chevron. [`Hover`] holds the fade and,
 //! like the reading bar, takes an explicit [`Instant`] for every transition.
+//! The same layer hosts the progress line between the strips' bottom ends.
 
+use super::progress_line::{self, Progress};
 use super::*;
 use iced::Animation;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer, widget};
@@ -183,7 +185,7 @@ pub(super) fn width(window_width: f32) -> f32 {
 
 /// The strips over the reading area `bounds`. The right one stops short of
 /// the scrollbar rail, and both stop `bottom_inset` above the bottom.
-fn regions(bounds: Rectangle, width: f32, bottom_inset: f32) -> [Rectangle; 2] {
+pub(super) fn regions(bounds: Rectangle, width: f32, bottom_inset: f32) -> [Rectangle; 2] {
     let inner = (bounds.width - crate::document_scroll::RAIL_WIDTH).max(0.0);
     let width = width.min(inner / 2.0);
     let height = (bounds.height - bottom_inset).max(0.0);
@@ -210,6 +212,9 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         alpha: SIDES.map(|side| reader.strips.alpha(side)),
         width: width(reader.window_size.width),
         bottom_inset: bottom_inset(reader),
+        progress: reader.progress(),
+        jumps: active,
+        labelled: reader.bar.visible(),
     })
 }
 
@@ -235,12 +240,33 @@ struct Strips {
     alpha: [f32; 2],
     width: f32,
     bottom_inset: f32,
+    progress: Option<Progress>,
+    /// A press on the line jumps; otherwise it only shows the position.
+    jumps: bool,
+    /// The reading bar shows, so the line shows its label too.
+    labelled: bool,
+}
+
+/// A part of the layer that acts on the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Zone {
+    Strip(Side),
+    Line,
+}
+
+impl Zone {
+    fn side(self) -> Option<Side> {
+        match self {
+            Zone::Strip(side) => Some(side),
+            Zone::Line => None,
+        }
+    }
 }
 
 #[derive(Default)]
 struct State {
     gesture: Gesture,
-    last_over: Option<Side>,
+    last_over: Option<Zone>,
     /// The right or middle button is down. The strips step aside until it is
     /// released so the page under them keeps its context menu and autoscroll.
     other_button: bool,
@@ -254,21 +280,44 @@ enum Gesture {
     /// Pressed on the page: the strips stay out of its way until the release,
     /// so a selection dragged into a strip keeps the pointer.
     Page,
-    /// Pressed on a strip, which turned the page.
-    Strip,
+    /// Pressed on a strip or the line, which already acted.
+    Zone,
 }
 
 impl Strips {
-    /// The enabled strip under `cursor`.
-    fn side_at(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Side> {
-        self.side_at_point(bounds, cursor.position()?)
+    /// The enabled zone under `cursor`.
+    fn zone_at(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Zone> {
+        self.zone_at_point(bounds, cursor.position()?)
     }
 
-    fn side_at_point(&self, bounds: Rectangle, point: iced::Point) -> Option<Side> {
+    fn zone_at_point(&self, bounds: Rectangle, point: iced::Point) -> Option<Zone> {
         let regions = regions(bounds, self.width, self.bottom_inset);
-        SIDES.into_iter().zip(regions).find_map(|(side, region)| {
-            (region.contains(point) && self.turns.get(side).is_some()).then_some(side)
+        let strip = SIDES.into_iter().zip(regions).find_map(|(side, region)| {
+            (region.contains(point) && self.turns.get(side).is_some()).then_some(Zone::Strip(side))
+        });
+        strip.or_else(|| {
+            (self.jumps && self.progress.is_some() && self.band(bounds).contains(point))
+                .then_some(Zone::Line)
         })
+    }
+
+    fn band(&self, bounds: Rectangle) -> Rectangle {
+        progress_line::band(bounds, self.width, self.bottom_inset)
+    }
+
+    /// What a press at `point` sends.
+    fn action(&self, bounds: Rectangle, point: iced::Point) -> Option<Message> {
+        match self.zone_at_point(bounds, point)? {
+            Zone::Strip(side) => self.turns.get(side).cloned(),
+            Zone::Line => {
+                let total = self.progress?.total;
+                Some(Message::ProgressJump(progress_line::page_under(
+                    self.band(bounds),
+                    point,
+                    total,
+                )))
+            }
+        }
     }
 
     fn draw_strip(
@@ -365,14 +414,11 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
             if !matches!(state.gesture, Gesture::None) {
                 return;
             }
-            match at
-                .and_then(|point| self.side_at_point(bounds, point))
-                .and_then(|side| self.turns.get(side))
-            {
+            match at.and_then(|point| self.action(bounds, point)) {
                 Some(message) => {
-                    shell.publish(message.clone());
+                    shell.publish(message);
                     shell.capture_event();
-                    state.gesture = Gesture::Strip;
+                    state.gesture = Gesture::Zone;
                 }
                 None => state.gesture = Gesture::Page,
             }
@@ -388,9 +434,8 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
             | iced::Event::Touch(
                 touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. },
             ) => {
-                // A release never turns the page; a strip's own release
-                // stays with the strip.
-                if matches!(std::mem::take(&mut state.gesture), Gesture::Strip) {
+                // A release never acts; a zone's own release stays with it.
+                if matches!(std::mem::take(&mut state.gesture), Gesture::Zone) {
                     shell.capture_event();
                 }
             }
@@ -407,15 +452,23 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
             | iced::Event::Window(window::Event::RedrawRequested(_)) => {
                 let over = match state.gesture {
                     Gesture::Page => None,
-                    Gesture::None | Gesture::Strip => self.side_at(bounds, cursor),
+                    Gesture::None | Gesture::Zone => self.zone_at(bounds, cursor),
                 };
                 if over != state.last_over {
-                    state.last_over = over;
-                    shell.publish(Message::StripHover(over));
+                    let was = std::mem::replace(&mut state.last_over, over);
+                    let side = over.and_then(Zone::side);
+                    if side != was.and_then(Zone::side) {
+                        shell.publish(Message::StripHover(side));
+                    }
+                    // The line's hover look is drawn from the cursor, with
+                    // no fade, so one redraw shows it.
+                    if (over == Some(Zone::Line)) != (was == Some(Zone::Line)) {
+                        shell.request_redraw();
+                    }
                 }
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if !matches!(state.gesture, Gesture::Page) && self.side_at(bounds, cursor).is_some()
+                if !matches!(state.gesture, Gesture::Page) && self.zone_at(bounds, cursor).is_some()
                 {
                     shell.publish(Message::ChromeWheel(*delta));
                     shell.capture_event();
@@ -429,8 +482,8 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
         }
     }
 
-    /// The hand cursor over an enabled strip also hides the pointer from the
-    /// page under it, which is why the strip forwards the wheel itself.
+    /// The hand cursor over an enabled zone also hides the pointer from the
+    /// page under it, which is why the zone forwards the wheel itself.
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
@@ -442,7 +495,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
         let state = tree.state.downcast_ref::<State>();
         if !matches!(state.gesture, Gesture::Page)
             && !state.other_button
-            && self.side_at(layout.bounds(), cursor).is_some()
+            && self.zone_at(layout.bounds(), cursor).is_some()
         {
             mouse::Interaction::Pointer
         } else {
@@ -452,19 +505,33 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
 
     fn draw(
         &self,
-        _tree: &widget::Tree,
+        tree: &widget::Tree,
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        let regions = regions(layout.bounds(), self.width, self.bottom_inset);
+        let bounds = layout.bounds();
+        let regions = regions(bounds, self.width, self.bottom_inset);
         for ((side, region), alpha) in SIDES.into_iter().zip(regions).zip(self.alpha) {
             if alpha > 0.0 && self.turns.get(side).is_some() {
                 self.draw_strip(renderer, theme, side, region, alpha);
             }
+        }
+        if let Some(progress) = self.progress {
+            let state = tree.state.downcast_ref::<State>();
+            let hovered = !matches!(state.gesture, Gesture::Page)
+                && self.zone_at(bounds, cursor) == Some(Zone::Line);
+            progress_line::draw(
+                renderer,
+                theme,
+                self.band(bounds),
+                progress,
+                hovered,
+                hovered || self.labelled,
+            );
         }
     }
 }

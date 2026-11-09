@@ -828,7 +828,7 @@ impl Reader {
         self.go_to_local_page(page)
     }
 
-    fn go_to_page_number(&mut self, number: u32) -> Option<Task<Message>> {
+    pub(super) fn go_to_page_number(&mut self, number: u32) -> Option<Task<Message>> {
         let atlas = self.atlas.as_ref()?;
         let (section, page) = atlas
             .sections

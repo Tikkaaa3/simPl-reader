@@ -128,6 +128,8 @@ pub enum Message {
     /// The page field gained or lost keyboard focus.
     PageFocus(bool),
     PageSubmit,
+    /// Turns to a page, from 0, as the page field does.
+    GoTo(usize),
     Previous,
     Next,
     ZoomIn,
@@ -1106,6 +1108,7 @@ impl Reader {
                     Task::none()
                 }
             },
+            Message::GoTo(page) => self.go_to_page(page),
             Message::Previous => self.jump((self.anchor().page as usize).saturating_sub(1)),
             Message::Next => self.jump(
                 (self.anchor().page as usize + 1).min(self.document.pages.len().saturating_sub(1)),
