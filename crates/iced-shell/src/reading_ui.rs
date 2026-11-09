@@ -156,8 +156,9 @@ impl Reader {
                 self.persist_preferences()
             }
         };
-        self.adapted.clear();
+        // A default change that this book overrides keeps its layout.
         let layout = if self.book.is_some() && self.reading_options() != before {
+            self.adapted.clear();
             self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
         } else {
             Task::none()

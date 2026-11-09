@@ -460,6 +460,10 @@ impl Reader {
             self.bar.modifiers = modifiers;
         }
         if self.document_path() != self.bar.document.as_deref() {
+            if self.bar.document.is_some() {
+                // Another document replaced this one under an open menu.
+                self.menu = None;
+            }
             self.bar.document = self.document_path().map(Path::to_path_buf);
             if self.bar.document.is_some() {
                 self.bar.open(now);

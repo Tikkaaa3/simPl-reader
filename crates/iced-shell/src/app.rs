@@ -4406,7 +4406,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     })
                 )
             {
-                reader.reading.picker = None;
+                if let Some((target, picker)) = reader.reading.picker.take()
+                    && matches!(reader.focused, Some(Control::Reading(..)))
+                {
+                    reader.focused =
+                        Some(Control::Reading(target, reading_ui::Focus::Picker(picker)));
+                }
                 return Task::none();
             }
             if reader.show_settings

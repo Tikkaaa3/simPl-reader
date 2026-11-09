@@ -150,4 +150,82 @@ mod tests {
         assert_eq!(reader.font_size, 22.0);
         assert_eq!(reader.reading.defaults.size, 20, "the defaults stay");
     }
+
+    fn aa_book_with_size_22() -> Reader {
+        let mut reader = super::super::tests::themed_reader(30);
+        let _ = reader.sync_reading_settings();
+        let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+        let _ = reader.reading_loaded(fingerprint, Ok(None));
+        let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+        let size_up = Control::Reading(Target::Book, reading_ui::Focus::SizeUp);
+        for _ in 0..2 {
+            let _ = reader.activate(size_up);
+        }
+        settle_theme(&mut reader);
+        reader
+    }
+
+    fn escape() -> Message {
+        Message::Event(
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Named(key::Named::Escape),
+                modified_key: Key::Named(key::Named::Escape),
+                physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            }),
+            window::Id::unique(),
+        )
+    }
+
+    #[test]
+    fn a_default_the_book_overrides_keeps_its_pages() {
+        let mut reader = aa_book_with_size_22();
+        let pages = reader.pages().len();
+        assert!(pages > 1);
+        let _ = update(
+            &mut reader,
+            Message::Reading(Target::Defaults, reading_ui::Action::Size(26)),
+        );
+        settle_theme(&mut reader);
+        assert_eq!(reader.reading.defaults.size, 26);
+        assert_eq!(reader.font_size, 22.0, "the book keeps its own size");
+        assert_eq!(reader.pages().len(), pages, "and its pages");
+    }
+
+    #[test]
+    fn escape_from_an_aa_picker_returns_focus_to_its_button() {
+        let mut reader = aa_book_with_size_22();
+        let font = Control::Reading(
+            Target::Book,
+            reading_ui::Focus::Picker(reading_ui::Picker::Font),
+        );
+        let _ = reader.activate(font);
+        let choice = Control::Reading(
+            Target::Book,
+            reading_ui::Focus::Font(reader_document::reading::Font::Spectral),
+        );
+        assert!(reader.controls().any(|control| control == choice));
+        reader.focused = Some(choice);
+        let _ = update(&mut reader, escape());
+        assert_eq!(reader.reading.picker, None);
+        assert_eq!(reader.focused, Some(font));
+        assert_eq!(
+            reader.menu,
+            Some(reading_chrome::Menu::Aa),
+            "the panel stays"
+        );
+    }
+
+    #[test]
+    fn a_menu_closes_when_another_document_replaces_this_one() {
+        let mut reader = aa_book_with_size_22();
+        let _ = update(&mut reader, Message::RevealBar);
+        assert_eq!(reader.menu, Some(reading_chrome::Menu::Aa));
+        reader.book = Some(super::super::tests::book("dropped"));
+        let _ = update(&mut reader, Message::RevealBar);
+        assert_eq!(reader.menu, None);
+    }
 }
