@@ -58,8 +58,24 @@ fn reader_navigation_semantics_assets_options_and_positions_roundtrip() {
             spacing: 180,
             margin: 64,
         };
+        let desktop = reader_document::reading::Options {
+            theme: Some(reader_document::reading::ThemeId::Soft),
+            ..Default::default()
+        };
+        reader_document::reading::save(&entry.fingerprint, Some(desktop)).unwrap();
         book.save_options(options).unwrap();
         assert_eq!(book.reader_info().unwrap().options.size, 28);
+        assert_eq!(
+            reader_document::reading::load(&entry.fingerprint).unwrap(),
+            Some(reader_document::reading::Options {
+                font: reader_document::reading::Font::Spectral,
+                size: 28,
+                spacing: 180,
+                margin: 64,
+                theme: Some(reader_document::reading::ThemeId::Soft),
+            }),
+            "{name}: the desktop's book theme survives an Android save"
+        );
         let before = book.atlas_json().unwrap();
         let task = book.clone().adapt("soft".into(), options).unwrap();
         wait(|| task.status());
