@@ -6742,9 +6742,9 @@ mod tests {
 
     /// A three-chapter EPUB like `fixtures/chapters/build_epub.py`, written to
     /// a temporary file because the EPUB reader opens a path.
-    pub(super) fn three_chapter_epub(name: &str) -> Arc<reader_document::epub::Epub> {
+    fn three_chapter_epub() -> Arc<reader_document::epub::Epub> {
         use std::io::Write as _;
-        let sentence = "The lamp burned low while the house settled into its evening sounds,             and the reader turned another page without noticing how late it had become. ";
+        let sentence = "The lamp burned low while the house settled into its evening sounds, and the reader turned another page without noticing how late it had become. ";
         let chapters: Vec<String> = (1..=3)
             .map(|number| {
                 let paragraphs: String = (1..15)
@@ -6758,7 +6758,8 @@ mod tests {
             })
             .collect();
         let package = r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-test-three-rooms</dc:identifier><dc:title>Three Rooms</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c1" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="c3" href="chapter-3.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>"#;
-        let path = std::env::temp_dir().join(format!("simpl-{name}-{}.epub", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("simpl-three-rooms-{}.epub", std::process::id()));
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         let stored = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
@@ -6785,7 +6786,7 @@ mod tests {
 
     #[test]
     fn epub_progress_grows_across_chapters() {
-        let epub = three_chapter_epub("progress");
+        let epub = three_chapter_epub();
         let mut reader = Reader {
             book: Some(Arc::new(load_epub_chapter(epub.clone(), 0, None).unwrap())),
             ..Reader::default()
@@ -9258,11 +9259,19 @@ mod tests {
                 .expect("the page shows text")
         };
         assert_eq!(first_text_row(&shown), first_text_row(&hidden));
+        // The progress line's band labels the line while the bar shows.
+        let band = shown.height() - 24;
         assert!(
-            (bar..shown.height()).all(
+            (bar..band).all(
                 |y| (0..shown.width()).all(|x| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
             ),
-            "everything outside the bar is identical whether it shows or not"
+            "everything between the bar and the progress line is identical whether it shows or not"
+        );
+        assert!(
+            (band..shown.height()).any(
+                |y| (0..shown.width()).any(|x| shown.get_pixel(x, y) != hidden.get_pixel(x, y))
+            ),
+            "the progress label shows with the bar"
         );
         assert!(
             (0..bar).any(
