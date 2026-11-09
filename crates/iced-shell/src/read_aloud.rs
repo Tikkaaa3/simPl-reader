@@ -209,6 +209,14 @@ impl Reader {
         self.read_aloud.speaker = Some(speaker);
     }
 
+    /// A session reading from the current page, as Listen starts one, without
+    /// a speaker, so nothing is spoken.
+    #[cfg(test)]
+    pub(super) fn begin_silent_listening(&mut self) {
+        let document = self.reading_document().expect("an open document");
+        self.begin(document, false, Next::Nothing, None);
+    }
+
     /// Identifies the open document so a session ends when it changes.
     fn reading_document(&self) -> Option<String> {
         if let Some(pdf) = &self.pdf {
@@ -1028,7 +1036,12 @@ pub(super) fn ticks() -> impl iced_futures::futures::Stream<Item = ()> {
     )
 }
 
-/// The Read aloud player shown under the toolbar while something is read.
+/// The Read aloud player, a pill over the page while something is read.
+// Fixed widths keep the pill's buttons still under the pointer when Pause
+// becomes Resume or the speed changes.
+const PAUSE_LABEL_WIDTH: f32 = 52.0;
+const SPEED_LABEL_WIDTH: f32 = 30.0;
+
 pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Message> {
     let Some(session) = &reader.read_aloud.session else {
         return iced::widget::Space::new().height(0).into();
@@ -1038,14 +1051,22 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
         control_button(
             reader,
             Control::ReadAloudPause,
-            text("Resume").font(ui::MEDIUM).size(13),
+            text("Resume")
+                .font(ui::MEDIUM)
+                .size(13)
+                .width(PAUSE_LABEL_WIDTH)
+                .align_x(iced::alignment::Horizontal::Center),
             action(Action::Resume),
         )
     } else {
         control_button(
             reader,
             Control::ReadAloudPause,
-            text("Pause").font(ui::MEDIUM).size(13),
+            text("Pause")
+                .font(ui::MEDIUM)
+                .size(13)
+                .width(PAUSE_LABEL_WIDTH)
+                .align_x(iced::alignment::Horizontal::Center),
             action(Action::Pause),
         )
     };
@@ -1058,8 +1079,7 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
         }),
         text(reader.read_aloud_caption())
             .size(13)
-            .style(ui::secondary_text)
-            .width(Length::Fill),
+            .style(ui::secondary_text),
         hinted_control(
             reader,
             Control::ReadAloudSlower,
@@ -1071,6 +1091,8 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
         ),
         text(format!("{:.1}×", speech::speed(rate)))
             .size(12)
+            .width(SPEED_LABEL_WIDTH)
+            .align_x(iced::alignment::Horizontal::Center)
             .style(ui::muted_text),
         hinted_control(
             reader,
@@ -1088,7 +1110,12 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
     if let Some(notice) = &session.notice {
         bar = bar.push(text(notice).size(11).style(ui::muted_text));
     }
-    container(bar).padding([8, 12]).style(ui::panel).into()
+    // Beside an overlaid drawer in a narrow window the pill has less room
+    // than its row needs; the row then breaks rather than losing Pause.
+    container(bar.wrap().vertical_spacing(4))
+        .padding([8, 12])
+        .style(ui::panel)
+        .into()
 }
 
 /// The Read aloud section of the settings panel.

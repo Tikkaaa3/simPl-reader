@@ -22,14 +22,6 @@ pub(super) fn note_editor_id() -> iced::advanced::widget::Id {
 
 const RIBBON: iced::Color = iced::Color::from_rgb(0.78, 0.20, 0.17);
 
-pub(super) fn sidebar_width(reader: &Reader) -> f32 {
-    if reader.notes.list.is_some() {
-        (reader.window_size.width * 0.36).clamp(230.0, 340.0)
-    } else {
-        0.0
-    }
-}
-
 fn unavailable(blocked: Option<&String>) -> String {
     match blocked {
         Some(error) => format!("Bookmarks and notes are unavailable for this book: {error}"),
@@ -38,12 +30,6 @@ fn unavailable(blocked: Option<&String>) -> String {
 }
 
 impl Reader {
-    pub(super) fn document_view_size(&self) -> iced::Size {
-        iced::Size::new(
-            (self.window_size.width - sidebar_width(self)).max(1.0),
-            self.window_size.height,
-        )
-    }
     /// The fingerprint of whatever is open, for either kind of reader.
     fn notes_book(&self) -> Option<String> {
         self.book
@@ -734,6 +720,9 @@ impl Reader {
                 } else {
                     Some(ListTab::default())
                 };
+                if self.notes.list.is_some() {
+                    self.make_room_for(drawers::Side::Right);
+                }
                 self.focused = None;
                 let size = self.document_view_size();
                 match &mut self.pdf {
@@ -1549,7 +1538,7 @@ fn list_panel(reader: &Reader, active: bool, tab: ListTab) -> Element<'_, Messag
         .spacing(12),
     )
     .padding(14)
-    .width((reader.window_size.width * 0.36).clamp(230.0, 340.0))
+    .width(drawers::width(reader.window_size.width))
     .height(Length::Fill)
     .style(ui::panel)
     .into()

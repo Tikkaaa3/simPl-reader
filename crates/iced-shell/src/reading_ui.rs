@@ -287,7 +287,7 @@ impl Reader {
         if !self.fit_width || self.book.is_none() || self.pagination.is_some() {
             return Task::none();
         }
-        let available = (self.window_size.width - notes_ui::sidebar_width(self)).max(1.0);
+        let available = self.document_view_size().width;
         let zoom = ((available - MINIMAL.side_padding(available) * 2.0 - 14.0) / book_map::PAPER)
             .clamp(0.25, 3.0);
         if (zoom - self.zoom).abs() < 0.001 {
@@ -735,10 +735,19 @@ mod tests {
         let _ = reader.fit_book_width();
         assert!(reader.fit_width && reader.zoom < 1.0);
         assert!(book_map::PAPER * reader.zoom + 46.0 <= reader.window_size.width + 0.1);
+        let fitted = reader.zoom;
         reader.notes.list = Some(notes::ListTab::Bookmarks);
         let _ = reader.refit_book();
-        let available = reader.window_size.width - notes_ui::sidebar_width(&reader);
-        assert!(book_map::PAPER * reader.zoom + 46.0 <= available + 0.1);
+        assert_eq!(
+            reader.zoom, fitted,
+            "an overlaid drawer leaves the page its width"
+        );
+        reader.window_size.width = 1000.0;
+        let _ = reader.refit_book();
+        assert!(
+            (book_map::PAPER * reader.zoom + 46.0 - 660.0).abs() < 0.1,
+            "a docked drawer fits the page in the 660px beside it"
+        );
         reader.notes.list = None;
         let _ = reader.fit_book_width();
         assert!(!reader.fit_width && reader.zoom == 1.0);

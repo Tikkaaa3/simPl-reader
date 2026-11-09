@@ -35,6 +35,8 @@ const STATES: &[State] = &[
         over_progress_line,
     ),
     ("reading-aa-open", reading_aa_open, still, away),
+    ("reading-listen", reading_listen, still, away),
+    ("reading-contents", reading_contents, still, away),
     ("settings", settings, still, away),
 ];
 
@@ -117,6 +119,22 @@ fn reading_aa_open() -> Reader {
     let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
     reader.bar.step_by(std::time::Duration::from_secs(1));
     assert!(reader.bar.visible() && reader.menu.is_some());
+    reader
+}
+
+/// The read-aloud pill floats above the progress line.
+fn reading_listen() -> Reader {
+    let mut reader = reading();
+    reader.begin_silent_listening();
+    assert!(reader.read_aloud.active());
+    reader
+}
+
+/// The contents drawer is docked beside a book with headings.
+fn reading_contents() -> Reader {
+    let mut reader = super::book_preview::full_bar_book(1280.0, 800.0);
+    let _ = update(&mut reader, Message::ToggleContents);
+    assert!(reader.show_contents && reader.drawers().docked().left > 0.0);
     reader
 }
 

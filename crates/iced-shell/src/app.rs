@@ -26,6 +26,8 @@ use reader_document::{BaseDirection, Endpoint, Item};
 mod book_map;
 #[path = "book_zoom.rs"]
 mod book_zoom;
+#[path = "drawers.rs"]
+mod drawers;
 #[path = "library_ui.rs"]
 mod library_ui;
 #[path = "notes_ui.rs"]
@@ -2083,7 +2085,7 @@ impl Reader {
             return 0..0;
         }
         let count = self.contents().len();
-        let height = (self.window_size.height * 0.35).clamp(100.0, 240.0);
+        let height = drawers::contents_viewport(self.window_size.height);
         let start = ((self.contents_offset / CONTENT_ROW_HEIGHT) as usize)
             .saturating_sub(1)
             .min(count);
@@ -2491,7 +2493,7 @@ impl Reader {
                 .return_location()
                 .map_or(Navigation::Preserve, Navigation::Push);
             self.commit_navigation(navigation);
-            self.show_contents = false;
+            self.close_overlaid_contents();
             self.selection.clear();
             self.focused = None;
             return self.rebuild_geometry(Anchor { row, fraction: 0.0 });
@@ -2525,12 +2527,12 @@ impl Reader {
     }
     fn open_chapter(&mut self, index: usize, fragment: Option<String>) -> Task<Message> {
         self.word_translation.reset();
+        self.close_overlaid_contents();
         if self
             .book
             .as_ref()
             .is_some_and(|b| b.epub.is_none() && b.pdf_source.is_none() && index < b.items.len())
         {
-            self.show_contents = false;
             self.focused = None;
             self.selection.clear();
             return self.rebuild_geometry(Anchor {
@@ -2569,7 +2571,7 @@ impl Reader {
                 fraction: location.as_ref().map_or(0.0, |l| l.within),
             };
             self.commit_navigation(navigation);
-            self.show_contents = false;
+            self.close_overlaid_contents();
             self.selection.clear();
             self.focused = None;
             self.error = None;
@@ -3915,7 +3917,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     let returns = navigation
                         .as_ref()
                         .map(|_| std::mem::take(&mut reader.returns));
+                    let docked_contents = (same_document && reader.drawers().docked().left > 0.0)
+                        .then_some(reader.contents_offset);
                     reader.clear_content();
+                    if let Some(offset) = docked_contents {
+                        reader.show_contents = true;
+                        reader.contents_offset = offset;
+                    }
                     if let Some(returns) = returns {
                         reader.returns = returns;
                     }
@@ -4109,6 +4117,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ToggleContents if reader.interactive() => {
             if !reader.contents().is_empty() {
                 reader.show_contents = !reader.show_contents;
+                if reader.show_contents {
+                    reader.make_room_for(drawers::Side::Left);
+                }
                 reader.contents_offset = 0.0;
                 reader.focused = if reader.show_contents && !reader.contents_range().is_empty() {
                     Some(Control::ContentsEntry(0))
@@ -4825,6 +4836,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         + (size.height - reader.window_size.height) / reader.zoom)
                         .max(1.0);
                     reader.window_size = size;
+                    reader.fit_drawers_to_window();
                     let view_size = reader.document_view_size();
                     let task = if let Some(pdf) = &mut reader.pdf {
                         forward_pdf(
@@ -5932,6 +5944,84 @@ fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a,
     container(bar).padding([8, 12]).style(ui::panel).into()
 }
 
+/// The narrowest room the find box and the read-aloud pill keep for their
+/// controls.
+const FLOATING_MIN_WIDTH: f32 = 300.0;
+
+/// The find box and the read-aloud pill over the page, between the page
+/// strips' inner edges: the box at the top right below the bar's place, the
+/// pill centred above the progress line. Each keeps its slot while closed.
+/// The wheel over either still scrolls the page.
+fn floating(reader: &Reader, active: bool) -> Element<'_, Message> {
+    fn wheel(content: Element<'_, Message>) -> Element<'_, Message> {
+        iced::widget::mouse_area(iced::widget::opaque(content))
+            .on_scroll(Message::ChromeWheel)
+            .into()
+    }
+    const FIND_WIDTH: f32 = 400.0;
+    const GAP: f32 = 8.0;
+    let window = reader.window_size;
+    let drawers = reader.drawers();
+    let area = iced::Rectangle::with_size(Size::new(
+        (window.width - drawers.docked().total()).max(0.0),
+        window.height,
+    ));
+    let strip = page_strips::width(window.width);
+    let inset = page_strips::bottom_inset(reader);
+    let overlaid = drawers.overlaid();
+    let [previous, next] = page_strips::regions(area, strip, inset, overlaid);
+    let band = progress_line::band(area, strip, inset, overlaid);
+    // Between the strips while the controls fit there. Two drawers in a
+    // narrow window leave too little, and the controls then cover the strips.
+    let between = previous.x + previous.width..next.x;
+    let lane = if between.end - between.start >= FLOATING_MIN_WIDTH {
+        between
+    } else {
+        let start = overlaid.left + GAP;
+        start..(area.width - overlaid.right - GAP).max(start)
+    };
+    let find: Element<'_, Message> = match &reader.find {
+        Some(find) => container(wheel(
+            container(find_bar(reader, find, active))
+                .width(FIND_WIDTH.min(lane.end - lane.start))
+                .into(),
+        ))
+        .width(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .padding(iced::Padding {
+            top: reading_chrome::HEIGHT + GAP,
+            right: area.width - lane.end,
+            ..iced::Padding::ZERO
+        })
+        .into(),
+        None => iced::widget::Space::new().into(),
+    };
+    let pill: Element<'_, Message> = if reader.read_aloud.active() {
+        container(wheel(
+            container(read_aloud::player(reader, active))
+                .max_width(lane.end - lane.start)
+                .into(),
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(iced::Padding {
+            left: lane.start,
+            right: area.width - lane.end,
+            bottom: area.height - band.y + GAP,
+            top: 0.0,
+        })
+        .into()
+    } else {
+        iced::widget::Space::new().into()
+    };
+    iced::widget::stack![find, pill]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
 /// Choosing a theme card: the default theme from Settings, the book's own from Aa.
 fn theme_message(target: reading_ui::Target, index: usize) -> Message {
     match target {
@@ -6053,7 +6143,7 @@ fn hinted_control<'a>(
 fn book_desk_widths(reader: &Reader) -> (f32, f32) {
     let margin = reader.reading_options().margin as f32;
     let paper_width = reader.width + margin * 2.0;
-    let available = (reader.window_size.width - notes_ui::sidebar_width(reader)).max(1.0);
+    let available = reader.document_view_size().width;
     let side_padding = MINIMAL.side_padding(available);
     (
         available,
@@ -6185,71 +6275,6 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     // This slot is always present, so expanding any panel never replaces the
     // reading scrollable's widget-tree position or its native scroll state.
     let mut auxiliary = column![].spacing(8);
-    if let Some(find) = reader
-        .find
-        .as_ref()
-        .filter(|_| reader.book.is_some() || reader.pdf.is_some())
-    {
-        auxiliary = auxiliary.push(find_bar(reader, find, active));
-    }
-    if reader.read_aloud.active() {
-        auxiliary = auxiliary.push(read_aloud::player(reader, active));
-    }
-    let contents = reader.contents();
-    if !contents.is_empty() && reader.show_contents {
-        let height = (reader.window_size.height * 0.35).clamp(100.0, 240.0);
-        let range = reader.contents_range();
-        let start = range.start;
-        let end = range.end;
-        let mut entries =
-            column![iced::widget::Space::new().height(start as f32 * CONTENT_ROW_HEIGHT)];
-        for (relative, entry) in contents[start..end].iter().enumerate() {
-            let label = text(entry.label.clone())
-                .size(13)
-                .wrapping(iced::widget::text::Wrapping::None);
-            entries = entries.push(
-                container(toned_button(
-                    reader,
-                    Control::ContentsEntry(start + relative),
-                    label,
-                    active.then(|| Message::EpubChapter {
-                        index: entry.chapter,
-                        fragment: entry.fragment.clone(),
-                    }),
-                    ui::ButtonTone::Subtle,
-                    reader
-                        .book
-                        .as_ref()
-                        .and_then(|b| b.epub.as_ref())
-                        .map_or(entry.chapter <= reader.anchor().row, |c| {
-                            entry.chapter == c.index
-                        }),
-                ))
-                .height(CONTENT_ROW_HEIGHT)
-                .width(Length::Fill)
-                .clip(true)
-                .padding(iced::Padding {
-                    left: entry.depth.min(6) as f32 * 12.0,
-                    ..iced::Padding::default()
-                }),
-            );
-        }
-        entries = entries.push(
-            iced::widget::Space::new().height((contents.len() - end) as f32 * CONTENT_ROW_HEIGHT),
-        );
-        auxiliary = auxiliary.push(
-            container(
-                scrollable(entries)
-                    .direction(ui::vertical_scrollbar())
-                    .style(ui::scroll_style)
-                    .id(iced::advanced::widget::Id::new("epub-contents"))
-                    .height(height)
-                    .on_scroll(|viewport| Message::ContentsScrolled(viewport.absolute_offset().y)),
-            )
-            .padding(8)
-            .style(ui::panel),
-        );
-    }
     if let Some(error) = &reader.error {
         let mut notice = row![
             text(error)
@@ -6451,20 +6476,18 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         // The reading area starts at the top of the window; the bar and the
         // panels it holds open float above it, so the page never moves when
         // they show or hide.
-        let reading = row![
-            container(iced::widget::stack![
-                content,
-                page_strips::layer(reader, active)
-            ])
-            .width(Length::Fill)
-            .height(Length::Fill),
-            // The sidebar starts below the bar's height whether or not the bar
-            // shows, so the bar never covers its tabs and it never moves.
-            container(notes_ui::sidebar(reader, active)).padding(iced::Padding {
-                top: reading_chrome::HEIGHT,
-                ..iced::Padding::ZERO
-            }),
-        ]
+        // Docked drawers narrow the reading area; overlaid ones cover it.
+        let docked = reader.drawers().docked();
+        let reading = container(iced::widget::stack![
+            content,
+            page_strips::layer(reader, active),
+            floating(reader, active),
+        ])
+        .padding(iced::Padding {
+            left: docked.left,
+            right: docked.right,
+            ..iced::Padding::ZERO
+        })
         .width(Length::Fill)
         .height(Length::Fill);
         let mut top = column![reading_chrome::view(reader, active)];
@@ -6476,7 +6499,7 @@ fn view(reader: &Reader) -> Element<'_, Message> {
                 }),
             ));
         }
-        let layers = iced::widget::stack![reading, top];
+        let layers = iced::widget::stack![reading, drawers::layer(reader, active), top];
         match reading_chrome::menu(reader, active) {
             Some(menu) => layers.push(menu).into(),
             None => layers.into(),
@@ -6785,6 +6808,58 @@ mod tests {
             start_of_second.fraction > end_of_first.fraction,
             "{start_of_second:?} after {end_of_first:?}"
         );
+    }
+
+    #[test]
+    fn choosing_an_entry_keeps_a_docked_contents_drawer_and_closes_an_overlaid_one() {
+        let epub = three_chapter_epub();
+        for (window, stays) in [(1400.0, true), (860.0, false)] {
+            let mut reader = Reader {
+                book: Some(Arc::new(load_epub_chapter(epub.clone(), 0, None).unwrap())),
+                window_size: Size::new(window, 900.0),
+                ..Reader::default()
+            };
+            let _ = reader.rebuild_geometry(Anchor {
+                row: 0,
+                fraction: 0.0,
+            });
+            settle_pagination(&mut reader);
+            let _ = update(&mut reader, Message::ToggleContents);
+            assert_eq!(reader.focused, Some(Control::ContentsEntry(0)));
+            let _ = update(&mut reader, Message::ContentsScrolled(34.0));
+            let _ = reader.activate(Control::ContentsEntry(1));
+            assert!(reader.opening.is_some(), "chapter 2 is loading");
+            assert_eq!(
+                reader.show_contents, stays,
+                "the drawer at {window} as chapter 2 loads"
+            );
+            let request = reader.request;
+            let _ = update(
+                &mut reader,
+                Message::Loaded {
+                    request,
+                    result: Ok(LoadReply {
+                        document: LoadedDocument::Reflow(Arc::new(
+                            load_epub_chapter(epub.clone(), 1, None).unwrap(),
+                        )),
+                        catalog: None,
+                    }),
+                },
+            );
+            assert_eq!(
+                reader.book.as_ref().unwrap().epub.as_ref().unwrap().index,
+                1
+            );
+            assert_eq!(
+                reader.show_contents, stays,
+                "the drawer at {window} once chapter 2 opened"
+            );
+            assert_eq!(
+                reader.contents_offset,
+                if stays { 34.0 } else { 0.0 },
+                "a docked list keeps its scroll position"
+            );
+        }
     }
 
     #[test]
@@ -9258,6 +9333,73 @@ mod tests {
         let _ = update(&mut reader, key(key::Named::Escape, key::Code::Escape));
         assert_eq!(reader.focused, None);
         assert_eq!(reader.bar.state(), BarState::Hidden);
+    }
+
+    #[test]
+    fn panels_do_not_move_the_page() {
+        ui::load_test_fonts();
+        let output =
+            std::env::temp_dir().join(format!("simpl-panels-still-{}", std::process::id()));
+        std::fs::create_dir_all(&output).unwrap();
+        let shot = |reader: &mut Reader, name: &str| {
+            let path = output.join(format!("{name}.png"));
+            book_preview::render(reader, &path);
+            ::image::open(&path).unwrap().to_rgba8()
+        };
+        let mut reader = book_preview::full_bar_book(1400.0, 900.0);
+        let plain = shot(&mut reader, "plain");
+        reader.begin_silent_listening();
+        let listening = shot(&mut reader, "listen");
+        let _ = update(&mut reader, Message::ReadAloud(read_aloud::Action::Toggle));
+        assert!(!reader.read_aloud.active());
+        let _ = update(&mut reader, Message::FindOpen);
+        let finding = shot(&mut reader, "find");
+        let _ = update(&mut reader, Message::FindClose);
+        let _ = update(&mut reader, Message::ToggleContents);
+        assert!(reader.show_contents);
+        let contents = shot(&mut reader, "contents");
+        let _ = std::fs::remove_dir_all(&output);
+
+        // Right of the docked contents drawer and left of the find box, and
+        // above the pill: dark ink there is the page's own text.
+        let (left, right) = (341, 880);
+        let first_text_row = |image: &::image::RgbaImage| {
+            (reading_chrome::HEIGHT as u32..image.height())
+                .find(|&y| {
+                    (left..right).any(|x| {
+                        let [r, g, b, _] = image.get_pixel(x, y).0;
+                        u32::from(r) + u32::from(g) + u32::from(b) < 3 * 80
+                    })
+                })
+                .expect("the page shows text")
+        };
+        let changed =
+            |image: &::image::RgbaImage, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>| {
+                ys.clone().any(|y| {
+                    xs.clone()
+                        .any(|x| image.get_pixel(x, y) != plain.get_pixel(x, y))
+                })
+            };
+        assert!(
+            changed(&listening, 0..1400, 780..868),
+            "the pill shows above the line"
+        );
+        assert!(
+            changed(&finding, 880..1300, 52..110),
+            "the find box shows at the top right"
+        );
+        assert!(
+            changed(&contents, 0..340, 44..900),
+            "the drawer shows on the left"
+        );
+        let row = first_text_row(&plain);
+        for (name, image) in [
+            ("Listen", &listening),
+            ("Find", &finding),
+            ("Contents", &contents),
+        ] {
+            assert_eq!(first_text_row(image), row, "{name} moved the page");
+        }
     }
 
     #[test]
