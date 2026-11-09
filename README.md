@@ -148,7 +148,7 @@ Older text imports may lack source-format metadata. Add the original TXT/Markdow
 file again to repair its library label while reusing the same managed document.
 
 When EPUB or HTML has no source page list, simPl creates a fixed page map on its
-first preparation. Zoom from **Aa** or with **Ctrl+plus / minus / 0** scales that map; it does not repaginate it. **Fit width** in **Aa**, or **Ctrl+Shift+F**, fits the page to the window. It follows window and notes-sidebar resizing, and returns to the previous zoom when toggled off.
+first preparation. Zoom from **Aa** or with **Ctrl+plus / minus / 0** scales that map; it does not repaginate it. **Fit width** in **Aa**, or **Ctrl+Shift+F**, fits the page to the window. It follows the window and any drawer docked beside the page, and returns to the previous zoom when toggled off.
 Click anywhere along the left or right edge of the reading area, or press the arrow
 keys, to turn pages; vertical scrolling stays within the selected Book page. The edge
 shows a soft shade and an arrow while the pointer is over it, and the wheel there still
@@ -169,14 +169,18 @@ highlight to change its color, edit its note or remove it. Same-color overlappin
 highlights merge without darkening; different colors can overlap. Right-click a
 page to bookmark it. The bookmarks and notes sidebar opens from the **Notes** icon
 in the reading bar or with Ctrl+B. Click a note in the sidebar to read its full text;
-long notes scroll within the list.
+long notes scroll within the list. The **Contents** icon or Ctrl+T opens the book's
+contents in a drawer on the left. In a window 900 pixels wide or more, both drawers
+sit beside the page; in a narrower one they open over it, and choosing a chapter
+closes the contents drawer.
 Bookmarks and highlights are stored per book under
 `%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
 
 Select the **Listen** icon or press **Ctrl+Shift+U** to continue from the current page to the
-end of the book, even when text is selected. The player provides pause, resume,
-and speed controls. The viewport follows the spoken line, turning pages and
-loading the next EPUB chapter automatically.
+end of the book, even when text is selected. A small player above the progress line
+provides pause, resume, and speed controls without moving the page. The viewport
+follows the spoken line, turning pages and loading the next EPUB chapter
+automatically.
 The spoken word has a temporary accent fill and outline in Book and PDF Document views. Pause keeps it visible; stopping clears it. It does not change selection or saved highlights.
 Select the same icon, now a stop sign, or press **Ctrl+Shift+U** to stop.
 Use **Read aloud** in the selection menu or on a saved highlight to read only
@@ -292,7 +296,7 @@ JSON also preserves their full anchors, IDs and timestamps.
 | **Ctrl+L** | Focus the page field |
 | **Ctrl+plus / minus / 0** | Zoom in / out / reset |
 | **Ctrl+wheel**, touchpad pinch | Zoom in / out |
-| **Ctrl+T** in EPUB | Open contents |
+| **Ctrl+T** in EPUB | Show or hide the contents drawer |
 | **Alt+Left** | Return from an internal link |
 | **Ctrl+C** | Copy selected text |
 | **Ctrl+Shift+U** | Start / stop reading aloud |
