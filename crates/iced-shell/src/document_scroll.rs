@@ -25,16 +25,20 @@ const FADE: Duration = Duration::from_millis(150);
 const FRAME: Duration = Duration::from_millis(16);
 
 /// `zoom` receives Ctrl+wheel movement in notches; positive values zoom in.
+/// `wheel` receives any other wheel delta over the document before it scrolls,
+/// so the app sees where the wheel found it, even at an end it cannot pass.
 /// `place` names what is scrolled, such as the page on screen. A new place
 /// shows the rail as a scroll does, because a page turn from the top of one
 /// page to the top of a page of the same height moves nothing else.
 pub fn wrap<'a, Message: 'a>(
     zoom: impl Fn(f32) -> Message + 'a,
+    wheel: Option<fn(mouse::ScrollDelta) -> Message>,
     place: u64,
     scrollable: iced::widget::Scrollable<'a, Message>,
 ) -> Element<'a, Message> {
     Element::new(DocumentScroll {
         zoom: Box::new(zoom),
+        wheel,
         place,
         content: scrollable
             .auto_scroll(true)
@@ -60,6 +64,7 @@ pub fn wrap<'a, Message: 'a>(
 
 struct DocumentScroll<'a, Message> {
     zoom: Box<dyn Fn(f32) -> Message + 'a>,
+    wheel: Option<fn(mouse::ScrollDelta) -> Message>,
     place: u64,
     content: Element<'a, Message>,
 }
@@ -561,6 +566,13 @@ impl<Message> DocumentScroll<'_, Message> {
             shell.capture_event();
             return;
         }
+        if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
+            && let Some(wheel) = self.wheel
+            && !was_auto_scrolling
+            && cursor.is_over(layout.bounds())
+        {
+            shell.publish(wheel(*delta));
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 state.pointer = cursor.position();
@@ -828,6 +840,7 @@ mod tests {
         let size = Size::new(800.0, 700.0);
         let mut element = wrap(
             |_| (),
+            None,
             0,
             iced::widget::scrollable(iced::widget::Space::new().height(10_000.0))
                 .height(Length::Fill),
@@ -884,6 +897,7 @@ mod tests {
         let page = |place| {
             wrap(
                 |_| (),
+                None,
                 place,
                 iced::widget::scrollable(iced::widget::Space::new().height(10_000.0))
                     .height(Length::Fill),

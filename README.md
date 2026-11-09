@@ -150,9 +150,12 @@ file again to repair its library label while reusing the same managed document.
 When EPUB or HTML has no source page list, simPl creates a fixed page map on its
 first preparation. Zoom from **Aa** or with **Ctrl+plus / minus / 0** scales that map; it does not repaginate it. **Fit width** in **Aa**, or **Ctrl+Shift+F**, fits the page to the window. It follows the window and any drawer docked beside the page, and returns to the previous zoom when toggled off.
 Click anywhere along the left or right edge of the reading area, or press the arrow
-keys, to turn pages; vertical scrolling stays within the selected Book page. The edge
+keys, to turn pages. The edge
 shows a soft shade and an arrow while the pointer is over it, and the wheel there still
 scrolls the page. The same edges turn pages in PDF Document view.
+Keep turning the wheel a little past the end of a Book page to go on to the top of
+the next page, or past its top to go back to the bottom of the previous page; a
+single notch does not turn it.
 A thin line along the bottom shows how far through the book or PDF you are. Point at
 it to see the page and percent, or click it to jump to that point.
 While you read, the scrollbar hides; it appears when you scroll or point at the right

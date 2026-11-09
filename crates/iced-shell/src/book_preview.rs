@@ -4148,3 +4148,136 @@ fn aa_zoom_buttons_zoom_the_book() {
     );
     assert_eq!((reader.zoom * 100.0).round(), 110.0);
 }
+
+/// The page scrollable's offset in the harness's widget tree, and how far it can scroll.
+fn native_scroll(ui: &mut Harness, reader: &Reader) -> (f32, f32) {
+    let mut element = view(reader);
+    ui.tree.diff(element.as_widget());
+    let node = element.as_widget_mut().layout(
+        &mut ui.tree,
+        &ui.renderer,
+        &layout::Limits::new(reader.window_size, reader.window_size),
+    );
+    let mut probe = PaperViewport::default();
+    element
+        .as_widget_mut()
+        .operate(&mut ui.tree, Layout::new(&node), &ui.renderer, &mut probe);
+    (probe.offset.y, probe.content.height - probe.bounds.height)
+}
+
+/// `count` wheel notches down. A push goes in one `send_all`, as input between
+/// two frames: rebuilding the view between notches can outlast the push window
+/// on a busy machine.
+fn wheel_notches(count: usize) -> Vec<iced::Event> {
+    vec![
+        iced::Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+        });
+        count
+    ]
+}
+
+/// Messages of each wheel kind among `messages`: over the chrome, over the page.
+fn wheels(messages: &[Message]) -> (usize, usize) {
+    let count = |kind: fn(&Message) -> bool| messages.iter().filter(|m| kind(m)).count();
+    (
+        count(|m| matches!(m, Message::ChromeWheel(_))),
+        count(|m| matches!(m, Message::PageWheel(_))),
+    )
+}
+
+#[test]
+fn overscroll_at_the_scrollable_bottom_turns_the_page() {
+    for zoom in [1.0, 0.8, 2.0, 0.6] {
+        let mut reader = strip_book(1280.0, 700.0);
+        let _ = update(&mut reader, Message::Zoom(zoom));
+        let generation = reader.generation;
+        let _ = update(&mut reader, Message::LayoutReady(generation));
+        assert_eq!(scrolls_sideways(&reader), zoom == 2.0);
+        let mut ui = Harness::new();
+        let page = Point::new(640.0, 350.0);
+        let mut notches = 0;
+        loop {
+            let (offset, end) = native_scroll(&mut ui, &reader);
+            let at_bottom = offset >= end - 0.5;
+            assert_eq!(
+                reader.at_page_end(true),
+                at_bottom,
+                "at zoom {zoom}, {notches} notches down: the scrollable is at {offset} of {end}"
+            );
+            if at_bottom {
+                break;
+            }
+            let messages = ui.send_all(&mut reader, &wheel_notches(1), page);
+            assert_eq!(wheels(&messages), (0, 1));
+            notches += 1;
+            assert!(notches < 40);
+        }
+        assert_eq!(reader.active_page().unwrap().number, 0, "at zoom {zoom}");
+        ui.send_all(&mut reader, &wheel_notches(4), page);
+        assert_eq!(reader.active_page().unwrap().number, 1, "at zoom {zoom}");
+        assert_eq!(reader.local_offset(), 0.0);
+    }
+}
+
+#[test]
+fn ctrl_wheel_at_the_page_bottom_zooms_without_turning() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let generation = reader.generation;
+    let _ = update(&mut reader, Message::LayoutReady(generation));
+    let mut ui = Harness::new();
+    let page = Point::new(640.0, 350.0);
+    for _ in 0..40 {
+        if reader.at_page_end(true) {
+            break;
+        }
+        ui.send_all(&mut reader, &wheel_notches(1), page);
+    }
+    assert!(reader.at_page_end(true));
+    let mut events = vec![iced::Event::Keyboard(keyboard::Event::ModifiersChanged(
+        keyboard::Modifiers::CTRL,
+    ))];
+    events.extend(wheel_notches(5));
+    let messages = ui.send_all(&mut reader, &events, page);
+    assert_eq!(wheels(&messages), (0, 0), "the page reports no wheel");
+    assert_eq!(reader.active_page().unwrap().number, 0);
+    assert_eq!((reader.zoom * 100.0).round(), 62.0);
+}
+
+/// A listening book with its bar pinned, scrolled to the bottom of page 1,
+/// and the middle of the read-aloud pill's Pause button.
+fn listening_at_the_page_bottom() -> (Reader, Point) {
+    let mut reader = full_bar_book(1400.0, 600.0);
+    reader.begin_silent_listening();
+    let _ = update(&mut reader, Message::TogglePinnedBar);
+    assert!(reader.bar.visible());
+    let pill = bounds_of(&mut reader, Control::ReadAloudPause).center();
+    let generation = reader.generation;
+    let _ = update(&mut reader, Message::LayoutReady(generation));
+    let viewport = paper_viewport(&reader);
+    let page_top = reader.active_page().unwrap().top;
+    let _ = update(
+        &mut reader,
+        Message::Scroll {
+            generation,
+            offset: viewport.content.height - viewport.bounds.height,
+            viewport: viewport.bounds.height,
+            page_top,
+        },
+    );
+    assert!(reader.at_page_end(true));
+    (reader, pill)
+}
+
+#[test]
+fn overscroll_over_the_pill_turns_the_page() {
+    let (mut reader, pill) = listening_at_the_page_bottom();
+    let messages = Harness::new().send_all(&mut reader, &wheel_notches(3), pill);
+    assert_eq!(wheels(&messages), (3, 0), "the pill takes the wheel");
+    assert_eq!(page_field(&reader), "1", "three notches push 180 px");
+
+    let (mut reader, pill) = listening_at_the_page_bottom();
+    Harness::new().send_all(&mut reader, &wheel_notches(4), pill);
+    assert_eq!(page_field(&reader), "2");
+    assert_eq!(reader.local_offset(), 0.0);
+}

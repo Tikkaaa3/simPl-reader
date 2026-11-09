@@ -6,6 +6,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::{Duration, Instant};
 
 use crate::{
     book_pages,
@@ -689,9 +690,74 @@ struct ReturnLocation {
 #[derive(Clone, Debug)]
 enum Navigation {
     Preserve,
-    End,
+    /// Opens the section on its last page.
+    End(Landing),
     Push(ReturnLocation),
     Pop,
+}
+
+/// Which part of a page a page turn shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Landing {
+    Top,
+    Bottom,
+}
+
+/// Wheel input pushing past one end of the page, toward a page turn.
+#[derive(Clone, Copy, Debug)]
+struct Overscroll {
+    next: bool,
+    distance: f32,
+    started: Instant,
+    generation: u64,
+}
+
+/// How far the wheel must push past the end of a page, and how quickly, to turn it.
+const OVERSCROLL_TURN: f32 = 240.0;
+const OVERSCROLL_WINDOW: Duration = Duration::from_millis(700);
+
+/// One wheel movement of `dy` (positive scrolls down) at `now`, with the page
+/// already at its end in that direction when `at_edge`. Returns the push that
+/// remains and whether this movement turns the page. A sideways movement
+/// (`dy` 0) leaves the push as it was.
+fn push(
+    previous: Option<Overscroll>,
+    dy: f32,
+    at_edge: bool,
+    now: Instant,
+    generation: u64,
+) -> (Option<Overscroll>, bool) {
+    if dy == 0.0 {
+        return (previous, false);
+    }
+    if !at_edge {
+        return (None, false);
+    }
+    let next = dy > 0.0;
+    let current = previous
+        .filter(|push| {
+            push.next == next
+                && push.generation == generation
+                && now.saturating_duration_since(push.started) <= OVERSCROLL_WINDOW
+        })
+        .unwrap_or(Overscroll {
+            next,
+            distance: 0.0,
+            started: now,
+            generation,
+        });
+    let distance = current.distance + dy.abs();
+    if distance >= OVERSCROLL_TURN {
+        (None, true)
+    } else {
+        (
+            Some(Overscroll {
+                distance,
+                ..current
+            }),
+            false,
+        )
+    }
 }
 
 /// A section laid out for the chosen reading theme: its own row heights, and the
@@ -925,8 +991,13 @@ struct Reader {
     heights: virtual_reader::HeightIndex,
     measurements: virtual_reader::Measurements,
     pending_anchor: Option<Anchor>,
+    /// The generation of a page turned back to by the wheel, which shows its
+    /// bottom once laid out. No content anchor can pin a bottom below the text.
+    bottom_landing: Option<u64>,
+    overscroll: Option<Overscroll>,
     pagination: Option<Arc<AtomicBool>>,
-    pagination_end: bool,
+    /// Pagination in progress ends on the last page, showing this part of it.
+    pagination_end: Option<Landing>,
     measured_layout: Option<(f32, f32)>,
     selection: selection::SelectionState,
     notes: notes::Notes,
@@ -1034,8 +1105,10 @@ impl Default for Reader {
             heights: virtual_reader::HeightIndex::new(Vec::new()),
             measurements: Default::default(),
             pending_anchor: None,
+            bottom_landing: None,
+            overscroll: None,
             pagination: None,
-            pagination_end: false,
+            pagination_end: None,
             measured_layout: None,
             selection: Default::default(),
             notes: Default::default(),
@@ -1162,6 +1235,8 @@ enum Message {
     /// The wheel turned over the reading bar or a page strip; it acts on the
     /// document under it.
     ChromeWheel(mouse::ScrollDelta),
+    /// The wheel turned over the Book page, before the page scrolls by it.
+    PageWheel(mouse::ScrollDelta),
     /// The pointer moved onto a page strip that can turn the page, or off both.
     StripHover(Option<page_strips::Side>),
     /// A press on the progress line, with the page it lands on, from 1.
@@ -1512,13 +1587,21 @@ impl Reader {
     }
 
     fn go_to_local_page(&mut self, page: usize) -> Task<Message> {
+        self.land_on_page(page, Landing::Top)
+    }
+
+    fn land_on_page(&mut self, page: usize, landing: Landing) -> Task<Message> {
         self.word_translation.reset();
         let pages = self.pages();
         let Some(page) = pages.get(page).cloned() else {
             return Task::none();
         };
         self.generation = self.generation.wrapping_add(1);
-        self.offset = page.top;
+        self.offset = match landing {
+            Landing::Top => page.top,
+            Landing::Bottom => self.page_bottom(&page),
+        };
+        self.bottom_landing = (landing == Landing::Bottom).then_some(self.generation);
         self.pending_anchor = Some(Anchor {
             row: page.rows.start,
             fraction: (page.content.start - self.heights.start(page.rows.start))
@@ -1526,6 +1609,11 @@ impl Reader {
         });
         self.selection.end_drag();
         self.restore_book_scroll()
+    }
+
+    /// The offset that shows the bottom of `page`, as far as the page scrolls.
+    fn page_bottom(&self, page: &book_pages::Page) -> f32 {
+        page.top + (page.height - self.viewport).max(0.0)
     }
 
     fn active_page(&self) -> Option<book_pages::Page> {
@@ -1572,6 +1660,11 @@ impl Reader {
     }
 
     fn adjacent_book_page(&mut self, next: bool) -> Task<Message> {
+        self.turn_book_page(next, Landing::Top)
+    }
+
+    /// Turns to the next page at its top, or to the previous page at `back`.
+    fn turn_book_page(&mut self, next: bool, back: Landing) -> Task<Message> {
         if self.pagination.is_some() || !self.interactive() {
             return Task::none();
         }
@@ -1596,17 +1689,44 @@ impl Reader {
                     if next {
                         Navigation::Preserve
                     } else {
-                        Navigation::End
+                        Navigation::End(back)
                     },
                 );
             }
         }
-        let target = if next {
-            (current + 1).min(pages.len() - 1)
+        if next {
+            self.go_to_local_page((current + 1).min(pages.len() - 1))
         } else {
-            current.saturating_sub(1)
-        };
-        self.go_to_local_page(target)
+            self.land_on_page(current.saturating_sub(1), back)
+        }
+    }
+
+    /// Counts a wheel movement that reached the page toward turning it, and
+    /// returns the turn once the push past the page's end is long enough.
+    /// `dy` is how far the wheel scrolls the page down. Callers never pass a
+    /// Ctrl+wheel, which zooms instead.
+    fn overscroll(&mut self, dy: f32, now: Instant) -> Option<Task<Message>> {
+        if self.pending_anchor.is_some() || !self.interactive() {
+            self.overscroll = None;
+            return None;
+        }
+        let next = dy > 0.0;
+        let at_edge = self.can_turn(next) && self.at_page_end(next);
+        let (overscroll, turn) = push(self.overscroll, dy, at_edge, now, self.generation);
+        self.overscroll = overscroll;
+        turn.then(|| self.turn_book_page(next, Landing::Bottom))
+    }
+
+    /// Whether the Book page is scrolled to its bottom (`next`) or its top.
+    fn at_page_end(&self, next: bool) -> bool {
+        const EPSILON: f32 = 0.5;
+        self.active_page().is_some_and(|page| {
+            if next {
+                self.offset >= self.page_bottom(&page) - EPSILON
+            } else {
+                self.offset <= page.top + EPSILON
+            }
+        })
     }
 
     fn anchor(&self) -> Anchor {
@@ -1727,7 +1847,7 @@ impl Reader {
         if let Some(cancel) = self.pagination.take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        self.pagination_end = false;
+        self.pagination_end = None;
         self.measured_layout = None;
         self.heights = virtual_reader::HeightIndex::new(Vec::new());
         self.measurements.lock().clear();
@@ -1820,14 +1940,13 @@ impl Reader {
         match result {
             Ok(Some(atlas)) => {
                 self.atlas = Some(Arc::new(atlas));
-                let end = self.pagination_end;
+                let end = self.pagination_end.take();
                 let task = self.rebuild_geometry(self.pending_anchor.unwrap_or(Anchor {
                     row: 0,
                     fraction: 0.0,
                 }));
-                self.pagination_end = false;
-                if end {
-                    return self.go_to_local_page(self.pages().len().saturating_sub(1));
+                if let Some(landing) = end {
+                    return self.land_on_page(self.pages().len().saturating_sub(1), landing);
                 }
                 task
             }
@@ -1874,6 +1993,12 @@ impl Reader {
         let restore = self.pending_anchor.take().is_some();
         if changed || restore {
             self.offset = self.offset_for(anchor);
+            if restore
+                && self.bottom_landing.take() == Some(self.generation)
+                && let Some(page) = self.active_page()
+            {
+                self.offset = self.page_bottom(&page);
+            }
             self.restore_book_scroll()
         } else {
             Task::none()
@@ -2464,7 +2589,7 @@ impl Reader {
             Navigation::Pop => {
                 self.returns.pop();
             }
-            Navigation::Preserve | Navigation::End => {}
+            Navigation::Preserve | Navigation::End(_) => {}
         }
     }
     fn follow_link(&mut self, href: String) -> Task<Message> {
@@ -2589,7 +2714,7 @@ impl Reader {
         let previous = self.document_position();
         self.cancel_open();
         let request = self.request;
-        let at_end = matches!(navigation, Navigation::End);
+        let at_end = matches!(navigation, Navigation::End(_));
         self.pending_navigation = Some(navigation);
         self.opening = Some(path);
         self.error = None;
@@ -3783,6 +3908,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ChromeWheel(delta) => reading_chrome::wheel(reader, delta),
+        Message::PageWheel(delta) => {
+            // Shift as the page's scrollable sees it, from keyboard events.
+            let dy = reading_chrome::wheel_offset(delta, reader.bar.modifiers.shift()).y;
+            reader
+                .overscroll(dy, Instant::now())
+                .unwrap_or_else(Task::none)
+        }
         Message::StripHover(side) => {
             reader.strips.hover(side, std::time::Instant::now());
             Task::none()
@@ -3919,7 +4051,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         .book
                         .as_ref()
                         .is_some_and(|current| current.fingerprint == book.fingerprint);
-                    let at_end = matches!(navigation, Some(Navigation::End));
+                    let end = match navigation {
+                        Some(Navigation::End(landing)) => Some(landing),
+                        _ => None,
+                    };
                     let returns = navigation
                         .as_ref()
                         .map(|_| std::mem::take(&mut reader.returns));
@@ -3998,20 +4133,15 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         reader.adapted.clear();
                     }
                     let task = reader.rebuild_geometry(anchor);
-                    if at_end && reader.pagination.is_some() {
-                        reader.pagination_end = true;
-                        task
-                    } else if at_end && let Some(last) = reader.pages().last() {
-                        let anchor = Anchor {
-                            row: last.rows.start,
-                            fraction: (last.content.start - reader.heights.start(last.rows.start))
-                                / reader.heights.height(last.rows.start),
-                        };
-                        reader.offset = reader.offset_for(anchor);
-                        reader.pending_anchor = Some(anchor);
-                        reader.restore_book_scroll()
-                    } else {
-                        task
+                    match end {
+                        Some(landing) if reader.pagination.is_some() => {
+                            reader.pagination_end = Some(landing);
+                            task
+                        }
+                        Some(landing) if !reader.pages().is_empty() => {
+                            reader.land_on_page(reader.pages().len() - 1, landing)
+                        }
+                        _ => task,
                     }
                 }
                 Ok(LoadedDocument::Pdf {
@@ -4188,11 +4318,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     if reader.adapted.len() > ADAPTED_SECTIONS {
                         reader.adapted.remove(0);
                     }
-                    let end = reader.pagination_end;
+                    let end = reader.pagination_end.take();
                     let task = reader.rebuild_geometry(anchor);
-                    reader.pagination_end = false;
-                    if end {
-                        return reader.go_to_local_page(reader.pages().len().saturating_sub(1));
+                    if let Some(landing) = end {
+                        return reader
+                            .land_on_page(reader.pages().len().saturating_sub(1), landing);
                     }
                     task
                 }
@@ -6299,6 +6429,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     iced::widget::mouse_area(
         container(crate::document_scroll::wrap(
             Message::ZoomBy,
+            Some(Message::PageWheel),
             (book.epub.as_ref().map_or(0, |chapter| chapter.index) as u64) << 32
                 | u64::from(page.top.to_bits()),
             scrollable(centered)
@@ -9644,5 +9775,274 @@ mod tests {
             Some("A readable")
         );
         assert!(reader.error.as_ref().unwrap().contains("missing.html"));
+    }
+
+    /// `book("overscroll")` on page `page` with a 200 px viewport, laid out
+    /// so the wheel acts on it.
+    fn overscroll_book(page: usize) -> Reader {
+        let mut reader = Reader {
+            book: Some(book("overscroll")),
+            viewport: 200.0,
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        let _ = reader.go_to_local_page(page);
+        laid_out(&mut reader);
+        reader
+    }
+
+    fn laid_out(reader: &mut Reader) {
+        let generation = reader.generation;
+        let _ = update(reader, Message::LayoutReady(generation));
+        assert!(reader.pending_anchor.is_none());
+    }
+
+    /// Scrolls the page to `local` px from its top, as its scrollable reports.
+    fn scrolled(reader: &mut Reader, local: f32) {
+        let page = reader.active_page().unwrap();
+        let generation = reader.generation;
+        let _ = update(
+            reader,
+            Message::Scroll {
+                generation,
+                offset: local,
+                viewport: 200.0,
+                page_top: page.top,
+            },
+        );
+    }
+
+    fn page_and_offset(reader: &Reader) -> (u32, f32) {
+        let offset = (reader.local_offset() * 100.0).round() / 100.0;
+        (reader.active_page().unwrap().number, offset)
+    }
+
+    fn wheel_lines(reader: &mut Reader, lines: f32) {
+        let _ = update(
+            reader,
+            Message::PageWheel(mouse::ScrollDelta::Lines { x: 0.0, y: -lines }),
+        );
+    }
+
+    #[test]
+    fn overscroll_turns_after_240px() {
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        assert_eq!(page_and_offset(&reader), (0, 818.08));
+        for _ in 0..3 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        assert_eq!(page_and_offset(&reader), (0, 818.08), "180 px");
+        wheel_lines(&mut reader, 1.0);
+        assert_eq!(
+            page_and_offset(&reader),
+            (1, 0.0),
+            "240 px opens page 2 at its top"
+        );
+
+        laid_out(&mut reader);
+        scrolled(&mut reader, 9999.0);
+        let touchpad = Message::PageWheel(mouse::ScrollDelta::Pixels { x: 0.0, y: -20.0 });
+        for _ in 0..11 {
+            let _ = update(&mut reader, touchpad.clone());
+        }
+        assert_eq!(page_and_offset(&reader), (1, 818.08), "220 px of touchpad");
+        let _ = update(&mut reader, touchpad);
+        assert_eq!(page_and_offset(&reader), (2, 0.0));
+    }
+
+    #[test]
+    fn one_notch_does_not_turn() {
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        wheel_lines(&mut reader, 1.0);
+        assert_eq!(page_and_offset(&reader), (0, 818.08));
+
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 700.0);
+        for _ in 0..5 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        assert_eq!(
+            page_and_offset(&reader),
+            (0, 700.0),
+            "the wheel counts only once the page is at its end"
+        );
+    }
+
+    #[test]
+    fn overscroll_push_expires_after_700ms() {
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        let start = Instant::now();
+        for _ in 0..3 {
+            assert!(reader.overscroll(60.0, start).is_none());
+        }
+        let late = start + Duration::from_millis(701);
+        assert!(
+            reader.overscroll(60.0, late).is_none(),
+            "a late notch starts a new push"
+        );
+        assert!(reader.overscroll(60.0, late).is_none());
+        assert!(reader.overscroll(60.0, late).is_none());
+        assert!(
+            reader
+                .overscroll(60.0, late + Duration::from_millis(700))
+                .is_some()
+        );
+        assert_eq!(page_and_offset(&reader), (1, 0.0));
+    }
+
+    #[test]
+    fn reverse_input_resets_overscroll() {
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        for _ in 0..3 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        wheel_lines(&mut reader, -1.0);
+        for _ in 0..3 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        assert_eq!(
+            page_and_offset(&reader),
+            (0, 818.08),
+            "the push started over"
+        );
+        wheel_lines(&mut reader, 1.0);
+        assert_eq!(page_and_offset(&reader), (1, 0.0));
+    }
+
+    #[test]
+    fn ctrl_wheel_never_turns() {
+        let modifiers = |reader: &mut Reader, modifiers| {
+            let _ = update(
+                reader,
+                Message::Event(
+                    iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)),
+                    window::Id::unique(),
+                ),
+            );
+        };
+        let notch = Message::ChromeWheel(mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 });
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        modifiers(&mut reader, keyboard::Modifiers::CTRL);
+        for _ in 0..5 {
+            let _ = update(&mut reader, notch.clone());
+        }
+        assert_eq!(reader.active_page().unwrap().number, 0);
+        assert_eq!((reader.zoom * 100.0).round(), 62.0, "it zooms out instead");
+
+        modifiers(&mut reader, keyboard::Modifiers::empty());
+        laid_out(&mut reader);
+        scrolled(&mut reader, 9999.0);
+        for _ in 0..4 {
+            let _ = update(&mut reader, notch.clone());
+        }
+        assert_eq!(page_and_offset(&reader), (1, 0.0));
+    }
+
+    #[test]
+    fn shift_wheel_never_turns() {
+        let mut reader = overscroll_book(0);
+        scrolled(&mut reader, 9999.0);
+        let _ = update(
+            &mut reader,
+            Message::Event(
+                iced::Event::Keyboard(keyboard::Event::ModifiersChanged(
+                    keyboard::Modifiers::SHIFT,
+                )),
+                window::Id::unique(),
+            ),
+        );
+        for _ in 0..5 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        assert_eq!(page_and_offset(&reader), (0, 818.08), "it scrolls sideways");
+    }
+
+    #[test]
+    fn overscroll_up_lands_at_the_previous_page_bottom() {
+        let mut reader = overscroll_book(2);
+        for _ in 0..4 {
+            wheel_lines(&mut reader, -1.0);
+        }
+        assert_eq!(page_and_offset(&reader), (1, 818.08));
+        laid_out(&mut reader);
+        assert_eq!(
+            page_and_offset(&reader),
+            (1, 818.08),
+            "and stays there once laid out"
+        );
+        let _ = update(&mut reader, Message::BookPage(false));
+        laid_out(&mut reader);
+        assert_eq!(
+            page_and_offset(&reader),
+            (0, 0.0),
+            "a turn by key still lands at the top"
+        );
+    }
+
+    #[test]
+    fn overscroll_does_not_pass_the_first_or_last_page() {
+        let mut reader = overscroll_book(0);
+        for _ in 0..5 {
+            wheel_lines(&mut reader, -1.0);
+        }
+        assert_eq!(page_and_offset(&reader), (0, 0.0));
+        let last = reader.pages().len() - 1;
+        let mut reader = overscroll_book(last);
+        scrolled(&mut reader, 9999.0);
+        let at_bottom = page_and_offset(&reader);
+        assert_eq!(at_bottom.0 as usize, last);
+        for _ in 0..5 {
+            wheel_lines(&mut reader, 1.0);
+        }
+        assert_eq!(page_and_offset(&reader), at_bottom);
+    }
+
+    #[test]
+    fn overscroll_up_at_a_chapter_start_lands_at_the_end_of_the_previous_chapter() {
+        let epub = three_chapter_epub();
+        let mut reader = Reader {
+            book: Some(Arc::new(load_epub_chapter(epub.clone(), 1, None).unwrap())),
+            viewport: 200.0,
+            ..Reader::default()
+        };
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        laid_out(&mut reader);
+        for _ in 0..4 {
+            wheel_lines(&mut reader, -1.0);
+        }
+        assert!(reader.opening.is_some(), "chapter 1 is loading");
+        let request = reader.request;
+        let _ = update(
+            &mut reader,
+            Message::Loaded {
+                request,
+                result: Ok(LoadReply {
+                    document: LoadedDocument::Reflow(Arc::new(
+                        load_epub_chapter(epub, 0, None).unwrap(),
+                    )),
+                    catalog: None,
+                }),
+            },
+        );
+        laid_out(&mut reader);
+        assert_eq!(
+            reader.book.as_ref().unwrap().epub.as_ref().unwrap().index,
+            0
+        );
+        assert_eq!(reader.pages().len(), 7);
+        assert_eq!(page_and_offset(&reader), (6, 818.08));
     }
 }
