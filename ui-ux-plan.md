@@ -30,7 +30,7 @@ As of 2026-11-09:
 | #21 | UX-6 follow-up: drawers dock only when the page fits, and the player hides with the bar | Merged |
 | #22 | The UX-6 record in this plan | Merged |
 | #24 | UX-7 wheel to next page | Merged |
-| | The UX-7 record in this plan | This PR |
+| #25 | The UX-7 record in this plan | This PR |
 | | UX-8 page surface and state styling | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
