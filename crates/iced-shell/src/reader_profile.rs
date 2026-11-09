@@ -122,11 +122,13 @@ fn reading_aa_open() -> Reader {
     reader
 }
 
-/// The read-aloud pill floats above the progress line.
+/// The read-aloud pill floats above the progress line, shown with the
+/// pinned bar.
 fn reading_listen() -> Reader {
     let mut reader = reading();
     reader.begin_silent_listening();
-    assert!(reader.read_aloud.active());
+    reader.bar.toggle_pin(Instant::now());
+    assert!(reader.read_aloud.active() && reader.bar.visible());
     reader
 }
 

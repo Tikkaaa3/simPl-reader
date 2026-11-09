@@ -1,12 +1,15 @@
 //! The contents drawer on the left of the page and the notes drawer on its
-//! right. A wide window docks an open drawer beside the page, which narrows
-//! the page; a narrow one lays it over the page, which keeps its width.
+//! right. An open drawer docks beside the page, which narrows the page, while
+//! the whole page still fits beside it; otherwise it lays over the page, which
+//! keeps its width.
 
 use super::*;
 use iced::widget::{Space, column, opaque, row};
 
-/// Windows narrower than this lay open drawers over the page.
-pub(super) const OVERLAY_BELOW: f32 = 900.0;
+/// The narrowest reading area a page counts as fitting in, so fit width never
+/// shrinks the page to nothing beside a drawer: the room one drawer leaves a
+/// 900px window.
+const PAGE_FLOOR: f32 = 576.0;
 
 const PADDING: f32 = 14.0;
 const TITLE: f32 = 28.0;
@@ -15,12 +18,6 @@ const GAP: f32 = 12.0;
 /// An open drawer's width in a window `window_width` wide.
 pub(super) fn width(window_width: f32) -> f32 {
     (window_width * 0.36).clamp(230.0, 340.0)
-}
-
-/// Both drawers stay open together only where the page keeps the width one
-/// drawer leaves it at the overlay width, so from 1256px.
-fn both_fit(window_width: f32) -> bool {
-    window_width - 2.0 * width(window_width) >= OVERLAY_BELOW - width(OVERLAY_BELOW)
 }
 
 /// The page's left or right side, where a drawer opens.
@@ -44,7 +41,7 @@ impl Edges {
 }
 
 /// The open drawers, contents on the left and notes on the right, and whether
-/// the window is narrow enough that they overlay the page.
+/// they overlay the page because it would not fit beside them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Drawers {
     open: Edges,
@@ -72,6 +69,18 @@ impl Drawers {
 }
 
 impl Reader {
+    /// The open document fits, without scrolling sideways, in a reading area
+    /// `available` wide.
+    pub(super) fn page_fits(&self, available: f32) -> bool {
+        if available < PAGE_FLOOR {
+            return false;
+        }
+        match &self.pdf {
+            Some(pdf) => pdf.fits_in(available),
+            None => self.fit_width || book_desk_width(self, available) <= available,
+        }
+    }
+
     pub(super) fn drawers(&self) -> Drawers {
         let open = |shown: bool| {
             if shown {
@@ -80,12 +89,13 @@ impl Reader {
                 0.0
             }
         };
+        let open = Edges {
+            left: open(self.show_contents && !self.contents().is_empty()),
+            right: open(self.notes.list.is_some()),
+        };
         Drawers {
-            open: Edges {
-                left: open(self.show_contents && !self.contents().is_empty()),
-                right: open(self.notes.list.is_some()),
-            },
-            overlay: self.window_size.width < OVERLAY_BELOW,
+            open,
+            overlay: !self.page_fits(self.window_size.width - open.total()),
         }
     }
 
@@ -97,9 +107,10 @@ impl Reader {
         )
     }
 
-    /// Opening one drawer closes the other in a window without room for both.
+    /// Opening one drawer closes the other unless the page fits between both.
     pub(super) fn make_room_for(&mut self, opened: Side) {
-        if both_fit(self.window_size.width) {
+        let window = self.window_size.width;
+        if self.page_fits(window - 2.0 * width(window)) {
             return;
         }
         match opened {
@@ -108,14 +119,24 @@ impl Reader {
         }
     }
 
-    /// A window shrunk below the room for both drawers keeps the notes drawer.
-    pub(super) fn fit_drawers_to_window(&mut self) {
+    /// Two drawers that no longer leave room for the page, after a resize or a
+    /// zoom, keep the notes drawer.
+    pub(super) fn fit_drawers(&mut self) {
         let drawers = self.drawers();
         if drawers.open.left > 0.0 && drawers.open.right > 0.0 {
             self.make_room_for(Side::Right);
             if !self.show_contents && matches!(self.focused, Some(Control::ContentsEntry(_))) {
                 self.focused = None;
             }
+        }
+    }
+
+    /// Lays the PDF out again in the width the drawers leave it.
+    pub(super) fn resize_pdf_view(&mut self) -> Task<Message> {
+        let size = self.document_view_size();
+        match &mut self.pdf {
+            Some(pdf) => forward_pdf(pdf.document().id, pdf.resize(size, self.scale_factor)),
+            None => Task::none(),
         }
     }
 
@@ -222,11 +243,13 @@ mod tests {
             text: "Chapter One".into(),
             level: 1,
         };
-        Reader {
+        let mut reader = Reader {
             book: Some(Arc::new(source)),
             window_size: Size::new(window, 800.0),
             ..Reader::default()
-        }
+        };
+        reader.width = reader.reading_width(window);
+        reader
     }
 
     fn drawers(window: f32, contents: bool, notes: bool) -> Drawers {
@@ -237,27 +260,60 @@ mod tests {
     }
 
     #[test]
-    fn wide_windows_dock_open_drawers_and_narrow_ones_overlay_them() {
-        let wide = drawers(1400.0, true, true);
+    fn a_drawer_docks_only_where_the_whole_page_fits_beside_it() {
+        // At zoom 1 the paper and the desk around it need 766px.
+        for (window, docked) in [(1105.0, false), (1106.0, true), (1400.0, true)] {
+            let drawers = drawers(window, true, false);
+            assert_eq!(
+                (drawers.docked().left, drawers.overlaid().left),
+                if docked { (340.0, 0.0) } else { (0.0, 340.0) },
+                "at {window}"
+            );
+        }
+        for window in (1106..=1700).map(|window| window as f32) {
+            assert_eq!(
+                drawers(window, true, false).docked().left,
+                width(window),
+                "one drawer stays docked at every width from 1106, so at {window}"
+            );
+        }
+        for window in (1446..=1700).map(|window| window as f32) {
+            assert_eq!(
+                drawers(window, true, true).docked().total(),
+                2.0 * width(window),
+                "two drawers stay docked at every width from 1446, so at {window}"
+            );
+        }
         assert_eq!(
-            wide.docked(),
+            drawers(1446.0, true, true).docked(),
             Edges {
                 left: 340.0,
                 right: 340.0
             }
         );
-        assert_eq!(wide.overlaid(), Edges::default());
-        let narrow = drawers(600.0, true, false);
-        assert_eq!(narrow.docked(), Edges::default());
         assert_eq!(
-            narrow.overlaid(),
+            drawers(600.0, false, true).overlaid(),
             Edges {
-                left: 230.0,
-                right: 0.0
+                left: 0.0,
+                right: 230.0
             }
         );
-        assert_eq!(drawers(900.0, true, true).overlaid(), Edges::default());
-        assert_eq!(drawers(899.0, true, true).docked(), Edges::default());
+        let mut fitted = headed_book(1000.0);
+        fitted.fit_width = true;
+        fitted.show_contents = true;
+        assert_eq!(
+            fitted.drawers().docked().left,
+            340.0,
+            "fit width shrinks the page to the room beside the drawer"
+        );
+        for (window, docked) in [(899.0, 0.0), (900.0, 324.0)] {
+            fitted.window_size.width = window;
+            assert_eq!(
+                fitted.drawers().docked().left,
+                docked,
+                "fit width keeps the page at least 576px, at {window}"
+            );
+        }
     }
 
     #[test]
@@ -271,18 +327,17 @@ mod tests {
     #[test]
     fn only_docked_drawers_narrow_the_document_view() {
         let mut reader = headed_book(860.0);
-        reader.show_contents = true;
         reader.notes.list = Some(crate::notes::ListTab::default());
         assert_eq!(
             reader.document_view_size(),
             Size::new(860.0, 800.0),
-            "overlaid drawers leave the page its width"
+            "an overlaid drawer leaves the page its width"
         );
-        reader.window_size.width = 1000.0;
+        reader.window_size.width = 1300.0;
         assert_eq!(
             reader.document_view_size(),
-            Size::new(320.0, 800.0),
-            "docked drawers take theirs from it"
+            Size::new(960.0, 800.0),
+            "a docked drawer takes its width from it"
         );
     }
 }

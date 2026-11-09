@@ -724,13 +724,7 @@ impl Reader {
                     self.make_room_for(drawers::Side::Right);
                 }
                 self.focused = None;
-                let size = self.document_view_size();
-                match &mut self.pdf {
-                    Some(pdf) => {
-                        forward_pdf(pdf.document().id, pdf.resize(size, self.scale_factor))
-                    }
-                    None => Task::none(),
-                }
+                Task::none()
             }
             Action::ToggleNote(id) => {
                 self.notes.expanded_note = if self.notes.expanded_note == Some(id) {
