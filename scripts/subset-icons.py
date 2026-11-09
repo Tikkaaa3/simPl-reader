@@ -24,7 +24,7 @@ from fontTools.pens.recordingPen import RecordingPen
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 
-CODEPOINTS = [0xE145, 0xE5C4, 0xE5C8, 0xE5CD, 0xE86F, 0xE8B6, 0xE8B8, 0xEA19, 0xEAE7, 0xEF7A]
+CODEPOINTS = [0xE145, 0xE5C4, 0xE5C8, 0xE5CB, 0xE5CC, 0xE5CD, 0xE86F, 0xE8B6, 0xE8B8, 0xEA19, 0xEAE7, 0xEF7A]
 AXES = {"FILL": 0, "GRAD": 0, "opsz": 24, "wght": 400}
 
 ROOT = Path(__file__).resolve().parents[1]
