@@ -178,14 +178,17 @@ impl Reader {
     }
 }
 
-/// Each strip's width follows the window: 7% of it, from 48 to 128 pixels.
+/// A strip's width before [`regions`] fits it to the reading area: 7% of the
+/// window, from 48 to 128 pixels.
 pub(super) fn width(window_width: f32) -> f32 {
     (window_width * 0.07).clamp(48.0, 128.0).round()
 }
 
 /// The strips over the reading area `bounds`, beside the drawers that cover
 /// its sides. The right one stops short of the scrollbar rail, and both stop
-/// `bottom_inset` above the bottom.
+/// `bottom_inset` above the bottom. The left one is wider by the part of the
+/// rail no drawer covers, so the lane between them is centred in the
+/// uncovered area.
 pub(super) fn regions(
     bounds: Rectangle,
     width: f32,
@@ -193,16 +196,19 @@ pub(super) fn regions(
     covered: drawers::Edges,
 ) -> [Rectangle; 2] {
     let left = covered.left.min(bounds.width);
+    let open = (bounds.width - covered.right).max(left);
     let right = (bounds.width - crate::document_scroll::RAIL_WIDTH)
-        .min(bounds.width - covered.right)
+        .min(open)
         .max(left);
-    let width = width.min((right - left) / 2.0);
+    let rail = open - right;
+    let room = right - left;
+    let width = width.min(((room - rail) / 2.0).max(0.0));
     let height = (bounds.height - bottom_inset).max(0.0);
     [
         Rectangle {
             x: bounds.x + left,
             y: bounds.y,
-            width,
+            width: (width + rail).min(room),
             height,
         },
         Rectangle {
@@ -571,7 +577,7 @@ mod tests {
         assert_eq!(
             regions(bounds, 70.0, 0.0, UNCOVERED),
             [
-                Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(70.0, 800.0)),
+                Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(84.0, 800.0)),
                 Rectangle::new(Point::new(576.0, 0.0), iced::Size::new(70.0, 800.0)),
             ]
         );
@@ -580,10 +586,28 @@ mod tests {
         let narrow = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(100.0, 800.0));
         let [previous, next] = regions(narrow, 70.0, 0.0, UNCOVERED);
         assert_eq!(
-            (previous.width, next.x),
-            (43.0, 43.0),
+            (previous.width, next.x, next.width),
+            (50.0, 50.0, 36.0),
             "strips never overlap"
         );
+        let sliver = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(10.0, 800.0));
+        let [previous, next] = regions(sliver, 70.0, 0.0, UNCOVERED);
+        assert_eq!((previous.width, next.width), (0.0, 0.0));
+    }
+
+    #[test]
+    fn lane_between_the_strips_is_centred() {
+        for area in [860.0, 1400.0, 2560.0] {
+            let bounds = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(area, 800.0));
+            let [previous, next] = regions(bounds, width(area), 0.0, UNCOVERED);
+            let lane = (previous.x + previous.width + next.x) / 2.0;
+            assert_eq!(lane, bounds.center_x(), "at {area}");
+            assert_eq!(
+                next.x + next.width,
+                area - crate::document_scroll::RAIL_WIDTH,
+                "at {area}"
+            );
+        }
     }
 
     const UNCOVERED: drawers::Edges = drawers::Edges {
@@ -624,7 +648,7 @@ mod tests {
             let _ = reader.go_to_local_page(1);
             let _ = update(&mut reader, Message::ToggleContents);
             let drawer = drawers::width(window);
-            let strip = width(window);
+            let strip = width(window) + crate::document_scroll::RAIL_WIDTH;
             for (x, pointer) in [
                 (drawer - 1.0, false),
                 (drawer + 1.0, true),

@@ -214,17 +214,17 @@ mod tests {
         // drawer), the overlaid drawers, bottom inset, then the strips' inner
         // edges and the band's top.
         for (window, area, covered, inset, left, right, top) in [
-            (860.0, 860.0, none, 0.0, 60.0, 786.0, 676.0),
+            (860.0, 860.0, none, 0.0, 74.0, 786.0, 676.0),
             (860.0, 860.0, right_drawer, 0.0, 60.0, 500.0, 676.0),
-            (860.0, 860.0, left_drawer, 0.0, 360.0, 786.0, 676.0),
-            (1400.0, 1400.0, none, 0.0, 98.0, 1288.0, 676.0),
-            (1400.0, 1060.0, none, 0.0, 98.0, 948.0, 676.0),
+            (860.0, 860.0, left_drawer, 0.0, 374.0, 786.0, 676.0),
+            (1400.0, 1400.0, none, 0.0, 112.0, 1288.0, 676.0),
+            (1400.0, 1060.0, none, 0.0, 112.0, 948.0, 676.0),
             (
                 860.0,
                 860.0,
                 none,
                 pdf_reader::STATUS_HEIGHT,
-                60.0,
+                74.0,
                 786.0,
                 650.0,
             ),
