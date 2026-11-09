@@ -34,6 +34,7 @@ const STATES: &[State] = &[
         still,
         over_progress_line,
     ),
+    ("reading-aa-open", reading_aa_open, still, away),
     ("settings", settings, still, away),
 ];
 
@@ -108,6 +109,15 @@ fn over_right_strip(reader: &Reader) -> mouse::Cursor {
 fn over_progress_line(reader: &Reader) -> mouse::Cursor {
     let size = reader.window_size;
     mouse::Cursor::Available(iced::Point::new(size.width / 2.0, size.height - 12.0))
+}
+
+/// The Aa panel hangs open under the bar.
+fn reading_aa_open() -> Reader {
+    let mut reader = reading();
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    reader.bar.step_by(std::time::Duration::from_secs(1));
+    assert!(reader.bar.visible() && reader.menu.is_some());
+    reader
 }
 
 fn settings() -> Reader {
