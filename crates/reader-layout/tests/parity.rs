@@ -77,6 +77,7 @@ fn shared_atlases_match_the_pre_move_desktop_bytes() {
                     size,
                     margin,
                     spacing,
+                    theme: None,
                 };
                 let sections = (0..atlas.sections.len())
                     .map(|section| {

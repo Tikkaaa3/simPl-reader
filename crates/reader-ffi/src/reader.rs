@@ -545,7 +545,14 @@ impl OpenBook {
     pub fn save_options(&self, options: LayoutOptions) -> Result<LayoutOptions, CoreError> {
         let _guard = crate::backup::read()?;
         crate::backup::current(self.epoch)?;
-        let options: reading::Options = options.into();
+        let options = reading::Options {
+            // Android has no book themes yet, so it keeps the one the desktop chose.
+            theme: reading::load(&self.book.fingerprint)
+                .ok()
+                .flatten()
+                .and_then(|stored| stored.theme),
+            ..options.into()
+        };
         reading::save(&self.book.fingerprint, Some(options))?;
         Ok(options.into())
     }

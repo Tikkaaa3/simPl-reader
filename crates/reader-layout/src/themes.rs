@@ -3,7 +3,7 @@
 //! them (for example from a plugin) can be described the same way later.
 use iced_core::Color;
 use reader_document::preferences::Appearance;
-use reader_document::reading::{Font, Options};
+use reader_document::reading::{Font, Options, ThemeId};
 
 use crate::style::{BookStyle, MINIMAL};
 
@@ -72,6 +72,11 @@ impl ReadingTheme {
             Appearance::Light => self.light,
             Appearance::Dark => self.dark,
         }
+    }
+
+    /// The id a book's own settings store for this theme.
+    pub fn key(&self) -> ThemeId {
+        ThemeId::from_id(self.id).unwrap_or(ThemeId::Default)
     }
 }
 
@@ -200,6 +205,10 @@ pub fn find(id: &str) -> &'static ReadingTheme {
         .unwrap_or(&THEMES[0])
 }
 
+pub fn by_id(id: ThemeId) -> &'static ReadingTheme {
+    find(id.as_str())
+}
+
 pub fn index_of(theme: &ReadingTheme) -> usize {
     THEMES
         .iter()
@@ -289,6 +298,17 @@ mod tests {
         }
         assert_eq!(find("no-such-theme").id, DEFAULT_ID);
         assert_eq!(find("").id, DEFAULT_ID);
+    }
+
+    #[test]
+    fn every_theme_has_its_own_stored_id() {
+        assert_eq!(
+            THEMES.iter().map(ReadingTheme::key).collect::<Vec<_>>(),
+            ThemeId::ALL
+        );
+        for theme in &THEMES {
+            assert_eq!(by_id(theme.key()).id, theme.id);
+        }
     }
 
     #[test]

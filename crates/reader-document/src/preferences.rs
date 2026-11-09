@@ -112,7 +112,7 @@ pub(crate) fn load_from(path: &Path) -> Result<Preferences, String> {
         },
         speech_rate: record.speech_rate.clamp(-10, 10),
         dictionary: record.dictionary.validated(),
-        reading: record.reading.validated(),
+        reading: record.reading.validated().without_theme(),
     })
 }
 
@@ -124,7 +124,7 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         voice: preferences.voice,
         speech_rate: preferences.speech_rate,
         dictionary: preferences.dictionary.validated(),
-        reading: preferences.reading.validated(),
+        reading: preferences.reading.validated().without_theme(),
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -200,6 +200,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_from(&path).unwrap().theme, "clear");
+        // The default theme is `theme`; a book theme inside the defaults is ignored.
+        fs::write(
+            &path,
+            br#"{"version":1,"theme":"clear","reading":{"size":26,"theme":"soft"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(
+            (loaded.theme.as_str(), loaded.reading),
+            (
+                "clear",
+                crate::reading::Options {
+                    size: 26,
+                    ..Default::default()
+                }
+            )
+        );
         fs::write(&path, br#"{"version":1,"speech_rate":40}"#).unwrap();
         assert_eq!(load_from(&path).unwrap().speech_rate, 10);
         fs::write(&path, br#"{"version":1,"dictionary":{"automatic":false,"source":"korean","target":"turkish"}}"#).unwrap();
