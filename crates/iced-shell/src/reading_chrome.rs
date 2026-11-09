@@ -167,6 +167,8 @@ pub(super) struct Bar {
     document: Option<PathBuf>,
     /// Read aloud is on, so starting it shows the bar, and the pill with it, once.
     listening: bool,
+    /// The last pointer position in the window.
+    pointer: Option<Point>,
     /// The book page field has keyboard focus.
     book_field: bool,
     /// Keyboard modifiers, for the wheel over the bar.
@@ -183,6 +185,7 @@ impl Default for Bar {
             now: Instant::now(),
             document: None,
             listening: false,
+            pointer: None,
             book_field: false,
             modifiers: keyboard::Modifiers::default(),
         }
@@ -392,10 +395,13 @@ impl Reader {
     pub(super) fn bar_held(&self) -> bool {
         self.focused.is_some_and(|control| {
             is_bar_control(control)
-                || matches!(
-                    control,
-                    Control::ReadAloudSlower | Control::ReadAloudFaster | Control::ReadAloudPause
-                )
+                || (self.read_aloud.active()
+                    && matches!(
+                        control,
+                        Control::ReadAloudSlower
+                            | Control::ReadAloudFaster
+                            | Control::ReadAloudPause
+                    ))
         }) || self.bar.book_field
             || self
                 .pdf
@@ -482,23 +488,24 @@ impl Reader {
             self.bar.open(now);
         }
         self.bar.listening = listening;
-        let hovered = input.pointer.map(|pointer| {
-            pointer.is_some_and(|point| {
-                point.y < HEIGHT.max(REVEAL_ZONE)
-                    || pill_zone(self).is_some_and(|zone| zone.contains(point))
-            })
+        if let Some(pointer) = input.pointer {
+            self.bar.pointer = pointer;
+        }
+        // Checked against the last pointer on every message, so a pill that
+        // goes away under a resting pointer stops holding the bar.
+        let hovered = self.bar.pointer.is_some_and(|point| {
+            point.y < HEIGHT.max(REVEAL_ZONE)
+                || pill_zone(self).is_some_and(|zone| zone.contains(point))
         });
         let held = self.bar_held();
         if self.bar.document.is_none() {
             // The Library header is static: only remember the inputs for the
             // next open, so no deadline and no frames start here.
-            self.bar.hovered = hovered.unwrap_or(self.bar.hovered);
+            self.bar.hovered = hovered;
             self.bar.held = held;
             return;
         }
-        if let Some(hovered) = hovered {
-            self.bar.hover(now, hovered);
-        }
+        self.bar.hover(now, hovered);
         self.bar.hold(now, held);
     }
 }
@@ -1410,8 +1417,9 @@ mod tests {
         let _ = update_inner(&mut reader, Message::ToggleContents);
         assert!(reader.find.is_some() && reader.read_aloud.active() && reader.show_contents);
         reader.focused = None;
+        // Listening started at 0.5 s shows the bar for its own 2 s.
         reader.sync_bar(opened + seconds(0.5), Input::default());
-        reader.bar.tick(opened + seconds(2.1));
+        reader.bar.tick(opened + seconds(2.6));
         assert_eq!(
             reader.bar.state(),
             BarState::Hidden,

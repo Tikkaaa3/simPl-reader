@@ -149,6 +149,8 @@ pub struct Reader {
     geometry: HeightIndex,
     measurements: iced_shell::virtual_reader::Measurements,
     content_width: f32,
+    /// The widest page with its margins at the current zoom.
+    pages_width: f32,
     generation: u64,
     in_flight: Option<(u64, u32, u32, bool)>,
     render_task: Option<iced::task::Handle>,
@@ -215,6 +217,7 @@ impl Reader {
             offset: Point::ORIGIN,
             geometry: HeightIndex::new(Vec::new()),
             content_width: 0.0,
+            pages_width: 0.0,
             measurements: Arc::new(parking_lot::Mutex::new(Vec::new())),
             generation: 0,
             in_flight: None,
@@ -317,14 +320,11 @@ impl Reader {
     /// wide at the current zoom.
     pub(crate) fn fits_in(&self, width: f32) -> bool {
         let viewport = viewport_width(width);
-        self.zoom == PdfZoom::FitWidth
-            || self.document.pages.iter().all(|page| {
-                page.width * self.scale_for(page.width) + PAGE_MARGIN * 2.0 <= viewport + 0.5
-            })
+        self.zoom == PdfZoom::FitWidth || self.pages_width <= viewport + 0.5
     }
 
     fn rebuild(&mut self) {
-        let mut width = self.viewport.width;
+        let mut pages_width: f32 = 0.0;
         let heights = self
             .document
             .pages
@@ -332,7 +332,7 @@ impl Reader {
             .enumerate()
             .map(|(index, info)| {
                 let scale = self.scale_for(info.width);
-                width = width.max(info.width * scale + PAGE_MARGIN * 2.0);
+                pages_width = pages_width.max(info.width * scale + PAGE_MARGIN * 2.0);
                 info.height * scale
                     + if index + 1 == self.document.pages.len() {
                         0.0
@@ -342,7 +342,8 @@ impl Reader {
             })
             .collect();
         self.geometry = HeightIndex::new(heights);
-        self.content_width = width;
+        self.pages_width = pages_width;
+        self.content_width = self.viewport.width.max(pages_width);
         self.range = self.visible_range();
     }
 

@@ -2193,6 +2193,34 @@ fn focus_on_the_pill_reveals_the_bar() {
 }
 
 #[test]
+fn stopping_reading_releases_the_bar_held_by_the_pill() {
+    let (mut reader, pause) = listening_with_hidden_bar();
+    reader.focused = Some(Control::ReadAloudPause);
+    let _ = update(&mut reader, Message::ReadAloud(read_aloud::Action::Toggle));
+    assert!(!reader.read_aloud.active());
+    reader.bar.step_by(std::time::Duration::from_secs(3));
+    reader.bar.step_by(std::time::Duration::from_secs(1));
+    assert!(
+        !reader.bar.visible(),
+        "focus left on the gone Pause does not hold the bar"
+    );
+
+    let (mut reader, pause_point) = (listening_with_hidden_bar().0, pause);
+    move_pointer(&mut reader, pause_point);
+    assert!(
+        reader.bar.visible(),
+        "the pointer on the pill shows the bar"
+    );
+    let _ = update(&mut reader, Message::ReadAloud(read_aloud::Action::Toggle));
+    reader.bar.step_by(std::time::Duration::from_secs(3));
+    reader.bar.step_by(std::time::Duration::from_secs(1));
+    assert!(
+        !reader.bar.visible(),
+        "a resting pointer where the pill was does not hold the bar"
+    );
+}
+
+#[test]
 fn starting_to_listen_shows_the_bar_and_the_pill_briefly() {
     let mut reader = full_bar_book(1400.0, 600.0);
     hide_bar(&mut reader);
