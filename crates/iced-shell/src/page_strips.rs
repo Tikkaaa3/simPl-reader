@@ -6,7 +6,7 @@
 use super::*;
 use iced::Animation;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer, widget};
-use iced::{Background, Border, Color, Radians, Rectangle, gradient};
+use iced::{Background, Border, Color, Radians, Rectangle, gradient, touch};
 use std::time::{Duration, Instant};
 
 const FADE: Duration = Duration::from_millis(150);
@@ -244,6 +244,9 @@ struct Strips {
 struct State {
     gesture: Gesture,
     last_over: Option<Side>,
+    /// The right or middle button is down. The strips step aside until it is
+    /// released so the page under them keeps its context menu and autoscroll.
+    other_button: bool,
 }
 
 /// The left button press the strips are following.
@@ -261,7 +264,10 @@ enum Gesture {
 impl Strips {
     /// The enabled strip under `cursor`.
     fn side_at(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Side> {
-        let point = cursor.position()?;
+        self.side_at_point(bounds, cursor.position()?)
+    }
+
+    fn side_at_point(&self, bounds: Rectangle, point: iced::Point) -> Option<Side> {
         let regions = regions(bounds, self.width, self.bottom_inset);
         SIDES.into_iter().zip(regions).find_map(|(side, region)| {
             (region.contains(point) && self.turns.get(side).is_some()).then_some(side)
@@ -380,31 +386,50 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
     ) {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
+        let mut press = |state: &mut State, at: Option<iced::Point>| {
+            if !matches!(state.gesture, Gesture::None) {
+                return;
+            }
+            match at
+                .and_then(|point| self.side_at_point(bounds, point))
+                .and_then(|side| self.turns.get(side))
+            {
+                Some(message) => {
+                    shell.publish(message.clone());
+                    shell.capture_event();
+                    state.gesture = Gesture::Strip;
+                }
+                None => state.gesture = Gesture::Page,
+            }
+        };
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if !matches!(state.gesture, Gesture::None) {
-                    return;
-                }
-                match self
-                    .side_at(bounds, cursor)
-                    .and_then(|side| self.turns.get(side))
-                {
-                    Some(message) => {
-                        shell.publish(message.clone());
-                        shell.capture_event();
-                        state.gesture = Gesture::Strip;
-                    }
-                    None => state.gesture = Gesture::Page,
-                }
+                press(state, cursor.position());
             }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            iced::Event::Touch(touch::Event::FingerPressed { position, .. }) => {
+                press(state, Some(*position));
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | iced::Event::Touch(
+                touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. },
+            ) => {
                 // A release never turns the page; a strip's own release
                 // stays with the strip.
                 if matches!(std::mem::take(&mut state.gesture), Gesture::Strip) {
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft) => {
+            iced::Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Right | mouse::Button::Middle,
+            )) => state.other_button = true,
+            iced::Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Right | mouse::Button::Middle,
+            )) => state.other_button = false,
+            // A redraw also rechecks the hover, so strips that moved under a
+            // resting pointer (the notes drawer opened, the window resized)
+            // follow it without waiting for the next mouse move.
+            iced::Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
+            | iced::Event::Window(window::Event::RedrawRequested(_)) => {
                 let over = match state.gesture {
                     Gesture::Page => None,
                     Gesture::None | Gesture::Strip => self.side_at(bounds, cursor),
@@ -421,7 +446,10 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
                     shell.capture_event();
                 }
             }
-            iced::Event::Window(window::Event::Unfocused) => state.gesture = Gesture::None,
+            iced::Event::Window(window::Event::Unfocused) => {
+                state.gesture = Gesture::None;
+                state.other_button = false;
+            }
             _ => {}
         }
     }
@@ -438,6 +466,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
         if !matches!(state.gesture, Gesture::Page)
+            && !state.other_button
             && self.side_at(layout.bounds(), cursor).is_some()
         {
             mouse::Interaction::Pointer

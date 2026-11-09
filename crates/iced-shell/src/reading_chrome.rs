@@ -303,13 +303,17 @@ impl Reader {
             || self.has_held_panels()
     }
 
-    /// Something shows in the panel area under the bar.
+    /// Something shows in the panel area under the bar. The library banner
+    /// does not hold the bar: a library location that stays unavailable
+    /// would otherwise keep it on screen for as long as the document is open.
     pub(super) fn has_panels(&self) -> bool {
-        self.has_held_panels() || self.opening.is_some() || self.pagination.is_some()
+        self.has_held_panels()
+            || self.opening.is_some()
+            || self.pagination.is_some()
+            || library_ui::banner_visible(self)
     }
 
-    /// Find, the read-aloud player, contents, help, recent documents, the
-    /// library banner or notices.
+    /// Find, the read-aloud player, contents, help, recent documents or notices.
     fn has_held_panels(&self) -> bool {
         self.find.is_some()
             || self.read_aloud.active()
@@ -320,7 +324,6 @@ impl Reader {
             || self.show_help
             || self.preferences_notice.is_some()
             || self.shelf.notice.is_some()
-            || library_ui::banner_visible(self)
             || self.saving
     }
 

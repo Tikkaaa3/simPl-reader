@@ -1894,10 +1894,10 @@ fn render_strip_looks() {
 }
 
 #[test]
-fn the_library_banner_shows_while_reading_and_holds_the_bar() {
+fn the_library_banner_shows_while_reading_without_holding_the_bar() {
     let mut reader = reading_bar_book(1280.0);
     reader.library.notice = Some("Your library moved.".into());
-    assert!(reader.bar_held(), "an actionable notice holds the bar");
+    assert!(!reader.bar_held());
     let dismiss = bounds_of(&mut reader, Control::Library(library_ui::Focus::Dismiss));
     assert!(
         dismiss.y >= reading_chrome::height(&reader),
@@ -1907,7 +1907,122 @@ fn the_library_banner_shows_while_reading_and_holds_the_bar() {
     let mut ui = Harness::new();
     ui.click(&mut reader, dismiss.center());
     assert_eq!(reader.library.notice, None, "Dismiss clears the notice");
+
+    // A library on a disconnected drive keeps its banner up indefinitely; the
+    // bar still hides, and the banner stays usable without it.
+    reader.library.location = Some(Err("The library drive is not connected.".into()));
+    reader.library.notice = Some("Your library moved.".into());
     assert!(!reader.bar_held());
+    hide_bar(&mut reader);
+    let retry = bounds_of(
+        &mut reader,
+        Control::Library(library_ui::Focus::BannerRetry),
+    );
+    assert!(
+        retry.y >= reading_chrome::REVEAL_ZONE,
+        "Retry hangs below the reveal band, at y={}",
+        retry.y
+    );
+    let dismiss = bounds_of(&mut reader, Control::Library(library_ui::Focus::Dismiss));
+    ui.click(&mut reader, dismiss.center());
+    assert_eq!(
+        reader.library.notice, None,
+        "Dismiss answers with the bar hidden"
+    );
+}
+
+#[test]
+fn a_tap_on_a_strip_turns_the_page() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let mut ui = Harness::new();
+    let at = right_strip(&reader, 350.0);
+    let finger = iced::touch::Finger(0);
+    let pressed = ui.send(
+        &mut reader,
+        iced::Event::Touch(iced::touch::Event::FingerPressed {
+            id: finger,
+            position: at,
+        }),
+        at,
+    );
+    assert_eq!(page_turns(&pressed), [true]);
+    let lifted = ui.send(
+        &mut reader,
+        iced::Event::Touch(iced::touch::Event::FingerLifted {
+            id: finger,
+            position: at,
+        }),
+        at,
+    );
+    assert!(page_turns(&lifted).is_empty(), "nothing on lift");
+    reader.bar.toggle_pin(std::time::Instant::now());
+    assert_eq!(page_field(&reader), "2");
+}
+
+#[test]
+fn a_right_click_on_a_strip_still_opens_the_page_menu() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let at = right_strip(&reader, 350.0);
+    assert_eq!(interaction_at(&reader, at), mouse::Interaction::Pointer);
+    let mut ui = Harness::new();
+    let messages = ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+        at,
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::ContextBlank)),
+        "the margin under the strip gets the right click: {messages:?}"
+    );
+    assert!(page_turns(&messages).is_empty());
+    let released = ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+        at,
+    );
+    assert!(page_turns(&released).is_empty());
+    assert_eq!(
+        page_turns(&ui.click(&mut reader, at)),
+        [true],
+        "a left click there still turns the page"
+    );
+}
+
+#[test]
+fn a_strip_that_moves_under_a_resting_pointer_drops_its_shade() {
+    let mut reader = strip_book(1000.0, 700.0);
+    let at = right_strip(&reader, 350.0);
+    let mut ui = Harness::new();
+    ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        at,
+    );
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    assert!(
+        at.x > 1000.0 - notes_ui::sidebar_width(&reader),
+        "the pointer is over the drawer now"
+    );
+    let redraw = ui.send(
+        &mut reader,
+        iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
+        at,
+    );
+    assert!(
+        redraw
+            .iter()
+            .any(|message| matches!(message, Message::StripHover(None))),
+        "the redraw notices the strip moved away: {redraw:?}"
+    );
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 0.0);
 }
 
 #[test]
