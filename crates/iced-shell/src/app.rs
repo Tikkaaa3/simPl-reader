@@ -6107,7 +6107,7 @@ fn floating_lane(reader: &Reader) -> FloatingLane {
     let strip = page_strips::width(window.width);
     let inset = page_strips::bottom_inset(reader);
     let overlaid = drawers.overlaid();
-    let [previous, next] = page_strips::regions(area, strip, inset, overlaid);
+    let [previous, next] = page_strips::regions(area, strip, inset, overlaid).strips;
     let band = progress_line::band(area, strip, inset, overlaid);
     let between = previous.x + previous.width..next.x;
     let lane = if between.end - between.start >= FLOATING_MIN_WIDTH {
@@ -6339,6 +6339,15 @@ fn scrolls_sideways(reader: &Reader) -> bool {
     }
     let available = reader.document_view_size().width;
     book_desk_width(reader, available) > available
+}
+
+/// Whether the open page scrolls down, so the vertical scrollbar has a rail
+/// at the reading area's right edge. A PDF's pages are one long scroll.
+fn scrolls_down(reader: &Reader) -> bool {
+    reader.pdf.is_some()
+        || reader
+            .active_page()
+            .is_some_and(|page| page.height > reader.viewport)
 }
 
 fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Message> {

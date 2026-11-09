@@ -184,40 +184,53 @@ pub(super) fn width(window_width: f32) -> f32 {
     (window_width * 0.07).clamp(48.0, 128.0).round()
 }
 
+/// Where the strips lie over the reading area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Regions {
+    /// The previous and next strips, as drawn.
+    pub(super) strips: [Rectangle; 2],
+    /// The part of the next strip over the scrollbar rail. It shows the
+    /// strip's hover, but while the page scrolls, presses, the wheel and the
+    /// cursor there belong to the scrollbar.
+    pub(super) rail: Option<Rectangle>,
+}
+
 /// The strips over the reading area `bounds`, beside the drawers that cover
-/// its sides. The right one stops short of the scrollbar rail, and both stop
-/// `bottom_inset` above the bottom. The left one is wider by the part of the
-/// rail no drawer covers, so the lane between them is centred in the
-/// uncovered area.
+/// its sides. Both are equally wide and stop `bottom_inset` above the bottom.
+/// Each runs to its side of the uncovered area, so the lane between them is
+/// centred there, and the right one also covers the scrollbar rail unless a
+/// drawer does.
 pub(super) fn regions(
     bounds: Rectangle,
     width: f32,
     bottom_inset: f32,
     covered: drawers::Edges,
-) -> [Rectangle; 2] {
+) -> Regions {
     let left = covered.left.min(bounds.width);
-    let open = (bounds.width - covered.right).max(left);
-    let right = (bounds.width - crate::document_scroll::RAIL_WIDTH)
-        .min(open)
-        .max(left);
-    let rail = open - right;
-    let room = right - left;
-    let width = width.min(((room - rail) / 2.0).max(0.0));
+    let right = (bounds.width - covered.right).max(left);
+    let width = width.min((right - left) / 2.0);
     let height = (bounds.height - bottom_inset).max(0.0);
-    [
-        Rectangle {
-            x: bounds.x + left,
-            y: bounds.y,
-            width: (width + rail).min(room),
-            height,
-        },
-        Rectangle {
-            x: bounds.x + right - width,
-            y: bounds.y,
-            width,
-            height,
-        },
-    ]
+    let next = Rectangle {
+        x: bounds.x + right - width,
+        y: bounds.y,
+        width,
+        height,
+    };
+    let rail = Rectangle {
+        x: bounds.x + bounds.width - crate::document_scroll::RAIL_WIDTH,
+        width: crate::document_scroll::RAIL_WIDTH,
+        ..bounds
+    };
+    Regions {
+        strips: [
+            Rectangle {
+                x: bounds.x + left,
+                ..next
+            },
+            next,
+        ],
+        rail: next.intersection(&rail),
+    }
 }
 
 /// The strips as one layer to stack over the reading area.
@@ -228,6 +241,7 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         width: width(reader.window_size.width),
         bottom_inset: bottom_inset(reader),
         covered: reader.drawers().overlaid(),
+        scrollbar: super::scrolls_down(reader),
         progress: reader.progress(),
         jumps: active,
         labelled: reader.bar.visible(),
@@ -258,6 +272,9 @@ struct Strips {
     bottom_inset: f32,
     /// The overlaid drawers' widths along each side.
     covered: drawers::Edges,
+    /// The page scrolls down, so a scrollbar lies under the next strip's
+    /// rail part. Without one, that part turns the page like the rest.
+    scrollbar: bool,
     progress: Option<Progress>,
     /// A press on the line jumps; otherwise it only shows the position.
     jumps: bool,
@@ -269,6 +286,9 @@ struct Strips {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Zone {
     Strip(Side),
+    /// The next strip over the scrollbar rail: hovered like the strip, but
+    /// the scrollbar under it takes presses, the wheel and the cursor.
+    Rail,
     Line,
 }
 
@@ -276,8 +296,14 @@ impl Zone {
     fn side(self) -> Option<Side> {
         match self {
             Zone::Strip(side) => Some(side),
+            Zone::Rail => Some(Side::Next),
             Zone::Line => None,
         }
+    }
+
+    /// Whether the zone takes the press, the wheel and the cursor.
+    fn acts(self) -> bool {
+        !matches!(self, Zone::Rail)
     }
 }
 
@@ -309,9 +335,15 @@ impl Strips {
     }
 
     fn zone_at_point(&self, bounds: Rectangle, point: iced::Point) -> Option<Zone> {
-        let regions = regions(bounds, self.width, self.bottom_inset, self.covered);
-        let strip = SIDES.into_iter().zip(regions).find_map(|(side, region)| {
-            (region.contains(point) && self.turns.get(side).is_some()).then_some(Zone::Strip(side))
+        let Regions { strips, rail } = regions(bounds, self.width, self.bottom_inset, self.covered);
+        let strip = SIDES.into_iter().zip(strips).find_map(|(side, region)| {
+            (region.contains(point) && self.turns.get(side).is_some()).then_some(
+                if self.scrollbar && rail.is_some_and(|rail| rail.contains(point)) {
+                    Zone::Rail
+                } else {
+                    Zone::Strip(side)
+                },
+            )
         });
         strip.or_else(|| {
             (self.jumps && self.progress.is_some() && self.band(bounds).contains(point))
@@ -327,6 +359,7 @@ impl Strips {
     fn action(&self, bounds: Rectangle, point: iced::Point) -> Option<Message> {
         match self.zone_at_point(bounds, point)? {
             Zone::Strip(side) => self.turns.get(side).cloned(),
+            Zone::Rail => None,
             Zone::Line => {
                 let total = self.progress?.total;
                 Some(Message::ProgressJump(progress_line::page_under(
@@ -486,7 +519,8 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
                 }
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if !matches!(state.gesture, Gesture::Page) && self.zone_at(bounds, cursor).is_some()
+                if !matches!(state.gesture, Gesture::Page)
+                    && self.zone_at(bounds, cursor).is_some_and(Zone::acts)
                 {
                     shell.publish(Message::ChromeWheel(*delta));
                     shell.capture_event();
@@ -513,7 +547,9 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
         let state = tree.state.downcast_ref::<State>();
         if !matches!(state.gesture, Gesture::Page)
             && !state.other_button
-            && self.zone_at(layout.bounds(), cursor).is_some()
+            && self
+                .zone_at(layout.bounds(), cursor)
+                .is_some_and(Zone::acts)
         {
             mouse::Interaction::Pointer
         } else {
@@ -532,8 +568,8 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let regions = regions(bounds, self.width, self.bottom_inset, self.covered);
-        for ((side, region), alpha) in SIDES.into_iter().zip(regions).zip(self.alpha) {
+        let strips = regions(bounds, self.width, self.bottom_inset, self.covered).strips;
+        for ((side, region), alpha) in SIDES.into_iter().zip(strips).zip(self.alpha) {
             if alpha > 0.0 && self.turns.get(side).is_some() {
                 self.draw_strip(renderer, theme, side, region, alpha);
             }
@@ -572,41 +608,58 @@ mod tests {
     }
 
     #[test]
-    fn strip_regions_stop_inside_the_rail_and_above_the_bottom_inset() {
+    fn strip_regions_cover_the_rail_and_stop_above_the_bottom_inset() {
         let bounds = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(660.0, 800.0));
         assert_eq!(
             regions(bounds, 70.0, 0.0, UNCOVERED),
-            [
-                Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(84.0, 800.0)),
-                Rectangle::new(Point::new(576.0, 0.0), iced::Size::new(70.0, 800.0)),
-            ]
+            Regions {
+                strips: [
+                    Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(70.0, 800.0)),
+                    Rectangle::new(Point::new(590.0, 0.0), iced::Size::new(70.0, 800.0)),
+                ],
+                rail: Some(Rectangle::new(
+                    Point::new(646.0, 0.0),
+                    iced::Size::new(14.0, 800.0)
+                )),
+            }
         );
-        let [_, next] = regions(bounds, 70.0, pdf_reader::STATUS_HEIGHT, UNCOVERED);
+        let Regions {
+            strips: [_, next],
+            rail,
+        } = regions(bounds, 70.0, pdf_reader::STATUS_HEIGHT, UNCOVERED);
         assert_eq!(next.height, 800.0 - pdf_reader::STATUS_HEIGHT);
+        assert_eq!(rail.unwrap().height, 800.0 - pdf_reader::STATUS_HEIGHT);
         let narrow = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(100.0, 800.0));
-        let [previous, next] = regions(narrow, 70.0, 0.0, UNCOVERED);
+        let [previous, next] = regions(narrow, 70.0, 0.0, UNCOVERED).strips;
         assert_eq!(
             (previous.width, next.x, next.width),
-            (50.0, 50.0, 36.0),
+            (50.0, 50.0, 50.0),
             "strips never overlap"
         );
         let sliver = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(10.0, 800.0));
-        let [previous, next] = regions(sliver, 70.0, 0.0, UNCOVERED);
-        assert_eq!((previous.width, next.width), (0.0, 0.0));
+        let Regions {
+            strips: [previous, next],
+            rail,
+        } = regions(sliver, 70.0, 0.0, UNCOVERED);
+        assert_eq!((previous.width, next.x, next.width), (5.0, 5.0, 5.0));
+        assert_eq!(
+            rail,
+            Some(Rectangle::new(
+                Point::new(5.0, 0.0),
+                iced::Size::new(5.0, 800.0)
+            ))
+        );
     }
 
     #[test]
     fn lane_between_the_strips_is_centred() {
-        for area in [860.0, 1400.0, 2560.0] {
+        for (area, strip) in [(860.0, 60.0), (1400.0, 98.0), (2560.0, 128.0)] {
             let bounds = Rectangle::new(Point::new(0.0, 0.0), iced::Size::new(area, 800.0));
-            let [previous, next] = regions(bounds, width(area), 0.0, UNCOVERED);
+            let [previous, next] = regions(bounds, width(area), 0.0, UNCOVERED).strips;
+            assert_eq!((previous.width, next.width), (strip, strip), "at {area}");
+            assert_eq!(next.x + next.width, area, "at {area}");
             let lane = (previous.x + previous.width + next.x) / 2.0;
-            assert_eq!(lane, bounds.center_x(), "at {area}");
-            assert_eq!(
-                next.x + next.width,
-                area - crate::document_scroll::RAIL_WIDTH,
-                "at {area}"
-            );
+            assert_eq!(lane, area / 2.0, "at {area}");
         }
     }
 
@@ -624,16 +677,20 @@ mod tests {
         };
         assert_eq!(
             regions(bounds, 60.0, 0.0, covered),
-            [
-                Rectangle::new(Point::new(300.0, 0.0), iced::Size::new(60.0, 800.0)),
-                Rectangle::new(Point::new(550.0, 0.0), iced::Size::new(60.0, 800.0)),
-            ]
+            Regions {
+                strips: [
+                    Rectangle::new(Point::new(300.0, 0.0), iced::Size::new(60.0, 800.0)),
+                    Rectangle::new(Point::new(550.0, 0.0), iced::Size::new(60.0, 800.0)),
+                ],
+                rail: None,
+            },
+            "the drawer covers the rail"
         );
         let crowded = drawers::Edges {
             left: 500.0,
             right: 300.0,
         };
-        let [previous, next] = regions(bounds, 60.0, 0.0, crowded);
+        let [previous, next] = regions(bounds, 60.0, 0.0, crowded).strips;
         assert_eq!(
             (previous.x, previous.width, next.x),
             (500.0, 30.0, 530.0),
@@ -648,7 +705,7 @@ mod tests {
             let _ = reader.go_to_local_page(1);
             let _ = update(&mut reader, Message::ToggleContents);
             let drawer = drawers::width(window);
-            let strip = width(window) + crate::document_scroll::RAIL_WIDTH;
+            let strip = width(window);
             for (x, pointer) in [
                 (drawer - 1.0, false),
                 (drawer + 1.0, true),

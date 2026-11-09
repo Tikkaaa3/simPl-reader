@@ -1472,11 +1472,11 @@ fn hide_bar(reader: &mut Reader) {
     assert!(!reader.bar.visible(), "the bar has faded out");
 }
 
-/// Where the right strip ends: inside the scrollbar rail beside a docked notes
-/// drawer, or at an overlaid one's edge.
+/// Where the right strip ends: at the reading area's right edge, over the
+/// scrollbar rail, or at an overlaid drawer's edge.
 fn right_strip_end(reader: &Reader) -> f32 {
     let drawers = reader.drawers();
-    reader.window_size.width - (drawers.docked().right + 14.0).max(drawers.overlaid().right)
+    reader.window_size.width - drawers.docked().right - drawers.overlaid().right
 }
 
 /// A point at height `y` in the middle of the right strip.
@@ -1754,6 +1754,83 @@ fn strip_wheel_scrolls_the_page() {
 }
 
 #[test]
+fn right_strip_shares_the_edge_with_the_scrollbar() {
+    let mut reader = strip_book(1280.0, 700.0);
+    assert!(reader.can_turn(true));
+    let mut ui = Harness::new();
+    let (offset, end) = native_scroll(&mut ui, &reader);
+    assert_eq!(offset, 0.0);
+    assert!(end > 0.0, "the page scrolls down");
+
+    let rail = Point::new(1280.0 - 5.0, 690.0);
+    let moved = ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: rail }),
+        rail,
+    );
+    assert!(
+        moved
+            .iter()
+            .any(|message| matches!(message, Message::StripHover(Some(page_strips::Side::Next)))),
+        "the rail is part of the hovered strip"
+    );
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+
+    let wheeled = ui.send_all(&mut reader, &wheel_notches(1), rail);
+    assert_eq!(wheels(&wheeled), (0, 1), "the page takes the wheel");
+    assert_eq!(native_scroll(&mut ui, &reader).0, 60.0);
+
+    let pressed = ui.press(&mut reader, rail);
+    assert!(
+        page_turns(&pressed).is_empty(),
+        "the rail press is not a turn"
+    );
+    let (paged, _) = native_scroll(&mut ui, &reader);
+    assert!(
+        (end - paged).abs() < 1.0,
+        "the press near the rail's bottom pages to the end: {paged} of {end}"
+    );
+    ui.release(&mut reader, rail);
+    app_event(
+        &mut reader,
+        mouse::Event::ButtonReleased(mouse::Button::Left),
+    );
+    assert_eq!(reader.active_page().unwrap().number, 0);
+
+    let strip = Point::new(1280.0 - 30.0, 350.0);
+    assert_eq!(page_turns(&ui.press(&mut reader, strip)), [true]);
+    assert_eq!(reader.active_page().unwrap().number, 1);
+}
+
+#[test]
+fn a_page_that_fits_gives_the_whole_right_strip_to_the_turn() {
+    let mut seen = [false; 2];
+    for zoom in [1.0, 0.8, 2.0, 0.6, 0.4] {
+        let mut reader = strip_book(1280.0, 700.0);
+        let _ = update(&mut reader, Message::Zoom(zoom));
+        let generation = reader.generation;
+        let _ = update(&mut reader, Message::LayoutReady(generation));
+        let mut ui = Harness::new();
+        let (_, end) = native_scroll(&mut ui, &reader);
+        let scrolls = end > 0.0;
+        seen[usize::from(scrolls)] = true;
+        assert_eq!(
+            scrolls_down(&reader),
+            scrolls,
+            "at zoom {zoom}: the page scrolls {end}"
+        );
+        let edge = Point::new(1280.0 - 5.0, 350.0);
+        assert_eq!(
+            page_turns(&ui.press(&mut reader, edge)),
+            if scrolls { vec![] } else { vec![true] },
+            "at zoom {zoom}: the edge turns the page only without a scrollbar"
+        );
+    }
+    assert_eq!(seen, [true, true], "a page that fits and one that scrolls");
+}
+
+#[test]
 fn ctrl_wheel_over_a_strip_zooms_like_over_the_bar() {
     let wheel = mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 };
     let zoom_at = |pinned: bool, at: fn(&Reader) -> Point| {
@@ -1814,8 +1891,9 @@ fn a_strip_that_cant_turn_draws_nothing_on_hover() {
             .get_pixel(x as u32, 100)[0]
     };
     let darkened = |x| i32::from(red(&idle, x)) - i32::from(red(&hovered, x));
+    // Left of the scrollbar's thumb, which the shade also covers.
     let outer = 1000.0 - 14.0 - 2.0;
-    let inner = outer - page_strips::width(1000.0) + 4.0;
+    let inner = 1000.0 - page_strips::width(1000.0) + 4.0;
     let (outer, inner) = (darkened(outer), darkened(inner));
     assert!(
         outer >= 20,
@@ -1836,16 +1914,17 @@ fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
         Message::Notes(crate::notes::Action::ToggleList),
     );
     assert_eq!(reader.document_view_size().width, 860.0);
-    let strip_right = 1200.0 - 340.0 - 14.0;
+    let strip_right = 1200.0 - 340.0;
     let strip_left = strip_right - page_strips::width(1200.0);
-    assert_eq!(strip_left, 762.0);
+    assert_eq!(strip_left, 776.0);
+    let rail = strip_right - 14.0;
     let mut ui = Harness::new();
     for (x, turns) in [
         (strip_left - 1.0, false),
         (strip_left + 1.0, true),
-        (strip_right - 1.0, true),
-        (strip_right + 1.0, false),
-        (1200.0 - 340.0 + 10.0, false),
+        (rail - 1.0, true),
+        (rail + 1.0, false),
+        (strip_right + 10.0, false),
     ] {
         let messages = ui.click(&mut reader, Point::new(x, 350.0));
         app_event(
