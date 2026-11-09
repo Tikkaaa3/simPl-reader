@@ -207,7 +207,7 @@ impl Reader {
             size: window_size,
             scale_factor: valid_dpi(scale_factor),
             viewport: Size::new(
-                (window_size.width - 32.0).max(1.0),
+                viewport_width(window_size.width),
                 (window_size.height - INITIAL_CHROME).max(1.0),
             ),
             viewport_left: 16.0,
@@ -311,6 +311,16 @@ impl Reader {
     /// shows along its bottom.
     pub(crate) fn scrolls_sideways(&self) -> bool {
         self.content_width > self.viewport.width + 0.5
+    }
+
+    /// Whether every page fits, without scrolling sideways, in a view `width`
+    /// wide at the current zoom.
+    pub(crate) fn fits_in(&self, width: f32) -> bool {
+        let viewport = viewport_width(width);
+        self.zoom == PdfZoom::FitWidth
+            || self.document.pages.iter().all(|page| {
+                page.width * self.scale_for(page.width) + PAGE_MARGIN * 2.0 <= viewport + 0.5
+            })
     }
 
     fn rebuild(&mut self) {
@@ -478,7 +488,7 @@ impl Reader {
         self.size = window_size;
         self.scale_factor = dpi;
         self.viewport = Size::new(
-            (window_size.width - 32.0).max(1.0),
+            viewport_width(window_size.width),
             (window_size.height - INITIAL_CHROME).max(1.0),
         );
         if dpi_changed || (width_changed && matches!(self.zoom, PdfZoom::FitWidth)) {
@@ -1431,6 +1441,11 @@ fn valid_fraction(value: f32) -> f32 {
         0.0
     }
 }
+/// The width pages lay out in, in a view `window_width` wide.
+fn viewport_width(window_width: f32) -> f32 {
+    (window_width - 32.0).max(1.0)
+}
+
 fn valid_dpi(value: f64) -> f64 {
     if value.is_finite() && value > 0.0 {
         value

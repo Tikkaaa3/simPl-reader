@@ -1241,7 +1241,11 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
         &mut reader,
         Message::Notes(crate::notes::Action::ToggleList),
     );
-    assert_eq!(reader.document_view_size().width, 660.0);
+    assert_eq!(
+        reader.document_view_size().width,
+        1000.0,
+        "the page does not fit beside the drawer, which lays over it"
+    );
     assert_eq!(
         reader
             .controls()
@@ -1820,22 +1824,22 @@ fn a_strip_that_cant_turn_draws_nothing_on_hover() {
 
 #[test]
 fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
-    let mut reader = strip_book(1000.0, 700.0);
+    let mut reader = strip_book(1200.0, 700.0);
     let _ = update(
         &mut reader,
         Message::Notes(crate::notes::Action::ToggleList),
     );
-    assert_eq!(reader.document_view_size().width, 660.0);
-    let strip_right = 1000.0 - 340.0 - 14.0;
-    let strip_left = strip_right - page_strips::width(1000.0);
-    assert_eq!(strip_left, 576.0);
+    assert_eq!(reader.document_view_size().width, 860.0);
+    let strip_right = 1200.0 - 340.0 - 14.0;
+    let strip_left = strip_right - page_strips::width(1200.0);
+    assert_eq!(strip_left, 762.0);
     let mut ui = Harness::new();
     for (x, turns) in [
         (strip_left - 1.0, false),
         (strip_left + 1.0, true),
         (strip_right - 1.0, true),
         (strip_right + 1.0, false),
-        (1000.0 - 340.0 + 10.0, false),
+        (1200.0 - 340.0 + 10.0, false),
     ] {
         let messages = ui.click(&mut reader, Point::new(x, 350.0));
         app_event(
@@ -1874,15 +1878,29 @@ fn the_left_strip_turns_back_beside_the_contents_drawer() {
     }
 }
 
+fn toggle_notes(reader: &mut Reader) {
+    let _ = update(reader, Message::Notes(crate::notes::Action::ToggleList));
+}
+
+fn resize(reader: &mut Reader, width: f32) {
+    let id = *reader.window.get_or_insert_with(window::Id::unique);
+    let height = reader.window_size.height;
+    let _ = update(
+        reader,
+        Message::Event(
+            iced::Event::Window(window::Event::Resized(Size::new(width, height))),
+            id,
+        ),
+    );
+}
+
 #[test]
 fn a_window_without_room_for_both_drawers_keeps_one() {
-    for (width, both) in [(1256.0, true), (1100.0, false), (860.0, false)] {
+    // Both drawers leave the page 766px from 1446px, what it needs at zoom 1.
+    for (width, both) in [(1446.0, true), (1445.0, false), (860.0, false)] {
         let mut reader = full_bar_book(width, 600.0);
         let _ = update(&mut reader, Message::ToggleContents);
-        let _ = update(
-            &mut reader,
-            Message::Notes(crate::notes::Action::ToggleList),
-        );
+        toggle_notes(&mut reader);
         assert!(reader.notes.list.is_some(), "at {width} notes open");
         assert_eq!(
             reader.show_contents, both,
@@ -1897,44 +1915,134 @@ fn a_window_without_room_for_both_drawers_keeps_one() {
             );
         }
     }
-    let mut reader = full_bar_book(1400.0, 600.0);
+    let mut reader = full_bar_book(1600.0, 600.0);
     let _ = update(&mut reader, Message::ToggleContents);
-    let _ = update(
-        &mut reader,
-        Message::Notes(crate::notes::Action::ToggleList),
-    );
+    toggle_notes(&mut reader);
     assert!(reader.show_contents && reader.notes.list.is_some());
-    let id = window::Id::unique();
-    reader.window = Some(id);
-    let resize = |reader: &mut Reader, width: f32| {
-        let _ = update(
-            reader,
-            Message::Event(
-                iced::Event::Window(window::Event::Resized(Size::new(width, 600.0))),
-                id,
-            ),
-        );
-    };
     reader.focused = Some(Control::ContentsEntry(0));
-    resize(&mut reader, 1390.0);
+    resize(&mut reader, 1500.0);
     assert_eq!(
         reader.focused,
         Some(Control::ContentsEntry(0)),
         "a resize that keeps both drawers keeps focus in contents"
     );
-    resize(&mut reader, 1000.0);
+    resize(&mut reader, 1400.0);
     assert_eq!(reader.focused, None, "closing contents drops focus from it");
     assert!(
         !reader.show_contents && reader.notes.list.is_some(),
-        "shrinking to 1000 keeps the notes drawer"
+        "shrinking to 1400 keeps the notes drawer"
+    );
+    assert_eq!(
+        reader.drawers().docked().right,
+        340.0,
+        "and docks it beside the page"
+    );
+}
+
+#[test]
+fn a_drawer_docks_beside_a_page_fitted_to_its_width_and_overlays_a_wider_page() {
+    let mut reader = full_bar_book(1000.0, 600.0);
+    toggle_notes(&mut reader);
+    assert_eq!(
+        (
+            reader.drawers().overlaid().right,
+            reader.document_view_size().width
+        ),
+        (340.0, 1000.0),
+        "the 766px page does not fit in the 660px beside the drawer"
+    );
+    let _ = update(&mut reader, Message::FitBookWidth);
+    assert_eq!(
+        (
+            reader.drawers().docked().right,
+            reader.document_view_size().width
+        ),
+        (340.0, 660.0),
+        "fit width shrinks the page to the room beside the drawer"
+    );
+    assert!(!scrolls_sideways(&reader));
+}
+
+#[test]
+fn zooming_in_lays_a_docked_drawer_over_the_page_and_closes_contents_beside_notes() {
+    let mut reader = full_bar_book(1200.0, 600.0);
+    toggle_notes(&mut reader);
+    assert_eq!(reader.document_view_size().width, 860.0);
+    let _ = update(&mut reader, Message::Zoom(1.2));
+    assert_eq!(
+        (
+            reader.drawers().overlaid().right,
+            reader.document_view_size().width
+        ),
+        (340.0, 1200.0),
+        "the zoomed page no longer fits beside the drawer"
+    );
+    let _ = update(&mut reader, Message::Zoom(1.0));
+    assert_eq!(
+        reader.drawers().docked().right,
+        340.0,
+        "zooming out docks it again"
+    );
+
+    let mut reader = full_bar_book(1600.0, 600.0);
+    let _ = update(&mut reader, Message::ToggleContents);
+    toggle_notes(&mut reader);
+    assert!(reader.show_contents && reader.notes.list.is_some());
+    let _ = update(&mut reader, Message::Zoom(1.3));
+    assert!(
+        !reader.show_contents && reader.notes.list.is_some(),
+        "zooming in past the room between both drawers keeps notes"
+    );
+}
+
+#[test]
+fn a_pdf_notes_drawer_docks_at_fit_width_and_overlays_a_page_zoomed_past_it() {
+    let Some(mut reader) = bar_test_pdf(1000.0) else {
+        return;
+    };
+    let document = reader.pdf.as_ref().unwrap().document().id;
+    let pdf = |reader: &mut Reader, message: pdf_reader::Message| {
+        let _ = update(reader, Message::Pdf { document, message });
+    };
+    toggle_notes(&mut reader);
+    assert_eq!(
+        (
+            reader.drawers().docked().right,
+            reader.document_view_size().width
+        ),
+        (340.0, 660.0),
+        "fit width docks the drawer"
+    );
+    let fitted = reader.pdf.as_ref().unwrap().zoom_percent();
+    assert!(
+        (fitted - 144.0).abs() < 0.01,
+        "the 300pt page fits the 628px beside the drawer at 144%, got {fitted}"
+    );
+    // A 300pt page at 177% is 748px with its margins: wider than the 628px
+    // beside the drawer, narrower than the 968px of the whole window.
+    pdf(&mut reader, pdf_reader::Message::ActualSize);
+    pdf(&mut reader, pdf_reader::Message::ZoomBy(6.0));
+    assert_eq!(
+        (
+            reader.drawers().overlaid().right,
+            reader.document_view_size().width
+        ),
+        (340.0, 1000.0),
+        "the zoomed page overlays the drawer"
+    );
+    assert!(
+        !reader.pdf.as_ref().unwrap().scrolls_sideways(),
+        "the PDF lays out again across the whole window"
     );
 }
 
 #[test]
 fn floating_controls_stay_usable_beside_a_drawer() {
-    // 900 docks a drawer beside a 576px page; 540 lays one over the page.
+    // At 900 fit width docks a drawer beside a 576px page; 540 lays one over
+    // the page.
     for (width, contents) in [(900.0, true), (900.0, false), (540.0, true), (540.0, false)] {
         let mut reader = full_bar_book(width, 600.0);
+        let _ = update(&mut reader, Message::FitBookWidth);
         if contents {
             let _ = update(&mut reader, Message::ToggleContents);
         } else {

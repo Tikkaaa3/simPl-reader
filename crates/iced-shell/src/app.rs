@@ -3221,11 +3221,17 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.word_translation.dismiss();
     }
     reader.sync_read_aloud();
+    let raster = reader.request_pdf_book_raster();
+    let settings = reader.sync_reading_settings();
+    // A resize, a zoom or new settings can leave the page no room beside the
+    // drawers, and the drawers decide the width the page then fits to.
+    reader.fit_drawers();
     let task = Task::batch([
         task,
-        reader.request_pdf_book_raster(),
-        reader.sync_reading_settings(),
+        raster,
+        settings,
         reader.refit_book(),
+        reader.resize_pdf_view(),
     ]);
     let panels_changed =
         previous_panels != (reader.show_recent, reader.show_help, reader.show_contents);
@@ -4836,7 +4842,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         + (size.height - reader.window_size.height) / reader.zoom)
                         .max(1.0);
                     reader.window_size = size;
-                    reader.fit_drawers_to_window();
                     let view_size = reader.document_view_size();
                     let task = if let Some(pdf) = &mut reader.pdf {
                         forward_pdf(
@@ -6138,17 +6143,12 @@ fn hinted_control<'a>(
     .into()
 }
 
-/// The book's reading area width, and the width its zoomed paper needs with
-/// the desk around it. The page scrolls sideways when the second is wider.
-fn book_desk_widths(reader: &Reader) -> (f32, f32) {
+/// The width the book's zoomed paper needs with the desk around it in a
+/// reading area `available` wide. The page scrolls sideways when it is wider.
+fn book_desk_width(reader: &Reader, available: f32) -> f32 {
     let margin = reader.reading_options().margin as f32;
     let paper_width = reader.width + margin * 2.0;
-    let available = reader.document_view_size().width;
-    let side_padding = MINIMAL.side_padding(available);
-    (
-        available,
-        paper_width * reader.zoom + 14.0 + side_padding * 2.0,
-    )
+    paper_width * reader.zoom + 14.0 + MINIMAL.side_padding(available) * 2.0
 }
 
 /// Whether the open book or PDF is zoomed wider than the reading area, so a
@@ -6157,8 +6157,8 @@ fn scrolls_sideways(reader: &Reader) -> bool {
     if let Some(pdf) = &reader.pdf {
         return pdf.scrolls_sideways();
     }
-    let (available, desk) = book_desk_widths(reader);
-    desk > available
+    let available = reader.document_view_size().width;
+    book_desk_width(reader, available) > available
 }
 
 fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Message> {
@@ -6232,7 +6232,8 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
             notes_ui::ribbon(reader, paper_width)
         ]);
     }
-    let (available_width, desk_width) = book_desk_widths(reader);
+    let available_width = reader.document_view_size().width;
+    let desk_width = book_desk_width(reader, available_width);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
         .center_x(available_width.max(desk_width))
         .padding(iced::Padding {
