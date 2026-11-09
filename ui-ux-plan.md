@@ -1,8 +1,8 @@
 # Reader UI and UX plan
 
-This plan makes simPl a quieter Windows reader. The reading screen loses its permanent chrome. A floating top bar hides itself, and full-height strips at both edges turn pages on hover and click. A thin progress line keeps your place. The macOS window-button mode is deleted because simPl ships only for Windows.
+This plan makes simPl a quieter Windows reader. The reading screen loses its permanent chrome. A floating top bar hides itself, and full-height strips at both edges turn pages on hover and click. A thin progress line keeps your place, and the scrollbar hides while you read. The macOS window-button mode is deleted because simPl ships only for Windows.
 The rule for every PR is that the page never moves when chrome appears or disappears. Chrome floats over the page and never takes layout space from it.
-PRs land in this order. UX-0 driver and probes, UX-1 Windows-only chrome, UX-2 floating bar, UX-3 page-turn strips, UX-4 progress line, UX-5 icon bar and **Aa** panel, UX-6 floating panels and contents drawer, UX-7 wheel to next page, UX-8 page surface and state styling, UX-9 library header, UX-10 settings sections.
+PRs land in this order. UX-0 driver and probes, UX-1 Windows-only chrome, UX-2 floating bar, UX-3 page-turn strips, UX-4 progress line and idle scrollbar, UX-5 icon bar and **Aa** panel, UX-6 floating panels and contents drawer, UX-7 wheel to next page, UX-8 page surface and state styling, UX-9 library header, UX-10 settings sections.
 
 ## How to read this
 
@@ -341,13 +341,14 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 - [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
 - [ ] The root appends UX-3 to the stack. The operator lands it bottom-up.
 
-## Keep your place with a progress line (UX-4)
+## Keep your place with a progress line and hide the idle scrollbar (UX-4)
 
 **Depends on.** UX-3.
 
 **Files.**
 
 - [ ] Create `crates/iced-shell/src/progress_line.rs`.
+- [ ] Edit `crates/iced-shell/src/document_scroll.rs`.
 - [ ] Edit `crates/iced-shell/src/app.rs`.
 - [ ] Edit `crates/iced-shell/src/reader_profile.rs`.
 - [ ] Edit `README.md`.
@@ -359,18 +360,27 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 - [ ] On hover over the bottom 24px, grow the line to 6px and show `Page 4 of 14 · 21%` in 11px muted text above it. The label also shows while the bar is shown.
 - [ ] Clicking the line jumps to the page at that fraction, through the same path as the page field.
 - [ ] Add the state `reading-progress-hover` to `profile_reader_frames`.
+- [ ] Hide the document scrollbar while you read. The operator asked for this at the UX-3 review: a scrollbar that shows all the time is noise, and the progress line now keeps your place. `document_scroll.rs` draws its own 14px rail and thumb (`draw`, about line 500), so the change stays in that widget.
+  - The thumb, and the rail's background fill under it, fade out over 150ms one second after the last scroll. While hidden, nothing is drawn, so the desk runs to the window edge.
+  - They fade back in on any scroll movement: wheel, touchpad, keyboard, a page turn, a find jump, a page-field jump and middle-button autoscroll. They also show while the pointer is over the 14px rail and for the whole of a thumb drag.
+  - The rail stays a live hit target while hidden. A press on it grabs or pages exactly as today, and the hand-over to the right page-turn strip is unchanged.
+  - Keep the fade inside the widget's `State` with an explicit `Instant`, and drive it with `Shell::request_redraw_at` only while a fade or the one-second delay runs. Once hidden it requests nothing, so idle CPU stays at zero.
+  - Leave the horizontal scrollbar as it is. It shows only while a page is zoomed wider than the window, and the strips already stop above it then.
+  - Leave the library, Settings and panel scrollbars as they are. They are thin `ui::scrollbar` bars owned by iced.
 
 **You see.**
 
 - [ ] With the bar hidden, a thin accent line at the bottom shows how far through the book you are.
 - [ ] Hovering the bottom edge shows the page and percent.
+- [ ] While you read, there is no scrollbar on the right. It appears as soon as you scroll or point at the right edge, and fades about a second after you stop.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] `app.rs` gains `epub_progress_grows_across_chapters`. It opens the Quiet Hours fixture, records progress at the last page of chapter 1 and the first page of chapter 2, and asserts the second is larger. Run `cargo test -p iced-shell --locked epub_progress`.
 - [ ] `progress_line.rs` gains `click_fraction_maps_to_page`. It asserts that fraction 0.5 of 14 pages maps to page 7 and that fraction 1.0 maps to page 14. Run `cargo test -p iced-shell --locked click_fraction`.
+- [ ] `document_scroll.rs` gains `idle_scrollbar_hides_and_returns`. It asserts that the thumb shows after a scroll, is hidden one second plus the fade later with no redraw requested, shows again while the pointer is over the rail, and that a press on the hidden rail still starts a thumb drag. Run `cargo test -p iced-shell --locked idle_scrollbar`.
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Twelve lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Hide the toolbar with F8 at trunk on page 4. Let the bar hide at head on page 4. Save `ux4-regression.png`. Pass when trunk shows no position and head shows a line filled to between 21 and 29 percent of its width.
 - [ ] Lane 2. Hover the bottom 24px. Save `ux4-hover.png`. Pass when the line grows and the label reads `Page 4 of 14` with a percent.
@@ -382,6 +392,8 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 - [ ] Lane 8. Open the PDF in Document view. Save `ux4-pdf.png`. Pass when the line shows the page fraction.
 - [ ] Lane 9. Hover the bottom edge, then move away for 2 seconds. Save `ux4-no-jump.png`. Pass when the label is gone and the page text has the same y position as before the hover.
 - [ ] Lane 10. Resize to 540x360 and hover the bottom edge. Save `ux4-narrow.png`. Pass when the label fits on one line inside the window.
+- [ ] Lane 11. Read for 3 seconds without moving the pointer. Save `ux4-scrollbar-idle.png`. Wheel down once and save `ux4-scrollbar-scroll.png` within 300ms. Pass when the first shows no scrollbar on the right and the second shows the thumb, in both light and dark appearance.
+- [ ] Lane 12. With the scrollbar hidden, press on the rail where the thumb sits and drag down 200px. Save `ux4-scrollbar-drag.png` mid-drag. Pass when the page scrolled, the thumb showed for the whole drag, and it hid again about a second after the release.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -389,11 +401,12 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 - [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
 - [ ] Baseline. Record the trunk `reading-idle` p95 first.
 - [ ] Rule. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when `reading-progress-hover` p95 exceeds 33ms.
+- [ ] Rule. Fail when `idle_cpu_ms_per_10s` after the scrollbar has faded out is above trunk's.
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, and 6 screenshots into `target\ui-ux-review\UX-4-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of reading with the line, hovering it, and jumping by click. Save it as `target\ui-ux-review\UX-4-review.mp4`.
+- [ ] Copy the lane 1, 2, 6, and 11 screenshots into `target\ui-ux-review\UX-4-review-<slug>.png`.
+- [ ] Record a 30 to 60 second video of reading with the line, hovering it, jumping by click, and the scrollbar fading out and back in on scroll and on a rail hover. Save it as `target\ui-ux-review\UX-4-review.mp4`.
 - [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
@@ -809,6 +822,7 @@ What stays unproven:
 - Removing only the `Mac` variant. Saved preferences with `"window_controls":"mac"` would fail to load and turn off saving. Deleting the field avoids both.
 - Keeping macOS buttons as a hidden option. simPl ships only for Windows, and the option doubles the title-bar layout code in `chrome.rs`.
 - Repaginating pages to the viewport height so the wheel never needs to cross a page. It would break the stable page numbers that the README promises and that bookmarks rely on.
+- Leaving the document scrollbar on screen at all times. The operator found it noisy while reading. Once the progress line keeps your place, an idle thumb adds nothing.
 - Moving the scrollbar rail to hug the paper. The rail is custom-drawn in `document_scroll.rs`, and moving it costs more than letting the strip sit inside it.
 
 ## Appendix C. Risks
@@ -822,6 +836,7 @@ What stays unproven:
 - Regenerating the icon font needs network access and `fontTools`. UX-0, UX-3, and UX-5. The script pins the source blob SHA.
 - Ignored preview tests that never set a window style render Mac chrome today, so their output changes. UX-1. The owner reruns `render_reading_comfort_previews` and attaches the new images.
 - The bar may not fit one row at 540px before UX-5 folds controls into overflow. UX-2. Lane 9 checks 860px only, and UX-5 lane 9 checks 540px.
+- A hidden scrollbar is harder to find. UX-4. The rail stays live while hidden, and the thumb returns on any scroll and on a hover over the right edge. Lanes 11 and 12 check it.
 - Bugbot may not be installed on this repository. All PRs. The owner records that once.
 
 ## Appendix D. Links and reading list
