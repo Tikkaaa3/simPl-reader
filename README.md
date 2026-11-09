@@ -182,7 +182,8 @@ Select the **Listen** icon or press **Ctrl+Shift+U** to continue from the curren
 end of the book, even when text is selected. A small player above the progress line
 provides pause, resume, and speed controls without moving the page. It shows and hides
 with the reading bar, so it leaves the page's last line clear while you listen; move
-the pointer to where it sits, or Tab to it, to bring both back. The viewport
+the pointer to where it sits, or Tab to it, to bring both back. Starting to listen
+shows both for a moment. The viewport
 follows the spoken line, turning pages and loading the next EPUB chapter
 automatically.
 The spoken word has a temporary accent fill and outline in Book and PDF Document views. Pause keeps it visible; stopping clears it. It does not change selection or saved highlights.
