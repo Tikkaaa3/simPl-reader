@@ -30,6 +30,8 @@ mod book_zoom;
 mod library_ui;
 #[path = "notes_ui.rs"]
 mod notes_ui;
+#[path = "page_strips.rs"]
+mod page_strips;
 #[path = "profile_ui.rs"]
 mod profile_ui;
 #[path = "read_aloud.rs"]
@@ -885,6 +887,7 @@ struct Reader {
     pending_open: Option<OpenAs>,
     show_recent: bool,
     bar: reading_chrome::Bar,
+    strips: page_strips::Hover,
     show_help: bool,
     focused: Option<Control>,
     focus_generation: u64,
@@ -992,6 +995,7 @@ impl Default for Reader {
             show_recent: false,
             show_help: false,
             bar: Default::default(),
+            strips: Default::default(),
             focused: None,
             focus_generation: 0,
             focus_pending: false,
@@ -1140,9 +1144,13 @@ enum Message {
     TogglePinnedBar,
     /// The pointer entered the band that reveals the hidden reading bar.
     RevealBar,
-    BarFrame(std::time::Instant),
-    /// The wheel turned over the reading bar; it acts on the document under it.
-    BarWheel(mouse::ScrollDelta),
+    /// A frame while the reading bar or a page strip has a deadline or a fade.
+    ReadingFrame(std::time::Instant),
+    /// The wheel turned over the reading bar or a page strip; it acts on the
+    /// document under it.
+    ChromeWheel(mouse::ScrollDelta),
+    /// The pointer moved onto a page strip that can turn the page, or off both.
+    StripHover(Option<page_strips::Side>),
     /// The book page field gained or lost keyboard focus.
     BookPageFocus(bool),
     ToggleHelp,
@@ -1212,8 +1220,6 @@ enum Message {
     DocumentMode {
         source_page: bool,
     },
-    // The edge strips send it from the next commit on.
-    #[allow(dead_code)]
     BookPage(bool),
     FollowLink(String),
     Back,
@@ -1531,8 +1537,6 @@ impl Reader {
         scroll_to(self.local_offset() * self.zoom)
     }
 
-    // The edge strips use it from the next commit on.
-    #[allow(dead_code)]
     fn can_turn(&self, next: bool) -> bool {
         if self.pagination.is_some() {
             return false;
@@ -3224,7 +3228,9 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     );
     let task = update_inner(reader, message);
     let task = Task::batch([task, reader.drain_inbox()]);
-    reader.sync_bar(std::time::Instant::now(), input);
+    let now = std::time::Instant::now();
+    reader.sync_bar(now, input);
+    reader.sync_strips(now);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
             || previous_pdf_page
@@ -3779,11 +3785,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.bar.hover(std::time::Instant::now(), true);
             Task::none()
         }
-        Message::BarFrame(at) => {
+        Message::ReadingFrame(at) => {
             reader.bar.tick(at);
+            reader.strips.tick(at);
             Task::none()
         }
-        Message::BarWheel(delta) => reading_chrome::wheel(reader, delta),
+        Message::ChromeWheel(delta) => reading_chrome::wheel(reader, delta),
+        Message::StripHover(side) => {
+            reader.strips.hover(side, std::time::Instant::now());
+            Task::none()
+        }
         Message::BookPageFocus(focused) => {
             reader.book_page_focus(focused);
             Task::none()
@@ -6464,7 +6475,12 @@ fn view(reader: &Reader) -> Element<'_, Message> {
         // panels it holds open float above it, so the page never moves when
         // they show or hide.
         let reading = row![
-            container(content).width(Length::Fill).height(Length::Fill),
+            container(iced::widget::stack![
+                content,
+                page_strips::layer(reader, active)
+            ])
+            .width(Length::Fill)
+            .height(Length::Fill),
             // The sidebar starts below the bar's height whether or not the bar
             // shows, so the bar never covers its tabs and it never moves.
             container(notes_ui::sidebar(reader, active)).padding(iced::Padding {
@@ -6601,8 +6617,8 @@ fn subscription(reader: &Reader) -> Subscription<Message> {
         subscriptions.push(Subscription::run(read_aloud::ticks).map(|()| Message::ReadAloudTick));
     }
     subscriptions.push(Subscription::run(instance::forwarded).map(Message::Forwarded));
-    if reader.bar.needs_frames() {
-        subscriptions.push(window::frames().map(Message::BarFrame));
+    if reader.bar.needs_frames() || reader.strips.needs_frames() {
+        subscriptions.push(window::frames().map(Message::ReadingFrame));
     }
     Subscription::batch(subscriptions)
 }

@@ -7,16 +7,28 @@ use std::time::Instant;
 const WARMUP_FRAMES: usize = 10;
 const MEASURED_FRAMES: usize = 120;
 
-/// A named screen state: how to build it, and what each frame does before it draws.
-type State = (&'static str, fn() -> Reader, fn(&mut Reader, usize));
+/// A named screen state: how to build it, what each frame does before it
+/// draws, and where the pointer is.
+type State = (
+    &'static str,
+    fn() -> Reader,
+    fn(&mut Reader, usize),
+    fn(&Reader) -> mouse::Cursor,
+);
 
 const STATES: &[State] = &[
-    ("library", library, still),
-    ("reading-idle", reading, still),
-    ("reading-page-turn", reading, turn_page),
-    ("reading-bar-hidden", reading_bar_hidden, still),
-    ("reading-bar-reveal", reading_bar_hidden, reveal_bar),
-    ("settings", settings, still),
+    ("library", library, still, away),
+    ("reading-idle", reading, still, away),
+    ("reading-page-turn", reading, turn_page, away),
+    ("reading-bar-hidden", reading_bar_hidden, still, away),
+    ("reading-bar-reveal", reading_bar_hidden, reveal_bar, away),
+    (
+        "reading-strip-hover",
+        reading_strip_hover,
+        still,
+        over_right_strip,
+    ),
+    ("settings", settings, still, away),
 ];
 
 fn library() -> Reader {
@@ -62,6 +74,30 @@ fn reading_bar_hidden() -> Reader {
     }
 }
 
+/// The pointer rests on the right strip and its fade has finished.
+fn reading_strip_hover() -> Reader {
+    let mut reader = reading_bar_hidden();
+    reader
+        .strips
+        .hover(Some(page_strips::Side::Next), Instant::now());
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+    reader
+}
+
+fn away(_: &Reader) -> mouse::Cursor {
+    mouse::Cursor::Unavailable
+}
+
+fn over_right_strip(reader: &Reader) -> mouse::Cursor {
+    let size = reader.window_size;
+    let width = page_strips::width(size.width);
+    mouse::Cursor::Available(iced::Point::new(
+        size.width - 14.0 - width / 2.0,
+        size.height / 2.0,
+    ))
+}
+
 fn settings() -> Reader {
     Reader {
         show_settings: true,
@@ -92,13 +128,18 @@ fn turn_page(reader: &mut Reader, frame: usize) {
 #[ignore = "Reader frame CPU profile: use --release --ignored --nocapture"]
 fn profile_reader_frames() {
     ui::load_test_fonts();
-    for &(name, setup, step) in STATES {
-        let (median, p95) = frame_times(setup(), step);
+    for &(name, setup, step, cursor) in STATES {
+        let (median, p95) = frame_times(setup(), step, cursor);
         println!("reader_frame_ms state={name} median={median:.2} p95={p95:.2}");
     }
 }
 
-fn frame_times(mut reader: Reader, step: fn(&mut Reader, usize)) -> (f64, f64) {
+fn frame_times(
+    mut reader: Reader,
+    step: fn(&mut Reader, usize),
+    cursor: fn(&Reader) -> mouse::Cursor,
+) -> (f64, f64) {
+    let cursor = cursor(&reader);
     let size = reader.window_size;
     let bounds = Rectangle::with_size(size);
     let theme = ui::theme(reader.appearance, reader.theme);
@@ -136,7 +177,7 @@ fn frame_times(mut reader: Reader, step: fn(&mut Reader, usize)) -> (f64, f64) {
             &mut tree,
             &iced::Event::Window(window::Event::RedrawRequested(Instant::now())),
             Layout::new(&node),
-            mouse::Cursor::Unavailable,
+            cursor,
             &renderer,
             &mut iced::advanced::clipboard::Null,
             &mut iced::advanced::Shell::new(&mut messages),
@@ -151,7 +192,7 @@ fn frame_times(mut reader: Reader, step: fn(&mut Reader, usize)) -> (f64, f64) {
                 text_color: theme.palette().text,
             },
             Layout::new(&node),
-            mouse::Cursor::Unavailable,
+            cursor,
             &bounds,
         );
         // A still screen has no damage, and the runtime never redraws one, so

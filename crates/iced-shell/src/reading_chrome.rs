@@ -540,12 +540,13 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
         content,
         alpha: reader.bar.alpha(),
     }))
-    .on_scroll(Message::BarWheel)
+    .on_scroll(Message::ChromeWheel)
     .into()
 }
 
-/// The wheel over the bar behaves as it does over the page: Ctrl+wheel and
-/// touchpad pinch zoom through the same path, anything else scrolls.
+/// The wheel over the bar or a page strip behaves as it does over the page:
+/// Ctrl+wheel and touchpad pinch zoom through the same path, anything else
+/// scrolls.
 pub(super) fn wheel(reader: &mut Reader, delta: mouse::ScrollDelta) -> Task<Message> {
     let modifiers = reader.bar.modifiers;
     if !crate::document_scroll::control_pressed(modifiers) {
@@ -586,8 +587,8 @@ pub(super) fn wheel_offset(
     iced::widget::scrollable::AbsoluteOffset { x, y }
 }
 
-/// Scrolls the open document by a wheel `delta` received over the bar, by the
-/// same distance its scrollable moves for that delta.
+/// Scrolls the open document by a wheel `delta` received over the bar or a
+/// page strip, by the same distance its scrollable moves for that delta.
 pub(super) fn forward_wheel(
     reader: &Reader,
     delta: mouse::ScrollDelta,

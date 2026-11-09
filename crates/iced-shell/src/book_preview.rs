@@ -404,7 +404,8 @@ pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
     render_frame(reader, output, scale, mouse::Cursor::Unavailable);
 }
 
-/// Renders hover as the runtime does, applying `mouse_area` enter messages before drawing.
+/// Renders hover as the runtime does, applying `mouse_area` enter messages
+/// before drawing and settling the page strips' fade.
 pub(super) fn render_with_cursor(reader: &mut Reader, output: &Path, point: Point) {
     render_frame(reader, output, 1.0, mouse::Cursor::Available(point));
 }
@@ -549,10 +550,12 @@ fn render_frame(reader: &mut Reader, output: &Path, scale: f32, cursor: mouse::C
             &mut iced::advanced::Shell::new(&mut messages),
             &bounds,
         );
-        if messages.is_empty() {
+        if messages.is_empty() && !reader.strips.needs_frames() {
             break (element, node);
         }
         drop(element);
+        // Hover fades in over a few frames; draw where it settles.
+        reader.strips.settle();
         for message in messages {
             let _ = update_inner(reader, message);
         }
@@ -814,8 +817,6 @@ fn appearance_toggle_keeps_its_position_across_screens() {
 
 #[test]
 fn wheel_over_the_bar_scrolls_the_page_under_it() {
-    use iced_futures::futures::{StreamExt, executor::block_on};
-    use iced_runtime::{Action as RuntimeAction, task::into_stream};
     ui::load_test_fonts();
     let mut reader = Reader {
         book: Some(super::tests::book("wheel")),
@@ -827,71 +828,8 @@ fn wheel_over_the_bar_scrolls_the_page_under_it() {
         fraction: 0.0,
     });
     settle_pagination(&mut reader);
-    let size = reader.window_size;
-    let bounds = Rectangle::with_size(size);
-    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
-    let top = Point::new(size.width / 2.0, 20.0);
-    // Turns the wheel one line down at `top`, then applies any forwarded
-    // scroll, and returns the page offset with the messages it published.
-    let wheel = |reader: &Reader| {
-        let mut element = view(reader);
-        let mut tree = Tree::new(&element);
-        let node =
-            element
-                .as_widget_mut()
-                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
-        let mut messages = Vec::new();
-        for event in [
-            mouse::Event::CursorMoved { position: top },
-            mouse::Event::WheelScrolled {
-                delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
-            },
-        ] {
-            element.as_widget_mut().update(
-                &mut tree,
-                &iced::Event::Mouse(event),
-                Layout::new(&node),
-                mouse::Cursor::Available(top),
-                &renderer,
-                &mut iced::advanced::clipboard::Null,
-                &mut iced::advanced::Shell::new(&mut messages),
-                &bounds,
-            );
-        }
-        let mut probe = PaperViewport::default();
-        element
-            .as_widget_mut()
-            .operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
-        let direct = probe.offset.y;
-        for message in &messages {
-            let Message::BarWheel(delta) = message else {
-                continue;
-            };
-            block_on(async {
-                let mut stream = into_stream(reading_chrome::forward_wheel(
-                    reader,
-                    *delta,
-                    keyboard::Modifiers::default(),
-                ))
-                .expect("a forwarded scroll");
-                while let Some(action) = stream.next().await {
-                    if let RuntimeAction::Widget(mut operation) = action {
-                        element.as_widget_mut().operate(
-                            &mut tree,
-                            Layout::new(&node),
-                            &renderer,
-                            operation.as_mut(),
-                        );
-                    }
-                }
-            });
-        }
-        let mut probe = PaperViewport::default();
-        element
-            .as_widget_mut()
-            .operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
-        (direct, probe.offset.y, messages)
-    };
+    let top = Point::new(reader.window_size.width / 2.0, 20.0);
+    let wheel = |reader: &Reader| wheel_at(reader, top);
 
     reader.bar = reading_chrome::Bar::hidden();
     let (direct, _, _) = wheel(&reader);
@@ -906,7 +844,7 @@ fn wheel_over_the_bar_scrolls_the_page_under_it() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::BarWheel(_)))
+            .any(|message| matches!(message, Message::ChromeWheel(_)))
     );
     assert_eq!(
         forwarded, 60.0,
@@ -1031,7 +969,22 @@ impl Harness {
 
 /// The bounds of the text input with `id`.
 fn input_bounds(reader: &Reader, id: iced::advanced::widget::Id) -> Rectangle {
-    struct Find(iced::advanced::widget::Id, Option<Rectangle>);
+    text_input(reader, id).0
+}
+
+/// The text the page field shows.
+fn page_field(reader: &Reader) -> String {
+    let id = if reader.pdf.is_some() {
+        pdf_reader::page_input_id()
+    } else {
+        iced::advanced::widget::Id::new("book-page")
+    };
+    text_input(reader, id).1
+}
+
+/// The bounds and the visible text of the text input with `id`.
+fn text_input(reader: &Reader, id: iced::advanced::widget::Id) -> (Rectangle, String) {
+    struct Find(iced::advanced::widget::Id, Option<(Rectangle, String)>);
     impl iced::advanced::widget::Operation for Find {
         fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
             visit(self);
@@ -1040,10 +993,10 @@ fn input_bounds(reader: &Reader, id: iced::advanced::widget::Id) -> Rectangle {
             &mut self,
             id: Option<&iced::advanced::widget::Id>,
             bounds: Rectangle,
-            _: &mut dyn iced::advanced::widget::operation::TextInput,
+            input: &mut dyn iced::advanced::widget::operation::TextInput,
         ) {
             if id == Some(&self.0) {
-                self.1 = Some(bounds);
+                self.1 = Some((bounds, input.text().to_owned()));
             }
         }
     }
@@ -1084,7 +1037,15 @@ fn reading_bar_book(width: f32) -> Reader {
 }
 
 fn bar_test_pdf(width: f32) -> Option<Reader> {
-    use crate::pdf_reader::tests::{complete, tall_pdf};
+    test_pdf(
+        crate::pdf_reader::tests::tall_pdf(),
+        Size::new(width, 700.0),
+    )
+}
+
+/// A PDF reader in a window of `size`, or `None` when PDFium is missing.
+fn test_pdf(bytes: Vec<u8>, size: Size) -> Option<Reader> {
+    use crate::pdf_reader::tests::complete;
     let dll = std::env::current_exe()
         .unwrap()
         .parent()
@@ -1098,17 +1059,19 @@ fn bar_test_pdf(width: f32) -> Option<Reader> {
         println!("SKIPPED the PDF half: pdfium.dll is not beside the test executable");
         return None;
     }
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
-        "simpl-bar-input-{}-{width}.pdf",
-        std::process::id()
+        "simpl-test-pdf-{}-{}.pdf",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&path, tall_pdf()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
     let document = complete(reader_pdf::open(path.clone())).unwrap();
     let _ = std::fs::remove_file(path);
-    let (pdf, _) = pdf_reader::Reader::new(document, None, Size::new(width, 700.0), 1.0);
+    let (pdf, _) = pdf_reader::Reader::new(document, None, size, 1.0);
     Some(Reader {
         pdf: Some(pdf),
-        window_size: Size::new(width, 700.0),
+        window_size: size,
         ..Reader::default()
     })
 }
@@ -1367,13 +1330,13 @@ fn ctrl_wheel_over_the_bar_zooms_and_shift_wheel_scrolls_sideways() {
     );
     let _ = update(
         &mut reader,
-        Message::BarWheel(mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 }),
+        Message::ChromeWheel(mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 }),
     );
     assert!(reader.zoom > before, "Ctrl+wheel up over the bar zooms in");
     let zoomed = reader.zoom;
     let _ = update(
         &mut reader,
-        Message::BarWheel(mouse::ScrollDelta::Pixels { x: 0.0, y: -50.0 }),
+        Message::ChromeWheel(mouse::ScrollDelta::Pixels { x: 0.0, y: -50.0 }),
     );
     assert!(reader.zoom < zoomed, "a pinch out over the bar zooms out");
 
@@ -1449,6 +1412,484 @@ fn the_notes_sidebar_starts_below_the_bar() {
             shown.y,
             "the sidebar never moves"
         );
+    }
+}
+
+/// A book of long paragraphs over many pages, open on its first page in a
+/// `width` x `height` window, with the bar faded out as while reading.
+fn strip_book(width: f32, height: f32) -> Reader {
+    let mut source = Arc::try_unwrap(super::tests::book("strips")).unwrap();
+    let sentence = "A readable paragraph with enough words to wrap over several lines. ";
+    source.items = (0..40)
+        .map(|index| Item::Paragraph {
+            id: format!("paragraph-{index}"),
+            text: sentence.repeat(8),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        })
+        .collect();
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(width, height),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    hide_bar(&mut reader);
+    reader
+}
+
+fn hide_bar(reader: &mut Reader) {
+    reader.sync_bar(std::time::Instant::now(), reading_chrome::Input::default());
+    reader.bar.step_by(std::time::Duration::from_secs(3));
+    reader.bar.step_by(std::time::Duration::from_secs(1));
+    assert!(!reader.bar.visible(), "the bar has faded out");
+}
+
+/// A point at height `y` in the middle of the right strip.
+fn right_strip(reader: &Reader, y: f32) -> Point {
+    let right = reader.window_size.width - notes_ui::sidebar_width(reader) - 14.0;
+    Point::new(
+        right - page_strips::width(reader.window_size.width) / 2.0,
+        y,
+    )
+}
+
+fn left_strip(reader: &Reader, y: f32) -> Point {
+    Point::new(page_strips::width(reader.window_size.width) / 2.0, y)
+}
+
+fn page_turns(messages: &[Message]) -> Vec<bool> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::BookPage(next) => Some(*next),
+            Message::Pdf {
+                message: pdf_reader::Message::Next,
+                ..
+            } => Some(true),
+            Message::Pdf {
+                message: pdf_reader::Message::Previous,
+                ..
+            } => Some(false),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The cursor the window shows at `at`.
+fn interaction_at(reader: &Reader, at: Point) -> mouse::Interaction {
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let size = reader.window_size;
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node =
+        element
+            .as_widget_mut()
+            .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+    element.as_widget().mouse_interaction(
+        &tree,
+        Layout::new(&node),
+        mouse::Cursor::Available(at),
+        &Rectangle::with_size(size),
+        &renderer,
+    )
+}
+
+fn app_event(reader: &mut Reader, event: mouse::Event) {
+    let _ = update(
+        reader,
+        Message::Event(iced::Event::Mouse(event), window::Id::unique()),
+    );
+}
+
+#[test]
+fn strip_press_turns_the_page() {
+    let mut reader = strip_book(1280.0, 700.0);
+    reader.bar.toggle_pin(std::time::Instant::now());
+    assert!(reader.page_total() >= 4, "three turns need four pages");
+    assert_eq!(page_field(&reader), "1");
+    let mut ui = Harness::new();
+    for (turn, fraction) in [0.1, 0.5, 0.9].into_iter().enumerate() {
+        let at = right_strip(&reader, 700.0 * fraction);
+        assert_eq!(interaction_at(&reader, at), mouse::Interaction::Pointer);
+        let pressed = ui.press(&mut reader, at);
+        assert_eq!(page_turns(&pressed), [true], "one turn per press at {at:?}");
+        let page = (turn + 2).to_string();
+        assert_eq!(page_field(&reader), page);
+        assert!(ui.release(&mut reader, at).is_empty(), "nothing on release");
+        app_event(
+            &mut reader,
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        );
+        assert_eq!(page_field(&reader), page);
+    }
+    let at = left_strip(&reader, 350.0);
+    let pressed = ui.press(&mut reader, at);
+    assert_eq!(page_turns(&pressed), [false]);
+    assert_eq!(page_field(&reader), "3");
+}
+
+#[test]
+fn strip_press_on_the_first_or_last_page_does_nothing() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let mut ui = Harness::new();
+    let at = left_strip(&reader, 350.0);
+    assert_ne!(interaction_at(&reader, at), mouse::Interaction::Pointer);
+    let mut messages = ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        at,
+    );
+    messages.extend(ui.click(&mut reader, at));
+    assert!(page_turns(&messages).is_empty());
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, Message::StripHover(Some(_)))),
+        "no hover on a strip that can't turn"
+    );
+    reader.bar.toggle_pin(std::time::Instant::now());
+    assert_eq!(page_field(&reader), "1");
+
+    let last = reader.pages().len() - 1;
+    let _ = reader.go_to_local_page(last);
+    assert!(!reader.can_turn(true));
+    let label = page_field(&reader);
+    let at = right_strip(&reader, 350.0);
+    assert_ne!(interaction_at(&reader, at), mouse::Interaction::Pointer);
+    assert!(page_turns(&ui.click(&mut reader, at)).is_empty());
+    assert_eq!(page_field(&reader), label);
+}
+
+#[test]
+fn a_resting_pointer_sees_the_strip_again_once_it_can_turn() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let last = reader.pages().len() - 1;
+    let _ = reader.go_to_local_page(last - 1);
+    let at = right_strip(&reader, 350.0);
+    let mut ui = Harness::new();
+    ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        at,
+    );
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+    assert_eq!(page_turns(&ui.click(&mut reader, at)), [true]);
+    assert!(!reader.can_turn(true));
+    assert_eq!(
+        reader.strips.alpha(page_strips::Side::Next),
+        0.0,
+        "the last page blanks the strip under the pointer"
+    );
+    let _ = update(&mut reader, Message::BookPage(false));
+    assert!(reader.strips.needs_frames(), "it fades back in");
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+}
+
+#[test]
+fn a_selection_dragged_into_a_strip_keeps_its_page_and_text() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let mut ui = Harness::new();
+    let start = Point::new(560.0, 200.0);
+    let further = Point::new(700.0, 260.0);
+    let edge = right_strip(&reader, 300.0);
+    let mut messages = ui.press(&mut reader, start);
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::SelectStart(_))),
+        "the press lands on text"
+    );
+    app_event(
+        &mut reader,
+        mouse::Event::ButtonPressed(mouse::Button::Left),
+    );
+    for at in [further, edge] {
+        messages.extend(ui.send(
+            &mut reader,
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+            at,
+        ));
+        app_event(&mut reader, mouse::Event::CursorMoved { position: at });
+    }
+    messages.extend(ui.release(&mut reader, edge));
+    app_event(
+        &mut reader,
+        mouse::Event::ButtonReleased(mouse::Button::Left),
+    );
+    assert!(page_turns(&messages).is_empty());
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, Message::StripHover(Some(_)))),
+        "the strip stays blank during the drag"
+    );
+    let book = reader.book.clone().unwrap();
+    let copied = reader.selection.copy_text(&book.items).unwrap_or_default();
+    assert!(copied.len() > 10, "selected {copied:?}");
+    reader.bar.toggle_pin(std::time::Instant::now());
+    assert_eq!(page_field(&reader), "1");
+}
+
+/// Turns the wheel one line down at `at` and applies any forwarded scroll;
+/// returns the page offset before forwarding, after it, and the messages.
+fn wheel_at(reader: &Reader, at: Point) -> (f32, f32, Vec<Message>) {
+    use iced_futures::futures::{StreamExt, executor::block_on};
+    use iced_runtime::{Action as RuntimeAction, task::into_stream};
+    let size = reader.window_size;
+    let bounds = Rectangle::with_size(size);
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node =
+        element
+            .as_widget_mut()
+            .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+    let mut messages = Vec::new();
+    for event in [
+        mouse::Event::CursorMoved { position: at },
+        mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+        },
+    ] {
+        element.as_widget_mut().update(
+            &mut tree,
+            &iced::Event::Mouse(event),
+            Layout::new(&node),
+            mouse::Cursor::Available(at),
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut iced::advanced::Shell::new(&mut messages),
+            &bounds,
+        );
+    }
+    let mut probe = PaperViewport::default();
+    element
+        .as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
+    let direct = probe.offset.y;
+    for message in &messages {
+        let Message::ChromeWheel(delta) = message else {
+            continue;
+        };
+        block_on(async {
+            let mut stream = into_stream(reading_chrome::forward_wheel(
+                reader,
+                *delta,
+                keyboard::Modifiers::default(),
+            ))
+            .expect("a forwarded scroll");
+            while let Some(action) = stream.next().await {
+                if let RuntimeAction::Widget(mut operation) = action {
+                    element.as_widget_mut().operate(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        operation.as_mut(),
+                    );
+                }
+            }
+        });
+    }
+    let mut probe = PaperViewport::default();
+    element
+        .as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
+    (direct, probe.offset.y, messages)
+}
+
+#[test]
+fn strip_wheel_scrolls_the_page() {
+    let reader = strip_book(1280.0, 500.0);
+    let (direct, forwarded, messages) = wheel_at(&reader, right_strip(&reader, 250.0));
+    assert_eq!(direct, 0.0, "the strip takes the wheel from the page");
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::ChromeWheel(_)))
+    );
+    let line = reading_chrome::wheel_offset(mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 }, false);
+    assert_eq!(forwarded, line.y, "the page moves as far as for the bar");
+    assert_eq!(forwarded, 60.0);
+    assert!(page_turns(&messages).is_empty());
+
+    let (direct, _, _) = wheel_at(&reader, Point::new(640.0, 250.0));
+    assert_eq!(direct, 60.0, "the page itself scrolls the same distance");
+}
+
+#[test]
+fn ctrl_wheel_over_a_strip_zooms_like_over_the_bar() {
+    let wheel = mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 };
+    let zoom_at = |pinned: bool, at: fn(&Reader) -> Point| {
+        let mut reader = strip_book(1280.0, 700.0);
+        if pinned {
+            reader.bar.toggle_pin(std::time::Instant::now());
+        }
+        let _ = update(
+            &mut reader,
+            Message::Event(
+                iced::Event::Keyboard(keyboard::Event::ModifiersChanged(keyboard::Modifiers::CTRL)),
+                window::Id::unique(),
+            ),
+        );
+        let at = at(&reader);
+        let mut ui = Harness::new();
+        ui.send(
+            &mut reader,
+            iced::Event::Mouse(mouse::Event::WheelScrolled { delta: wheel }),
+            at,
+        );
+        reader.zoom
+    };
+    let strip = zoom_at(false, |reader| right_strip(reader, 350.0));
+    let bar = zoom_at(true, |reader| {
+        Point::new(reader.window_size.width / 2.0, 20.0)
+    });
+    assert!(
+        strip > 1.0,
+        "Ctrl+wheel up over a strip zooms in to {strip}"
+    );
+    assert_eq!(strip, bar);
+}
+
+#[test]
+fn a_strip_that_cant_turn_draws_nothing_on_hover() {
+    let directory = std::env::temp_dir().join(format!("simpl-strips-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let pixels = |path: &Path| ::image::open(path).unwrap().to_rgba8().into_raw();
+    let mut reader = strip_book(1000.0, 600.0);
+    let idle = directory.join("idle.png");
+    render(&mut reader, &idle);
+    let blank = directory.join("previous.png");
+    let at = left_strip(&reader, 300.0);
+    render_with_cursor(&mut reader, &blank, at);
+    assert!(
+        pixels(&idle) == pixels(&blank),
+        "the first page's left strip stays blank"
+    );
+    let hovered = directory.join("next.png");
+    let at = right_strip(&reader, 300.0);
+    render_with_cursor(&mut reader, &hovered, at);
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+    let red = |path: &Path, x: f32| {
+        ::image::open(path)
+            .unwrap()
+            .to_rgba8()
+            .get_pixel(x as u32, 100)[0]
+    };
+    let darkened = |x| i32::from(red(&idle, x)) - i32::from(red(&hovered, x));
+    let outer = 1000.0 - 14.0 - 2.0;
+    let inner = outer - page_strips::width(1000.0) + 4.0;
+    assert!(
+        darkened(outer) >= 12,
+        "the shade is darkest at the window edge: {}",
+        darkened(outer)
+    );
+    assert!(
+        darkened(inner) <= 3,
+        "and clear at the strip's inner edge: {}",
+        darkened(inner)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
+    let mut reader = strip_book(1000.0, 700.0);
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    assert_eq!(notes_ui::sidebar_width(&reader), 340.0);
+    let strip_right = 1000.0 - 340.0 - 14.0;
+    let strip_left = strip_right - page_strips::width(1000.0);
+    assert_eq!(strip_left, 576.0);
+    let mut ui = Harness::new();
+    for (x, turns) in [
+        (strip_left - 1.0, false),
+        (strip_left + 1.0, true),
+        (strip_right - 1.0, true),
+        (strip_right + 1.0, false),
+        (1000.0 - 340.0 + 10.0, false),
+    ] {
+        let messages = ui.click(&mut reader, Point::new(x, 350.0));
+        app_event(
+            &mut reader,
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        );
+        assert_eq!(
+            page_turns(&messages).len(),
+            usize::from(turns),
+            "a click at x={x}"
+        );
+    }
+}
+
+#[test]
+fn a_pdf_strip_turns_the_pdf_page_above_the_status_line() {
+    let Some(mut reader) = test_pdf(
+        crate::pdf_reader::tests::pages_pdf(3),
+        Size::new(1000.0, 700.0),
+    ) else {
+        return;
+    };
+    let mut ui = Harness::new();
+    let page = |reader: &Reader| reader.pdf.as_ref().unwrap().page_index();
+    let bottom = 700.0 - pdf_reader::STATUS_HEIGHT - 14.0;
+    let at = right_strip(&reader, bottom - 1.0);
+    let messages = ui.click(&mut reader, at);
+    assert_eq!(page_turns(&messages), [true]);
+    assert_eq!(page(&reader), 1);
+    assert_eq!(page_field(&reader), "2");
+    let at = right_strip(&reader, bottom + 1.0);
+    let messages = ui.click(&mut reader, at);
+    assert!(
+        page_turns(&messages).is_empty(),
+        "the status line is not a strip"
+    );
+    let at = right_strip(&reader, 100.0);
+    let messages = ui.click(&mut reader, at);
+    assert_eq!(page_turns(&messages), [true]);
+    assert_eq!(page(&reader), 2);
+    let at = right_strip(&reader, 350.0);
+    assert_ne!(
+        interaction_at(&reader, at),
+        mouse::Interaction::Pointer,
+        "the last page has no next strip"
+    );
+    let at = left_strip(&reader, 350.0);
+    let messages = ui.click(&mut reader, at);
+    assert_eq!(page_turns(&messages), [false]);
+    assert_eq!(page(&reader), 1);
+}
+
+#[test]
+#[ignore = "UX-3 review: writes the three strip looks to target/ui-ux-review"]
+fn render_strip_looks() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (name, look) in [
+        ("v0", page_strips::Look::Shade),
+        ("v1", page_strips::Look::Circle),
+        ("v2", page_strips::Look::Flat),
+    ] {
+        page_strips::REVIEW_LOOK.set(Some(look));
+        let mut reader = strip_book(1400.0, 900.0);
+        let at = right_strip(&reader, 450.0);
+        render_with_cursor(
+            &mut reader,
+            &output.join(format!("UX-3-look-{name}.png")),
+            at,
+        );
+        assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+        page_strips::REVIEW_LOOK.set(None);
     }
 }
 
