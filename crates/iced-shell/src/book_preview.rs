@@ -2284,6 +2284,35 @@ fn render_ux5_bar_look() {
 }
 
 #[test]
+#[ignore = "Per-book theme review: writes the Aa panel and Settings to target/ui-ux-review"]
+fn render_book_theme_look() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        let mut reader = full_bar_book(1400.0, 900.0);
+        reader.appearance = appearance;
+        let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+        let clear = Control::Theme(reading_ui::Target::Book, 2);
+        let _ = reader.activate(clear);
+        settle_theme(&mut reader);
+        reader.focused = None;
+        render(&mut reader, &output.join(format!("theme-aa-{name}.png")));
+        let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+        reader.show_settings = true;
+        render(
+            &mut reader,
+            &output.join(format!("theme-settings-{name}.png")),
+        );
+    }
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let _ = update(&mut reader, Message::SetTheme(3));
+    settle_theme(&mut reader);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("theme-aa-following-compact.png"));
+}
+
+#[test]
 #[ignore = "Visual QA: set SIMPL_PREVIEW_HTML, SIMPL_PREVIEW_EPUB and SIMPL_PREVIEW_OUTPUT"]
 fn render_book_previews() {
     for bytes in ui::font_data() {
