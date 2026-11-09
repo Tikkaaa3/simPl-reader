@@ -338,6 +338,9 @@ pub fn button_style(
 ) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     let disabled = matches!(status, button::Status::Disabled);
+    let accent_tint = palette(theme)
+        .accent
+        .scale_alpha(if hovered { 0.24 } else { 0.14 });
     let (background, text_color) = if disabled {
         (None, palette(theme).muted)
     } else {
@@ -346,50 +349,38 @@ pub fn button_style(
                 hovered.then(|| palette(theme).danger.scale_alpha(0.12)),
                 palette(theme).danger,
             ),
+            _ if selected => (Some(accent_tint), palette(theme).text),
             // The primary action: a tinted accent, never a solid block of color.
-            ButtonTone::Quiet => (
-                Some(palette(theme).accent.scale_alpha(if hovered || selected {
-                    0.24
-                } else {
-                    0.14
-                })),
-                palette(theme).accent,
-            ),
+            ButtonTone::Quiet => (Some(accent_tint), palette(theme).accent),
             ButtonTone::Surface => (
-                Some(if hovered || selected {
+                Some(if hovered {
                     palette(theme).raised
                 } else {
                     palette(theme).surface
                 }),
                 palette(theme).text,
             ),
-            ButtonTone::Subtle if selected => (Some(palette(theme).raised), palette(theme).text),
             ButtonTone::Subtle if hovered => (Some(palette(theme).surface), palette(theme).text),
             ButtonTone::Subtle => (None, palette(theme).secondary),
         }
     };
+    let hairline = matches!(tone, ButtonTone::Surface) && !selected && !disabled;
     button::Style {
         background: background.map(Into::into),
         text_color,
         border: Border {
             color: if focused && !disabled {
                 palette(theme).accent
-            } else if matches!(tone, ButtonTone::Quiet) && !disabled {
-                palette(theme).accent.scale_alpha(0.35)
-            } else if matches!(tone, ButtonTone::Surface) && !disabled {
-                if selected {
-                    palette(theme).accent.scale_alpha(0.7)
-                } else {
-                    palette(theme)
-                        .border
-                        .scale_alpha(if hovered { 0.5 } else { 0.2 })
-                }
+            } else if hairline {
+                palette(theme)
+                    .border
+                    .scale_alpha(if hovered { 0.5 } else { 0.2 })
             } else {
                 Color::TRANSPARENT
             },
             width: if focused && !disabled {
                 2.0
-            } else if matches!(tone, ButtonTone::Surface | ButtonTone::Quiet) && !disabled {
+            } else if hairline {
                 1.0
             } else {
                 0.0
@@ -772,5 +763,43 @@ mod tests {
         });
         assert_eq!(reveal.target.unwrap().y, 0.0);
         assert_eq!(reveal.changes.into_inner(), [(Id::new("panel"), 120.0)]);
+    }
+
+    #[test]
+    fn selected_has_no_outline_and_focus_does() {
+        use reader_document::preferences::Appearance;
+        let theme = crate::themes::iced_theme(crate::themes::default_theme(), Appearance::Light);
+        let accent = Color::from_rgb8(0x09, 0x69, 0xda);
+        let text = Color::from_rgb8(0x10, 0x10, 0x10);
+        let tint = Some(iced::Background::Color(accent.scale_alpha(0.14)));
+        let idle = button::Status::Active;
+        for (tone, name) in [
+            (ButtonTone::Surface, "surface"),
+            (ButtonTone::Subtle, "subtle"),
+            (ButtonTone::Quiet, "quiet"),
+        ] {
+            let selected = button_style(&theme, idle, tone, false, true);
+            assert_eq!(selected.border.width, 0.0, "{name} selected");
+            assert_eq!(selected.background, tint, "{name} selected");
+            assert_eq!(selected.text_color, text, "{name} selected");
+            for is_selected in [false, true] {
+                let focused = button_style(&theme, idle, tone, true, is_selected);
+                assert_eq!(focused.border.width, 2.0, "{name} focused");
+                assert_eq!(focused.border.color, accent, "{name} focused");
+            }
+            let plain = button_style(&theme, idle, tone, false, false);
+            assert_ne!(plain.border.color, accent, "{name} unselected");
+            if !matches!(tone, ButtonTone::Quiet) {
+                assert_ne!(plain.background, tint, "{name} unselected");
+            }
+        }
+        let surface = button_style(&theme, idle, ButtonTone::Surface, false, false);
+        assert_eq!(surface.border.width, 1.0);
+        assert_eq!(
+            surface.border.color,
+            Color::from_rgb8(0xe5, 0xe5, 0xe5).scale_alpha(0.2)
+        );
+        let quiet = button_style(&theme, idle, ButtonTone::Quiet, false, false);
+        assert_eq!(quiet.border.width, 0.0);
     }
 }

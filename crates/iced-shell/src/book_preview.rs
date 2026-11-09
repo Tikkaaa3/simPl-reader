@@ -2644,6 +2644,85 @@ pub(super) fn full_bar_book(width: f32, height: f32) -> Reader {
 }
 
 #[test]
+fn selected_sort_and_shelf_chip_are_tinted_without_an_outline() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let mut reader = Reader {
+        window_size: Size::new(1280.0, 800.0),
+        ..Reader::default()
+    };
+    let entries = shelf::sample_entries(&[
+        ("Frankenstein", DocumentKind::Epub),
+        ("Dream Analysis", DocumentKind::Pdf),
+    ]);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(reader.window_size);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::NewShelf));
+    let _ = reader
+        .shelf
+        .update(shelf::Message::NameInput("Done".into()));
+    let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::Sort(
+            shelf::Sort::Title,
+        )));
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::Filter(None)));
+    let sort = bounds_of(
+        &mut reader,
+        Control::Shelf(shelf::Control::Sort(shelf::Sort::Title)),
+    );
+    let all = bounds_of(&mut reader, Control::Shelf(shelf::Control::Filter(None)));
+    let done = bounds_of(&mut reader, Control::Shelf(shelf::Control::Filter(Some(1))));
+    let output = std::env::temp_dir().join(format!("simpl-selected-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("library.png"));
+    let image = ::image::open(output.join("library.png"))
+        .unwrap()
+        .to_rgba8();
+    let _ = std::fs::remove_dir_all(&output);
+    let pixel = |x: f32, y: f32| image.get_pixel(x as u32, y as u32).0;
+    let edge_and_fill = |bounds: Rectangle| {
+        let y = bounds.center_y();
+        (pixel(bounds.x.ceil(), y), pixel(bounds.x.ceil() + 4.0, y))
+    };
+    let (sort_edge, sort_fill) = edge_and_fill(sort);
+    let (all_edge, all_fill) = edge_and_fill(all);
+    let (done_edge, done_fill) = edge_and_fill(done);
+    let accent_tint_on_desk = [210, 224, 240, 255];
+    assert_eq!(
+        sort_fill, accent_tint_on_desk,
+        "the selected sort is tinted"
+    );
+    assert_eq!(
+        sort_edge, accent_tint_on_desk,
+        "the selected sort has no outline"
+    );
+    assert_eq!(all_fill, accent_tint_on_desk, "the selected chip is tinted");
+    assert_eq!(
+        all_edge, accent_tint_on_desk,
+        "the selected chip has no outline"
+    );
+    assert_eq!(
+        done_fill,
+        [255, 255, 255, 255],
+        "an unselected chip is paper"
+    );
+    assert_eq!(
+        done_edge,
+        [252, 252, 252, 255],
+        "an unselected chip keeps its hairline"
+    );
+}
+
+#[test]
 #[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
 fn render_ux5_bar_look() {
     ui::load_test_fonts();
