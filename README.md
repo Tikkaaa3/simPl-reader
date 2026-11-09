@@ -151,6 +151,10 @@ Click anywhere along the left or right edge of the reading area, or press the ar
 keys, to turn pages; vertical scrolling stays within the selected Book page. The edge
 shows a soft shade and an arrow while the pointer is over it, and the wheel there still
 scrolls the page. The same edges turn pages in PDF Document view.
+A thin line along the bottom shows how far through the book or PDF you are. Point at
+it to see the page and percent, or click it to jump to that point.
+While you read, the scrollbar hides; it appears when you scroll or point at the right
+edge, and fades about a second after you stop.
 
 PDF Book view uses the PDF's existing text layer; it does **not** perform OCR.
 Image-only or complex pages may be better read in Document view. Initial preparation
