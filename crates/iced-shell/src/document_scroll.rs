@@ -5,6 +5,7 @@
 use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, Scrollable as ScrollState};
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget};
 use iced::{Border, Element, Event, Length, Point, Rectangle, Size, Vector};
+use std::time::{Duration, Instant};
 
 use crate::ui;
 
@@ -18,6 +19,10 @@ const EDGE: f32 = 32.0;
 /// Scroll speed, in DIP per second, for each DIP the pointer is past `EDGE`.
 const EDGE_ACCELERATION: f32 = 18.0;
 const MAX_EDGE_SPEED: f32 = 3000.0;
+/// How long the rail stays after the last scroll movement, then how long it fades.
+const IDLE_DELAY: Duration = Duration::from_secs(1);
+const FADE: Duration = Duration::from_millis(150);
+const FRAME: Duration = Duration::from_millis(16);
 
 /// `zoom` receives Ctrl+wheel movement in notches; positive values zoom in.
 pub fn wrap<'a, Message: 'a>(
@@ -161,6 +166,52 @@ impl Geometry {
     }
 }
 
+/// When the rail shows. `engaged` is the pointer over the rail or a thumb drag;
+/// the idle delay counts from the last scroll movement or the end of engagement.
+#[derive(Clone, Copy, Default)]
+struct Visibility {
+    last_motion: Option<Instant>,
+}
+
+impl Visibility {
+    fn moved(&mut self, now: Instant) {
+        self.last_motion = Some(now);
+    }
+
+    fn alpha(self, now: Instant, engaged: bool) -> f32 {
+        if engaged {
+            return 1.0;
+        }
+        let Some(last) = self.last_motion else {
+            return 0.0;
+        };
+        let idle = now.saturating_duration_since(last);
+        if idle < IDLE_DELAY {
+            1.0
+        } else if idle < IDLE_DELAY + FADE {
+            1.0 - (idle - IDLE_DELAY).as_secs_f32() / FADE.as_secs_f32()
+        } else {
+            0.0
+        }
+    }
+
+    fn next_redraw(self, now: Instant, engaged: bool) -> Option<Instant> {
+        if engaged {
+            return None;
+        }
+        let last = self.last_motion?;
+        let fade_start = last + IDLE_DELAY;
+        let hidden = fade_start + FADE;
+        if now < fade_start {
+            Some(fade_start)
+        } else if now < hidden {
+            Some((now + FRAME).min(hidden))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     geometry: Geometry,
@@ -171,7 +222,35 @@ struct State {
     /// A left-button drag that started in the document (a text selection).
     selecting: bool,
     pointer: Option<Point>,
-    last_tick: Option<std::time::Instant>,
+    last_tick: Option<Instant>,
+    visibility: Visibility,
+    /// The time of the event being handled; `draw` has no clock of its own.
+    now: Option<Instant>,
+}
+
+impl State {
+    fn engaged(&self) -> bool {
+        self.hovered || self.grabbed_at.is_some()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.now
+            .map_or(0.0, |now| self.visibility.alpha(now, self.engaged()))
+    }
+
+    /// Stores a probe result. Comparing consecutive probes catches every scroll
+    /// path (wheel, keys, page turns, jumps, autoscroll) without special cases.
+    fn observe(&mut self, geometry: Geometry) {
+        let previous = self.geometry;
+        self.geometry = geometry;
+        // A page turn or chapter load can keep the offset and swap the content.
+        if (geometry.offset.y != previous.offset.y
+            || geometry.content.height != previous.content.height)
+            && let Some(now) = self.now
+        {
+            self.visibility.moved(now);
+        }
+    }
 }
 
 // The wrapped widget is the document scrollable itself. Do not traverse into
@@ -254,10 +333,187 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
         self.content
             .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, &mut probe);
-        tree.state.downcast_mut::<State>().geometry = probe.geometry;
+        let state = tree.state.downcast_mut::<State>();
+        state.now = Some(Instant::now());
+        state.observe(probe.geometry);
     }
 
     fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let now = match event {
+            Event::Window(iced::window::Event::RedrawRequested(now)) => *now,
+            _ => Instant::now(),
+        };
+        let state = tree.state.downcast_mut::<State>();
+        state.now = Some(now);
+        let was_engaged = state.engaged();
+        self.handle(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+        );
+        let state = tree.state.downcast_mut::<State>();
+        let engaged = state.engaged();
+        if was_engaged && !engaged {
+            state.visibility.moved(now);
+        }
+        // A redraw requested while handling a redraw can be dropped on Windows;
+        // timed requests wake the event loop reliably.
+        if let Some(at) = state.visibility.next_redraw(now, engaged) {
+            shell.request_redraw_at(iced::window::RedrawRequest::At(at));
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+        let state = tree.state.downcast_ref::<State>();
+        let alpha = state.alpha();
+        if let (Some(rail), Some(thumb)) = (state.geometry.rail(), state.geometry.thumb())
+            && let Some(clip) = rail.intersection(viewport)
+            && alpha > 0.0
+        {
+            // Keep the rail above page rasters, including horizontally zoomed PDFs.
+            renderer.with_layer(clip, |renderer| {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: rail,
+                        ..renderer::Quad::default()
+                    },
+                    ui::palette(theme).background.scale_alpha(alpha),
+                );
+                // At rest the thumb is a slim, faint line; it widens under the pointer.
+                // The hit area stays the full rail either way.
+                let drawn = if state.engaged() {
+                    thumb
+                } else {
+                    Rectangle {
+                        x: thumb.x + thumb.width / 2.0 - 2.0,
+                        width: 4.0,
+                        ..thumb
+                    }
+                };
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: drawn,
+                        border: Border::default().rounded(4),
+                        ..renderer::Quad::default()
+                    },
+                    if state.grabbed_at.is_some() {
+                        ui::palette(theme).accent
+                    } else if state.hovered {
+                        ui::palette(theme).secondary
+                    } else {
+                        ui::palette(theme).muted.scale_alpha(0.45 * alpha)
+                    },
+                );
+            });
+        }
+        if let Some(origin) = state.auto_scroll_origin {
+            let marker = Rectangle::new(origin - Vector::new(7.0, 7.0), Size::new(14.0, 14.0));
+            if let Some(clip) = marker.intersection(viewport) {
+                renderer.with_layer(clip, |renderer| {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: marker,
+                            border: Border {
+                                color: ui::palette(theme).secondary,
+                                width: 1.0,
+                                ..Border::default().rounded(7)
+                            },
+                            ..renderer::Quad::default()
+                        },
+                        ui::palette(theme).background,
+                    );
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle::new(
+                                origin - Vector::new(1.0, 1.0),
+                                Size::new(2.0, 2.0),
+                            ),
+                            border: Border::default().rounded(1),
+                            ..renderer::Quad::default()
+                        },
+                        ui::palette(theme).secondary,
+                    );
+                });
+            }
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        let state = tree.state.downcast_ref::<State>();
+        if state.grabbed_at.is_some() {
+            mouse::Interaction::Grabbing
+        } else if state
+            .geometry
+            .rail()
+            .is_some_and(|rail| cursor.is_over(rail))
+        {
+            mouse::Interaction::Pointer
+        } else {
+            self.content.as_widget().mouse_interaction(
+                &tree.children[0],
+                layout,
+                cursor,
+                viewport,
+                renderer,
+            )
+        }
+    }
+
+    fn overlay<'a>(
+        &'a mut self,
+        tree: &'a mut widget::Tree,
+        layout: Layout<'a>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'a, Message, iced::Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<Message> DocumentScroll<'_, Message> {
+    #[allow(clippy::too_many_arguments)]
+    fn handle(
         &mut self,
         tree: &mut widget::Tree,
         event: &Event,
@@ -273,7 +529,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
             .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, &mut probe);
         let state = tree.state.downcast_mut::<State>();
-        state.geometry = probe.geometry;
+        state.observe(probe.geometry);
         let rail = state.geometry.rail();
         let over_rail = rail.is_some_and(|rail| cursor.is_over(rail));
         if state.hovered != over_rail {
@@ -339,7 +595,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
                     renderer,
                     &mut probe,
                 );
-                state.geometry = probe.geometry;
+                state.observe(probe.geometry);
                 // The pointer may be outside the document or still; extend the
                 // selection to the text now at the nearest visible edge.
                 let area = state.geometry.content_area();
@@ -456,7 +712,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
                 renderer,
                 &mut probe,
             );
-            state.geometry = probe.geometry;
+            state.observe(probe.geometry);
             // The next redraw lets Iced publish its normal viewport notification;
             // virtualization, saved positions and page labels use one scroll path.
             shell.capture_event();
@@ -477,145 +733,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for DocumentScroll<'_
         self.content
             .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, &mut probe);
-        state.geometry = probe.geometry;
-    }
-
-    fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        use iced::advanced::Renderer as _;
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
-        let state = tree.state.downcast_ref::<State>();
-        if let (Some(rail), Some(thumb)) = (state.geometry.rail(), state.geometry.thumb())
-            && let Some(clip) = rail.intersection(viewport)
-        {
-            // Keep the rail above page rasters, including horizontally zoomed PDFs.
-            renderer.with_layer(clip, |renderer| {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: rail,
-                        ..renderer::Quad::default()
-                    },
-                    ui::palette(theme).background,
-                );
-                // At rest the thumb is a slim, faint line; it widens under the pointer.
-                // The hit area stays the full rail either way.
-                let engaged = state.grabbed_at.is_some() || state.hovered;
-                let drawn = if engaged {
-                    thumb
-                } else {
-                    Rectangle {
-                        x: thumb.x + thumb.width / 2.0 - 2.0,
-                        width: 4.0,
-                        ..thumb
-                    }
-                };
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: drawn,
-                        border: Border::default().rounded(4),
-                        ..renderer::Quad::default()
-                    },
-                    if state.grabbed_at.is_some() {
-                        ui::palette(theme).accent
-                    } else if state.hovered {
-                        ui::palette(theme).secondary
-                    } else {
-                        ui::palette(theme).muted.scale_alpha(0.45)
-                    },
-                );
-            });
-        }
-        if let Some(origin) = state.auto_scroll_origin {
-            let marker = Rectangle::new(origin - Vector::new(7.0, 7.0), Size::new(14.0, 14.0));
-            if let Some(clip) = marker.intersection(viewport) {
-                renderer.with_layer(clip, |renderer| {
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: marker,
-                            border: Border {
-                                color: ui::palette(theme).secondary,
-                                width: 1.0,
-                                ..Border::default().rounded(7)
-                            },
-                            ..renderer::Quad::default()
-                        },
-                        ui::palette(theme).background,
-                    );
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: Rectangle::new(
-                                origin - Vector::new(1.0, 1.0),
-                                Size::new(2.0, 2.0),
-                            ),
-                            border: Border::default().rounded(1),
-                            ..renderer::Quad::default()
-                        },
-                        ui::palette(theme).secondary,
-                    );
-                });
-            }
-        }
-    }
-
-    fn mouse_interaction(
-        &self,
-        tree: &widget::Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &iced::Renderer,
-    ) -> mouse::Interaction {
-        let state = tree.state.downcast_ref::<State>();
-        if state.grabbed_at.is_some() {
-            mouse::Interaction::Grabbing
-        } else if state
-            .geometry
-            .rail()
-            .is_some_and(|rail| cursor.is_over(rail))
-        {
-            mouse::Interaction::Pointer
-        } else {
-            self.content.as_widget().mouse_interaction(
-                &tree.children[0],
-                layout,
-                cursor,
-                viewport,
-                renderer,
-            )
-        }
-    }
-
-    fn overlay<'a>(
-        &'a mut self,
-        tree: &'a mut widget::Tree,
-        layout: Layout<'a>,
-        renderer: &iced::Renderer,
-        viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'a, Message, iced::Theme, iced::Renderer>> {
-        self.content.as_widget_mut().overlay(
-            &mut tree.children[0],
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
+        state.observe(probe.geometry);
     }
 }
 
@@ -675,5 +793,76 @@ mod tests {
         assert_eq!(geometry.drag_offset(400.0, 5.0), 0.0);
         geometry.content.height = 20.0;
         assert!(geometry.rail().is_none());
+    }
+
+    #[test]
+    fn idle_scrollbar_hides_and_returns() {
+        let scrolled = Instant::now();
+        let mut visibility = Visibility::default();
+        visibility.moved(scrolled);
+        assert_eq!(visibility.alpha(scrolled, false), 1.0);
+        assert_eq!(
+            visibility.next_redraw(scrolled, false),
+            Some(scrolled + IDLE_DELAY)
+        );
+        let fading = scrolled + IDLE_DELAY + FADE / 2;
+        assert_eq!(visibility.alpha(fading, false), 0.5);
+        assert_eq!(visibility.next_redraw(fading, false), Some(fading + FRAME));
+        let hidden = scrolled + IDLE_DELAY + FADE;
+        assert_eq!(visibility.alpha(hidden, false), 0.0);
+        assert_eq!(visibility.next_redraw(hidden, false), None);
+        assert_eq!(visibility.alpha(hidden, true), 1.0, "shows over the rail");
+        assert_eq!(visibility.next_redraw(hidden, true), None);
+
+        let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+        let size = Size::new(800.0, 700.0);
+        let mut element = wrap(
+            |_| (),
+            iced::widget::scrollable(iced::widget::Space::new().height(10_000.0))
+                .height(Length::Fill),
+        );
+        let mut tree = widget::Tree::new(&element);
+        let node =
+            element
+                .as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let bounds = Rectangle::with_size(size);
+        let mut send = |tree: &mut widget::Tree, event: Event, cursor: mouse::Cursor| {
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            element.as_widget_mut().update(
+                tree,
+                &event,
+                Layout::new(&node),
+                cursor,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut shell,
+                &bounds,
+            );
+            (shell.redraw_request(), shell.is_event_captured())
+        };
+        let redraw = |now| Event::Window(iced::window::Event::RedrawRequested(now));
+        let loaded = Instant::now();
+        send(&mut tree, redraw(loaded), mouse::Cursor::Unavailable);
+        let (request, _) = send(
+            &mut tree,
+            redraw(loaded + IDLE_DELAY + FADE),
+            mouse::Cursor::Unavailable,
+        );
+        let state = tree.state.downcast_ref::<State>();
+        assert_eq!(state.alpha(), 0.0, "hidden while reading");
+        assert_eq!(request, iced::window::RedrawRequest::Wait);
+
+        let on_thumb = Point::new(800.0 - RAIL_WIDTH / 2.0, 10.0);
+        let (_, captured) = send(
+            &mut tree,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            mouse::Cursor::Available(on_thumb),
+        );
+        let state = tree.state.downcast_ref::<State>();
+        assert!(captured, "the hidden rail takes the press");
+        assert_eq!(state.grabbed_at, Some(10.0), "the press grabs the thumb");
+        assert_eq!(state.alpha(), 1.0, "the thumb shows for the drag");
     }
 }
