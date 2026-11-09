@@ -12,11 +12,35 @@ The program runs `~/.claude/skills/poteto-mode/playbooks/autopilot-stack.md`. Th
 
 Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
+## Status
+
+As of 2026-11-09:
+
+| PR | Milestone | State |
+| --- | --- | --- |
+| #2 | UX-0 driver and probes | Merged |
+| #3 | UX-1 Windows-only chrome | Merged |
+| #6 | UX-2 floating bar | Merged |
+| #11 | UX-3 page-turn strips | Merged |
+| #12 | This plan | Merged |
+| | UX-4 progress line and idle scrollbar | Next |
+
+How the program actually runs, where it differs from the checklist below:
+
+- One interactive session runs it, without the hourly audit tick. Code is written by a delegated owner, and the session reviews and verifies it.
+- Each PR branches from current `main` and the operator merges it into `main` after review. There is no stack, so the stack and rebase-after-verdict boxes do not apply.
+- The session runs the live lanes and the perf probe itself on the build machine with `scripts/ui-drive.ps1`, one lane at a time. A second model reviews each diff independently in place of the swarm's audit lanes.
+- The repository has no Bugbot.
+- `desktop_page_atlases_match_the_golden_books` and `reader-layout/tests/parity.rs` fail on `main` on the build machine. Every gate reports them as known failures.
+- The perf baseline is the detached worktree `..\simPl-trunk`, moved to `main` and release-built before each milestone.
+
+A milestone's boxes are ticked from its PR's Verification section. A box left open in a merged milestone says why.
+
 ## Program checklist
 
 ### Arm the program
 
-- [ ] State the protocol and this plan to the operator, then stop. Start execution only on the operator's explicit go.
+- [x] State the protocol and this plan to the operator, then stop. Start execution only on the operator's explicit go.
 - [ ] Read these at program start. Re-read them at every tick.
   - [ ] `git show origin/main:ui-ux-plan.md`
   - [ ] `git show origin/main:design/DESIGN.md`
@@ -32,10 +56,10 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 - [ ] Spawn one owner per PR with the full lifecycle the execution playbook names.
 - [ ] Follow this dependency graph. Base each branch on its parent branch, because the program stacks.
-  - [ ] UX-0 is first. It branches from `main`.
-  - [ ] UX-1 after UX-0.
-  - [ ] UX-2 after UX-1.
-  - [ ] UX-3 after UX-2.
+  - [x] UX-0 is first. It branches from `main`.
+  - [x] UX-1 after UX-0.
+  - [x] UX-2 after UX-1.
+  - [x] UX-3 after UX-2.
   - [ ] UX-4 after UX-3.
   - [ ] UX-5 after UX-4.
   - [ ] UX-6 after UX-5.
@@ -70,7 +94,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 simPl is a native Windows app, so every lane runs on a Windows desktop at the PR head, not on a cloud VM. No control skill drives native Windows windows. Lanes drive the app through `scripts/ui-drive.ps1`, which UX-0 adds. That script moves the global cursor, so lanes on one desktop run one at a time.
 
 - [ ] `git fetch origin <head-branch> && git worktree add ..\simPl-<pr-id> <head SHA>`.
-- [ ] In the worktree, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 build`. Then run `python scripts/promotion-fixtures.py target\lane-fixtures` to create the demo books.
+- [ ] In the worktree, run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 build`. Then run `python scripts/promotion-fixtures.py target\lane-fixtures` to create the demo books. For lanes that cross chapters, also run `python -I fixtures/chapters/build_epub.py`, which writes `target\lane-fixtures\Three Rooms.epub`.
 - [ ] Launch with `scripts\ui-drive.ps1 -Launch "target\lane-fixtures\The Quiet Hours.epub" -Profile target\lane-profile-<n> -Size 1400x900`. The script sets `LOCALAPPDATA` to the lane profile, so the real library stays untouched.
 - [ ] Deliver input only through `ui-drive.ps1` (`-Move`, `-Click`, `-Wheel`, `-Key`, `-Resize`, `-Hold`). Read-only diagnostics are `-Shot`, `-IdleCpu`, the window title, and the files under the lane profile's `simPl` folder.
 - [ ] Save every screenshot to `target\swarm-<pr-id>\worker-<n>\<slug>.png` and return the paths with the report.
@@ -81,57 +105,57 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Files.**
 
-- [ ] Create `scripts/ui-drive.ps1`.
-- [ ] Create `scripts/subset-icons.py`.
-- [ ] Create `crates/iced-shell/src/reader_profile.rs`.
-- [ ] Edit `crates/iced-shell/src/book_preview.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`, only the `#[cfg(test)]` module list near `release_audit` at line 40.
+- [x] Create `scripts/ui-drive.ps1`.
+- [x] Create `scripts/subset-icons.py`.
+- [x] Create `crates/iced-shell/src/reader_profile.rs`.
+- [x] Edit `crates/iced-shell/src/book_preview.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`, only the `#[cfg(test)]` module list near `release_audit` at line 40.
 
 **Build.**
 
-- [ ] Write `scripts/ui-drive.ps1` from the session driver in Appendix A. It takes `-Launch <path>`, `-Profile <dir>`, `-Size WxH`, `-Move x,y`, `-Click`, `-Wheel <delta>`, `-Key <SendKeys string>`, `-Hold <ms>`, `-Shot <png>`, `-IdleCpu <seconds>`, and `-Stop`. Coordinates are client-relative, because the window has no OS decorations (`decorations: false`, app.rs:7035).
-- [ ] Add `render_with_cursor(reader, path, point)` beside `render` in `book_preview.rs:370`. It passes `mouse::Cursor::Available(point)` where `render_at_scale` passes `mouse::Cursor::Unavailable` today (book_preview.rs:503 and 518), so headless renders can show hover states.
-- [ ] Add the ignored test `profile_reader_frames` in `reader_profile.rs`, modeled on `profile_settings_scroll` (settings_profile.rs:98). It renders 120 frames per state at 1280x800 and prints one line per state, `reader_frame_ms state=<name> median=<ms> p95=<ms>`. The states are `library`, `reading-idle`, `reading-page-turn`, and `settings`. Later PRs add their own states.
-- [ ] Write `scripts/subset-icons.py`. It downloads the Material Symbols source font at the blob SHA pinned in `assets/licenses/Material-Symbols-CHANGES.txt`, subsets it to a codepoint list kept in the script, writes `assets/fonts/MaterialSymbolsOutlined-Subset.ttf`, and rewrites the codepoint line of the change notice. The list starts as the ten codepoints shipped today.
+- [x] Write `scripts/ui-drive.ps1` from the session driver in Appendix A. It takes `-Launch <path>`, `-Profile <dir>`, `-Size WxH`, `-Move x,y`, `-Click`, `-Wheel <delta>`, `-Key <SendKeys string>`, `-Hold <ms>`, `-Shot <png>`, `-IdleCpu <seconds>`, and `-Stop`. Coordinates are client-relative, because the window has no OS decorations (`decorations: false`, app.rs:7035).
+- [x] Add `render_with_cursor(reader, path, point)` beside `render` in `book_preview.rs:370`. It passes `mouse::Cursor::Available(point)` where `render_at_scale` passes `mouse::Cursor::Unavailable` today (book_preview.rs:503 and 518), so headless renders can show hover states.
+- [x] Add the ignored test `profile_reader_frames` in `reader_profile.rs`, modeled on `profile_settings_scroll` (settings_profile.rs:98). It renders 120 frames per state at 1280x800 and prints one line per state, `reader_frame_ms state=<name> median=<ms> p95=<ms>`. The states are `library`, `reading-idle`, `reading-page-turn`, and `settings`. Later PRs add their own states.
+- [x] Write `scripts/subset-icons.py`. It downloads the Material Symbols source font at the blob SHA pinned in `assets/licenses/Material-Symbols-CHANGES.txt`, subsets it to a codepoint list kept in the script, writes `assets/fonts/MaterialSymbolsOutlined-Subset.ttf`, and rewrites the codepoint line of the change notice. The list starts as the ten codepoints shipped today.
 
 **You see.**
 
-- [ ] `scripts\ui-drive.ps1 -Launch ... -Shot target\ux0\reading.png` writes a 1400x900 PNG of the reading screen.
-- [ ] `cargo test -p iced-shell --release profile_reader_frames -- --ignored --nocapture --test-threads=1` prints four `reader_frame_ms` lines.
+- [x] `scripts\ui-drive.ps1 -Launch ... -Shot target\ux0\reading.png` writes a 1400x900 PNG of the reading screen.
+- [x] `cargo test -p iced-shell --release profile_reader_frames -- --ignored --nocapture --test-threads=1` prints four `reader_frame_ms` lines.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `book_preview.rs` gains `render_with_cursor_shows_card_hover`. It renders the library with the cursor over a card and asserts that the favourite button's pixels differ from a render without a cursor. Run `cargo test -p iced-shell --locked render_with_cursor`.
-- [ ] Run `scripts\dev.ps1 check`. It passes with no new warnings.
+- [x] `book_preview.rs` gains `render_with_cursor_shows_card_hover`. It renders the library with the cursor over a card and asserts that the favourite button's pixels differ from a render without a cursor. Run `cargo test -p iced-shell --locked render_with_cursor`.
+- [x] Run `scripts\dev.ps1 check`. It passes with no new warnings.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Trunk has no driver, so record that fact. Launch trunk by hand and head through the driver with the same fixture, then capture the reading screen at 1400x900. Save `ux0-regression.png`. Pass when both captures show the same layout.
-- [ ] Lane 2. Launch with `-Profile target\lane-profile-2`. Save `ux0-isolated.png`. Pass when `target\lane-profile-2\simPl\library.json` exists and the modified time of `%LOCALAPPDATA%\simPl` in the real profile is unchanged.
-- [ ] Lane 3. Run `-Resize 860x700`, then `-Shot`. Save `ux0-resize.png`. Pass when the PNG is exactly 860x700.
-- [ ] Lane 4. Press Ctrl+W, then move the cursor over a library card. Save `ux0-hover.png`. Pass when the card shows its favourite and remove buttons.
-- [ ] Lane 5. Click the Continue Reading card. Save `ux0-click.png`. Pass when the book opens at its saved page.
-- [ ] Lane 6. Send `-Key '{F8}'`. Save `ux0-key.png`. Pass when the reading toolbar collapses.
-- [ ] Lane 7. Send `-Wheel -360` over the page. Save `ux0-wheel.png`. Pass when the page text sits higher than in the capture before the wheel.
-- [ ] Lane 8. Run `-IdleCpu 10` with the book open and the mouse still. Save `ux0-idle.png`. Pass when the script prints `idle_cpu_ms_per_10s=<n>` with a number.
-- [ ] Lane 9. Run the `profile_reader_frames` command from **You see.** Save `ux0-profile.png` as a capture of the console. Pass when four state lines print with numeric median and p95.
-- [ ] Lane 10. Run `python scripts/subset-icons.py` with the shipped codepoint list. Save `ux0-icons.png` as a capture of the console. Pass when the SHA-256 of the regenerated font equals the committed file, or the lane records the `fontTools` version that changed the bytes.
+- [ ] Lane 1. Regression lane against trunk. Trunk has no driver, so record that fact. Launch trunk by hand and head through the driver with the same fixture, then capture the reading screen at 1400x900. Save `ux0-regression.png`. Pass when both captures show the same layout. *Not recorded in PR #2.*
+- [x] Lane 2. Launch with `-Profile target\lane-profile-2`. Save `ux0-isolated.png`. Pass when `target\lane-profile-2\simPl\library.json` exists and the modified time of `%LOCALAPPDATA%\simPl` in the real profile is unchanged.
+- [x] Lane 3. Run `-Resize 860x700`, then `-Shot`. Save `ux0-resize.png`. Pass when the PNG is exactly 860x700.
+- [x] Lane 4. Press Ctrl+W, then move the cursor over a library card. Save `ux0-hover.png`. Pass when the card shows its favourite and remove buttons.
+- [x] Lane 5. Click the Continue Reading card. Save `ux0-click.png`. Pass when the book opens at its saved page.
+- [x] Lane 6. Send `-Key '{F8}'`. Save `ux0-key.png`. Pass when the reading toolbar collapses.
+- [x] Lane 7. Send `-Wheel -360` over the page. Save `ux0-wheel.png`. Pass when the page text sits higher than in the capture before the wheel.
+- [ ] Lane 8. Run `-IdleCpu 10` with the book open and the mouse still. Save `ux0-idle.png`. Pass when the script prints `idle_cpu_ms_per_10s=<n>` with a number. *Not recorded in PR #2; `-IdleCpu` was used from UX-2 on.*
+- [x] Lane 9. Run the `profile_reader_frames` command from **You see.** Save `ux0-profile.png` as a capture of the console. Pass when four state lines print with numeric median and p95.
+- [x] Lane 10. Run `python scripts/subset-icons.py` with the shipped codepoint list. Save `ux0-icons.png` as a capture of the console. Pass when the SHA-256 of the regenerated font equals the committed file, or the lane records the `fontTools` version that changed the bytes. *`--check` compares outlines and printed `icons match`.*
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. The size in bytes of `target\release\iced-shell.exe`. Trunk lacks the frame probe, so the diff-added work gets an absolute budget, the wall time of `profile_reader_frames`.
-- [ ] Probe. Build release at trunk, then at head, then at trunk again, and record the exe size each time. Time `profile_reader_frames` at head three times.
-- [ ] Baseline. Record the trunk exe size first.
-- [ ] Rule. Fail when the head exe size differs from trunk by more than 0 bytes, because all new code is test-only or script. Fail when the median `profile_reader_frames` wall time exceeds 90 seconds.
+- [x] Metric. The size in bytes of `target\release\iced-shell.exe`. Trunk lacks the frame probe, so the diff-added work gets an absolute budget, the wall time of `profile_reader_frames`.
+- [x] Probe. Build release at trunk, then at head, then at trunk again, and record the exe size each time. Time `profile_reader_frames` at head three times.
+- [x] Baseline. Record the trunk exe size first.
+- [x] Rule. Fail when the head exe size differs from trunk by more than 0 bytes, because all new code is test-only or script. Fail when the median `profile_reader_frames` wall time exceeds 90 seconds.
 
 **Review gate.** None. UX-0 is not review-gated.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-0 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-0 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #2.*
 
 ## Delete the macOS window-button mode (UX-1)
 
@@ -139,64 +163,64 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Files.**
 
-- [ ] Edit `crates/reader-document/src/preferences.rs`.
-- [ ] Edit `crates/iced-shell/src/chrome.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/book_preview.rs`.
-- [ ] Edit `crates/iced-shell/src/promotion_preview.rs`.
-- [ ] Edit `README.md`.
+- [x] Edit `crates/reader-document/src/preferences.rs`.
+- [x] Edit `crates/iced-shell/src/chrome.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [x] Edit `crates/iced-shell/src/book_preview.rs`.
+- [x] Edit `crates/iced-shell/src/promotion_preview.rs`.
+- [x] Edit `README.md`.
 
 **Build.**
 
-- [ ] Delete `enum WindowControls` (preferences.rs:36-45), the `window_controls` field of `Preferences` (:50), and the field of `Record` (:67) with its load and save mappings (:125, :142). Delete the field, not only the `Mac` variant. `Record` has no `deny_unknown_fields`, so serde then ignores the `"window_controls":"mac"` key that most saved files contain. Removing only the variant makes `load_from` (:100) reject those files, and app.rs:3807 then turns off saving for the session.
-- [ ] In `chrome.rs`, delete `dot` (:124-147), `blend` (:51), the `dots` row (:233-256), the Mac arm of the tool order (:292-366), and the Mac side widths (:397-418). Delete `Controls.style` (:217). The Windows layout becomes the only layout.
-- [ ] In `app.rs`, delete `Control::SettingsWindowControls` (:1189), `Message::SetWindowControls` (:1327), the handler (:3775-3790), the settings row (:5938-5945), `window_controls_button` (:6168-6181), the focus entries (:2277-2280), and the field (:1032, :1132, :2108). Collapse the per-style title-bar focus order (:2230-2262) to the Windows order.
-- [ ] Delete `SIMPL_PREVIEW_WINDOWS` handling (book_preview.rs:1368-1372), the `windows-controls-*` captures (book_preview.rs:1064-1069), and the `SetWindowControls` call (promotion_preview.rs:47).
-- [ ] Rewrite README.md:34 so it no longer offers a choice of window buttons.
+- [x] Delete `enum WindowControls` (preferences.rs:36-45), the `window_controls` field of `Preferences` (:50), and the field of `Record` (:67) with its load and save mappings (:125, :142). Delete the field, not only the `Mac` variant. `Record` has no `deny_unknown_fields`, so serde then ignores the `"window_controls":"mac"` key that most saved files contain. Removing only the variant makes `load_from` (:100) reject those files, and app.rs:3807 then turns off saving for the session.
+- [x] In `chrome.rs`, delete `dot` (:124-147), `blend` (:51), the `dots` row (:233-256), the Mac arm of the tool order (:292-366), and the Mac side widths (:397-418). Delete `Controls.style` (:217). The Windows layout becomes the only layout.
+- [x] In `app.rs`, delete `Control::SettingsWindowControls` (:1189), `Message::SetWindowControls` (:1327), the handler (:3775-3790), the settings row (:5938-5945), `window_controls_button` (:6168-6181), the focus entries (:2277-2280), and the field (:1032, :1132, :2108). Collapse the per-style title-bar focus order (:2230-2262) to the Windows order.
+- [x] Delete `SIMPL_PREVIEW_WINDOWS` handling (book_preview.rs:1368-1372), the `windows-controls-*` captures (book_preview.rs:1064-1069), and the `SetWindowControls` call (promotion_preview.rs:47).
+- [x] Rewrite README.md:34 so it no longer offers a choice of window buttons.
 
 **You see.**
 
-- [ ] A fresh profile opens with minimize, maximize, and close at the right of the title bar, and Settings is the outermost icon on the left.
-- [ ] Settings has no **Window controls** row.
+- [x] A fresh profile opens with minimize, maximize, and close at the right of the title bar, and Settings is the outermost icon on the left.
+- [x] Settings has no **Window controls** row.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `preferences.rs` gains `legacy_mac_window_controls_key_still_loads`. It writes a version 1 record with `"window_controls":"mac"` and `"appearance":"dark"`, calls `load_from`, and asserts `Ok` with `Appearance::Dark`. Run `cargo test -p reader-document --locked legacy_mac`.
-- [ ] Replace the round-trip loop over both variants (preferences.rs:176) and the Mac default assertion (:212) with a round-trip that asserts the saved JSON contains no `window_controls` key. Run `cargo test -p reader-document --locked`.
-- [ ] Update `saved_theme_reaches_a_book_that_is_already_open` (app.rs:7996) to drop the field. Run `cargo test -p iced-shell --locked saved_theme`.
+- [x] `preferences.rs` gains `legacy_mac_window_controls_key_still_loads`. It writes a version 1 record with `"window_controls":"mac"` and `"appearance":"dark"`, calls `load_from`, and asserts `Ok` with `Appearance::Dark`. Run `cargo test -p reader-document --locked legacy_mac`.
+- [x] Replace the round-trip loop over both variants (preferences.rs:176) and the Mac default assertion (:212) with a round-trip that asserts the saved JSON contains no `window_controls` key. Run `cargo test -p reader-document --locked`.
+- [x] Update `saved_theme_reaches_a_book_that_is_already_open` (app.rs:7996) to drop the field. Run `cargo test -p iced-shell --locked saved_theme`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Open a fresh profile at trunk and at head. Save `ux1-regression.png`. Pass when trunk shows round dots at the left and head shows Windows caption buttons at the right.
-- [ ] Lane 2. Copy a trunk `preferences.json` with `"window_controls":"mac"`, the Soft theme, and dark appearance into the lane profile, then launch head. Save `ux1-legacy.png`. Pass when the app shows Soft dark with no "Invalid preferences" notice.
-- [ ] Lane 3. In the lane 2 profile, change the text size in Settings, then quit. Save `ux1-resave.png`. Pass when `preferences.json` is rewritten with the new size and without a `window_controls` key.
-- [ ] Lane 4. Open Settings. Save `ux1-settings.png`. Pass when no **Window controls** row or macOS option appears.
-- [ ] Lane 5. Press Tab through the title bar. Save `ux1-focus.png` with focus on Close. Pass when focus visits Settings, the other tools, Minimize, Maximize, and Close in that order.
-- [ ] Lane 6. Click Maximize, then click it again. Save `ux1-maximize.png`. Pass when the window maximizes, the glyph changes to restore, and the second click restores it.
-- [ ] Lane 7. With a book on page 4, click Close, then relaunch. Save `ux1-close.png`. Pass when the book reopens on page 4.
-- [ ] Lane 8. Double-click the empty title bar, then drag it. Save `ux1-drag.png`. Pass when double-click maximizes and the drag moves the restored window.
-- [ ] Lane 9. Restore a backup ZIP made at trunk that contains `"window_controls":"mac"`. Save `ux1-restore.png`. Pass when the restore review appears and **Restore and replace** finishes without an error.
-- [ ] Lane 10. Resize to the minimum 540x360 in dark appearance. Save `ux1-narrow.png`. Pass when the title, tools, and caption buttons do not overlap.
+- [x] Lane 1. Regression lane against trunk. Open a fresh profile at trunk and at head. Save `ux1-regression.png`. Pass when trunk shows round dots at the left and head shows Windows caption buttons at the right.
+- [x] Lane 2. Copy a trunk `preferences.json` with `"window_controls":"mac"`, the Soft theme, and dark appearance into the lane profile, then launch head. Save `ux1-legacy.png`. Pass when the app shows Soft dark with no "Invalid preferences" notice.
+- [x] Lane 3. In the lane 2 profile, change the text size in Settings, then quit. Save `ux1-resave.png`. Pass when `preferences.json` is rewritten with the new size and without a `window_controls` key.
+- [x] Lane 4. Open Settings. Save `ux1-settings.png`. Pass when no **Window controls** row or macOS option appears.
+- [x] Lane 5. Press Tab through the title bar. Save `ux1-focus.png` with focus on Close. Pass when focus visits Settings, the other tools, Minimize, Maximize, and Close in that order.
+- [x] Lane 6. Click Maximize, then click it again. Save `ux1-maximize.png`. Pass when the window maximizes, the glyph changes to restore, and the second click restores it.
+- [x] Lane 7. With a book on page 4, click Close, then relaunch. Save `ux1-close.png`. Pass when the book reopens on page 4.
+- [x] Lane 8. Double-click the empty title bar, then drag it. Save `ux1-drag.png`. Pass when double-click maximizes and the drag moves the restored window.
+- [ ] Lane 9. Restore a backup ZIP made at trunk that contains `"window_controls":"mac"`. Save `ux1-restore.png`. Pass when the restore review appears and **Restore and replace** finishes without an error. *Not recorded in PR #3.*
+- [x] Lane 10. Resize to the minimum 540x360 in dark appearance. Save `ux1-narrow.png`. Pass when the title, tools, and caption buttons do not overlap.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `library` and `reading-idle`.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk p95 for both states first.
-- [ ] Rule. Fail when the head median of the three p95 values exceeds trunk by more than 10 percent in either state.
+- [x] Metric. `reader_frame_ms` p95 for `library` and `reading-idle`. *PR #3 records `library` over five alternating runs.*
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
+- [x] Baseline. Record the trunk p95 for both states first.
+- [x] Rule. Fail when the head median of the three p95 values exceeds trunk by more than 10 percent in either state.
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, and 5 screenshots into `target\ui-ux-review\UX-1-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of the change on the lane desktop with `ffmpeg -f gdigrab -framerate 30 -i title=simPl -t 45`, or with Xbox Game Bar. Save it as `target\ui-ux-review\UX-1-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [ ] Copy the lane 1, 2, and 5 screenshots into `target\ui-ux-review\UX-1-review-<slug>.png`. *Not kept on disk.*
+- [ ] Record a 30 to 60 second video of the change on the lane desktop with `ffmpeg -f gdigrab -framerate 30 -i title=simPl -t 45`, or with Xbox Game Bar. Save it as `target\ui-ux-review\UX-1-review.mp4`. *Not kept on disk.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-1 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-1 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #3.*
 
 ## Float the reading bar and hide it when idle (UX-2)
 
@@ -204,70 +228,70 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Files.**
 
-- [ ] Create `crates/iced-shell/src/reading_chrome.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/chrome.rs`.
-- [ ] Edit `crates/iced-shell/src/reader_profile.rs`.
-- [ ] Edit `README.md`.
+- [x] Create `crates/iced-shell/src/reading_chrome.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [x] Edit `crates/iced-shell/src/chrome.rs`.
+- [x] Edit `crates/iced-shell/src/reader_profile.rs`.
+- [x] Edit `README.md`.
 
 **Build.**
 
-- [ ] Model the bar's visibility as one state machine in `reading_chrome.rs`, replacing `toolbar_expanded` (app.rs:1020). Use `enum BarState { Pinned, Shown { hide_at: Option<Instant> }, Hidden }` plus an `iced::Animation<bool>` for the fade. `toolbar_expanded` is session-only today, so no saved data migrates.
-- [ ] In a book, merge the title bar and `document_toolbar` (app.rs:6252) into one 44px bar. Render it as the top layer of a `stack!` over the reading area, not as a row of the page column (app.rs:6827). The page keeps its current position whether the bar shows or not.
-- [ ] Give the bar an opaque `lowest` background and a 1px `border` hairline at its bottom edge. Do not use a drop shadow or translucency. Appendix A shows why.
-- [ ] Show the bar for 2 seconds after a book opens. Show it while the pointer is in the top 48px or over the bar. Hide it 1.5 seconds after the pointer leaves. Fade in and out over 150ms.
-- [ ] Keep the bar shown while a bar control has keyboard focus or while a panel the bar opened is open. Keep every bar control in `Reader::controls()` (app.rs:2161) at all times, and reveal the bar when focus lands on one. Escape hides the bar when nothing else is open.
-- [ ] While hidden, render only a transparent 48px `mouse_area` with `on_enter` and no `interaction`. Its pointer state stays `None`, so the page under it keeps hover and clicks. The bar's buttons are not in the tree while hidden.
-- [ ] Subscribe to `window::frames()` only while `hide_at` is pending or the fade runs. That follows the rule at app.rs:6914, no idle redraw loop.
-- [ ] Change F8 from hide or show to pin or unpin. Delete the `▤` title-bar icon (chrome.rs:325-337) and `Control::ToggleToolbar`.
-- [ ] Put the light and dark toggle at the same position in the bar on the Library and the reading screens.
-- [ ] Keep the static, always-visible title bar on the Library screen.
-- [ ] In fullscreen, use the same bar without caption buttons.
-- [ ] Add the states `reading-bar-reveal` and `reading-bar-hidden` to `profile_reader_frames`.
+- [x] Model the bar's visibility as one state machine in `reading_chrome.rs`, replacing `toolbar_expanded` (app.rs:1020). Use `enum BarState { Pinned, Shown { hide_at: Option<Instant> }, Hidden }` plus an `iced::Animation<bool>` for the fade. `toolbar_expanded` is session-only today, so no saved data migrates.
+- [x] In a book, merge the title bar and `document_toolbar` (app.rs:6252) into one 44px bar. Render it as the top layer of a `stack!` over the reading area, not as a row of the page column (app.rs:6827). The page keeps its current position whether the bar shows or not.
+- [x] Give the bar an opaque `lowest` background and a 1px `border` hairline at its bottom edge. Do not use a drop shadow or translucency. Appendix A shows why.
+- [x] Show the bar for 2 seconds after a book opens. Show it while the pointer is in the top 48px or over the bar. Hide it 1.5 seconds after the pointer leaves. Fade in and out over 150ms.
+- [x] Keep the bar shown while a bar control has keyboard focus or while a panel the bar opened is open. Keep every bar control in `Reader::controls()` (app.rs:2161) at all times, and reveal the bar when focus lands on one. Escape hides the bar when nothing else is open.
+- [x] While hidden, render only a transparent 48px `mouse_area` with `on_enter` and no `interaction`. Its pointer state stays `None`, so the page under it keeps hover and clicks. The bar's buttons are not in the tree while hidden.
+- [x] Subscribe to `window::frames()` only while `hide_at` is pending or the fade runs. That follows the rule at app.rs:6914, no idle redraw loop.
+- [x] Change F8 from hide or show to pin or unpin. Delete the `▤` title-bar icon (chrome.rs:325-337) and `Control::ToggleToolbar`.
+- [x] Put the light and dark toggle at the same position in the bar on the Library and the reading screens.
+- [x] Keep the static, always-visible title bar on the Library screen.
+- [x] In fullscreen, use the same bar without caption buttons.
+- [x] Add the states `reading-bar-reveal` and `reading-bar-hidden` to `profile_reader_frames`.
 
 **You see.**
 
-- [ ] On opening a book, the bar shows and then fades out after 2 seconds. The first line of text stays at the same y position before and after.
-- [ ] Moving the pointer to the top edge brings the bar back within 150ms.
+- [x] On opening a book, the bar shows and then fades out after 2 seconds. The first line of text stays at the same y position before and after.
+- [x] Moving the pointer to the top edge brings the bar back within 150ms.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `reading_chrome.rs` gains transition tests that drive `BarState` with fixed `Instant`s. `opened_then_idle_hides_after_two_seconds` asserts `Hidden` at open plus 2.1 seconds. `focus_holds_the_bar` asserts `Shown { hide_at: None }` while a bar control is focused. `pin_survives_idle` asserts `Pinned` after 60 seconds. Run `cargo test -p iced-shell --locked reading_chrome`.
-- [ ] `app.rs` gains `bar_overlay_does_not_move_the_page`. It renders a book with the bar shown and hidden through `book_preview::render` and asserts that the first text row has the same y in both. Run `cargo test -p iced-shell --locked bar_overlay`.
-- [ ] Replace the `ToggleToolbar` tests (app.rs:7600, 8453-8471) with tests of the pin behavior.
+- [x] `reading_chrome.rs` gains transition tests that drive `BarState` with fixed `Instant`s. `opened_then_idle_hides_after_two_seconds` asserts `Hidden` at open plus 2.1 seconds. `focus_holds_the_bar` asserts `Shown { hide_at: None }` while a bar control is focused. `pin_survives_idle` asserts `Pinned` after 60 seconds. Run `cargo test -p iced-shell --locked reading_chrome`.
+- [x] `app.rs` gains `bar_overlay_does_not_move_the_page`. It renders a book with the bar shown and hidden through `book_preview::render` and asserts that the first text row has the same y in both. Run `cargo test -p iced-shell --locked bar_overlay`.
+- [x] Replace the `ToggleToolbar` tests (app.rs:7600, 8453-8471) with tests of the pin behavior.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Open the book at trunk and at head, and capture at 0.5 seconds and at 3 seconds after opening. Save `ux2-regression.png`. Pass when trunk shows both bars in both captures, head shows no bar at 3 seconds, and the head's first text line has the same y in both captures.
-- [ ] Lane 2. Move the pointer to y=20, then to the page centre, and capture 1.0 and 2.0 seconds later. Save `ux2-reveal.png`. Pass when the bar shows at y=20, is still shown at 1.0 seconds, and is gone at 2.0 seconds.
-- [ ] Lane 3. Rest the pointer on the bar for 10 seconds. Save `ux2-hold.png`. Pass when the bar is still shown at 10 seconds.
-- [ ] Lane 4. Press F8, wait 5 seconds, press F8, then wait 3 seconds. Save `ux2-pin.png`. Pass when the bar stays at 5 seconds and is gone 3 seconds after unpinning.
-- [ ] Lane 5. With the bar hidden, press Tab, wait 5 seconds, then press Escape. Save `ux2-keyboard.png`. Pass when Tab reveals the bar with a focus ring on its first control, the bar is still shown at 5 seconds, and Escape hides it.
-- [ ] Lane 6. Reveal the bar, drag it, then double-click it. Save `ux2-drag.png`. Pass when the drag moves the window and the double-click maximizes it.
-- [ ] Lane 7. Press F11, wait 3 seconds, move to the top edge, then press Escape. Save `ux2-fullscreen.png`. Pass when the bar hides in fullscreen, reveals without caption buttons, and Escape leaves fullscreen.
-- [ ] Lane 8. Press Ctrl+W and wait 10 seconds on the Library. Save `ux2-library.png`. Pass when the Library title bar is still shown.
-- [ ] Lane 9. Resize to 860x700 in dark appearance and reveal the bar. Save `ux2-narrow.png`. Pass when no bar controls overlap and the page does not move.
-- [ ] Lane 10. Capture the bar on the Library and on the reading screen. Save `ux2-toggle-position.png`. Pass when the light and dark toggle has the same x position on both screens, within 2px.
+- [x] Lane 1. Regression lane against trunk. Open the book at trunk and at head, and capture at 0.5 seconds and at 3 seconds after opening. Save `ux2-regression.png`. Pass when trunk shows both bars in both captures, head shows no bar at 3 seconds, and the head's first text line has the same y in both captures.
+- [x] Lane 2. Move the pointer to y=20, then to the page centre, and capture 1.0 and 2.0 seconds later. Save `ux2-reveal.png`. Pass when the bar shows at y=20, is still shown at 1.0 seconds, and is gone at 2.0 seconds.
+- [x] Lane 3. Rest the pointer on the bar for 10 seconds. Save `ux2-hold.png`. Pass when the bar is still shown at 10 seconds.
+- [x] Lane 4. Press F8, wait 5 seconds, press F8, then wait 3 seconds. Save `ux2-pin.png`. Pass when the bar stays at 5 seconds and is gone 3 seconds after unpinning.
+- [x] Lane 5. With the bar hidden, press Tab, wait 5 seconds, then press Escape. Save `ux2-keyboard.png`. Pass when Tab reveals the bar with a focus ring on its first control, the bar is still shown at 5 seconds, and Escape hides it.
+- [x] Lane 6. Reveal the bar, drag it, then double-click it. Save `ux2-drag.png`. Pass when the drag moves the window and the double-click maximizes it.
+- [x] Lane 7. Press F11, wait 3 seconds, move to the top edge, then press Escape. Save `ux2-fullscreen.png`. Pass when the bar hides in fullscreen, reveals without caption buttons, and Escape leaves fullscreen.
+- [x] Lane 8. Press Ctrl+W and wait 10 seconds on the Library. Save `ux2-library.png`. Pass when the Library title bar is still shown.
+- [x] Lane 9. Resize to 860x700 in dark appearance and reveal the bar. Save `ux2-narrow.png`. Pass when no bar controls overlap and the page does not move.
+- [x] Lane 10. Capture the bar on the Library and on the reading screen. Save `ux2-toggle-position.png`. Pass when the light and dark toggle has the same x position on both screens, within 2px.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `idle_cpu_ms_per_10s` with a book open and the pointer still, and `reader_frame_ms` p95. Trunk has no fade, so the fade gets an absolute budget, the p95 of `reading-bar-reveal`.
-- [ ] Probe. Run `ui-drive.ps1 -IdleCpu 10` at trunk, head, trunk, head, trunk, head. Run `profile_reader_frames` the same way.
-- [ ] Baseline. Record the trunk idle CPU and the trunk `reading-idle` p95 first.
-- [ ] Rule. Fail when the head median idle CPU exceeds trunk by more than 30ms per 10 seconds. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when the `reading-bar-reveal` p95 exceeds 33ms.
+- [x] Metric. `idle_cpu_ms_per_10s` with a book open and the pointer still, and `reader_frame_ms` p95. Trunk has no fade, so the fade gets an absolute budget, the p95 of `reading-bar-reveal`.
+- [x] Probe. Run `ui-drive.ps1 -IdleCpu 10` at trunk, head, trunk, head, trunk, head. Run `profile_reader_frames` the same way.
+- [x] Baseline. Record the trunk idle CPU and the trunk `reading-idle` p95 first.
+- [x] Rule. Fail when the head median idle CPU exceeds trunk by more than 30ms per 10 seconds. Fail when the head `reading-idle` p95 exceeds trunk by more than 10 percent. Fail when the `reading-bar-reveal` p95 exceeds 33ms.
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, 5, and 7 screenshots into `target\ui-ux-review\UX-2-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of the reveal, the hide, the pin, and fullscreen on the lane desktop. Save it as `target\ui-ux-review\UX-2-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [ ] Copy the lane 1, 2, 5, and 7 screenshots into `target\ui-ux-review\UX-2-review-<slug>.png`. *Not kept on disk.*
+- [ ] Record a 30 to 60 second video of the reveal, the hide, the pin, and fullscreen on the lane desktop. Save it as `target\ui-ux-review\UX-2-review.mp4`. *Not kept on disk.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-2 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-2 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #6.*
 
 ## Turn pages from full-height edge strips (UX-3)
 
@@ -275,71 +299,79 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Files.**
 
-- [ ] Create `crates/iced-shell/src/page_strips.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`.
-- [ ] Edit `crates/iced-shell/src/notes_ui.rs`.
-- [ ] Edit `crates/iced-shell/src/pdf_reader.rs`.
-- [ ] Edit `crates/iced-shell/src/reader_profile.rs`.
-- [ ] Edit `scripts/subset-icons.py` and `assets/fonts/MaterialSymbolsOutlined-Subset.ttf`.
-- [ ] Edit `README.md`.
+- [x] Create `crates/iced-shell/src/page_strips.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`.
+- [x] Edit `crates/iced-shell/src/notes_ui.rs`.
+- [x] Edit `crates/iced-shell/src/pdf_reader.rs`.
+- [x] Edit `crates/iced-shell/src/reader_profile.rs`.
+- [x] Edit `scripts/subset-icons.py` and `assets/fonts/MaterialSymbolsOutlined-Subset.ttf`.
+- [x] Edit `README.md`.
 
 **Build.**
 
-- [ ] Add a left and a right strip as a `stack!` layer above the reading area and below the bar. Each strip is the full height of the reading area. Its width is `(window_width * 0.07).clamp(48.0, 128.0)`, which gives 59px at 844px, 97px at 1384px, and 128px from about 1830px. The right strip ends at the left edge of the notes drawer when the drawer is open.
-- [ ] Turn the page on `on_press` inside the strip. Send `Message::BookPage(bool)` in Book view, through `adjacent_book_page` (app.rs:1682). Send the PDF previous or next message in PDF Document view. A drag that starts on the page and ends in a strip never turns the page, because the press happened outside the strip.
-- [ ] Forward the wheel. A strip with a pointer cursor makes `stack!` hide the cursor from the page under it (`iced_widget-0.14.2/src/stack.rs:266-272`), so the page stops scrolling there. Give each strip `on_scroll` that sends `operation::scroll_by` to the reading scrollable.
-- [ ] Draw nothing until hover. On hover, fade in a gradient from about 7 percent black at the window edge to clear, plus a chevron icon of 28 to 32px in a faint 48px circle, centred vertically in the strip. Use a hand cursor. Pick the final look from the Appendix A variants at the review gate.
-- [ ] Disable a strip when `can_turn` (app.rs:1652) is false. A disabled strip shows no shade, no chevron, no hand cursor, and ignores presses.
-- [ ] Add `chevron_left` and `chevron_right` to the codepoint list in `subset-icons.py` and regenerate the font.
-- [ ] Delete the `‹` edge toggle from `notes_ui::sidebar` (notes_ui.rs:1471-1520) and its 26px edge width in `sidebar_width` (notes_ui.rs:25). Add a **Notes** button to the bar that sends `Action::ToggleList`. Ctrl+B is unchanged.
-- [ ] Delete the toolbar's previous and next page buttons, `Control::PreviousBookPage`, `Control::NextBookPage`, and the PDF `FocusControl::Previous` and `FocusControl::Next` buttons. Keep the page field and the arrow keys.
-- [ ] Keep the 14px document scrollbar rail (`document_scroll.rs:11`) at the far right edge. The right strip sits just inside it, so the rail stays draggable.
-- [ ] Add the state `reading-strip-hover` to `profile_reader_frames`, rendered through `render_with_cursor`.
-- [ ] Rewrite the README sentence about the arrow at the right edge.
+- [x] Add a left and a right strip as a `stack!` layer above the reading area and below the bar. Each strip is the full height of the reading area. Its width is `(window_width * 0.07).clamp(48.0, 128.0)`, which gives 59px at 844px, 97px at 1384px, and 128px from about 1830px. The right strip ends at the left edge of the notes drawer when the drawer is open.
+- [x] Turn the page on `on_press` inside the strip. Send `Message::BookPage(bool)` in Book view, through `adjacent_book_page` (app.rs:1682). Send the PDF previous or next message in PDF Document view. A drag that starts on the page and ends in a strip never turns the page, because the press happened outside the strip.
+- [x] Forward the wheel. A strip with a pointer cursor makes `stack!` hide the cursor from the page under it (`iced_widget-0.14.2/src/stack.rs:266-272`), so the page stops scrolling there. Give each strip `on_scroll` that sends `operation::scroll_by` to the reading scrollable.
+- [x] Draw nothing until hover. On hover, fade in a gradient from about 7 percent black at the window edge to clear, plus a chevron icon of 28 to 32px in a faint 48px circle, centred vertically in the strip. Use a hand cursor. Pick the final look from the Appendix A variants at the review gate. *As built: see below.*
+- [x] Disable a strip when `can_turn` (app.rs:1652) is false. A disabled strip shows no shade, no chevron, no hand cursor, and ignores presses.
+- [x] Add `chevron_left` and `chevron_right` to the codepoint list in `subset-icons.py` and regenerate the font.
+- [x] Delete the `‹` edge toggle from `notes_ui::sidebar` (notes_ui.rs:1471-1520) and its 26px edge width in `sidebar_width` (notes_ui.rs:25). Add a **Notes** button to the bar that sends `Action::ToggleList`. Ctrl+B is unchanged.
+- [x] Delete the toolbar's previous and next page buttons, `Control::PreviousBookPage`, `Control::NextBookPage`, and the PDF `FocusControl::Previous` and `FocusControl::Next` buttons. Keep the page field and the arrow keys.
+- [x] Keep the 14px document scrollbar rail (`document_scroll.rs:11`) at the far right edge. The right strip sits just inside it, so the rail stays draggable.
+- [x] Add the state `reading-strip-hover` to `profile_reader_frames`, rendered through `render_with_cursor`.
+- [x] Rewrite the README sentence about the arrow at the right edge.
+
+**As built.** The review changed these from the steps above.
+
+- The look is a bare chevron over a full-height band. The band is drawn in the theme's text colour, strongest at the window edge and still visible at its inner edge, so the whole strip reads as clickable: 15 to 5.5 percent on light pages and 7 to 2.5 percent on dark ones. The circle and flat variants are deleted.
+- The strips run to the bottom of the reading area. They stop above the PDF status row, and above the horizontal scrollbar only while a page is zoomed wider than the window (`page_strips::bottom_inset`).
+- The **Notes** button sits after **Listen**. The bar's one-row width thresholds are measured by the ignored test `measure_reading_bar_thresholds`, so an 860px window at 125 percent shows two rows until UX-5.
+- The LF-3 library banner shows while a document is open, without holding the bar.
+- A tap on a strip turns the page. Right and middle presses reach the page under a strip.
 
 **You see.**
 
-- [ ] Hovering anywhere along the right edge shows a soft shade and a chevron. A click at the top, middle, or bottom of the edge turns to the next page.
-- [ ] No arrow tab sits on the right edge. The bar has a **Notes** button.
+- [x] Hovering anywhere along the right edge shows a soft shade and a chevron. A click at the top, middle, or bottom of the edge turns to the next page.
+- [x] No arrow tab sits on the right edge. The bar has a **Notes** button.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `page_strips.rs` gains `strip_width_follows_the_window`. It asserts the literal widths 48 at 600, 59 at 844, 97 at 1384, and 128 at 2560. Run `cargo test -p iced-shell --locked strip_width`.
-- [ ] `app.rs` gains `strip_press_turns_the_page` and `strip_press_on_first_page_does_nothing`. They send the strip messages through `update` and assert the page number. Run `cargo test -p iced-shell --locked strip_press`.
-- [ ] `app.rs` gains `strip_wheel_scrolls_the_page`. It sends the forwarded wheel message and asserts that the viewport offset grows. Run `cargo test -p iced-shell --locked strip_wheel`.
+- [x] `page_strips.rs` gains `strip_width_follows_the_window`. It asserts the literal widths 48 at 600, 59 at 844, 97 at 1384, and 128 at 2560. Run `cargo test -p iced-shell --locked strip_width`.
+- [x] `app.rs` gains `strip_press_turns_the_page` and `strip_press_on_first_page_does_nothing`. They send the strip messages through `update` and assert the page number. Run `cargo test -p iced-shell --locked strip_press`. *They live in `book_preview.rs`, as `strip_press_turns_the_page` and `strip_press_on_the_first_or_last_page_does_nothing`.*
+- [x] `app.rs` gains `strip_wheel_scrolls_the_page`. It sends the forwarded wheel message and asserts that the viewport offset grows. Run `cargo test -p iced-shell --locked strip_wheel`. *It lives in `book_preview.rs`.*
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Turn from page 1 to page 4 at trunk with the toolbar arrow. At head, click the right strip at y=10 percent, 50 percent, and 90 percent of the window height. Save `ux3-regression.png`. Pass when head reaches page 4 and the page field reads 4.
-- [ ] Lane 2. Hover the right strip, then move to the page centre. Save `ux3-hover.png`. Pass when the shade and chevron show on hover and are gone after leaving.
-- [ ] Lane 3. On page 1, hover and click the left strip. Save `ux3-first-page.png`. Pass when the left strip shows nothing and the page stays 1.
-- [ ] Lane 4. Go to the last page of chapter 1 and click the right strip. Save `ux3-chapter.png`. Pass when chapter 2 opens on its first page.
-- [ ] Lane 5. Hover the right strip and send `-Wheel -360`. Save `ux3-wheel.png`. Pass when the page text moves up and the page number is unchanged.
-- [ ] Lane 6. Press on a word, drag into the right strip, and release there. Save `ux3-select.png`. Pass when a selection exists and the page number is unchanged.
-- [ ] Lane 7. Hover the right strip at 860, 1400, and 1920 window widths. Save `ux3-widths.png`. Pass when the shade widths are 60, 98, and 128px within 2px.
-- [ ] Lane 8. Reveal the bar, click **Notes**, then hover the right strip. Save `ux3-notes.png`. Pass when no edge tab exists, the drawer opens, and the right strip sits left of the drawer.
-- [ ] Lane 9. Open `The Art of Paying Attention.pdf` in Document view with Fit width, then click the right strip. Save `ux3-pdf.png`. Pass when the strip overlays the page edge and the PDF turns to the next page.
-- [ ] Lane 10. Reveal the bar, type 7 in the page field, press Enter, then press the right arrow key. Save `ux3-keys.png`. Pass when the bar has no previous or next buttons and the page reads 8.
+- [x] Lane 1. Regression lane against trunk. Turn from page 1 to page 4 at trunk with the toolbar arrow. At head, click the right strip at y=10 percent, 50 percent, and 90 percent of the window height. Save `ux3-regression.png`. Pass when head reaches page 4 and the page field reads 4.
+- [x] Lane 2. Hover the right strip, then move to the page centre. Save `ux3-hover.png`. Pass when the shade and chevron show on hover and are gone after leaving.
+- [x] Lane 3. On page 1, hover and click the left strip. Save `ux3-first-page.png`. Pass when the left strip shows nothing and the page stays 1.
+- [x] Lane 4. Go to the last page of chapter 1 and click the right strip. Save `ux3-chapter.png`. Pass when chapter 2 opens on its first page. *Run on `Three Rooms.epub`, because the demo books have one chapter.*
+- [x] Lane 5. Hover the right strip and send `-Wheel -360`. Save `ux3-wheel.png`. Pass when the page text moves up and the page number is unchanged.
+- [x] Lane 6. Press on a word, drag into the right strip, and release there. Save `ux3-select.png`. Pass when a selection exists and the page number is unchanged.
+- [x] Lane 7. Hover the right strip at 860, 1400, and 1920 window widths. Save `ux3-widths.png`. Pass when the shade widths are 60, 98, and 128px within 2px. *Widths 60, 98 and 135; the visible shade read 59, 95 and 132. 1920 needs F11 fullscreen.*
+- [x] Lane 8. Reveal the bar, click **Notes**, then hover the right strip. Save `ux3-notes.png`. Pass when no edge tab exists, the drawer opens, and the right strip sits left of the drawer.
+- [x] Lane 9. Open `The Art of Paying Attention.pdf` in Document view with Fit width, then click the right strip. Save `ux3-pdf.png`. Pass when the strip overlays the page edge and the PDF turns to the next page. *Run on `prose.pdf` (5 pages), because the demo PDF has one page.*
+- [x] Lane 10. Reveal the bar, type 7 in the page field, press Enter, then press the right arrow key. Save `ux3-keys.png`. Pass when the bar has no previous or next buttons and the page reads 8.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `reading-idle` and `reading-page-turn`. Trunk has no strips, so `reading-strip-hover` gets an absolute budget.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head. Run `ui-drive.ps1 -IdleCpu 10` the same way.
-- [ ] Baseline. Record the trunk p95 values and idle CPU first.
-- [ ] Rule. Fail when a head p95 exceeds trunk by more than 10 percent. Fail when `reading-strip-hover` p95 exceeds 33ms. Fail when head idle CPU exceeds trunk by more than 30ms per 10 seconds.
+- [x] Metric. `reader_frame_ms` p95 for `reading-idle` and `reading-page-turn`. Trunk has no strips, so `reading-strip-hover` gets an absolute budget.
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head. Run `ui-drive.ps1 -IdleCpu 10` the same way.
+- [x] Baseline. Record the trunk p95 values and idle CPU first.
+- [x] Rule. Fail when a head p95 exceeds trunk by more than 10 percent. Fail when `reading-strip-hover` p95 exceeds 33ms. Fail when head idle CPU exceeds trunk by more than 30ms per 10 seconds.
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 2, 7, 8, and 9 screenshots into `target\ui-ux-review\UX-3-review-<slug>.png`. Include one screenshot of each Appendix A strip variant on the real reader so the operator picks the final look.
-- [ ] Record a 30 to 60 second video of hover, page turns at several heights, the wheel over a strip, and the notes drawer. Save it as `target\ui-ux-review\UX-3-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 2, 7, 8, and 9 screenshots into `target\ui-ux-review\UX-3-review-<slug>.png`. Include one screenshot of each Appendix A strip variant on the real reader so the operator picks the final look.
+- [x] Record a 30 to 60 second video of hover, page turns at several heights, the wheel over a strip, and the notes drawer. Save it as `target\ui-ux-review\UX-3-review.mp4`.
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-3 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA.
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-3 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #11.*
 
 ## Keep your place with a progress line and hide the idle scrollbar (UX-4)
 
@@ -355,9 +387,11 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Build.**
 
-- [ ] Check the progress formula in `capture_progress` (app.rs:2076) first. An explorer suspects that EPUB progress mixes a per-chapter page number with a whole-book total. Write the failing test before any fix, and fix it only if the test fails.
+- [ ] Check the progress formula in `capture_progress` (app.rs:1986) first. An explorer suspects that EPUB progress mixes a per-chapter page number with a whole-book total. Write the failing test before any fix, and fix it only if the test fails.
 - [ ] Draw a 2px line along the bottom edge of the reading area as a `stack!` layer. Fill it with `accent` up to the progress fraction over a `border` track. It shows at all times in a book.
-- [ ] On hover over the bottom 24px, grow the line to 6px and show `Page 4 of 14 · 21%` in 11px muted text above it. The label also shows while the bar is shown.
+  - [ ] The line runs only between the page-turn strips. It starts at the left strip's inner edge and ends at the right strip's inner edge (`page_strips::width`, and the right strip ends at the notes drawer). The strips keep the full height, and the line and its hover area never overlap them.
+  - [ ] It stops where the strips stop: above the PDF status row, and above the horizontal scrollbar while a page is zoomed wider than the window. Reuse `page_strips::bottom_inset`.
+- [ ] On hover over the bottom 24px between the strips, grow the line to 6px and show `Page 4 of 14 · 21%` in 11px muted text above it. The label also shows while the bar is shown.
 - [ ] Clicking the line jumps to the page at that fraction, through the same path as the page field.
 - [ ] Add the state `reading-progress-hover` to `profile_reader_frames`.
 - [ ] Hide the document scrollbar while you read. The operator asked for this at the UX-3 review: a scrollbar that shows all the time is noise, and the progress line now keeps your place. `document_scroll.rs` draws its own 14px rail and thumb (`draw`, about line 500), so the change stays in that widget.
@@ -376,16 +410,17 @@ simPl is a native Windows app, so every lane runs on a Windows desktop at the PR
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `app.rs` gains `epub_progress_grows_across_chapters`. It opens the Quiet Hours fixture, records progress at the last page of chapter 1 and the first page of chapter 2, and asserts the second is larger. Run `cargo test -p iced-shell --locked epub_progress`.
+- [ ] `app.rs` gains `epub_progress_grows_across_chapters`. It builds a three-chapter book in the test, because the demo books have one chapter each. It records progress at the last page of chapter 1 and the first page of chapter 2, and asserts the second is larger. Run `cargo test -p iced-shell --locked epub_progress`.
+- [ ] `progress_line.rs` gains `progress_line_runs_between_the_strips`. It asserts that the line's ends meet the strips' inner edges at 860 and 1400 window widths, with and without the notes drawer, and above the PDF status row. Run `cargo test -p iced-shell --locked progress_line_runs`.
 - [ ] `progress_line.rs` gains `click_fraction_maps_to_page`. It asserts that fraction 0.5 of 14 pages maps to page 7 and that fraction 1.0 maps to page 14. Run `cargo test -p iced-shell --locked click_fraction`.
 - [ ] `document_scroll.rs` gains `idle_scrollbar_hides_and_returns`. It asserts that the thumb shows after a scroll, is hidden one second plus the fade later with no redraw requested, shows again while the pointer is over the rail, and that a press on the hidden rail still starts a thumb drag. Run `cargo test -p iced-shell --locked idle_scrollbar`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Twelve lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Hide the toolbar with F8 at trunk on page 4. Let the bar hide at head on page 4. Save `ux4-regression.png`. Pass when trunk shows no position and head shows a line filled to between 21 and 29 percent of its width.
-- [ ] Lane 2. Hover the bottom 24px. Save `ux4-hover.png`. Pass when the line grows and the label reads `Page 4 of 14` with a percent.
+- [ ] Lane 1. Regression lane against trunk. Open page 4 at trunk and at head, and let the bar hide on both. F8 pins the bar since UX-2, so do not press it. Save `ux4-regression.png`. Pass when trunk shows no position and head shows a line filled to between 21 and 29 percent of its width.
+- [ ] Lane 2. Hover the bottom 24px at the page centre. Save `ux4-hover.png`. Pass when the line grows, the label reads `Page 4 of 14` with a percent, and the line's ends stop at the strips' inner edges.
 - [ ] Lane 3. Click the line at 50 percent of its width. Save `ux4-jump.png`. Pass when the page field reads 7 or 8.
-- [ ] Lane 4. Read the percent on the last page of chapter 1 and the first page of chapter 2. Save `ux4-chapters.png`. Pass when the second percent is larger.
+- [ ] Lane 4. Open `Three Rooms.epub`, built by `python -I fixtures/chapters/build_epub.py`. Read the percent on the last page of chapter 1 and the first page of chapter 2. Save `ux4-chapters.png`. Pass when the second percent is larger.
 - [ ] Lane 5. Note the percent, press Ctrl+W, and read the Continue Reading card. Save `ux4-library.png`. Pass when the card percent equals the line percent.
 - [ ] Lane 6. Switch to dark appearance. Save `ux4-dark.png`. Pass when the filled part and the track are both visible.
 - [ ] Lane 7. Press F11. Save `ux4-fullscreen.png`. Pass when the line shows in fullscreen.
@@ -822,6 +857,7 @@ What stays unproven:
 - Removing only the `Mac` variant. Saved preferences with `"window_controls":"mac"` would fail to load and turn off saving. Deleting the field avoids both.
 - Keeping macOS buttons as a hidden option. simPl ships only for Windows, and the option doubles the title-bar layout code in `chrome.rs`.
 - Repaginating pages to the viewport height so the wheel never needs to cross a page. It would break the stable page numbers that the README promises and that bookmarks rely on.
+- A progress line across the full width. It would overlap the page-turn strips in the bottom corners, so one hover would mean two things. The operator chose a line between the strips.
 - Leaving the document scrollbar on screen at all times. The operator found it noisy while reading. Once the progress line keeps your place, an idle thumb adds nothing.
 - Moving the scrollbar rail to hug the paper. The rail is custom-drawn in `document_scroll.rs`, and moving it costs more than letting the strip sit inside it.
 
