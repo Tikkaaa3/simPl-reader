@@ -2193,6 +2193,27 @@ fn focus_on_the_pill_reveals_the_bar() {
 }
 
 #[test]
+fn starting_to_listen_shows_the_bar_and_the_pill_briefly() {
+    let mut reader = full_bar_book(1400.0, 600.0);
+    hide_bar(&mut reader);
+    reader.begin_silent_listening();
+    reader.sync_bar(std::time::Instant::now(), reading_chrome::Input::default());
+    assert!(reader.bar.visible(), "listening shows the bar");
+    assert!(
+        bounds_of(&mut reader, Control::ReadAloudPause).width > 0.0,
+        "and the pill with it"
+    );
+    reader.bar.step_by(std::time::Duration::from_secs(3));
+    reader.bar.step_by(std::time::Duration::from_secs(1));
+    assert!(!reader.bar.visible(), "then both idle away");
+    reader.sync_bar(std::time::Instant::now(), reading_chrome::Input::default());
+    assert!(
+        !reader.bar.visible(),
+        "while reading goes on, the bar stays hidden"
+    );
+}
+
+#[test]
 fn strips_reach_the_bottom_unless_the_page_scrolls_sideways() {
     let mut reader = strip_book(1000.0, 600.0);
     // Below the window's own resize border, which takes the last few pixels.

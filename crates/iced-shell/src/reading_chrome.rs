@@ -165,6 +165,8 @@ pub(super) struct Bar {
     now: Instant,
     /// The open document, so a new one shows the bar once.
     document: Option<PathBuf>,
+    /// Read aloud is on, so starting it shows the bar, and the pill with it, once.
+    listening: bool,
     /// The book page field has keyboard focus.
     book_field: bool,
     /// Keyboard modifiers, for the wheel over the bar.
@@ -180,6 +182,7 @@ impl Default for Bar {
             held: false,
             now: Instant::now(),
             document: None,
+            listening: false,
             book_field: false,
             modifiers: keyboard::Modifiers::default(),
         }
@@ -474,6 +477,11 @@ impl Reader {
                 self.bar.close(now);
             }
         }
+        let listening = self.read_aloud.active();
+        if listening && !self.bar.listening {
+            self.bar.open(now);
+        }
+        self.bar.listening = listening;
         let hovered = input.pointer.map(|pointer| {
             pointer.is_some_and(|point| {
                 point.y < HEIGHT.max(REVEAL_ZONE)
