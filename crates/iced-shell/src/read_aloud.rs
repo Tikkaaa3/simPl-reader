@@ -1037,6 +1037,11 @@ pub(super) fn ticks() -> impl iced_futures::futures::Stream<Item = ()> {
 }
 
 /// The Read aloud player, a pill over the page while something is read.
+// Fixed widths keep the pill's buttons still under the pointer when Pause
+// becomes Resume or the speed changes.
+const PAUSE_LABEL_WIDTH: f32 = 52.0;
+const SPEED_LABEL_WIDTH: f32 = 30.0;
+
 pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Message> {
     let Some(session) = &reader.read_aloud.session else {
         return iced::widget::Space::new().height(0).into();
@@ -1046,14 +1051,22 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
         control_button(
             reader,
             Control::ReadAloudPause,
-            text("Resume").font(ui::MEDIUM).size(13),
+            text("Resume")
+                .font(ui::MEDIUM)
+                .size(13)
+                .width(PAUSE_LABEL_WIDTH)
+                .align_x(iced::alignment::Horizontal::Center),
             action(Action::Resume),
         )
     } else {
         control_button(
             reader,
             Control::ReadAloudPause,
-            text("Pause").font(ui::MEDIUM).size(13),
+            text("Pause")
+                .font(ui::MEDIUM)
+                .size(13)
+                .width(PAUSE_LABEL_WIDTH)
+                .align_x(iced::alignment::Horizontal::Center),
             action(Action::Pause),
         )
     };
@@ -1078,6 +1091,8 @@ pub(super) fn player<'a>(reader: &'a Reader, active: bool) -> Element<'a, Messag
         ),
         text(format!("{:.1}×", speech::speed(rate)))
             .size(12)
+            .width(SPEED_LABEL_WIDTH)
+            .align_x(iced::alignment::Horizontal::Center)
             .style(ui::muted_text),
         hinted_control(
             reader,
