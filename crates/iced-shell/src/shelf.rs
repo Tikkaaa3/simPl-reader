@@ -1349,11 +1349,9 @@ impl Shelf {
             (short_date(entry.opened_at), false)
         };
         let room = cover_width - estimated_width(&format!("{format} · {size}"), 11.0);
-        let placed = ellipsize(&placed, room, 11.0);
-        // A narrow card drops the date or shelves rather than show a stub like "N…".
-        let readable = !placed.is_empty() && (!placed.ends_with('…') || placed.chars().count() > 3);
+        let placed = footer_note(&placed, room);
         let mut footer = row![label(format, 11).style(ui::secondary_text)];
-        footer = if readable {
+        footer = if let Some(placed) = placed {
             footer
                 .push(label(" · ", 11).style(ui::muted_text))
                 .push(clipped(
@@ -2031,6 +2029,13 @@ fn estimated_width(value: &str, size: f32) -> f32 {
     value.chars().count() as f32 * size * GLYPH_WIDTH
 }
 
+/// The date or shelf names beside the format under a cover, shortened to
+/// `room`. A narrow card drops them rather than show a stub like "N…".
+fn footer_note(value: &str, room: f32) -> Option<String> {
+    let fitted = ellipsize(value, room, 11.0);
+    (!value.is_empty() && (fitted == value || fitted.chars().count() > 3)).then_some(fitted)
+}
+
 /// Shortens `value` with an ellipsis when it would overflow `width` at `size`.
 fn ellipsize(value: &str, width: f32, size: f32) -> String {
     let fits = ((width / (size * GLYPH_WIDTH)).floor() as usize).max(2);
@@ -2498,6 +2503,18 @@ mod tests {
         assert_eq!(jacket_title_size("Let's Go", 150.0, 19.0), 19.0);
         let long = jacket_title_size("Frankenstein", 112.0, 19.0);
         assert!(long < 19.0 && long * 0.58 * 12.0 <= 112.0, "{long}");
+    }
+
+    #[test]
+    fn card_footer_keeps_a_note_that_fits_and_drops_a_stub() {
+        assert_eq!(footer_note("Nov 10", 80.0), Some("Nov 10".into()));
+        assert_eq!(footer_note("To…", 80.0), Some("To…".into()));
+        assert_eq!(
+            footer_note("Novels · Essays", 60.0),
+            Some("Novels ·…".into())
+        );
+        assert_eq!(footer_note("Novels", 10.0), None);
+        assert_eq!(footer_note("", 80.0), None);
     }
 
     /// Entries that have been opened, each at its reading fraction.
