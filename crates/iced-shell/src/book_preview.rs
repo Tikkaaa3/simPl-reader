@@ -2951,7 +2951,8 @@ fn progress_jump_lands_on_the_page() {
     let _ = update(&mut reader, Message::ProgressJump(7));
     assert_eq!(page_field(&reader), "7");
     assert_eq!(reader.active_page().unwrap().number + 1, 7);
-    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 43%");
+    // Six pages, and the part of the seventh that is in view.
+    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 47%");
 }
 
 #[test]
@@ -2970,6 +2971,42 @@ fn a_press_on_the_progress_line_jumps_to_its_page() {
     let above = middle - iced::Vector::new(0.0, 24.0);
     assert!(progress_jumps(&ui.click(&mut reader, above)).is_empty());
     assert_eq!(page_field(&reader), "14", "the band is 24px tall");
+}
+
+#[test]
+fn the_progress_line_is_full_at_the_end_of_the_book() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let total = reader.page_total() as f32;
+    let start = reader.progress().unwrap();
+    assert_eq!(start.page, 1);
+    assert!(
+        start.fraction > 0.0 && start.fraction <= 1.0 / total,
+        "the part of the first page in view: {}",
+        start.fraction
+    );
+
+    let _ = update(&mut reader, Message::ProgressJump(total as u32));
+    let last = reader.pages().last().unwrap().clone();
+    let top_of_last = reader.progress().unwrap();
+    assert_eq!(top_of_last.page as f32, total);
+    assert!(last.height > reader.viewport, "the last page scrolls");
+    assert!(top_of_last.fraction < 1.0, "its end is not in view yet");
+
+    reader.offset = last.top + last.height - reader.viewport;
+    let end = reader.progress().unwrap();
+    assert_eq!(end.fraction, 1.0, "the end of the last page is in view");
+    assert_eq!(end.label(), format!("Page {total} of {total} · 100%"));
+
+    let Some(mut reader) = test_pdf(
+        crate::pdf_reader::tests::pages_pdf(3),
+        Size::new(1000.0, 700.0),
+    ) else {
+        return;
+    };
+    let top = reader.progress().unwrap().fraction;
+    assert!(top > 0.0 && top < 1.0, "a PDF at its top: {top}");
+    reader.pdf.as_mut().unwrap().scroll_to_end();
+    assert_eq!(reader.progress().unwrap().fraction, 1.0, "a PDF at its end");
 }
 
 #[test]

@@ -47,7 +47,8 @@ pub(super) struct Progress {
     /// The current page, from 1.
     pub(super) page: u32,
     pub(super) total: u32,
-    /// From 0 at the start of the first page to 1 at the end of the last.
+    /// How much of the book lies above the bottom of the view: 1 with the
+    /// end of the last page in view.
     pub(super) fraction: f32,
 }
 
@@ -449,22 +450,28 @@ impl Reader {
 
     /// `None` without a document, and while a book is still being paginated.
     pub(super) fn progress(&self) -> Option<Progress> {
-        let (page, within, total) = if let Some(pdf) = &self.pdf {
-            let position = pdf.position();
+        // The line follows the bottom of the view, so the end of the book
+        // fills it. Measured from the top of the view it could not: the top
+        // never reaches the end of the last page.
+        let (page, seen, total) = if let Some(pdf) = &self.pdf {
             (
-                position.page,
-                position.within,
+                pdf.position().page,
+                pdf.pages_seen(),
                 pdf.document().pages.len() as u32,
             )
         } else {
             let page = book_pages::current(self.pages(), self.offset)?;
-            let within = ((self.offset - page.top) / page.height).clamp(0.0, 1.0);
-            (page.number, within, self.page_total() as u32)
+            let within = (self.offset + self.viewport - page.top) / page.height.max(1.0);
+            (
+                page.number,
+                page.number as f32 + within.clamp(0.0, 1.0),
+                self.page_total() as u32,
+            )
         };
         (total > 0).then(|| Progress {
             page: page + 1,
             total,
-            fraction: ((page as f32 + within) / total as f32).clamp(0.0, 1.0),
+            fraction: (seen / total as f32).clamp(0.0, 1.0),
         })
     }
 

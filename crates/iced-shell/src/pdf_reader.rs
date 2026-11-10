@@ -300,6 +300,27 @@ impl Reader {
         }
     }
 
+    /// How many pages lie above the bottom of the view, counting the part
+    /// of the page that the bottom crosses.
+    pub fn pages_seen(&self) -> f32 {
+        if self.geometry.is_empty() {
+            return 0.0;
+        }
+        let bottom = (self.offset.y + self.viewport.height).min(self.geometry.total());
+        let page = self
+            .geometry
+            .window(bottom, 0.0, 0.0)
+            .start
+            .min(self.geometry.len() - 1);
+        let within = (bottom - self.geometry.start(page)) / self.page_size(page).height.max(1.0);
+        page as f32 + within.clamp(0.0, 1.0)
+    }
+
+    #[cfg(test)]
+    pub fn scroll_to_end(&mut self) {
+        self.offset.y = (self.geometry.total() - self.viewport.height).max(0.0);
+    }
+
     /// Reassert the actual native scroll offset after shell chrome changes.
     pub fn restore_scroll(&self) -> Task<Message> {
         scroll_to(self.offset.x, self.offset.y)
