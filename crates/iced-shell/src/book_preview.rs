@@ -2665,6 +2665,9 @@ fn start_reading_from_here_off_the_text_starts_at_the_next_paragraph() {
         ],
         "under the page's last paragraph, from the next page's first"
     );
+    assert_eq!(page_field(&reader), "1");
+    engine_reaches(&mut reader, 1);
+    assert_eq!(page_field(&reader), "2", "the page turns once it is spoken");
 
     // A right click that reached no row, as one on a scrollbar.
     let _ = update(&mut reader, Message::ContextBlank(None));
