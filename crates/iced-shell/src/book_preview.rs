@@ -1035,29 +1035,7 @@ fn bar_test_pdf(width: f32) -> Option<Reader> {
 
 /// A PDF reader in a window of `size`, or `None` when PDFium is missing.
 fn test_pdf(bytes: Vec<u8>, size: Size) -> Option<Reader> {
-    use crate::pdf_reader::tests::complete;
-    let dll = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("pdfium.dll");
-    if !dll.exists() {
-        assert!(
-            std::env::var_os("SIMPL_REQUIRE_PDFIUM").is_none(),
-            "SIMPL_REQUIRE_PDFIUM is set but pdfium.dll is not beside the test executable"
-        );
-        println!("SKIPPED the PDF half: pdfium.dll is not beside the test executable");
-        return None;
-    }
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "simpl-test-pdf-{}-{}.pdf",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, bytes).unwrap();
-    let document = complete(reader_pdf::open(path.clone())).unwrap();
-    let _ = std::fs::remove_file(path);
+    let document = super::tests::pdfium_document(bytes)?;
     let (pdf, _) = pdf_reader::Reader::new(document, None, size, 1.0);
     Some(Reader {
         pdf: Some(pdf),
@@ -5135,4 +5113,127 @@ fn overscroll_over_the_pill_turns_the_page() {
     Harness::new().send_all(&mut reader, &wheel_notches(4), pill);
     assert_eq!(page_field(&reader), "2");
     assert_eq!(reader.local_offset(), 0.0);
+}
+
+#[test]
+#[ignore = "PDF Book review: reads target/book-milestone3/fixtures and writes every look to target/ui-ux-review; PDFium beside the test executable"]
+fn render_pdf_book_looks() {
+    use reader_document::reading::{Font, Options, ThemeId};
+    ui::load_test_fonts();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = root.join("target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    let plain = Options::default();
+    let looks = [
+        ("default-light", plain, Appearance::Light),
+        (
+            "soft",
+            Options {
+                theme: Some(ThemeId::Soft),
+                ..plain
+            },
+            Appearance::Light,
+        ),
+        (
+            "clear-26",
+            Options {
+                theme: Some(ThemeId::Clear),
+                size: 26,
+                ..plain
+            },
+            Appearance::Light,
+        ),
+        (
+            "16-spacing-180-margin-96",
+            Options {
+                size: 16,
+                spacing: 180,
+                margin: 96,
+                ..plain
+            },
+            Appearance::Light,
+        ),
+        (
+            "compact-dark-fira-sans",
+            Options {
+                theme: Some(ThemeId::Compact),
+                font: Font::FiraSans,
+                ..plain
+            },
+            Appearance::Dark,
+        ),
+    ];
+    // A PDF in Book view as a finished load opens it, reading in `options`.
+    let open = |book: &Arc<Book>, options: Options, appearance| {
+        let mut reader = super::tests::reader_showing(book.clone());
+        reader.appearance = appearance;
+        let _ = reader.reading_loaded(book.fingerprint.clone(), Ok(Some(options)));
+        settle_theme(&mut reader);
+        reader
+    };
+    let fixture = |name: &str| {
+        let path = root.join(format!("target/book-milestone3/fixtures/{name}.pdf"));
+        complete(reader_pdf::open(path)).unwrap()
+    };
+    for name in ["prose", "layout"] {
+        let document = fixture(name);
+        let origin = default_pdf_position(&document);
+        let book = Arc::new(complete(load_pdf_book(document, origin, 20.0, false)).unwrap());
+        let source = book.pdf_source.as_ref().unwrap();
+        let places = if name == "prose" {
+            vec![("prose", 0)]
+        } else {
+            let contents = source
+                .conversion
+                .blocks
+                .iter()
+                .position(|block| matches!(block.layout, reader_pdf::book::BlockLayout::Toc { .. }))
+                .expect("layout.pdf has a contents page");
+            let picture = book
+                .items
+                .iter()
+                .position(|item| source.conversion.illustrations.contains_key(item.id()))
+                .expect("layout.pdf has a picture");
+            vec![("layout-contents", contents), ("layout-picture", picture)]
+        };
+        let mut source_pages = None;
+        for (look, options, appearance) in looks {
+            let mut reader = open(&book, options, appearance);
+            let pages: Vec<_> = reader
+                .pages()
+                .iter()
+                .map(|page| (page.number, page.rows.start))
+                .collect();
+            println!("{name} {look}: (page, first row) = {pages:?}");
+            assert_eq!(
+                &pages,
+                source_pages.get_or_insert_with(|| pages.clone()),
+                "{name} {look}: every page keeps its number and first row"
+            );
+            for (place, row) in &places {
+                let page = pages.partition_point(|(_, first)| first <= row) - 1;
+                let _ = reader.rebuild_geometry(Anchor {
+                    row: pages[page].1,
+                    fraction: 0.0,
+                });
+                settle_pagination(&mut reader);
+                render(
+                    &mut reader,
+                    &output.join(format!("PDF-book-{place}-{look}.png")),
+                );
+            }
+        }
+    }
+
+    let document = fixture("prose");
+    let origin = default_pdf_position(&document);
+    let book = Arc::new(complete(load_pdf_book(document.clone(), origin, 20.0, false)).unwrap());
+    let mut reader = open(&book, looks[1].1, Appearance::Light);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("PDF-book-aa-book-view.png"));
+    let mut reader = Reader::default();
+    let (pdf, _) = pdf_reader::Reader::new(document, None, reader.window_size, 1.0);
+    reader.pdf = Some(pdf);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("PDF-book-aa-document-view.png"));
 }
