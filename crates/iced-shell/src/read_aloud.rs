@@ -56,6 +56,9 @@ const AUTOMATIC: &str = "Automatic (matches the text)";
 #[derive(Debug, Default)]
 pub(super) struct ReadAloud {
     speaker: Option<Speaker>,
+    /// Takes the engine's place in a test, so nothing is heard.
+    #[cfg(test)]
+    silent: Option<Silent>,
     /// Why Windows speech cannot be used, once that is known.
     pub(super) unavailable: Option<String>,
     pub(super) session: Option<Session>,
@@ -64,6 +67,17 @@ pub(super) struct ReadAloud {
     pub(super) rate: i8,
     /// Identifies extraction requests across restarts in the same PDF.
     generation: u64,
+}
+
+/// Stands in for the Windows engine in a test: it makes no sound, keeps what
+/// it was asked to say and reports the progress the test gives it.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Silent {
+    /// Text queued since reading last started, in stream order.
+    said: Vec<String>,
+    streams: u32,
+    status: speech::Status,
 }
 
 #[derive(Debug)]
@@ -180,12 +194,41 @@ impl ReadAloud {
         if let Some(speaker) = self.speaker.as_mut() {
             speaker.stop();
         }
+        #[cfg(test)]
+        if let Some(silent) = &mut self.silent {
+            *silent = Silent::default();
+        }
         self.session = None;
+    }
+
+    /// Queues text after anything already queued and returns its stream
+    /// number; `None` without an engine.
+    fn speak(&mut self, text: &str) -> Option<Result<u32, String>> {
+        #[cfg(test)]
+        if let Some(silent) = &mut self.silent {
+            silent.said.push(text.to_owned());
+            silent.streams += 1;
+            return Some(Ok(silent.streams));
+        }
+        self.speaker.as_ref().map(|speaker| speaker.speak(text))
+    }
+
+    /// Where the engine is; `None` without an engine.
+    fn status(&self) -> Result<Option<speech::Status>, String> {
+        #[cfg(test)]
+        if let Some(silent) = &self.silent {
+            return Ok(Some(silent.status));
+        }
+        self.speaker.as_ref().map(Speaker::status).transpose()
     }
 
     /// Picks the voice for `sample`: the chosen one, or in automatic mode an
     /// installed voice for the language the text seems to be in.
     fn prepare(&mut self, sample: &str) -> Result<(), String> {
+        #[cfg(test)]
+        if self.silent.is_some() {
+            return Ok(());
+        }
         let chosen = self.voice.clone();
         let rate = self.rate;
         let speaker = self
@@ -224,6 +267,28 @@ impl Reader {
     pub(super) fn begin_silent_listening(&mut self) {
         let document = self.reading_document().expect("an open document");
         self.begin(document, false, Next::Nothing, None);
+    }
+
+    /// From here on nothing reaches the Windows engine: what reading would
+    /// say is kept for `said`, and `engine_at` gives the engine's progress.
+    #[cfg(test)]
+    pub(super) fn silence_speech(&mut self) {
+        self.read_aloud.silent = Some(Silent::default());
+    }
+
+    /// The text queued to the silenced engine since reading last started.
+    #[cfg(test)]
+    pub(super) fn said(&self) -> Vec<String> {
+        let silent = self.read_aloud.silent.as_ref();
+        silent.expect("silence_speech first").said.clone()
+    }
+
+    /// The silenced engine is now here. Its streams count from 1, in the order
+    /// `said` lists their text.
+    #[cfg(test)]
+    pub(super) fn engine_at(&mut self, status: speech::Status) {
+        let silent = self.read_aloud.silent.as_mut();
+        silent.expect("silence_speech first").status = status;
     }
 
     /// Identifies the open document so a session ends when it changes.
@@ -441,20 +506,18 @@ impl Reader {
             self.error = Some(error);
             return;
         }
-        let Some(speaker) = self.read_aloud.speaker.as_mut() else {
-            return;
-        };
         // The user may have paused while PDF selection extraction was pending.
         if self
             .read_aloud
             .session
             .as_ref()
             .is_some_and(|session| session.paused)
+            && let Some(speaker) = self.read_aloud.speaker.as_mut()
         {
             speaker.pause();
         }
-        match speaker.speak(text) {
-            Ok(stream) => {
+        match self.read_aloud.speak(text) {
+            Some(Ok(stream)) => {
                 if let Some(session) = &mut self.read_aloud.session {
                     session.queued.push_back(Queued {
                         stream,
@@ -463,10 +526,11 @@ impl Reader {
                     });
                 }
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 self.read_aloud.session = None;
                 self.error = Some(error);
             }
+            None => {}
         }
     }
 
@@ -563,13 +627,7 @@ impl Reader {
     pub(super) fn read_aloud_tick(&mut self) -> Task<Message> {
         self.sync_read_aloud();
         // Even chapters with no text must advance before the engine is created.
-        let status = match self
-            .read_aloud
-            .speaker
-            .as_ref()
-            .map(Speaker::status)
-            .transpose()
-        {
+        let status = match self.read_aloud.status() {
             Ok(status) => status.unwrap_or(speech::Status {
                 done: true,
                 ..Default::default()
@@ -787,11 +845,8 @@ impl Reader {
                 return false;
             }
         }
-        let Some(speaker) = self.read_aloud.speaker.as_ref() else {
-            return false;
-        };
-        match speaker.speak(&text) {
-            Ok(stream) => {
+        match self.read_aloud.speak(&text) {
+            Some(Ok(stream)) => {
                 if let Some(session) = &mut self.read_aloud.session {
                     session.queued.push_back(Queued {
                         stream,
@@ -802,11 +857,12 @@ impl Reader {
                 }
                 true
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 self.read_aloud.stop();
                 self.error = Some(error);
                 false
             }
+            None => false,
         }
     }
 
@@ -1776,6 +1832,90 @@ mod tests {
         let _ = reader.read_aloud_tick();
         assert!(!reader.read_aloud.active());
         assert!(reader.error.is_some());
+    }
+
+    /// A book of these paragraphs on its first page, with speech silenced.
+    fn silent_book(paragraphs: &[&str]) -> Reader {
+        let mut reader = book_reader();
+        Arc::get_mut(reader.book.as_mut().unwrap()).unwrap().items = paragraphs
+            .iter()
+            .enumerate()
+            .map(|(index, text)| Item::Paragraph {
+                id: format!("paragraph-{index}"),
+                text: (*text).into(),
+                base_direction: BaseDirection::Ltr,
+                style_runs: Vec::new(),
+            })
+            .collect();
+        reader.atlas = None;
+        let _ = reader.rebuild_geometry(Anchor {
+            row: 0,
+            fraction: 0.0,
+        });
+        settle_pagination(&mut reader);
+        reader.silence_speech();
+        reader
+    }
+
+    #[test]
+    fn the_reading_bar_reads_from_the_page_top_to_the_end_and_a_selection_alone() {
+        let mut reader = silent_book(&[
+            "One opens. One closes.",
+            "Two opens. Two goes on. Two closes.",
+            "Three opens. Three closes.",
+            "Four opens. Four closes.",
+            "Five opens. Five closes.",
+        ]);
+        let _ = update(&mut reader, Message::ReadAloud(Action::Toggle));
+        assert_eq!(
+            reader.said(),
+            [
+                "One opens. One closes.",
+                "Two opens. Two goes on. Two closes.",
+                "Three opens. Three closes.",
+            ]
+        );
+        assert!(!reader.read_aloud.session.as_ref().unwrap().selection);
+
+        // The engine reaches the third text it was given, at its first word.
+        reader.engine_at(speech::Status {
+            stream: 3,
+            word_len: 5,
+            ..Default::default()
+        });
+        let _ = update(&mut reader, Message::ReadAloudTick);
+        assert_eq!(
+            reader.said(),
+            [
+                "One opens. One closes.",
+                "Two opens. Two goes on. Two closes.",
+                "Three opens. Three closes.",
+                "Four opens. Four closes.",
+                "Five opens. Five closes.",
+            ]
+        );
+        assert_eq!(reader.spoken_word("paragraph-2"), Some(0..5));
+        reader.engine_at(speech::Status {
+            stream: 5,
+            done: true,
+            ..Default::default()
+        });
+        let _ = update(&mut reader, Message::ReadAloudTick);
+        assert!(!reader.read_aloud.active(), "the end of the book ends it");
+        assert_eq!(reader.error, None);
+
+        reader.selection.begin(Endpoint {
+            item_id: "paragraph-1".into(),
+            byte_offset: "Two opens. ".len(),
+        });
+        reader.selection.extend(Endpoint {
+            item_id: "paragraph-1".into(),
+            byte_offset: "Two opens. Two goes on.".len(),
+        });
+        reader.selection.end_drag();
+        let _ = update(&mut reader, Message::ReadAloud(Action::Selection));
+        assert_eq!(reader.said(), ["Two goes on."]);
+        assert!(reader.read_aloud.session.as_ref().unwrap().selection);
     }
 
     #[test]
