@@ -1557,6 +1557,25 @@ mod tests {
     }
 
     #[test]
+    fn closing_a_book_drops_the_page_fields_hold_on_the_tools() {
+        let mut reader = reading();
+        reader.book_page_focus(true);
+        assert!(reader.bar_held());
+        reader.clear_content();
+        assert!(!reader.bar_held(), "the next book's tools can hide");
+    }
+
+    #[test]
+    fn a_page_field_under_settings_does_not_turn_the_book() {
+        let mut reader = reading();
+        reader.settings = Some(super::super::settings::Section::Reading);
+        let _ = update_inner(&mut reader, Message::PageInput("9".into()));
+        assert_eq!(reader.page_input, None);
+        let _ = update_inner(&mut reader, Message::PageSubmit);
+        assert!(reader.settings.is_some());
+    }
+
+    #[test]
     fn the_find_tool_opens_and_closes_find() {
         let mut reader = reading();
         let _ = update_inner(&mut reader, Message::FindToggle);

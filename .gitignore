@@ -29,3 +29,6 @@ android/local.properties
 android/**/build/
 *.jks
 *.keystore
+
+# Written by the golden atlas test when it fails, for comparison.
+crates/reader-layout/tests/golden/*.actual.json
