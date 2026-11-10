@@ -1,6 +1,6 @@
 //! The Aa panel that drops from the reading bar: the open book's own theme and
-//! typography, and zoom. PDF views keep their source layout, so there it
-//! offers only zoom.
+//! typography, and zoom. A PDF in Document view shows its original pages, so
+//! there it offers only zoom.
 
 use super::*;
 use iced::widget::{Space, column};
@@ -13,15 +13,6 @@ pub(super) enum Zoom {
     Out,
     In,
     Fit,
-}
-
-/// A reflowable book, the only kind whose typography the reader sets.
-fn reflowable(reader: &Reader) -> bool {
-    reader.pdf.is_none()
-        && reader
-            .book
-            .as_ref()
-            .is_some_and(|book| book.pdf_source.is_none())
 }
 
 /// What a zoom control does in the open view, or `None` at its limit.
@@ -46,7 +37,7 @@ pub(super) fn message(reader: &Reader, zoom: Zoom) -> Option<Message> {
 /// The panel's controls in the order it shows them.
 pub(super) fn controls(reader: &Reader) -> Vec<Control> {
     let mut controls = Vec::new();
-    if reflowable(reader) {
+    if reader.book.is_some() {
         controls.extend(
             (0..themes::THEMES.len())
                 .filter(|_| reading_ui::enabled(reader, Target::Book))
@@ -76,7 +67,7 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
             .style(ui::rule)
     };
     let mut content = column![].spacing(10);
-    if reflowable(reader) {
+    if reader.book.is_some() {
         content = content
             .push(section("Theme"))
             .push(theme_picker(reader, Target::Book))
@@ -113,9 +104,9 @@ pub(super) fn view(reader: &Reader, active: bool) -> Element<'_, Message> {
         .spacing(8)
         .align_y(iced::Alignment::Center),
     );
-    if !reflowable(reader) {
+    if reader.pdf.is_some() {
         content = content.push(
-            text("A PDF keeps its own fonts and layout, so only zoom applies.")
+            text("This is the PDF’s original page. Book view has the theme and text settings.")
                 .size(12)
                 .style(ui::muted_text),
         );

@@ -8262,31 +8262,67 @@ mod tests {
     }
 
     #[test]
-    fn the_aa_panel_offers_only_zoom_in_pdf_views() {
+    fn the_aa_panel_offers_only_zoom_for_a_pdfs_original_pages() {
         use reading_panel::Zoom;
+        use reading_ui::{Focus, Picker, Target};
+        let aa_tooltip = |reader: &Reader| {
+            reading_chrome::items(reader, true)
+                .into_iter()
+                .find_map(|item| match item {
+                    reading_chrome::Item::Button(button)
+                        if button.control == Control::Menu(reading_chrome::Menu::Aa) =>
+                    {
+                        Some(button.tooltip())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let book_settings = [
+            Control::Theme(Target::Book, 0),
+            Control::Theme(Target::Book, 1),
+            Control::Theme(Target::Book, 2),
+            Control::Theme(Target::Book, 3),
+            Control::Reading(Target::Book, Focus::SizeDown),
+            Control::Reading(Target::Book, Focus::SizeUp),
+            Control::Reading(Target::Book, Focus::Picker(Picker::Font)),
+            Control::Reading(Target::Book, Focus::Picker(Picker::Spacing)),
+            Control::Reading(Target::Book, Focus::Picker(Picker::Margin)),
+            Control::Reading(Target::Book, Focus::Reset),
+            Control::Zoom(Zoom::Out),
+            Control::Zoom(Zoom::In),
+            Control::Zoom(Zoom::Fit),
+        ];
         let (mut book, pdfs) = bar_fit_readers();
         let _ = book.sync_reading_settings();
         let _ = book.reading_loaded(book.book.as_ref().unwrap().fingerprint.clone(), Ok(None));
         book.menu = Some(reading_chrome::Menu::Aa);
-        assert!(
-            book.controls().any(|control| control
-                == Control::Reading(reading_ui::Target::Book, reading_ui::Focus::SizeUp)),
-            "a book's panel offers its typography"
-        );
+        assert_eq!(reading_panel::controls(&book), book_settings);
+        assert_eq!(aa_tooltip(&book), "Text, theme and zoom");
         let Some((mut pdf, mut pdf_book)) = pdfs else {
             return;
         };
-        for reader in [&mut pdf, &mut pdf_book] {
-            reader.menu = Some(reading_chrome::Menu::Aa);
-            assert_eq!(
-                reading_panel::controls(reader),
-                [
-                    Control::Zoom(Zoom::Out),
-                    Control::Zoom(Zoom::In),
-                    Control::Zoom(Zoom::Fit)
-                ]
-            );
-        }
+        let _ = pdf_book.sync_reading_settings();
+        let fingerprint = pdf_book.book.as_ref().unwrap().fingerprint.clone();
+        let _ = pdf_book.reading_loaded(fingerprint, Ok(None));
+        pdf_book.menu = Some(reading_chrome::Menu::Aa);
+        assert_eq!(
+            reading_panel::controls(&pdf_book),
+            book_settings,
+            "a PDF in Book view has a book's settings"
+        );
+        assert_eq!(aa_tooltip(&pdf_book), "Text, theme and zoom");
+
+        pdf.menu = Some(reading_chrome::Menu::Aa);
+        assert_eq!(
+            reading_panel::controls(&pdf),
+            [
+                Control::Zoom(Zoom::Out),
+                Control::Zoom(Zoom::In),
+                Control::Zoom(Zoom::Fit)
+            ]
+        );
+        assert_eq!(aa_tooltip(&pdf), "Zoom");
         let before = pdf.pdf.as_ref().unwrap().zoom_percent();
         let _ = pdf.activate(Control::Zoom(Zoom::In));
         assert_eq!(

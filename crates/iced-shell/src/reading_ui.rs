@@ -546,10 +546,12 @@ pub(super) fn typography(reader: &Reader, target: Target) -> Element<'_, Message
         ));
     } else {
         content = content.push(
-            text(if reader.reading.loading {
-                "Loading this book’s reading settings…"
-            } else {
-                "Typography controls apply to reflowable books. PDF Book retains its source layout."
+            text(match target {
+                Target::Book if reader.reading.loading => "Loading this book’s reading settings…",
+                Target::Book if reader.reading.blocked => {
+                    "This book’s reading settings could not be loaded."
+                }
+                _ => "Reading settings are unavailable while simPl is busy.",
             })
             .size(12)
             .style(ui::muted_text),
