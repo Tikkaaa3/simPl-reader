@@ -1166,6 +1166,7 @@ enum Control {
     DismissOverlay,
     SettingsHelp,
     SettingsSection(settings::Section),
+    Appearance(Appearance),
     Theme(reading_ui::Target, usize),
     Close,
     Back,
@@ -1323,6 +1324,8 @@ enum Message {
         result: Result<Option<book_map::Section>, String>,
     },
     ToggleAppearance,
+    /// Settings' Light and Dark: switch only when this is not the current one.
+    SetAppearance(Appearance),
     PreferencesLoaded(Result<Preferences, String>),
     WindowMaximized(bool),
     PreferencesSaved(Result<(), String>),
@@ -2434,6 +2437,7 @@ impl Reader {
             Control::ConfirmRemove => Message::ConfirmRemove,
             Control::DismissOverlay => Message::DismissOverlay,
             Control::SettingsSection(section) => Message::SettingsSection(section),
+            Control::Appearance(appearance) => Message::SetAppearance(appearance),
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
             Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
@@ -3835,6 +3839,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::FocusReady(generation) if generation == reader.focus_generation => {
             reader.focus_pending = false;
             ui::reveal_focus()
+        }
+        Message::SetAppearance(appearance) if reader.appearance != appearance => {
+            update_inner(reader, Message::ToggleAppearance)
         }
         Message::ToggleAppearance if reader.interactive() => {
             reader.appearance = reader.appearance.toggled();

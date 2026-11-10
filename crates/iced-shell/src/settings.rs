@@ -63,7 +63,11 @@ pub(super) fn controls(reader: &Reader, section: Section) -> Vec<Control> {
                 (0..themes::THEMES.len())
                     .map(|index| Control::Theme(reading_ui::Target::Defaults, index)),
             );
-            controls.push(Control::Fullscreen);
+            controls.extend([
+                Control::Appearance(Appearance::Light),
+                Control::Appearance(Appearance::Dark),
+                Control::Fullscreen,
+            ]);
         }
         Section::Listen => {
             let rate = reader.read_aloud.rate;
@@ -110,6 +114,23 @@ pub(super) fn modal(reader: &Reader, section: Section) -> Element<'_, Message> {
         .into()
 }
 
+/// One half of the Light and Dark choice. The current one keeps the selected
+/// look and stays pressable, so it never reads as disabled.
+fn appearance_choice<'a>(
+    reader: &Reader,
+    appearance: Appearance,
+    label: &'static str,
+) -> Element<'a, Message> {
+    toned_button(
+        reader,
+        Control::Appearance(appearance),
+        text(label).size(12),
+        Some(Message::SetAppearance(appearance)),
+        ui::ButtonTone::Surface,
+        reader.appearance == appearance,
+    )
+}
+
 fn note(value: &'static str) -> iced::widget::Text<'static> {
     text(value)
         .size(12)
@@ -143,6 +164,13 @@ fn pane(reader: &Reader, section: Section) -> Element<'_, Message> {
             theme_picker(reader, reading_ui::Target::Defaults),
             note("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme. Every book uses this theme until you choose another for it from Aa in its reading bar."),
             rule(),
+            row![
+                text("Light or dark").font(ui::MEDIUM).size(13).width(Length::Fill),
+                appearance_choice(reader, Appearance::Light, "Light"),
+                appearance_choice(reader, Appearance::Dark, "Dark"),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
             row![
                 text("Fullscreen").font(ui::MEDIUM).size(13).width(Length::Fill),
                 control_button(
@@ -265,6 +293,28 @@ mod tests {
 
         press(&mut reader, key::Named::Escape, key::Code::Escape);
         assert_eq!(reader.settings, None);
+    }
+
+    #[test]
+    fn appearance_switches_only_from_the_other_choice() {
+        let mut reader = Reader::default();
+        toggle_settings(&mut reader);
+        let _ = update(&mut reader, Message::SettingsSection(Section::Appearance));
+        let controls: Vec<_> = reader.controls().collect();
+        assert_eq!(
+            controls[controls.len() - 3..],
+            [
+                Control::Appearance(Appearance::Light),
+                Control::Appearance(Appearance::Dark),
+                Control::Fullscreen,
+            ]
+        );
+        let _ = reader.activate(Control::Appearance(Appearance::Light));
+        assert_eq!(reader.appearance, Appearance::Light);
+        let _ = reader.activate(Control::Appearance(Appearance::Dark));
+        assert_eq!(reader.appearance, Appearance::Dark);
+        let _ = reader.activate(Control::Appearance(Appearance::Dark));
+        assert_eq!(reader.appearance, Appearance::Dark, "the current one stays");
     }
 
     #[test]
