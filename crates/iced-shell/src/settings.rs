@@ -310,6 +310,22 @@ mod tests {
     }
 
     #[test]
+    fn focus_in_a_pane_that_leaves_moves_to_the_section_list() {
+        let mut reader = Reader::default();
+        toggle_settings(&mut reader);
+        let _ = update(&mut reader, Message::SettingsSection(Section::Listen));
+        reader.focused = Some(Control::ReadAloudFaster);
+        let _ = update(&mut reader, Message::SettingsSection(Section::Shortcuts));
+        assert_eq!(
+            reader.focused,
+            Some(Control::SettingsSection(Section::Shortcuts))
+        );
+        reader.focused = None;
+        let _ = update(&mut reader, Message::SettingsSection(Section::Reading));
+        assert_eq!(reader.focused, None, "a mouse choice leaves no focus ring");
+    }
+
+    #[test]
     fn appearance_switches_only_from_the_other_choice() {
         let mut reader = Reader::default();
         toggle_settings(&mut reader);
@@ -329,6 +345,8 @@ mod tests {
         assert_eq!(reader.appearance, Appearance::Dark);
         let _ = reader.activate(Control::Appearance(Appearance::Dark));
         assert_eq!(reader.appearance, Appearance::Dark, "the current one stays");
+        let _ = reader.activate(Control::Appearance(Appearance::Light));
+        assert_eq!(reader.appearance, Appearance::Light);
     }
 
     #[test]

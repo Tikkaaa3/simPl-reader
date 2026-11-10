@@ -3835,7 +3835,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             // An open dropdown belongs to the pane that is leaving.
             reader.reading.picker = None;
             reader.word_translation.picker = None;
-            if matches!(reader.focused, Some(Control::SettingsSection(_))) {
+            // Focus that was in the list or in the pane that left moves to the list.
+            if reader
+                .focused
+                .is_some_and(|focused| !reader.controls().any(|control| control == focused))
+            {
                 reader.focused = Some(Control::SettingsSection(section));
             }
             scroll_to_widget(overlay_id(), 0.0)
