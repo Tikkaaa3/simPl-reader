@@ -637,7 +637,11 @@ pub(super) fn items_at(reader: &Reader, active: bool, fold: Fold) -> Vec<Item> {
             ..Button::new(
                 Control::Menu(Menu::Aa),
                 glyph::AA,
-                "Text, theme and zoom",
+                if reader.pdf.is_some() {
+                    "Zoom"
+                } else {
+                    "Text, theme and zoom"
+                },
                 None,
                 active.then_some(Message::ToggleMenu(Menu::Aa)),
             )

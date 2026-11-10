@@ -1550,21 +1550,11 @@ impl Reader {
             .map_or(&[], |section| section.pages.as_slice())
     }
 
-    /// Whether this book is laid out for the theme rather than with the default
-    /// measurements. PDF Book keeps the default typography (its colors still follow the theme).
-    fn line_height(&self) -> f32 {
-        self.book.as_ref().map_or(MINIMAL.line_height, |book| {
-            self.reading_style(book).line_height
-        })
-    }
-
+    /// Whether the open book is laid out for its theme and reading options
+    /// rather than with the default measurements.
     fn needs_adaptation(&self) -> bool {
-        (self.theme.id != themes::DEFAULT_ID
-            || self.reading_options() != reader_document::reading::Options::default())
-            && self
-                .book
-                .as_ref()
-                .is_some_and(|book| book.pdf_source.is_none())
+        self.theme.id != themes::DEFAULT_ID
+            || self.reading_options() != reader_document::reading::Options::default()
     }
 
     /// Row heights and pages of the current section for the current theme, if ready.
@@ -1959,7 +1949,10 @@ impl Reader {
                 let generation = self.generation;
                 return Task::perform(
                     async move {
-                        book_map::adapt_section_with(book, &canonical, theme, reading, &cancel)
+                        crate::platform::on_worker_thread("book-layout", move || {
+                            book_map::adapt_section_with(book, &canonical, theme, reading, &cancel)
+                        })
+                        .await?
                     },
                     move |result| Message::ThemeLayoutReady {
                         generation,
@@ -2031,10 +2024,13 @@ impl Reader {
         if self.pagination.is_some() || self.book.is_none() || self.opening.is_some() {
             return Task::none();
         }
-        let pdf_book = self
-            .book
-            .as_ref()
-            .is_some_and(|book| book.pdf_source.is_some());
+        // Only the canonical layout of a PDF book is estimated. Its layout for
+        // a theme or reading options is measured, like any other book's.
+        let estimated = !self.needs_adaptation()
+            && self
+                .book
+                .as_ref()
+                .is_some_and(|book| book.pdf_source.is_some());
         let anchor = self.anchor();
         let mut changed = false;
         let mut pending = self.measurements.lock();
@@ -2042,7 +2038,7 @@ impl Reader {
             if generation != self.generation || width != self.width || row >= self.heights.len() {
                 continue;
             }
-            if (self.measured_layout.is_none() || pdf_book)
+            if (self.measured_layout.is_none() || estimated)
                 && (self.heights.height(row) - height).abs() > 0.01
             {
                 self.heights.refine(row, height, self.offset);
@@ -2051,7 +2047,7 @@ impl Reader {
         }
         drop(pending);
         if changed
-            && pdf_book
+            && estimated
             && let (Some(book), Some(atlas)) = (&self.book, &mut self.atlas)
         {
             book_map::refine_pdf(Arc::make_mut(atlas), book, &self.heights);
@@ -3519,8 +3515,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 .and_then(|b| b.pdf_source.as_ref())
                 .is_some_and(|s| s.document.id == document)
                 && reader.active_page().is_some_and(|p| p.number == page);
-            if current && reader.pdf_book_pending == Some((document, page)) {
+            // A reply that arrives while the book is laid out again has no
+            // page to show on. Its request is forgotten, so the page asks again.
+            let pending = reader.pdf_book_pending == Some((document, page));
+            if pending {
                 reader.pdf_book_pending = None;
+            }
+            if current && pending {
                 reader.pdf_book_raster = Some((
                     document,
                     page,
@@ -5169,10 +5170,12 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             ))
                         }
                         Key::Named(key::Named::ArrowUp) => {
-                            reader.jump(reader.offset - reader.font_size * reader.line_height())
+                            let line = reader.font_size * reader.reading_style().line_height;
+                            reader.jump(reader.offset - line)
                         }
                         Key::Named(key::Named::ArrowDown) => {
-                            reader.jump(reader.offset + reader.font_size * reader.line_height())
+                            let line = reader.font_size * reader.reading_style().line_height;
+                            reader.jump(reader.offset + line)
                         }
                         Key::Named(key::Named::PageDown | key::Named::Space) => {
                             reader.jump(reader.offset + reader.viewport * 0.9)
@@ -5237,25 +5240,6 @@ fn scroll_to_widget(id: iced::advanced::widget::Id, offset: f32) -> Task<Message
 /// Measure a complete reflowable section on the task executor. Only scalar heights survive.
 #[cfg(test)]
 use reader_layout::measure::measure_book;
-
-/// Spacing and heading scales for a book: the theme's, except that PDF Book
-/// keeps the default typography its layout was built around.
-fn style_for(theme: &'static themes::ReadingTheme, book: &Book) -> &'static BookStyle {
-    if book.pdf_source.is_some() {
-        &MINIMAL
-    } else {
-        &theme.style
-    }
-}
-
-/// The bundled family replacing Literata for this book's text, if the theme has one.
-fn family_for(theme: &'static themes::ReadingTheme, book: &Book) -> Option<&'static str> {
-    if book.pdf_source.is_some() {
-        None
-    } else {
-        theme.family
-    }
-}
 
 fn styled_item_size(style: &BookStyle, book: &Book, index: usize, item: &Item, body: f32) -> f32 {
     if let Some(source) = &book.pdf_source
@@ -5336,8 +5320,8 @@ fn render_item(
     item: &Item,
     bounds: Option<selection::SelectionBounds>,
 ) -> Element<'static, Message> {
-    let style = reader.reading_style(book);
-    let family = reader.reading_family(book);
+    let style = reader.reading_style();
+    let family = reader.reading_family();
     if let Some(source) = &book.pdf_source
         && let Some(rect) = source.conversion.illustrations.get(item.id())
     {
@@ -6448,7 +6432,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
             range,
             &reader.heights,
             reader.width,
-            reader.reading_style(book).gap(reader.font_size),
+            reader.reading_style().gap(reader.font_size),
             rows,
             virtual_reader::LayoutReports {
                 measurements: reader.measurements.clone(),
@@ -7715,6 +7699,112 @@ mod tests {
         })
     }
 
+    /// `pdf` opened through PDFium, or `None` when `pdfium.dll` is not beside
+    /// the test executable.
+    pub(super) fn pdfium_document(pdf: Vec<u8>) -> Option<Arc<reader_pdf::Document>> {
+        static OPENED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dll = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pdfium.dll");
+        if !dll.exists() {
+            assert!(
+                std::env::var_os("SIMPL_REQUIRE_PDFIUM").is_none(),
+                "SIMPL_REQUIRE_PDFIUM is set but pdfium.dll is not beside the test executable"
+            );
+            println!("SKIPPED: pdfium.dll is not beside the test executable");
+            return None;
+        }
+        let path = std::env::temp_dir().join(format!(
+            "simpl-test-{}-{}.pdf",
+            std::process::id(),
+            OPENED.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, pdf).unwrap();
+        let document = crate::pdf_reader::tests::complete(reader_pdf::open(path.clone())).unwrap();
+        let _ = std::fs::remove_file(path);
+        Some(document)
+    }
+
+    /// A PDF read in Book view, as its conversion describes it: a heading,
+    /// a contents entry and prose from three source pages, in rows 0..3, 3..5
+    /// and 5..7. `None` without PDFium, which owns the source document.
+    pub(super) fn pdf_book() -> Option<Arc<Book>> {
+        use reader_pdf::book::{Block, BlockLayout, Conversion, SourceRange};
+        let document = pdfium_document(crate::pdf_reader::tests::pages_pdf(3))?;
+        let prose = "A readable paragraph with enough words to wrap over several lines. ".repeat(8);
+        let contents = "Chapter One 12";
+        let rows = [
+            (0, "The Tides", true, BlockLayout::Flow),
+            (0, prose.as_str(), false, BlockLayout::Flow),
+            (0, prose.as_str(), false, BlockLayout::Flow),
+            (
+                1,
+                contents,
+                false,
+                BlockLayout::Toc {
+                    number_start: contents.len() - 2,
+                    indent: 0.05,
+                },
+            ),
+            (1, prose.as_str(), false, BlockLayout::Flow),
+            (2, prose.as_str(), false, BlockLayout::Flow),
+            (2, prose.as_str(), false, BlockLayout::Flow),
+        ];
+        let conversion = Conversion {
+            blocks: rows
+                .into_iter()
+                .enumerate()
+                .map(|(row, (page, text, heading, layout))| Block {
+                    id: format!("block-{row}"),
+                    text: text.to_owned(),
+                    heading,
+                    layout,
+                    size_ratio: if heading { 1.5 } else { 1.0 },
+                    top_gap: 0.0,
+                    styles: Vec::new(),
+                    links: Vec::new(),
+                    sources: vec![SourceRange {
+                        page,
+                        start: 0,
+                        end: text.len(),
+                        top: 0.0,
+                        bottom: 1.0,
+                    }],
+                })
+                .collect(),
+            page_labels: HashMap::new(),
+            fallback_pages: std::collections::HashSet::new(),
+            illustrations: HashMap::new(),
+            placements: HashMap::new(),
+            warnings: Vec::new(),
+        };
+        let position = default_pdf_position(&document);
+        Some(Arc::new(
+            reader_layout::book::pdf_book(document, conversion, position, None, Vec::new())
+                .unwrap(),
+        ))
+    }
+
+    /// `book` opened the way a finished load opens it, with its pages ready.
+    pub(super) fn reader_showing(book: Arc<Book>) -> Reader {
+        let mut reader = Reader::default();
+        let request = reader.request;
+        let _ = update(
+            &mut reader,
+            Message::Loaded {
+                request,
+                result: Ok(LoadReply {
+                    document: LoadedDocument::Reflow(book),
+                    catalog: None,
+                }),
+            },
+        );
+        settle_pagination(&mut reader);
+        reader
+    }
+
     fn searchable_reader() -> Reader {
         let mut source = Arc::try_unwrap(book("searchable")).unwrap();
         for (row, text) in [
@@ -7867,26 +7957,10 @@ mod tests {
         };
         let book_reader = open(headed("bar-layout"));
 
-        use crate::pdf_reader::tests::{complete, tall_pdf};
-        let dll = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("pdfium.dll");
-        if !dll.exists() {
-            assert!(
-                std::env::var_os("SIMPL_REQUIRE_PDFIUM").is_none(),
-                "SIMPL_REQUIRE_PDFIUM is set but pdfium.dll is not beside the test executable"
-            );
-            println!("SKIPPED the PDF bars: pdfium.dll is not beside the test executable");
+        let Some(document) = pdfium_document(crate::pdf_reader::tests::tall_pdf()) else {
             return (book_reader, None);
-        }
-        let path =
-            std::env::temp_dir().join(format!("simpl-bar-layout-{}.pdf", std::process::id()));
-        std::fs::write(&path, tall_pdf()).unwrap();
-        let mut document = Arc::try_unwrap(complete(reader_pdf::open(path.clone())).unwrap())
-            .expect("a just-opened PDF has one owner");
-        let _ = std::fs::remove_file(path);
+        };
+        let mut document = Arc::try_unwrap(document).expect("a just-opened PDF has one owner");
         document.pages = document.pages.iter().cycle().take(1000).cloned().collect();
         let document = Arc::new(document);
         let (pdf, _) =
@@ -8196,31 +8270,67 @@ mod tests {
     }
 
     #[test]
-    fn the_aa_panel_offers_only_zoom_in_pdf_views() {
+    fn the_aa_panel_offers_only_zoom_for_a_pdfs_original_pages() {
         use reading_panel::Zoom;
+        use reading_ui::{Focus, Picker, Target};
+        let aa_tooltip = |reader: &Reader| {
+            reading_chrome::items(reader, true)
+                .into_iter()
+                .find_map(|item| match item {
+                    reading_chrome::Item::Button(button)
+                        if button.control == Control::Menu(reading_chrome::Menu::Aa) =>
+                    {
+                        Some(button.tooltip())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let book_settings = [
+            Control::Theme(Target::Book, 0),
+            Control::Theme(Target::Book, 1),
+            Control::Theme(Target::Book, 2),
+            Control::Theme(Target::Book, 3),
+            Control::Reading(Target::Book, Focus::SizeDown),
+            Control::Reading(Target::Book, Focus::SizeUp),
+            Control::Reading(Target::Book, Focus::Picker(Picker::Font)),
+            Control::Reading(Target::Book, Focus::Picker(Picker::Spacing)),
+            Control::Reading(Target::Book, Focus::Picker(Picker::Margin)),
+            Control::Reading(Target::Book, Focus::Reset),
+            Control::Zoom(Zoom::Out),
+            Control::Zoom(Zoom::In),
+            Control::Zoom(Zoom::Fit),
+        ];
         let (mut book, pdfs) = bar_fit_readers();
         let _ = book.sync_reading_settings();
         let _ = book.reading_loaded(book.book.as_ref().unwrap().fingerprint.clone(), Ok(None));
         book.menu = Some(reading_chrome::Menu::Aa);
-        assert!(
-            book.controls().any(|control| control
-                == Control::Reading(reading_ui::Target::Book, reading_ui::Focus::SizeUp)),
-            "a book's panel offers its typography"
-        );
+        assert_eq!(reading_panel::controls(&book), book_settings);
+        assert_eq!(aa_tooltip(&book), "Text, theme and zoom");
         let Some((mut pdf, mut pdf_book)) = pdfs else {
             return;
         };
-        for reader in [&mut pdf, &mut pdf_book] {
-            reader.menu = Some(reading_chrome::Menu::Aa);
-            assert_eq!(
-                reading_panel::controls(reader),
-                [
-                    Control::Zoom(Zoom::Out),
-                    Control::Zoom(Zoom::In),
-                    Control::Zoom(Zoom::Fit)
-                ]
-            );
-        }
+        let _ = pdf_book.sync_reading_settings();
+        let fingerprint = pdf_book.book.as_ref().unwrap().fingerprint.clone();
+        let _ = pdf_book.reading_loaded(fingerprint, Ok(None));
+        pdf_book.menu = Some(reading_chrome::Menu::Aa);
+        assert_eq!(
+            reading_panel::controls(&pdf_book),
+            book_settings,
+            "a PDF in Book view has a book's settings"
+        );
+        assert_eq!(aa_tooltip(&pdf_book), "Text, theme and zoom");
+
+        pdf.menu = Some(reading_chrome::Menu::Aa);
+        assert_eq!(
+            reading_panel::controls(&pdf),
+            [
+                Control::Zoom(Zoom::Out),
+                Control::Zoom(Zoom::In),
+                Control::Zoom(Zoom::Fit)
+            ]
+        );
+        assert_eq!(aa_tooltip(&pdf), "Zoom");
         let before = pdf.pdf.as_ref().unwrap().zoom_percent();
         let _ = pdf.activate(Control::Zoom(Zoom::In));
         assert_eq!(
@@ -8367,6 +8477,54 @@ mod tests {
                 "theme {index}: same page"
             );
         }
+    }
+
+    #[test]
+    fn an_illustration_that_arrives_during_a_new_layout_is_asked_for_again() {
+        let Some(book) = pdf_book() else { return };
+        let document = book.pdf_source.as_ref().unwrap().document.id;
+        let mut reader = reader_showing(book);
+        reader.pdf_book_pending = Some((document, 0));
+        // A look change empties the layout until the new one is measured.
+        reader.theme = &themes::THEMES[1];
+        let _ = reader.rebuild_geometry(reader.anchor());
+        assert!(reader.active_page().is_none());
+
+        let _ = update_inner(
+            &mut reader,
+            Message::PdfBookRaster {
+                document,
+                page: 0,
+                result: Err("rendered for the old layout".into()),
+            },
+        );
+        assert_eq!(
+            reader.pdf_book_pending, None,
+            "the page can ask for its illustration again"
+        );
+        assert!(reader.pdf_book_raster.is_none());
+    }
+
+    #[test]
+    fn a_looks_layout_runs_on_a_worker_thread() {
+        use iced_futures::futures::{StreamExt, executor::block_on, task::noop_waker_ref};
+        use iced_runtime::{Action, task::into_stream};
+        let mut reader = themed_reader(30);
+        reader.theme = &themes::THEMES[1];
+        let mut layout = into_stream(reader.rebuild_geometry(reader.anchor())).unwrap();
+        // iced polls a new task on the UI thread, as this poll does.
+        let first = layout.poll_next_unpin(&mut std::task::Context::from_waker(noop_waker_ref()));
+        assert!(first.is_pending(), "the UI thread measures nothing");
+        let Some(Action::Output(ready)) = block_on(layout.next()) else {
+            panic!("the layout reports its result");
+        };
+        let _ = update_inner(&mut reader, ready);
+        assert!(reader.pagination.is_none());
+        assert_eq!(
+            reader.heights.len(),
+            30,
+            "the book is laid out for the theme"
+        );
     }
 
     #[test]

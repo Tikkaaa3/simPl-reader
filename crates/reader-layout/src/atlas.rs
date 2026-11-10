@@ -581,7 +581,7 @@ pub fn adapt_section_with(
     }
     let old = virtual_reader::HeightIndex::new(canonical.heights.clone());
     let new = virtual_reader::HeightIndex::new(heights.clone());
-    let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
+    let style = themes::effective_style(theme, options);
     // Lines of a paragraph in a layout: (line height, space above the text, line count).
     let grid = |style: &BookStyle,
                 index: &virtual_reader::HeightIndex,
@@ -634,7 +634,15 @@ pub fn adapt_section_with(
     let mut cuts = vec![0.0_f32];
     for page in canonical.pages.iter().skip(1) {
         let previous = *cuts.last().unwrap_or(&0.0);
-        cuts.push(map_cut(page.content.start).clamp(previous, new.total()));
+        // A PDF book's pages are its source pages, and each starts at a row.
+        // Rows refined on screen shift its canonical offsets by rounding
+        // errors, so the row comes from the page, not from a lookup at its offset.
+        let cut = if book.pdf_source.is_some() {
+            new.start(page.rows.start)
+        } else {
+            map_cut(page.content.start)
+        };
+        cuts.push(cut.clamp(previous, new.total()));
     }
     cuts.push(new.total());
     let mut top = book_pages::GAP;

@@ -273,8 +273,8 @@ pub fn measure_book_with(
     options: Options,
 ) -> Option<Vec<f32>> {
     fonts::load();
-    let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
-    let family = themes::effective_family(theme, book.pdf_source.is_some(), options);
+    let style = themes::effective_style(theme, options);
+    let family = themes::effective_family(theme, options);
     let renderer = Renderer::new(fonts::SANS, Pixels(13.0));
     let limits = Limits::new(Size::ZERO, Size::new(width, f32::INFINITY));
     let mut heights = Vec::with_capacity(book.items.len());
@@ -362,8 +362,8 @@ pub fn source_ys(book: &Book, row: usize, bytes: &[usize]) -> Result<Vec<f32>, S
     }
     let theme = themes::default_theme();
     let options = Options::default();
-    let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
-    let family = themes::effective_family(theme, book.pdf_source.is_some(), options);
+    let style = themes::effective_style(theme, options);
+    let family = themes::effective_family(theme, options);
     let mapped = mapped_item(book, item)?;
     let prefix = mapped.text.len() - logical.len();
     let size = styled_item_size(&style, book, row, item, MINIMAL.default_size);

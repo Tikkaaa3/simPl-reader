@@ -71,7 +71,7 @@ fn record(fixture: &golden::Fixture) -> Option<serde_json::Value> {
     let cancel = AtomicBool::new(false);
     let atlas = book_map::build(book.clone(), &cancel).unwrap().unwrap();
     let mut adapted = Vec::new();
-    // PDF Book always keeps the default typography; only reflowable books adapt.
+    // The golden file of a PDF book holds its canonical atlas alone.
     if book.pdf_source.is_none() {
         for (theme, font, size, margin, spacing) in golden::ADAPTATIONS {
             let sections = (0..atlas.sections.len())
@@ -164,7 +164,7 @@ fn shared_measurement_matches_the_desktop_widgets() {
                     ..Reader::default()
                 };
                 reader.reading.defaults = options;
-                let style = reading_ui::effective_style(theme, &current, options);
+                let style = themes::effective_style(theme, options);
                 let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
                 let limits = layout::Limits::new(Size::ZERO, Size::new(width, f32::INFINITY));
                 let desktop = current

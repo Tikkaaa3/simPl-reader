@@ -87,8 +87,7 @@ pub(crate) fn presentation(
     theme: &'static themes::ReadingTheme,
     options: reading::Options,
 ) -> RowPresentation {
-    let pdf = book.pdf_source.is_some();
-    let style = themes::effective_style(theme, pdf, options);
+    let (style, family) = crate::layout::typography(book, theme, options);
     let body = options.size as f32;
     let width = reader_layout::atlas::PAPER - 2.0 * options.margin as f32;
     let mut padding = style.block_padding(item, book.structure.get(item.id()), body, width);
@@ -162,7 +161,7 @@ pub(crate) fn presentation(
         family: if code {
             "monospace"
         } else {
-            themes::effective_family(theme, pdf, options).unwrap_or("Literata")
+            family.unwrap_or("Literata")
         }
         .into(),
         top: padding.top,

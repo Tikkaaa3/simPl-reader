@@ -216,41 +216,19 @@ pub fn index_of(theme: &ReadingTheme) -> usize {
         .unwrap_or(0)
 }
 
-/// Spacing and heading scales for a book: the theme's, except that PDF Book
-/// keeps the default typography its layout was built around.
-pub fn style_for(theme: &'static ReadingTheme, pdf_book: bool) -> &'static BookStyle {
-    if pdf_book { &MINIMAL } else { &theme.style }
-}
-
-/// The bundled family replacing Literata for this book's text, if the theme has one.
-pub fn family_for(theme: &'static ReadingTheme, pdf_book: bool) -> Option<&'static str> {
-    if pdf_book { None } else { theme.family }
-}
-
 /// The typography a book is laid out with under `theme` and the reader's options.
-pub fn effective_style(
-    theme: &'static ReadingTheme,
-    pdf_book: bool,
-    options: Options,
-) -> BookStyle {
-    let mut style = *style_for(theme, pdf_book);
-    if !pdf_book && options.spacing != 0 {
+pub fn effective_style(theme: &'static ReadingTheme, options: Options) -> BookStyle {
+    let mut style = theme.style;
+    if options.spacing != 0 {
         style.line_height = options.spacing as f32 / 100.0;
     }
     style
 }
 
 /// The reading family a book is laid out with (`None` = Literata).
-pub fn effective_family(
-    theme: &'static ReadingTheme,
-    pdf_book: bool,
-    options: Options,
-) -> Option<&'static str> {
-    if pdf_book {
-        return None;
-    }
+pub fn effective_family(theme: &'static ReadingTheme, options: Options) -> Option<&'static str> {
     match options.font {
-        Font::Theme => family_for(theme, pdf_book),
+        Font::Theme => theme.family,
         Font::Literata => None,
         Font::Spectral => Some("Spectral"),
         Font::FiraSans => Some("Fira Sans"),
@@ -309,6 +287,39 @@ mod tests {
         for theme in &THEMES {
             assert_eq!(by_id(theme.key()).id, theme.id);
         }
+    }
+
+    #[test]
+    fn a_chosen_line_spacing_replaces_the_themes() {
+        let soft = find("soft");
+        let chosen = effective_style(
+            soft,
+            Options {
+                spacing: 180,
+                ..Options::default()
+            },
+        );
+        assert_eq!(chosen.line_height, 1.8);
+        assert_eq!(chosen.paragraph_gap_em, 0.85, "the rest stays the theme's");
+        assert_eq!(effective_style(soft, Options::default()).line_height, 1.7);
+    }
+
+    #[test]
+    fn a_chosen_font_replaces_the_themes() {
+        let chosen = |theme, font| {
+            effective_family(
+                find(theme),
+                Options {
+                    font,
+                    ..Options::default()
+                },
+            )
+        };
+        assert_eq!(chosen("soft", Font::Theme), Some("Spectral"));
+        assert_eq!(chosen("soft", Font::FiraSans), Some("Fira Sans"));
+        assert_eq!(chosen("soft", Font::Literata), None);
+        assert_eq!(chosen("default", Font::Theme), None);
+        assert_eq!(chosen("default", Font::Spectral), Some("Spectral"));
     }
 
     #[test]

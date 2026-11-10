@@ -32,7 +32,8 @@ against the active document/generation so stale work cannot replace a newer view
   use the current page; reopening restores the saved Book position.
 - Its page atlas starts from inexpensive height estimates and corrects the
   visible rows with native layout as the reader moves. Scrolling retains the
-  layout state of rows that remain visible.
+  layout state of rows that remain visible. A theme or reading options other
+  than the defaults measure the whole book once and keep the same boundaries.
 - EPUB/HTML use source page markers when available, otherwise a canonical first
   layout. Window resizing and zoom do not change those saved boundaries.
 - In a document, the title bar and the toolbar are one reading bar

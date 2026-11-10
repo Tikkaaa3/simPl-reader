@@ -14,6 +14,28 @@ pub fn mark_reader_running() {
     }
 }
 
+/// Runs blocking `work` on a thread of its own and resolves with its result.
+///
+/// iced polls a new task on the UI thread before the executor gets it, and
+/// polls it again there while a batch it belongs to still has ready work. So
+/// blocking work inside a task's future can run in the window's event handler
+/// and freeze the window. On its own thread it cannot, however the task is polled.
+pub async fn on_worker_thread<T: Send + 'static>(
+    name: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .map_err(|error| format!("Cannot start {name}: {error}"))?;
+    receiver
+        .await
+        .map_err(|_| format!("{name} stopped unexpectedly."))
+}
+
 /// Runs a native dialog on a thread of its own and resolves when it closes.
 ///
 /// iced polls a new task once on the UI thread before the executor gets it, so
@@ -37,25 +59,17 @@ async fn on_dialog_thread<T: Send + 'static>(
             unsafe { CoUninitialize() };
         }
     }
-    let (sender, receiver) = iced::futures::channel::oneshot::channel();
-    std::thread::Builder::new()
-        .name(name.into())
-        .spawn(move || {
-            // SAFETY: initializes this new thread's apartment once.
-            let result =
-                unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
-                    .ok()
-                    .map_err(|error| format!("Cannot open the dialog: {error}"))
-                    .and_then(|()| {
-                        let _apartment = Apartment;
-                        dialog()
-                    });
-            let _ = sender.send(result);
-        })
-        .map_err(|error| format!("Cannot open the dialog: {error}"))?;
-    receiver
-        .await
-        .map_err(|_| "The dialog stopped unexpectedly.".to_string())?
+    on_worker_thread(name, move || {
+        // SAFETY: initializes this new thread's apartment once.
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
+            .ok()
+            .map_err(|error| format!("Cannot open the dialog: {error}"))
+            .and_then(|()| {
+                let _apartment = Apartment;
+                dialog()
+            })
+    })
+    .await?
 }
 
 /// Display the native Windows picker. Cancellation is not an error.
@@ -327,6 +341,23 @@ mod tests {
     use super::*;
     use iced::futures::{FutureExt, executor::block_on, task::noop_waker_ref};
     use std::task::{Context, Poll};
+
+    #[test]
+    fn work_on_a_worker_thread_never_runs_on_the_thread_that_polls_it() {
+        let polling = std::thread::current().id();
+        let mut work = on_worker_thread("test-worker", || std::thread::current().id()).boxed();
+        // iced can poll a task many times on the UI thread while it drains a
+        // batch. However often this thread polls, the work runs elsewhere.
+        let ran_on = loop {
+            if let Poll::Ready(ran_on) = work.poll_unpin(&mut Context::from_waker(noop_waker_ref()))
+            {
+                break ran_on;
+            }
+            std::thread::yield_now();
+        };
+        assert_ne!(ran_on, Ok(polling));
+        assert!(ran_on.is_ok());
+    }
 
     #[test]
     fn a_dialog_never_runs_on_the_thread_that_polls_its_task() {

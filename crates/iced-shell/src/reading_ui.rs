@@ -56,11 +56,7 @@ impl State {
 }
 impl Reader {
     pub(super) fn reading_options(&self) -> Options {
-        if self.book.as_ref().is_some_and(|b| b.pdf_source.is_some()) {
-            Options::default()
-        } else {
-            self.reading.options().without_theme()
-        }
+        self.reading.options().without_theme()
     }
     /// The theme the open book reads in: its own, else the default theme.
     pub(super) fn book_theme(&self) -> &'static themes::ReadingTheme {
@@ -85,11 +81,11 @@ impl Reader {
         }
         self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
     }
-    pub(super) fn reading_style(&self, book: &Book) -> BookStyle {
-        effective_style(self.theme, book, self.reading_options())
+    pub(super) fn reading_style(&self) -> BookStyle {
+        themes::effective_style(self.theme, self.reading_options())
     }
-    pub(super) fn reading_family(&self, book: &Book) -> Option<&'static str> {
-        effective_family(self.theme, book, self.reading_options())
+    pub(super) fn reading_family(&self) -> Option<&'static str> {
+        themes::effective_family(self.theme, self.reading_options())
     }
     pub(super) fn sync_reading_settings(&mut self) -> Task<Message> {
         let before = self.look();
@@ -99,11 +95,7 @@ impl Reader {
     /// Follows the open book: its own options from the save queue, or loaded in
     /// the background, and the theme they call for. Lays nothing out.
     pub(super) fn select_reading_book(&mut self) -> Task<Message> {
-        let book = self
-            .book
-            .as_ref()
-            .filter(|b| b.pdf_source.is_none())
-            .map(|b| b.fingerprint.clone());
+        let book = self.book.as_ref().map(|b| b.fingerprint.clone());
         if self.reading.book == book {
             return Task::none();
         }
@@ -318,32 +310,6 @@ impl Reader {
         }
     }
 }
-pub(super) fn effective_style(
-    theme: &'static themes::ReadingTheme,
-    book: &Book,
-    options: Options,
-) -> BookStyle {
-    let mut style = *style_for(theme, book);
-    if book.pdf_source.is_none() && options.spacing != 0 {
-        style.line_height = options.spacing as f32 / 100.0;
-    }
-    style
-}
-pub(super) fn effective_family(
-    theme: &'static themes::ReadingTheme,
-    book: &Book,
-    options: Options,
-) -> Option<&'static str> {
-    if book.pdf_source.is_some() {
-        return None;
-    }
-    match options.font {
-        Font::Theme => family_for(theme, book),
-        Font::Literata => None,
-        Font::Spectral => Some("Spectral"),
-        Font::FiraSans => Some("Fira Sans"),
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Spacing(u16);
 impl std::fmt::Display for Spacing {
@@ -373,7 +339,7 @@ pub(super) enum Focus {
     Reset,
 }
 /// The defaults can always be edited; a book's own options only once they
-/// have loaded, and only for a reflowable book.
+/// have loaded.
 pub(super) fn enabled(reader: &Reader, target: Target) -> bool {
     reader.interactive()
         && match target {
@@ -383,7 +349,6 @@ pub(super) fn enabled(reader: &Reader, target: Target) -> bool {
                     && !reader.reading.blocked
                     && reader.reading.book.is_some()
                     && reader.pdf.is_none()
-                    && reader.book.as_ref().is_some_and(|b| b.pdf_source.is_none())
             }
         }
 }
@@ -581,10 +546,12 @@ pub(super) fn typography(reader: &Reader, target: Target) -> Element<'_, Message
         ));
     } else {
         content = content.push(
-            text(if reader.reading.loading {
-                "Loading this book’s reading settings…"
-            } else {
-                "Typography controls apply to reflowable books. PDF Book retains its source layout."
+            text(match target {
+                Target::Book if reader.reading.loading => "Loading this book’s reading settings…",
+                Target::Book if reader.reading.blocked => {
+                    "This book’s reading settings could not be loaded."
+                }
+                _ => "Reading settings are unavailable while simPl is busy.",
             })
             .size(12)
             .style(ui::muted_text),
@@ -658,11 +625,8 @@ mod tests {
         assert!(reader.heights.total() > original);
         assert_eq!(reader.font_size, 28.0);
         assert_eq!(reader.width, 560.0);
-        assert_eq!(reader.line_height(), 2.0);
-        assert_eq!(
-            reader.reading_family(reader.book.as_ref().unwrap()),
-            Some("Fira Sans")
-        );
+        assert_eq!(reader.reading_style().line_height, 2.0);
+        assert_eq!(reader.reading_family(), Some("Fira Sans"));
         // A stale finished write cannot discard the newer queued override.
         let flight = reader.reading.flight.clone().unwrap();
         let _ = reader.reading_saved(Ok(flight));
@@ -675,6 +639,180 @@ mod tests {
         assert_eq!(reader.reading.options(), defaults);
         assert!(!reader.needs_adaptation());
         assert!((reader.heights.total() - original).abs() < 0.1);
+    }
+    /// A PDF open in Book view whose own options have not arrived yet, or
+    /// `None` without PDFium.
+    fn pdf_book_reader() -> Option<Reader> {
+        super::super::tests::pdf_book().map(super::super::tests::reader_showing)
+    }
+    /// The open book's own options arriving from disk.
+    fn stored(reader: &mut Reader, options: Option<Options>) {
+        let message = Message::ReadingLoaded {
+            profile: reader.profile.epoch,
+            book: reader.book.as_ref().unwrap().fingerprint.clone(),
+            result: Ok(options),
+        };
+        let _ = update(reader, message);
+        settle_theme(reader);
+    }
+    fn page_rows(reader: &Reader) -> Vec<(u32, String, std::ops::Range<usize>)> {
+        reader
+            .pages()
+            .iter()
+            .map(|page| (page.number, page.label.clone(), page.rows.clone()))
+            .collect()
+    }
+    fn source_pages() -> Vec<(u32, String, std::ops::Range<usize>)> {
+        vec![
+            (0, "1".into(), 0..3),
+            (1, "2".into(), 3..5),
+            (2, "3".into(), 5..7),
+        ]
+    }
+    #[test]
+    fn a_pdf_in_book_view_loads_saves_and_reads_in_its_own_options() {
+        let Some(mut reader) = pdf_book_reader() else {
+            return;
+        };
+        let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+        assert_eq!(reader.reading.book, Some(fingerprint.clone()));
+        assert!(reader.reading.loading, "its own options are being read");
+        let saved = Options {
+            size: 26,
+            ..Options::default()
+        };
+        stored(&mut reader, Some(saved));
+        assert_eq!(reader.reading_options(), saved);
+        assert_eq!(reader.font_size, 26.0);
+        let _ = reader.reading_action(Target::Book, Action::Margin(96));
+        settle_theme(&mut reader);
+        let chosen = Options {
+            size: 26,
+            margin: 96,
+            ..Options::default()
+        };
+        assert_eq!(reader.reading_options(), chosen);
+        assert_eq!((reader.font_size, reader.width), (26.0, 528.0));
+        assert_eq!(
+            reader.reading.pending,
+            [(fingerprint, Some(chosen))],
+            "saved under the PDF's fingerprint"
+        );
+    }
+    #[test]
+    fn a_look_lays_a_pdf_book_out_again_and_keeps_every_source_page() {
+        let Some(mut reader) = pdf_book_reader() else {
+            return;
+        };
+        stored(&mut reader, None);
+        assert_eq!(page_rows(&reader), source_pages());
+        let canonical = serde_json::to_vec(&**reader.atlas.as_ref().unwrap()).unwrap();
+        let estimated = reader.heights.total();
+        for action in [
+            Action::Theme(1),
+            Action::Size(26),
+            Action::Spacing(180),
+            Action::Margin(96),
+            Action::Font(Font::FiraSans),
+        ] {
+            let _ = reader.reading_action(Target::Book, action.clone());
+            settle_theme(&mut reader);
+            assert_eq!(page_rows(&reader), source_pages(), "{action:?}");
+            assert_eq!(
+                serde_json::to_vec(&**reader.atlas.as_ref().unwrap()).unwrap(),
+                canonical,
+                "{action:?} leaves the canonical pages alone"
+            );
+        }
+        assert_eq!(reader.theme.id, "soft");
+        assert_eq!((reader.font_size, reader.width), (26.0, 528.0));
+        assert_eq!(reader.reading_style().line_height, 1.8);
+        assert_eq!(reader.reading_style().paragraph_gap_em, 0.85);
+        assert_eq!(reader.reading_family(), Some("Fira Sans"));
+        assert!(
+            reader.heights.total() > estimated,
+            "measured again at the larger size"
+        );
+
+        let _ = reader.reading_action(Target::Book, Action::Reset);
+        settle_theme(&mut reader);
+        assert_eq!(page_rows(&reader), source_pages());
+        assert_eq!(reader.heights.total(), estimated);
+    }
+    #[test]
+    fn a_pdf_book_in_the_default_look_keeps_its_canonical_layout() {
+        let Some(mut reader) = pdf_book_reader() else {
+            return;
+        };
+        let generation = reader.generation;
+        stored(&mut reader, None);
+        assert_eq!(reader.generation, generation, "nothing is laid out again");
+        let canonical = reader.atlas.as_ref().unwrap().section(0).unwrap();
+        assert!(std::ptr::eq(reader.section_layout().unwrap(), canonical));
+        assert_eq!(page_rows(&reader), source_pages());
+        assert_eq!(
+            reader
+                .pages()
+                .iter()
+                .map(|page| page.height.round())
+                .collect::<Vec<_>>(),
+            [1018.0, 1018.0, 1018.0],
+            "each short source page is one default sheet"
+        );
+        assert_eq!((reader.font_size, reader.width), (20.0, 624.0));
+        assert_eq!(reader.reading_style().line_height, 1.6);
+        assert_eq!(reader.reading_family(), None);
+    }
+    /// A PDF book's canonical heights are estimates that the rows on screen
+    /// correct. Its layout for a look is measured, and must not overwrite them.
+    #[test]
+    fn only_the_default_look_refines_a_pdf_books_canonical_pages() {
+        let Some(mut reader) = pdf_book_reader() else {
+            return;
+        };
+        stored(&mut reader, None);
+        let canonical_height =
+            |reader: &Reader| reader.atlas.as_ref().unwrap().sections[0].heights[1];
+        let estimate = canonical_height(&reader);
+        let _ = reader.reading_action(Target::Book, Action::Theme(1));
+        settle_theme(&mut reader);
+        let measured = reader.heights.height(1);
+        let report = (1, measured + 40.0, reader.width, reader.generation);
+        reader.measurements.lock().push(report);
+        let _ = reader.refine_geometry();
+        assert_eq!(reader.heights.height(1), measured);
+        assert_eq!(canonical_height(&reader), estimate);
+
+        let _ = reader.reading_action(Target::Book, Action::Reset);
+        settle_theme(&mut reader);
+        let report = (1, estimate + 40.0, reader.width, reader.generation);
+        reader.measurements.lock().push(report);
+        let _ = reader.refine_geometry();
+        assert_eq!(reader.heights.height(1), estimate + 40.0);
+        assert_eq!(canonical_height(&reader), estimate + 40.0);
+    }
+    /// Rows corrected on screen in the default look change the canonical row
+    /// starts. A look chosen afterwards must still cut at the same rows.
+    #[test]
+    fn a_look_chosen_after_reading_a_pdf_book_keeps_every_source_page() {
+        let Some(mut reader) = pdf_book_reader() else {
+            return;
+        };
+        stored(&mut reader, None);
+        let shown = [61.7, 203.3, 198.9, 47.1, 211.3, 207.7, 190.1];
+        let reports = shown
+            .into_iter()
+            .enumerate()
+            .map(|(row, height)| (row, height, reader.width, reader.generation));
+        reader.measurements.lock().extend(reports);
+        let _ = reader.refine_geometry();
+        assert_eq!(reader.heights.height(4), 211.3);
+        assert_eq!(page_rows(&reader), source_pages());
+        for theme in [1, 2, 3] {
+            let _ = reader.reading_action(Target::Book, Action::Theme(theme));
+            settle_theme(&mut reader);
+            assert_eq!(page_rows(&reader), source_pages(), "theme {theme}");
+        }
     }
     #[test]
     fn stale_loads_and_save_failures_do_not_overwrite_other_books_or_loop() {
