@@ -6988,7 +6988,13 @@ mod tests {
     /// written to a temporary file because the EPUB reader opens a path.
     fn epub_of(name: &str, files: Vec<(String, String)>) -> Arc<reader_document::epub::Epub> {
         use std::io::Write as _;
-        let path = std::env::temp_dir().join(format!("simpl-{name}-{}.epub", std::process::id()));
+        // Tests run in parallel and may share a name, so each call gets its own file.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "simpl-{name}-{}-{}.epub",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         let stored = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
