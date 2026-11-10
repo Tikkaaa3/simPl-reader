@@ -467,17 +467,6 @@ fn enabled(reader: &Reader) -> Vec<Focus> {
         focus.extend([Focus::Cancel, Focus::BannerCancel]);
         return focus;
     }
-    match &state.phase {
-        Phase::Confirm(_) => {
-            focus.extend(ready.then_some(Focus::Move));
-            focus.push(Focus::Cancel);
-        }
-        Phase::ConfirmForget => {
-            focus.extend(settled.then_some(Focus::ConfirmForget));
-            focus.push(Focus::Cancel);
-        }
-        _ => {}
-    }
     if let Some(location) = location {
         focus.extend((ready && location.available).then_some(Focus::Change));
         focus.extend((location.available && !reader.profile.busy).then_some(Focus::OpenFolder));
@@ -493,18 +482,42 @@ fn enabled(reader: &Reader) -> Vec<Focus> {
         (settled && unavailable && !matches!(state.phase, Phase::ConfirmForget))
             .then_some(Focus::Forget),
     );
+    match &state.phase {
+        Phase::Confirm(_) => {
+            focus.extend(ready.then_some(Focus::Move));
+            focus.push(Focus::Cancel);
+        }
+        Phase::ConfirmForget => {
+            focus.extend(settled.then_some(Focus::ConfirmForget));
+            focus.push(Focus::Cancel);
+        }
+        _ => {}
+    }
     focus.extend(state.notice.is_some().then_some(Focus::Dismiss));
     focus
 }
 
+fn in_banner(focus: &Focus) -> bool {
+    matches!(
+        focus,
+        Focus::BannerRetry | Focus::BannerCancel | Focus::Dismiss
+    )
+}
+
+/// The banner's controls, which show over any screen while the banner does.
 pub(super) fn controls(reader: &Reader) -> impl Iterator<Item = Control> + Clone + '_ {
     let banner = banner_visible(reader);
     enabled(reader)
         .into_iter()
-        .filter(move |focus| match focus {
-            Focus::BannerRetry | Focus::BannerCancel | Focus::Dismiss => banner,
-            _ => reader.show_settings,
-        })
+        .filter(move |focus| banner && in_banner(focus))
+        .map(Control::Library)
+}
+
+/// The controls of the library folder in Settings.
+pub(super) fn settings_controls(reader: &Reader) -> impl Iterator<Item = Control> {
+    enabled(reader)
+        .into_iter()
+        .filter(|focus| !in_banner(focus))
         .map(Control::Library)
 }
 

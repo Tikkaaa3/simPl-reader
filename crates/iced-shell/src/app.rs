@@ -47,6 +47,10 @@ mod reading_chrome;
 mod reading_panel;
 #[path = "reading_ui.rs"]
 mod reading_ui;
+#[path = "settings.rs"]
+mod settings;
+#[path = "shortcuts.rs"]
+mod shortcuts;
 #[path = "word_translation.rs"]
 pub(crate) mod word_translation;
 
@@ -956,7 +960,8 @@ struct Reader {
     before_fullscreen_maximized: bool,
     profile: profile_ui::State,
     library: library_ui::State,
-    show_settings: bool,
+    /// The section Settings shows, or `None` while Settings is closed.
+    settings: Option<settings::Section>,
     dropping: Option<Storage>,
     recent_loading: bool,
     recent_pending: Vec<(Entry, Option<Entry>)>,
@@ -973,7 +978,6 @@ struct Reader {
     bar: reading_chrome::Bar,
     menu: Option<reading_chrome::Menu>,
     strips: page_strips::Hover,
-    show_help: bool,
     focused: Option<Control>,
     focus_generation: u64,
     focus_pending: bool,
@@ -1074,7 +1078,7 @@ impl Default for Reader {
             before_fullscreen_maximized: false,
             profile: Default::default(),
             library: Default::default(),
-            show_settings: false,
+            settings: None,
             dropping: None,
             recent_loading: true,
             recent_pending: Vec::new(),
@@ -1088,7 +1092,6 @@ impl Default for Reader {
             dialog: None,
             pending_open: None,
             show_recent: false,
-            show_help: false,
             bar: Default::default(),
             menu: None,
             strips: Default::default(),
@@ -1161,7 +1164,8 @@ enum Control {
     RemoveLibrary(usize),
     ConfirmRemove,
     DismissOverlay,
-    SettingsHelp,
+    SettingsSection(settings::Section),
+    Appearance(Appearance),
     Theme(reading_ui::Target, usize),
     Close,
     Back,
@@ -1186,7 +1190,6 @@ enum Control {
     AddRecent(usize),
     LocateRecent(usize),
     RemoveRecent(usize),
-    HideHelp,
     Notes(notes::Focus),
     ReadAloud,
     ReadAloudPause,
@@ -1232,6 +1235,8 @@ enum Message {
         result: Result<(), String>,
     },
     DismissOverlay,
+    /// Show this section of the open Settings.
+    SettingsSection(settings::Section),
     ChooseFile(Storage),
     RecentLoaded(Result<Vec<Entry>, String>),
     RecentSaved(Result<(), String>),
@@ -1257,7 +1262,8 @@ enum Message {
     ProgressJump(u32),
     /// The book page field gained or lost keyboard focus.
     BookPageFocus(bool),
-    ToggleHelp,
+    /// F1: open Settings on Shortcuts, or close Settings when it shows them.
+    ToggleShortcuts,
     FocusReady(u64),
     OpenRecent(usize),
     AddRecent(usize),
@@ -1317,6 +1323,8 @@ enum Message {
         result: Result<Option<book_map::Section>, String>,
     },
     ToggleAppearance,
+    /// Settings' Light and Dark: switch only when this is not the current one.
+    SetAppearance(Appearance),
     PreferencesLoaded(Result<Preferences, String>),
     WindowMaximized(bool),
     PreferencesSaved(Result<(), String>),
@@ -1420,6 +1428,19 @@ fn image_size(image: &DisplayImage, width: f32) -> Size {
 }
 
 impl Reader {
+    /// Open Settings on `section` and load what its panes show.
+    fn open_settings(&mut self, section: settings::Section) -> Task<Message> {
+        self.settings = Some(section);
+        self.show_search = false;
+        self.voice_choices = self.read_aloud.choices();
+        Task::batch([
+            self.refresh_dictionaries(),
+            self.estimate_backup(),
+            self.refresh_library(),
+            scroll_to_widget(overlay_id(), 0.0),
+        ])
+    }
+
     fn interactive(&self) -> bool {
         self.opening.is_none()
             && !self.saving
@@ -2067,7 +2088,7 @@ impl Reader {
         self.capture_progress();
         let library_task = self.shelf.persist().map(Message::Shelf);
         self.show_search = false;
-        self.show_settings = false;
+        self.settings = None;
         self.dropping = None;
         let previous = self.document_position();
         self.cancel_open();
@@ -2238,7 +2259,7 @@ impl Reader {
 
     fn choose(&mut self, how: OpenAs) -> Task<Message> {
         self.show_search = false;
-        self.show_settings = false;
+        self.settings = None;
         let title = how.dialog_title();
         self.dialog = Some(how);
         self.selection.end_drag();
@@ -2262,7 +2283,7 @@ impl Reader {
 
     fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
         let book = self.book.as_ref();
-        let overlay = self.show_search || self.show_settings || self.confirm_remove.is_some();
+        let overlay = self.show_search || self.settings.is_some() || self.confirm_remove.is_some();
         let has_document = book.is_some() || self.pdf.is_some();
         let history = self.show_recent && !overlay;
         let reading = has_document && !overlay;
@@ -2317,26 +2338,15 @@ impl Reader {
                 self.confirm_remove
                     .is_some()
                     .then_some(Control::ConfirmRemove),
-                (self.show_settings && self.read_aloud.rate > crate::speech::MIN_RATE)
-                    .then_some(Control::ReadAloudSlower),
-                (self.show_settings && self.read_aloud.rate < crate::speech::MAX_RATE)
-                    .then_some(Control::ReadAloudFaster),
-                self.show_settings.then_some(Control::SettingsHelp),
-                self.show_settings.then_some(Control::Fullscreen),
             ])
             .flatten()
             .chain(
-                reading_ui::controls(self, reading_ui::Target::Defaults)
-                    .filter(move |_| self.show_settings),
+                self.settings
+                    .into_iter()
+                    .flat_map(move |section| settings::controls(self, section)),
             )
             .chain(self.dictionary_controls())
             .chain(library_ui::controls(self))
-            .chain(profile_ui::controls(self).filter(move |_| self.show_settings))
-            .chain(
-                (0..themes::THEMES.len())
-                    .filter(move |_| self.show_settings)
-                    .map(|index| Control::Theme(reading_ui::Target::Defaults, index)),
-            )
             .chain(
                 primary
                     .into_iter()
@@ -2378,11 +2388,6 @@ impl Reader {
                         .into_iter()
                         .flatten()
                     }),
-            )
-            .chain(
-                self.show_help
-                    .then_some(Control::HideHelp)
-                    .filter(move |_| !overlay),
             )
             .chain(
                 self.notes_controls()
@@ -2438,9 +2443,10 @@ impl Reader {
             Control::RemoveLibrary(index) => Message::RemoveLibrary(index),
             Control::ConfirmRemove => Message::ConfirmRemove,
             Control::DismissOverlay => Message::DismissOverlay,
+            Control::SettingsSection(section) => Message::SettingsSection(section),
+            Control::Appearance(appearance) => Message::SetAppearance(appearance),
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
-            Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
             Control::Theme(target, index) => theme_message(target, index),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
@@ -2888,7 +2894,7 @@ impl Reader {
         self.cancel_open();
         self.selection.end_drag();
         self.show_search = false;
-        self.show_settings = false;
+        self.settings = None;
         self.capture_progress();
         if let Some(position) = self.document_position() {
             self.saving = true;
@@ -3362,7 +3368,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         .as_ref()
         .map(|pdf| (pdf.document().id, pdf.page_index()));
     let previous_focus = reader.focused;
-    let previous_panels = (reader.show_recent, reader.show_help, reader.show_contents);
+    let previous_panels = (reader.show_recent, reader.show_contents);
     let previous_bar = reader.bar.visible();
     let input = reading_chrome::Input::of(&message);
     let resized = matches!(
@@ -3383,7 +3389,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
                     .as_ref()
                     .map(|pdf| (pdf.document().id, pdf.page_index()))
             || reader.show_search
-            || reader.show_settings
+            || reader.settings.is_some()
             || reader.notes.editor.is_some()
             || reader.confirm_remove.is_some())
     {
@@ -3402,8 +3408,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.refit_book(),
         reader.resize_pdf_view(),
     ]);
-    let panels_changed =
-        previous_panels != (reader.show_recent, reader.show_help, reader.show_contents);
+    let panels_changed = previous_panels != (reader.show_recent, reader.show_contents);
     if reader.focused != previous_focus
         || resized
         || panels_changed
@@ -3556,7 +3561,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             chrome::Action::Close => reader.close(CloseAction::Window),
             chrome::Action::Search if reader.interactive() => {
                 reader.show_search = !reader.show_search;
-                reader.show_settings = false;
+                reader.settings = None;
                 reader.search_query.clear();
                 reader.search_results = reader.shelf.search("");
                 reader.search_selected = 0;
@@ -3574,24 +3579,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
             }
             chrome::Action::Settings if reader.interactive() => {
-                reader.show_settings = !reader.show_settings;
-                if reader.show_settings {
-                    reader.voice_choices = reader.read_aloud.choices();
-                }
-                reader.show_search = false;
-                reader.focused = Some(if reader.show_settings {
-                    Control::DismissOverlay
-                } else {
-                    reading_chrome::return_focus(reader, Control::Chrome(chrome::Action::Settings))
-                });
-                if reader.show_settings {
-                    Task::batch([
-                        reader.refresh_dictionaries(),
-                        reader.estimate_backup(),
-                        reader.refresh_library(),
-                    ])
-                } else {
+                if reader.settings.take().is_some() {
+                    reader.show_search = false;
+                    reader.focused = Some(reading_chrome::return_focus(
+                        reader,
+                        Control::Chrome(chrome::Action::Settings),
+                    ));
                     Task::none()
+                } else {
+                    reader.focused = Some(Control::DismissOverlay);
+                    reader.open_settings(settings::Section::Reading)
                 }
             }
             action => reader.window.map_or_else(Task::none, |id| match action {
@@ -3701,7 +3698,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             reader.confirm_remove = Some(entry.document.clone());
             reader.show_search = false;
-            reader.show_settings = false;
+            reader.settings = None;
             reader.focused = Some(Control::DismissOverlay);
             Task::none()
         }
@@ -3821,13 +3818,30 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::DismissOverlay => {
             reader.confirm_remove = None;
             reader.show_search = false;
-            reader.show_settings = false;
+            reader.settings = None;
             reader.focused = None;
             iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
+        }
+        Message::SettingsSection(section) if reader.settings.is_some() => {
+            reader.settings = Some(section);
+            // An open dropdown belongs to the pane that is leaving.
+            reader.reading.picker = None;
+            reader.word_translation.picker = None;
+            // Focus that was in the list or in the pane that left moves to the list.
+            if reader
+                .focused
+                .is_some_and(|focused| !reader.controls().any(|control| control == focused))
+            {
+                reader.focused = Some(Control::SettingsSection(section));
+            }
+            scroll_to_widget(overlay_id(), 0.0)
         }
         Message::FocusReady(generation) if generation == reader.focus_generation => {
             reader.focus_pending = false;
             ui::reveal_focus()
+        }
+        Message::SetAppearance(appearance) if reader.appearance != appearance => {
+            update_inner(reader, Message::ToggleAppearance)
         }
         Message::ToggleAppearance if reader.interactive() => {
             reader.appearance = reader.appearance.toggled();
@@ -3969,7 +3983,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ToggleRecent if reader.interactive() => {
-            reader.show_settings = false;
+            reader.settings = None;
             reader.show_search = false;
             reader.show_recent = !reader.show_recent;
             reader.focused = if reader.show_recent {
@@ -3983,12 +3997,18 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             restore_viewport(reader)
         }
-        Message::ToggleHelp if reader.interactive() => {
-            reader.show_settings = false;
-            reader.show_search = false;
-            reader.show_help = !reader.show_help;
-            reader.focused = reader.show_help.then_some(Control::HideHelp);
-            restore_viewport(reader)
+        Message::ToggleShortcuts if reader.interactive() => {
+            use settings::Section::Shortcuts;
+            if reader.settings == Some(Shortcuts) {
+                return update_inner(reader, Message::DismissOverlay);
+            }
+            let task = if reader.settings.is_some() {
+                update_inner(reader, Message::SettingsSection(Shortcuts))
+            } else {
+                reader.open_settings(Shortcuts)
+            };
+            reader.focused = Some(Control::SettingsSection(Shortcuts));
+            task
         }
         Message::OpenRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
@@ -4583,7 +4603,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     }
                 }
             }
-            if (reader.show_settings || reader.menu == Some(reading_chrome::Menu::Aa))
+            if (reader.settings == Some(settings::Section::Reading)
+                || reader.menu == Some(reading_chrome::Menu::Aa))
                 && reader.reading.picker.is_some()
                 && matches!(
                     &event,
@@ -4601,7 +4622,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
                 return Task::none();
             }
-            if reader.show_settings
+            if reader.settings == Some(settings::Section::Translation)
                 && reader.word_translation.picker.is_some()
                 && matches!(
                     &event,
@@ -4715,7 +4736,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && !repeat
                             && (reader.book.is_some() || reader.pdf.is_some())
                             && !reader.show_search
-                            && !reader.show_settings
+                            && reader.settings.is_none()
                             && matches!(value.to_ascii_lowercase().as_str(), "d" | "h" | "b") =>
                     {
                         reader.notes.popup = None;
@@ -4733,7 +4754,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && !repeat
                             && (reader.book.is_some() || reader.pdf.is_some())
                             && !reader.show_search
-                            && !reader.show_settings =>
+                            && reader.settings.is_none() =>
                     {
                         reader.notes.popup = None;
                         return reader.read_aloud(read_aloud::Action::Toggle);
@@ -4751,7 +4772,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && !repeat
                             && reader.book.is_some()
                             && !reader.show_search
-                            && !reader.show_settings =>
+                            && reader.settings.is_none() =>
                     {
                         return reader.fit_book_width();
                     }
@@ -4763,7 +4784,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && !repeat
                             && (reader.book.is_some() || reader.pdf.is_some())
                             && !reader.show_search
-                            && !reader.show_settings =>
+                            && reader.settings.is_none() =>
                     {
                         return update_inner(
                             reader,
@@ -4777,7 +4798,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Key::Named(key::Named::Enter)
                         if reader.find.is_some()
                             && !reader.show_search
-                            && !reader.show_settings
+                            && reader.settings.is_none()
                             && matches!(reader.focused, None | Some(Control::FindInput)) =>
                     {
                         return update_inner(reader, Message::FindStep(!modifiers.shift()));
@@ -4786,7 +4807,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         if !repeat
                             && reader.find.is_some()
                             && !reader.show_search
-                            && !reader.show_settings =>
+                            && reader.settings.is_none() =>
                     {
                         return update_inner(reader, Message::FindClose);
                     }
@@ -4842,6 +4863,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         };
                     }
                     Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
+                        if matches!(reader.focused, Some(Control::SettingsSection(_))) =>
+                    {
+                        let Some(Control::SettingsSection(section)) = reader.focused else {
+                            unreachable!()
+                        };
+                        let down = matches!(key.as_ref(), Key::Named(key::Named::ArrowDown));
+                        return section.step(down).map_or_else(Task::none, |next| {
+                            update_inner(reader, Message::SettingsSection(next))
+                        });
+                    }
+                    Key::Named(key::Named::ArrowDown | key::Named::ArrowUp)
                         if matches!(reader.focused, Some(Control::ContentsEntry(_))) =>
                     {
                         let Control::ContentsEntry(index) = reader.focused.unwrap() else {
@@ -4875,13 +4907,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         return update_inner(reader, Message::TogglePinnedBar);
                     }
                     Key::Named(key::Named::F1) if !repeat => {
-                        return update_inner(reader, Message::ToggleHelp);
+                        return update_inner(reader, Message::ToggleShortcuts);
                     }
                     Key::Named(key::Named::Escape) if !repeat => {
                         if reader.show_conversion {
                             return update_inner(reader, Message::CancelConversion);
                         }
-                        if reader.show_search || reader.show_settings {
+                        if reader.show_search || reader.settings.is_some() {
                             reader.focused = None;
                             return update_inner(reader, Message::DismissOverlay);
                         }
@@ -4890,9 +4922,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             return Task::none();
                         }
                         reader.focused = None;
-                        if reader.show_help {
-                            return update_inner(reader, Message::ToggleHelp);
-                        }
                         if reader.show_recent {
                             return update_inner(reader, Message::ToggleRecent);
                         }
@@ -4941,7 +4970,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     _ => {}
                 }
             }
-            if (reader.show_search || reader.show_settings)
+            if (reader.show_search || reader.settings.is_some())
                 && matches!(&event, iced::Event::Keyboard(_))
             {
                 return Task::none();
@@ -4965,7 +4994,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: Key::Character(value), modifiers, ..
                 }) if modifiers.control() && (value.eq_ignore_ascii_case("o") || value.eq_ignore_ascii_case("i") || value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("r") || value.eq_ignore_ascii_case("l") || value.eq_ignore_ascii_case("k")));
-            if pdf_input && !global_shortcut && !reader.show_search && !reader.show_settings {
+            if pdf_input && !global_shortcut && !reader.show_search && reader.settings.is_none() {
                 let accepted = reader.interactive() || !matches!(event, iced::Event::Keyboard(_));
                 if let Some(pdf) = &mut reader.pdf {
                     let was_dragging = pdf.is_dragging();
@@ -5629,8 +5658,7 @@ fn toned_button<'a>(
     if focused
         && !matches!(
             control,
-            Control::HideHelp
-                | Control::OpenRecent(_)
+            Control::OpenRecent(_)
                 | Control::AddRecent(_)
                 | Control::LocateRecent(_)
                 | Control::RemoveRecent(_)
@@ -5778,16 +5806,20 @@ fn search_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("library-search")
 }
 
+fn overlay_id() -> iced::advanced::widget::Id {
+    iced::advanced::widget::Id::new("workspace-overlay")
+}
+
 fn find_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("book-find")
 }
 
 fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, Message> {
-    use iced::widget::{Space, mouse_area, opaque, stack, text_input};
+    use iced::widget::{Space, mouse_area, opaque, stack};
     if reader.notes.editor.is_some() {
         return notes_ui::editor_overlay(reader, base);
     }
-    if !reader.show_search && !reader.show_settings && reader.confirm_remove.is_none() {
+    if !reader.show_search && reader.settings.is_none() && reader.confirm_remove.is_none() {
         // Keep the reader and shelf in the same widget-tree slot when a modal opens.
         let mut layers = stack![base];
         if let Some(popup) = word_translation::popup_layer(reader) {
@@ -5798,21 +5830,42 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
         }
         return layers.into();
     }
-    let heading = row![
-        text(if reader.confirm_remove.is_some() {
-            "Remove book?"
-        } else if reader.show_search {
-            "Quick Switcher"
-        } else {
-            "Reading Settings"
-        })
-        .font(ui::HEADING)
-        .size(22)
-        .shaping(text::Shaping::Advanced),
+    let panel = match reader.settings {
+        Some(section) if reader.confirm_remove.is_none() && !reader.show_search => {
+            settings::modal(reader, section)
+        }
+        _ => modal_sheet(reader),
+    };
+    let backdrop = mouse_area(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(iced::Color::BLACK.scale_alpha(0.55).into()),
+                ..container::Style::default()
+            }),
+    )
+    .on_press(Message::DismissOverlay);
+    stack![
+        base,
+        backdrop,
+        container(opaque(panel))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+    ]
+    .into()
+}
+
+/// A modal's title row, with the close button unless the modal asks for a choice.
+fn modal_heading<'a>(reader: &Reader, title: &'a str, closable: bool) -> Element<'a, Message> {
+    use iced::widget::Space;
+    row![
+        text(title)
+            .font(ui::HEADING)
+            .size(22)
+            .shaping(text::Shaping::Advanced),
         Space::new().width(Length::Fill),
-        if reader.confirm_remove.is_some() {
-            Space::new().into()
-        } else {
+        if closable {
             toned_button(
                 reader,
                 Control::DismissOverlay,
@@ -5821,10 +5874,23 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                 ui::ButtonTone::Subtle,
                 false,
             )
+        } else {
+            Space::new().into()
         },
     ]
     .align_y(iced::Alignment::Center)
-    .spacing(12);
+    .spacing(12)
+    .into()
+}
+
+/// The quick switcher or the remove confirmation: one sheet that scrolls whole.
+fn modal_sheet(reader: &Reader) -> Element<'_, Message> {
+    use iced::widget::{Space, text_input};
+    let heading = if reader.confirm_remove.is_some() {
+        modal_heading(reader, "Remove book?", false)
+    } else {
+        modal_heading(reader, "Quick Switcher", true)
+    };
     let mut contents = column![heading].spacing(16);
     if let Some(entry) = &reader.confirm_remove {
         contents = contents
@@ -5955,100 +6021,45 @@ fn overlays<'a>(reader: &'a Reader, base: Element<'a, Message>) -> Element<'a, M
                     .size(11)
                     .style(ui::muted_text),
             );
-    } else {
-        let section = |title: &'static str| {
-            text(title.to_uppercase())
-                .font(ui::MEDIUM)
-                .size(11)
-                .style(ui::muted_text)
-        };
-        let note = |value: &'static str| {
-            text(value)
-                .size(12)
-                .width(Length::Fill)
-                .style(ui::muted_text)
-        };
-        let rule = || {
-            container(Space::new().height(1))
-                .width(Length::Fill)
-                .style(ui::rule)
-        };
-        contents = contents
-            .push(section("Theme"))
-            .push(theme_picker(reader, reading_ui::Target::Defaults))
-            .push(note("A theme sets the reading font, spacing and colors. Page numbers stay the same in every theme. Every book uses this theme until you choose another for it from Aa in its reading bar."))
-            .push(rule())
-            .push(reading_ui::settings(reader))
-            .push(rule())
-            .push(control_button(reader, Control::Fullscreen, text(if reader.fullscreen { "Exit fullscreen (F11)" } else { "Fullscreen (F11)" }).size(12), Some(Message::ToggleFullscreen)))
-            .push(rule())
-            .push(section("Read aloud"))
-            .push(read_aloud::settings(reader, reader.voice_choices.clone()))
-            .push(rule())
-            .push(section("Word translation"))
-            .push(word_translation::settings(reader))
-            .push(rule())
-            .push(section("Library & data"))
-            .push(library_ui::settings(reader))
-            .push(profile_ui::settings(reader))
-            .push(rule())
-            .push(row![
-                column![
-                    text("Keyboard shortcuts").font(ui::MEDIUM).size(13),
-                    note("Every action has a key; press F1 at any time."),
-                ].spacing(4),
-                Space::new().width(Length::Fill),
-                control_button(reader, Control::SettingsHelp, text("Show").font(ui::MEDIUM).size(12), Some(Message::ToggleHelp)),
-            ].spacing(8).align_y(iced::Alignment::Center));
     }
-    let panel = container(
-        scrollable(
-            container(contents)
-                .padding(iced::Padding {
-                    right: 14.0,
-                    ..Default::default()
-                })
-                // Keep scrolling damage contiguous. Otherwise tiny-skia repaints
-                // the underlying reader once for each moving text/control region.
-                // This moving fill has the panel color and is clipped by the scrollable.
-                .style(|theme| container::Style {
-                    background: Some(ui::palette(theme).surface.into()),
-                    ..container::Style::default()
-                }),
+    container(modal_scroll(contents).height(Length::Shrink))
+        .padding(24)
+        .width(
+            (reader.window_size.width - 32.0).min(if reader.confirm_remove.is_some() {
+                420.0
+            } else {
+                680.0
+            }),
         )
-        .id(iced::advanced::widget::Id::new("workspace-overlay"))
-        .height(Length::Shrink)
-        .direction(ui::vertical_scrollbar())
-        .style(ui::scroll_style),
-    )
-    .padding(24)
-    .width(
-        (reader.window_size.width - 32.0).min(if reader.confirm_remove.is_some() {
-            420.0
-        } else {
-            680.0
-        }),
-    )
-    .max_height((reader.window_size.height - 64.0).max(160.0))
-    .style(ui::panel);
-    let backdrop = mouse_area(
-        container(Space::new())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(iced::Color::BLACK.scale_alpha(0.55).into()),
+        .max_height((reader.window_size.height - 64.0).max(160.0))
+        .style(ui::panel)
+        .into()
+}
+
+/// The right padding `modal_scroll` keeps clear for its scrollbar.
+const MODAL_SCROLLBAR_GUTTER: f32 = 14.0;
+
+/// The scrolling part of a modal. Focus reveal and the tests find it by its id.
+fn modal_scroll<'a>(
+    contents: impl Into<Element<'a, Message>>,
+) -> scrollable::Scrollable<'a, Message> {
+    scrollable(
+        container(contents)
+            .padding(iced::Padding {
+                right: MODAL_SCROLLBAR_GUTTER,
+                ..Default::default()
+            })
+            // Keep scrolling damage contiguous. Otherwise tiny-skia repaints
+            // the underlying reader once for each moving text/control region.
+            // This moving fill has the panel color and is clipped by the scrollable.
+            .style(|theme| container::Style {
+                background: Some(ui::palette(theme).surface.into()),
                 ..container::Style::default()
             }),
     )
-    .on_press(Message::DismissOverlay);
-    stack![
-        base,
-        backdrop,
-        container(opaque(panel))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-    ]
-    .into()
+    .id(overlay_id())
+    .direction(ui::vertical_scrollbar())
+    .style(ui::scroll_style)
 }
 
 fn find_bar<'a>(reader: &'a Reader, find: &'a Find, active: bool) -> Element<'a, Message> {
@@ -6578,38 +6589,6 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     if reader.show_recent {
         auxiliary = auxiliary.push(recent_panel(reader, active, has_document));
     }
-    if reader.show_help {
-        let help = column![
-            row![
-                text("Shortcuts").size(16).font(ui::SEMIBOLD),
-                iced::widget::Space::new().width(Length::Fill),
-                control_button(reader, Control::HideHelp, text("Hide").font(ui::MEDIUM).size(12),
-                    Some(Message::ToggleHelp)),
-            ]
-            .align_y(iced::Alignment::Center),
-            text("Tab / Shift+Tab  ·  Controls    Enter / Space  ·  Activate    Escape  ·  Dismiss    F1  ·  Help")
-                .size(12).style(ui::muted_text),
-            text("Ctrl+O  Open    Ctrl+I  Add to library    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
-                .size(12).style(ui::muted_text),
-            text("Page Up / Down  Read    Ctrl+Home / End  Ends    Ctrl+plus / minus / 0  Zoom")
-                .size(12).style(ui::muted_text),
-            text("Book  Left / Right: previous / next page · Up / Down: scroll within page").size(12).style(ui::secondary_text),
-            text("Ctrl+L  Page    Ctrl+F  Find, again to close (Enter / Shift+Enter next / previous)    EPUB  Ctrl+T contents · Ctrl+Page Up / Down chapters    Ctrl+Shift+F fit width / previous zoom · F11 fullscreen")
-                .size(12).style(ui::muted_text),
-            text("Select text to highlight or add a note    Right-click a highlight to edit or remove it    Right-click a page to bookmark    Ctrl+H  Highlight    Ctrl+D  Bookmark page    Ctrl+B  Notes sidebar")
-                .size(12).style(ui::muted_text),
-            text("Ctrl+Shift+U  Read aloud / stop    Listen reads the selection, or continues from the current page")
-                .size(12).style(ui::muted_text),
-            text("Hold middle button  Scroll · Move away to change speed · Release / Escape to stop    F8  Pin / unpin the reading bar")
-                .size(12).style(ui::muted_text),
-        ]
-        .spacing(6);
-        let mut panel = container(help).padding(12).style(ui::panel);
-        if reader.focused == Some(Control::HideHelp) {
-            panel = panel.id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL));
-        }
-        auxiliary = auxiliary.push(panel);
-    }
     if let Some(notice) = &reader.preferences_notice {
         auxiliary = auxiliary.push(
             container(text(notice).size(12).style(ui::danger_text))
@@ -6985,7 +6964,13 @@ mod tests {
     /// written to a temporary file because the EPUB reader opens a path.
     fn epub_of(name: &str, files: Vec<(String, String)>) -> Arc<reader_document::epub::Epub> {
         use std::io::Write as _;
-        let path = std::env::temp_dir().join(format!("simpl-{name}-{}.epub", std::process::id()));
+        // Tests run in parallel and may share a name, so each call gets its own file.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "simpl-{name}-{}-{}.epub",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         let stored = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
@@ -8470,7 +8455,7 @@ mod tests {
     #[test]
     fn theme_controls_are_reachable_from_the_keyboard_and_activate_the_theme() {
         let mut reader = themed_reader(10);
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Appearance);
         for index in 0..themes::THEMES.len() {
             assert!(
                 reader
@@ -9544,7 +9529,7 @@ mod tests {
         let mut reader = Reader {
             book: Some(book("reading")),
             focused: Some(Control::Find),
-            show_help: true,
+            show_recent: true,
             ..Reader::default()
         };
         let _ = reader.rebuild_geometry(Anchor {
@@ -9555,7 +9540,7 @@ mod tests {
         let original = reader.saved_position().unwrap().1;
         let _ = update(&mut reader, f8());
         assert_eq!(reader.bar.state(), BarState::Pinned);
-        assert!(reader.show_help, "pinning closes no panel");
+        assert!(reader.show_recent, "pinning closes no panel");
         assert_eq!(reader.focused, Some(Control::Find));
         assert!(reader.controls().any(|control| control == Control::Find));
         let pinned = reader.saved_position().unwrap().1;
@@ -9566,10 +9551,10 @@ mod tests {
         assert_eq!(
             reader.bar.state(),
             BarState::Shown { hide_at: None },
-            "the open help panel hangs below the bar and holds it"
+            "the open recent panel hangs below the bar and holds it"
         );
         let _ = update(&mut reader, f8());
-        reader.show_help = false;
+        reader.show_recent = false;
         let _ = update(&mut reader, f8());
         assert!(
             matches!(reader.bar.state(), BarState::Shown { hide_at: Some(_) }),

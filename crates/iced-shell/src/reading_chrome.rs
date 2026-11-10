@@ -408,7 +408,7 @@ impl Reader {
                 .as_ref()
                 .is_some_and(pdf_reader::Reader::page_focused)
             || self.menu.is_some()
-            || self.show_settings
+            || self.settings.is_some()
             || self.show_search
             || self.has_held_panels()
     }
@@ -423,13 +423,12 @@ impl Reader {
             || library_ui::banner_visible(self)
     }
 
-    /// Help, recent documents or notices. Find, the read-aloud player and the
+    /// Recent documents or notices. Find, the read-aloud player and the
     /// drawers float over the page instead, so they never hold the bar.
     fn has_held_panels(&self) -> bool {
         self.error.is_some()
             || self.history_notice.is_some()
             || self.show_recent
-            || self.show_help
             || self.preferences_notice.is_some()
             || self.shelf.notice.is_some()
             || self.saving
@@ -446,7 +445,7 @@ impl Reader {
 
     /// Header tooltips stay quiet while a modal covers the header.
     pub(super) fn chrome_tooltips(&self) -> bool {
-        !self.show_settings
+        self.settings.is_none()
             && !self.show_search
             && self.confirm_remove.is_none()
             && self.notes.editor.is_none()
@@ -455,7 +454,7 @@ impl Reader {
     /// A menu closes with its document, behind a modal, and when a wider
     /// window brings More's buttons back to the bar.
     fn settle_menu(&mut self) {
-        let modal = self.show_settings || self.show_search || self.confirm_remove.is_some();
+        let modal = self.settings.is_some() || self.show_search || self.confirm_remove.is_some();
         if self.document_path().is_none()
             || modal
             || (self.menu == Some(Menu::More) && fold(self) != Fold::Overflow)
@@ -1382,9 +1381,9 @@ mod tests {
         let now = Instant::now();
         reader.sync_bar(now, pointer_at(10.0));
         reader.sync_bar(now, pointer_at(300.0));
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Reading);
         reader.sync_bar(now, Input::default());
-        reader.show_settings = false;
+        reader.settings = None;
         reader.sync_bar(now, Input::default());
         assert!(!reader.bar.needs_frames());
 
@@ -1431,12 +1430,12 @@ mod tests {
             BarState::Hidden,
             "the bar idles away over open panels that float"
         );
-        reader.show_help = true;
+        reader.show_recent = true;
         reader.sync_bar(opened + seconds(3.0), Input::default());
         assert_eq!(
             reader.bar.state(),
             BarState::Shown { hide_at: None },
-            "help still hangs below the bar and holds it"
+            "recent documents still hang below the bar and hold it"
         );
     }
 
@@ -1502,7 +1501,7 @@ mod tests {
         assert_eq!(reader.appearance, Appearance::Dark);
         let _ = update_inner(&mut reader, Message::ToggleMenu(Menu::More));
         let _ = update_inner(&mut reader, Message::Chrome(chrome::Action::Settings));
-        assert!(reader.show_settings && reader.menu.is_none());
+        assert!(reader.settings.is_some() && reader.menu.is_none());
         let _ = update_inner(&mut reader, Message::Chrome(chrome::Action::Settings));
         assert_eq!(
             reader.focused,

@@ -4,9 +4,11 @@ use iced::advanced::{Layout, Renderer as _, layout, renderer, widget::Tree};
 use iced::{Point, Rectangle};
 use std::time::Instant;
 
-fn scenario(with_book: bool, narrow: bool) -> Reader {
+/// Settings open on `section`. Translation lists every dictionary, and a
+/// narrow window also opens its language picker, so each case's pane scrolls.
+fn scenario(with_book: bool, narrow: bool, section: settings::Section) -> Reader {
     let mut reader = Reader {
-        show_settings: true,
+        settings: Some(section),
         ..Default::default()
     };
     reader.library.location = Some(Ok(reader_document::library_location::Location {
@@ -19,15 +21,15 @@ fn scenario(with_book: bool, narrow: bool) -> Reader {
         books: 42,
         bytes: 1_288_490_189,
     });
+    reader.word_translation.packages_expanded = true;
+    reader.word_translation.inventory = vec![
+        reader_document::dictionary::PackageState::Missing;
+        reader_document::dictionary::packages().len()
+    ];
     if narrow {
         reader.window_size = Size::new(640.0, 480.0);
         reader.appearance = reader_document::preferences::Appearance::Light;
         reader.word_translation.picker = Some(word_translation::Picker::Source);
-        reader.word_translation.packages_expanded = true;
-        reader.word_translation.inventory = vec![
-            reader_document::dictionary::PackageState::Missing;
-            reader_document::dictionary::packages().len()
-        ];
     }
     if with_book {
         reader.book = Some(super::tests::book("settings-profile"));
@@ -40,13 +42,27 @@ fn scenario(with_book: bool, narrow: bool) -> Reader {
     reader
 }
 
+/// Library & data in the smallest window the plan checks, where it scrolls.
+fn narrow_library() -> Reader {
+    let mut reader = scenario(false, true, settings::Section::Library);
+    reader.window_size = Size::new(540.0, 360.0);
+    reader
+}
+
 #[test]
 fn settings_scroll_damage_stays_contiguous() {
+    use settings::Section::Translation;
     ui::load_test_fonts();
-    run_case("book", scenario(true, false), 1.0, false);
-    run_case("shelf", scenario(false, false), 1.0, false);
-    run_case("narrow-picker", scenario(true, true), 1.5, false);
-    let mut dark = scenario(false, false);
+    run_case("book", scenario(true, false, Translation), 1.0, false);
+    run_case("shelf", scenario(false, false, Translation), 1.0, false);
+    run_case(
+        "narrow-picker",
+        scenario(true, true, Translation),
+        1.5,
+        false,
+    );
+    run_case("narrow-library", narrow_library(), 1.0, false);
+    let mut dark = scenario(false, false, Translation);
     dark.appearance = reader_document::preferences::Appearance::Dark;
     run_case("dark-shelf", dark, 1.0, false);
 }
@@ -106,23 +122,32 @@ fn cached_control_glyph_respects_its_scroll_clip() {
 #[test]
 #[ignore = "Settings scroll CPU profile: use --release --ignored --nocapture"]
 fn profile_settings_scroll() {
+    use settings::Section::Translation;
     ui::load_test_fonts();
-    for (name, with_book, scale, narrow) in [
-        ("book-1x", true, 1.0, false),
-        ("shelf-1x", false, 1.0, false),
-        ("book-1.5x", true, 1.5, false),
-        ("book-2x", true, 2.0, false),
-        ("narrow-picker-1.5x", true, 1.5, true),
+    for (name, with_book, scale, narrow, section) in [
+        ("book-1x", true, 1.0, false, Translation),
+        ("shelf-1x", false, 1.0, false, Translation),
+        ("book-1.5x", true, 1.5, false, Translation),
+        ("book-2x", true, 2.0, false, Translation),
+        ("narrow-picker-1.5x", true, 1.5, true, Translation),
     ] {
-        run_case(name, scenario(with_book, narrow), scale, true);
+        run_case(name, scenario(with_book, narrow, section), scale, true);
     }
-    let mut dark = scenario(true, false);
+    run_case("narrow-library-1x", narrow_library(), 1.0, true);
+    let mut dark = scenario(true, false, Translation);
     dark.appearance = reader_document::preferences::Appearance::Dark;
     run_case("dark-book-1x", dark, 1.0, true);
 }
 
 fn run_case(name: &str, reader: Reader, scale: f32, profile: bool) {
     let size = reader.window_size;
+    let step = if size.width < 800.0 { 32.0 } else { 12.0 };
+    let (pane, content) = super::book_preview::scrollable_bounds(&reader, overlay_id());
+    let range = content.height - pane.height;
+    assert!(
+        range >= 5.0 * step,
+        "{name}: the pane must scroll through every checked frame, {content:?} in {pane:?}"
+    );
     let bounds = Rectangle::with_size(size);
     let theme = ui::theme(reader.appearance, reader.theme);
     let viewport = iced::advanced::graphics::Viewport::with_physical_size(
@@ -150,12 +175,11 @@ fn run_case(name: &str, reader: Reader, scale: f32, profile: bool) {
                 .as_widget_mut()
                 .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
         let built = started.elapsed();
-        let step = if size.width < 800.0 { 32.0 } else { 12.0 };
-        let offset = if frame < 35 {
-            frame as f32 * step
-        } else {
-            (70 - frame) as f32 * step
-        };
+        let travel = if frame < 35 { frame } else { 70 - frame } as f32 * step;
+        // A pane shorter than the travel turns back at its ends, so every
+        // frame still moves and none is timed standing still.
+        let lap = travel % (2.0 * range);
+        let offset = if lap <= range { lap } else { 2.0 * range - lap };
         element.as_widget_mut().operate(
             &mut tree,
             Layout::new(&node),

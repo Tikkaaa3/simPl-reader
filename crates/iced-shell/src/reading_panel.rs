@@ -305,10 +305,10 @@ mod tests {
         stored(&mut reader, None);
         assert_eq!(reader.theme.id, "default");
 
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Appearance);
         let _ = reader.activate(Control::Theme(Target::Defaults, 2));
         settle_theme(&mut reader);
-        reader.show_settings = false;
+        reader.settings = None;
         assert_eq!(
             (reader.theme.id, reader.default_theme.id),
             ("clear", "clear")

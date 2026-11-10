@@ -1954,14 +1954,14 @@ mod tests {
             } else {
                 Appearance::Light
             };
-            reader.show_settings = false;
+            reader.settings = None;
             reader.read_aloud.session.as_mut().unwrap().spoken =
                 Some(("paragraph-0".into(), 8..16));
             super::super::book_preview::render(
                 &mut reader,
                 &output.join(format!("player-{name}.png")),
             );
-            reader.show_settings = true;
+            reader.settings = Some(settings::Section::Listen);
             super::super::book_preview::render(
                 &mut reader,
                 &output.join(format!("settings-{name}.png")),

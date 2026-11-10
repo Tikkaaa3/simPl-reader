@@ -405,7 +405,6 @@ pub(super) fn controls(
         Some(Focus::Picker(Picker::Font)),
         Some(Focus::Picker(Picker::Spacing)),
         Some(Focus::Picker(Picker::Margin)),
-        Some(Focus::Reset),
     ]
     .into_iter()
     .flatten()
@@ -427,6 +426,7 @@ pub(super) fn controls(
             .filter(move |_| picker == Some(Picker::Margin))
             .map(Focus::Margin),
     )
+    .chain([Focus::Reset])
     .filter(move |_| enabled(reader, target))
     .map(move |focus| Control::Reading(target, focus))
 }
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn settings_change_the_defaults_that_a_book_without_its_own_follows() {
         let mut reader = reader();
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Reading);
         let size_up = Control::Reading(Target::Defaults, Focus::SizeUp);
         assert!(reader.controls().any(|control| control == size_up));
         let _ = reader.activate(size_up);
@@ -774,7 +774,7 @@ mod tests {
         reader.maximized = true;
         let _ = reader.toggle_fullscreen();
         assert!(reader.fullscreen && reader.before_fullscreen_maximized);
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Reading);
         let escape = || {
             Message::Event(
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
@@ -790,7 +790,7 @@ mod tests {
             )
         };
         let _ = update_inner(&mut reader, escape());
-        assert!(!reader.show_settings && reader.fullscreen);
+        assert!(reader.settings.is_none() && reader.fullscreen);
         let _ = update_inner(&mut reader, escape());
         assert!(!reader.fullscreen && reader.before_fullscreen_maximized);
     }
@@ -820,7 +820,7 @@ mod tests {
                 &mut reader,
                 &output.join(format!("reading-{name}.png")),
             );
-            reader.show_settings = true;
+            reader.settings = Some(settings::Section::Reading);
             reader.focused = Some(Control::Reading(
                 Target::Defaults,
                 Focus::Picker(Picker::Font),
@@ -829,7 +829,7 @@ mod tests {
                 &mut reader,
                 &output.join(format!("settings-{name}.png")),
             );
-            reader.show_settings = false;
+            reader.settings = None;
             reader.focused = None;
             reader.fullscreen = true;
             super::super::book_preview::render(
