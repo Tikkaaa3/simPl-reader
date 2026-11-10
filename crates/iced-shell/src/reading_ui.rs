@@ -75,11 +75,43 @@ impl Reader {
         if self.look() == before {
             return Task::none();
         }
+        // The look has changed already, so the pages on screen are those of
+        // the look before. Read against the new look's pages, which are not
+        // laid out yet, the reader's place would be a row far from the view.
+        let (options, theme) = before;
+        let adapted = theme != themes::DEFAULT_ID || options != Options::default();
+        let shown = self
+            .section_layout_for(theme, adapted)
+            .filter(|layout| layout.heights.len() == self.heights.len())
+            .map(|layout| layout.pages.clone());
+        let anchor = self.pending_anchor.unwrap_or_else(|| match &shown {
+            Some(pages) => self.anchor_on(pages),
+            None => self.anchor(),
+        });
+        // While an earlier change is still being laid out there are no
+        // pages, and the place taken for that change stands.
+        if let Some(page) = shown
+            .as_deref()
+            .and_then(|pages| book_pages::current(pages, self.offset))
+        {
+            let range = (page.height - self.viewport).max(0.0);
+            self.look_place = self.book.as_ref().map(|book| super::LookPlace {
+                fingerprint: book.fingerprint.clone(),
+                section: book.epub.as_ref().map_or(0, |chapter| chapter.index),
+                anchor,
+                page: page.number,
+                scrolled: if range > 0.0 {
+                    ((self.offset - page.top) / range).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
+            });
+        }
         self.adapted.clear();
         if self.book.is_none() {
             return Task::none();
         }
-        self.rebuild_geometry(self.pending_anchor.unwrap_or_else(|| self.anchor()))
+        self.rebuild_geometry(anchor)
     }
     pub(super) fn reading_style(&self) -> BookStyle {
         themes::effective_style(self.theme, self.reading_options())

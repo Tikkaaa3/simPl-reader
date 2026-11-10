@@ -820,27 +820,42 @@ fn wheel_over_the_bar_scrolls_the_page_under_it() {
         fraction: 0.0,
     });
     settle_pagination(&mut reader);
-    let top = Point::new(reader.window_size.width / 2.0, 20.0);
-    let wheel = |reader: &Reader| wheel_at(reader, top);
+    let centre = reader.window_size.width / 2.0;
+    let on_title_bar = Point::new(centre, 20.0);
+    let on_tools = Point::new(centre, reading_chrome::TOOLS_BOTTOM - 20.0);
+    let forwards = |reader: &Reader, at: Point, what: &str| {
+        let (direct, forwarded, messages) = wheel_at(reader, at);
+        assert_eq!(direct, 0.0, "{what} covers the page");
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::ChromeWheel(_))),
+            "{what}"
+        );
+        assert_eq!(
+            forwarded, 60.0,
+            "{what} forwards one wheel line to the page"
+        );
+    };
 
     reader.bar = reading_chrome::Bar::hidden();
-    let (direct, _, _) = wheel(&reader);
+    forwards(&reader, on_title_bar, "the title bar, which stays");
+    let (direct, _, _) = wheel_at(&reader, on_tools);
     assert_eq!(
         direct, 60.0,
-        "the hidden bar's reveal band lets the wheel reach the page"
+        "where the hidden tools were, the wheel reaches the page"
     );
 
     reader.bar = Default::default();
-    let (direct, forwarded, messages) = wheel(&reader);
-    assert_eq!(direct, 0.0, "the shown bar covers the page");
-    assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, Message::ChromeWheel(_)))
-    );
+    forwards(&reader, on_title_bar, "the title bar");
+    forwards(&reader, on_tools, "the shown tools");
+
+    reader.fullscreen = true;
+    reader.bar = reading_chrome::Bar::hidden();
+    let (direct, _, _) = wheel_at(&reader, on_title_bar);
     assert_eq!(
-        forwarded, 60.0,
-        "the bar forwards one wheel line to the page"
+        direct, 60.0,
+        "in fullscreen the hidden bar's reveal band lets the wheel reach the page"
     );
 }
 
@@ -1204,15 +1219,18 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
     assert_eq!(
         bar,
         [
+            // The title bar, then the tools, then the caption buttons.
             Control::Close,
+            Control::PinTools,
+            Control::Chrome(chrome::Action::Search),
+            Control::Chrome(chrome::Action::Settings),
+            Control::BarFullscreen,
             Control::BookPageInput,
             Control::Find,
             Control::ReadAloud,
             notes,
             Control::Menu(reading_chrome::Menu::Aa),
             Control::Chrome(chrome::Action::ToggleAppearance),
-            Control::Chrome(chrome::Action::Search),
-            Control::Chrome(chrome::Action::Settings),
             Control::Chrome(chrome::Action::Minimize),
             Control::Chrome(chrome::Action::Maximize),
             Control::Chrome(chrome::Action::Close),
@@ -1273,6 +1291,10 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
         bar[..bar.len() - 3],
         [
             Control::Close,
+            Control::PinTools,
+            Control::Chrome(chrome::Action::Search),
+            Control::Chrome(chrome::Action::Settings),
+            Control::BarFullscreen,
             Control::BookMode,
             Control::PdfPage,
             Control::Find,
@@ -1280,8 +1302,6 @@ fn notes_follows_listen_in_the_bar_and_focusing_it_reveals_the_bar() {
             notes,
             Control::Menu(reading_chrome::Menu::Aa),
             Control::Chrome(chrome::Action::ToggleAppearance),
-            Control::Chrome(chrome::Action::Search),
-            Control::Chrome(chrome::Action::Settings),
         ]
     );
 }
@@ -2952,7 +2972,15 @@ fn progress_jump_lands_on_the_page() {
     assert_eq!(page_field(&reader), "7");
     assert_eq!(reader.active_page().unwrap().number + 1, 7);
     // Six pages, and the part of the seventh that is in view.
-    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 48%");
+    let progress = reader.progress().unwrap();
+    assert_eq!(
+        (
+            progress.page,
+            progress.total,
+            shelf::percent(progress.fraction)
+        ),
+        (7, 14, 48)
+    );
 }
 
 #[test]
@@ -3013,7 +3041,7 @@ fn the_progress_line_is_full_at_the_end_of_the_book() {
     reader.offset = (last.top + text(&last) - reader.viewport).max(last.top);
     let end = reader.progress().unwrap();
     assert_eq!(end.fraction, 1.0, "the last line of the book is in view");
-    assert_eq!(end.label(), format!("Page {total} of {total} · 100%"));
+    assert_eq!((end.page, end.total), (total as u32, total as u32));
 
     let Some(mut reader) = test_pdf(
         crate::pdf_reader::tests::pages_pdf(3),
@@ -3589,7 +3617,8 @@ fn a_contents_entry_stays_current_after_jumping_to_it() {
             )
             .unwrap(),
         )),
-        window_size: Size::new(1400.0, 900.0),
+        // Tall enough that the page under the title bar does not scroll.
+        window_size: Size::new(1400.0, 900.0 + reading_chrome::HEIGHT),
         ..Reader::default()
     };
     let _ = reader.rebuild_geometry(Anchor {
@@ -4107,9 +4136,6 @@ fn render_ux5_bar_look() {
     render_with_cursor(&mut reader, &output.join("UX-5-tooltip.png"), find);
     let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
     render(&mut reader, &output.join("UX-5-aa-book.png"));
-    let mut reader = full_bar_book(540.0, 600.0);
-    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::More));
-    render(&mut reader, &output.join("UX-5-more-540.png"));
     let Some(mut reader) = test_pdf(
         crate::pdf_reader::tests::tall_pdf(),
         Size::new(1400.0, 900.0),
@@ -5923,4 +5949,98 @@ fn render_pdf_book_looks() {
     reader.pdf = Some(pdf);
     let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
     render(&mut reader, &output.join("PDF-book-aa-document-view.png"));
+}
+
+#[test]
+fn a_new_theme_keeps_the_page_and_how_far_it_is_scrolled() {
+    // Paragraphs that each run over several pages.
+    let long: String = (1..=400)
+        .map(|number| format!("Sentence {number} of a long paragraph that runs on. "))
+        .collect();
+    let open = || {
+        let mut reader = sentence_book_with(|rows| {
+            for (row, item) in rows.iter_mut().enumerate().take(3) {
+                *item = Item::Paragraph {
+                    id: format!("paragraph-{}", row + 1),
+                    text: long.clone(),
+                    base_direction: BaseDirection::Ltr,
+                    style_runs: Vec::new(),
+                };
+            }
+        });
+        reader.window_size = Size::new(1280.0, 800.0);
+        reader.viewport = 756.0;
+        reader
+    };
+    let pages = open().page_total();
+    assert!(pages >= 6, "the paragraphs span pages: {pages}");
+    for theme in 1..themes::THEMES.len() {
+        for scrolled in [0.0_f32, 0.4, 1.0] {
+            for page in [1, 5] {
+                let mut reader = open();
+                let _ = reader.go_to_local_page(page);
+                let before = reader.active_page().unwrap();
+                reader.offset = before.top + scrolled * (before.height - reader.viewport);
+                let _ = update(&mut reader, Message::SetTheme(theme));
+                settle_pagination(&mut reader);
+                let after = reader.active_page().unwrap();
+                let what = format!("theme {theme}, page {page}, scrolled {scrolled}");
+                assert_eq!(after.number, before.number, "{what}");
+                let range = after.height - reader.viewport;
+                assert!(range > 0.0, "{what}: the page scrolls");
+                let now = (reader.offset - after.top) / range;
+                assert!((now - scrolled).abs() < 0.08, "{what}: now {now}");
+                if scrolled == 0.0 {
+                    assert_eq!(reader.offset, after.top, "{what}: the top stays the top");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "Title bar review: writes the title bar and the reading tools to target/ui-ux-review"]
+fn render_title_bar_and_tools() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Dark, "dark"), (Appearance::Light, "light")] {
+        for width in [1280.0, 620.0] {
+            let mut reader = full_bar_book(width, 800.0);
+            reader.appearance = appearance;
+            let file = |state: &str| output.join(format!("bars-{name}-{width}-{state}.png"));
+            render(&mut reader, &file("tools"));
+            let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+            render(&mut reader, &file("aa"));
+            let _ = update(&mut reader, Message::CloseMenu);
+            hide_bar(&mut reader);
+            render(&mut reader, &file("reading"));
+        }
+    }
+}
+
+#[test]
+fn a_place_kept_for_a_new_theme_does_not_reach_another_book() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let _ = reader.go_to_local_page(3);
+    // The layout for the new theme is still in flight.
+    let _ = update(&mut reader, Message::SetTheme(1));
+    let kept = reader.look_place.clone().expect("the place waits");
+    assert_eq!(kept.page, 3);
+
+    reader.clear_content();
+    assert!(reader.look_place.is_none(), "closing the book drops it");
+
+    // Left behind by any other path, it still names its own book.
+    let mut other = strip_book(1280.0, 700.0);
+    let _ = other.go_to_local_page(1);
+    let anchor = other.anchor();
+    other.look_place = Some(LookPlace {
+        fingerprint: "another book".into(),
+        anchor,
+        ..kept
+    });
+    let _ = other.rebuild_geometry(anchor);
+    assert_eq!(other.active_page().unwrap().number, 1);
+    assert!(other.look_place.is_none());
 }

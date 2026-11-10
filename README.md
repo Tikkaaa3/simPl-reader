@@ -27,18 +27,17 @@ and keep your highlights and notes with your books.
   numbers and page boundaries stay the same in every theme, and text size stays your
   own. A PDF in Book view takes the theme like any other book. All fonts are bundled,
   so nothing is downloaded.
-- **Reading comfort.** The **Aa** button in the reading bar opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading sets them for every book without its own. A PDF in Book view has all of them. In Document view, which shows the original page, **Aa** has zoom and **Fit width** only. Press F11 for fullscreen.
+- **Reading comfort.** The **Aa** button in the reading tools opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading sets them for every book without its own. A PDF in Book view has all of them. In Document view, which shows the original page, **Aa** has zoom and **Fit width** only. Press F11 for fullscreen.
 - **Listen and follow along.** Windows' installed voices read continuously across pages and EPUB chapters. The viewport follows the spoken line, and a temporary word highlight shows your place. Pause, resume and adjust the speed; select the stop icon in the bar to stop.
 - **Offline word lookup.** Double-click a word or select → right-click → Translate. Choose your language pair and automatic lookup preference. Download only the dictionaries you need; the 13 optional directions cover English, Turkish, Spanish, German, French, Japanese, Korean and Chinese. Lookup works locally after installation.
 - **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
 - **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
 - **Settings in sections.** The gear opens Settings on **Reading**, with its sections listed at the left: **Reading** for the defaults every book follows, **Appearance** for the theme, light or dark and fullscreen, **Listen** for the voice and speed, **Translation** for the languages and dictionaries, **Library & data** for the library folder, backup and export, and **Shortcuts** for the list of keys, which F1 opens from anywhere. Tab reaches the list, and the up and down arrows move between sections.
-- **Less chrome.** While you read, one row of quiet icons holds the window and reading
-  controls and fades away when idle; point at the top edge to bring it back, or press
-  F8 to keep it visible. Every icon names its action and shortcut when you point at it. A
-  narrow window hides the book title first, then folds the light and dark toggle,
-  Search and Settings into **More**. The page never moves when the bar shows or hides.
-  The bar keeps standard Windows minimize, maximize and close buttons. Geist for the interface,
+- **Less chrome.** The title bar stays on screen, with standard Windows minimize,
+  maximize and close buttons. The reading tools are a small pill of quiet icons under
+  it that fades away when idle; point at the title bar to bring it back, or press F8 to
+  keep it. Every icon names its action and shortcut when you point at it. The page
+  never moves when the tools show or hide. Geist for the interface,
   Literata (or the theme's font) for the book, and bundled fonts for offline reading.
 - **Keyboard access.** Navigate controls, switch books, turn pages and copy selected
   text without reaching for the mouse.
@@ -163,9 +162,17 @@ single notch does not turn it.
 A thin line along the bottom shows how far through the book or PDF you are, cut
 into the book's chapters. Point at it to see two places: the page you are on, and
 the chapter and page a click would jump to. The stretch between them shows the jump
-before you make it.
+before you make it. **Settings → Appearance → Progress line** hides the line.
 While you read, the scrollbar hides; it appears when you scroll or point at the right
 edge, and fades about a second after you stop.
+
+The title bar stays on screen: the Library, the book's title, search, Settings and
+the window buttons never hide in a window. The reading tools (contents, the page
+field, find, listen, notes, **Aa** and light or dark) are a small pill under it that
+hides as soon as you scroll or turn a page. Point at the title bar to bring it back. The pin in the title
+bar, or **F8**, keeps the tools on screen, and simPl remembers that choice. Fullscreen
+(**F11**, or its button in the title bar) is the one mode that hides everything; move
+the pointer to the top of the screen to bring both back.
 
 PDF Book view uses the PDF's existing text layer; it does **not** perform OCR.
 Image-only or complex pages may be better read in Document view. Initial preparation
@@ -177,7 +184,7 @@ Select text to choose a highlight color or add a note. Right-click a saved
 highlight to change its color, edit its note or remove it. Same-color overlapping
 highlights merge without darkening; different colors can overlap. Right-click a
 page to bookmark it. The bookmarks and notes sidebar opens from the **Notes** icon
-in the reading bar or with Ctrl+B. Click a note in the sidebar to read its full text;
+in the reading tools or with Ctrl+B. Click a note in the sidebar to read its full text;
 long notes scroll within the list. The **Contents** icon or Ctrl+T opens the book's
 contents in a drawer on the left. A drawer sits beside the page while the whole
 page still fits beside it; otherwise it opens over the page, and choosing a chapter
@@ -190,7 +197,7 @@ Bookmarks and highlights are stored per book under
 Select the **Listen** icon or press **Ctrl+Shift+U** to continue from the current page to the
 end of the book, even when text is selected. A small player above the progress line
 provides pause, resume, and speed controls without moving the page. It shows and hides
-with the reading bar, so it leaves the page's last line clear while you listen; move
+with the reading tools, so it leaves the page's last line clear while you listen; move
 the pointer to where it sits, or Tab to it, to bring both back. Starting to listen
 shows both for a moment. The viewport
 follows the spoken line, turning pages and loading the next EPUB chapter
@@ -325,7 +332,7 @@ JSON also preserves their full anchors, IDs and timestamps.
 | **Ctrl+B** | Show or hide bookmarks, highlights and notes |
 | **Ctrl+Shift+F** | Toggle fit width / previous zoom in Book or PDF Document |
 | **F11** | Enter / exit fullscreen; Esc exits after dismissing open panels |
-| **F8** | Keep the reading bar visible |
+| **F8** | Keep the reading tools on screen |
 | **Tab / Shift+Tab** | Move between controls |
 | **F1** | Open the shortcut list in Settings |
 

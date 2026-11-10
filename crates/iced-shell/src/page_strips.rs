@@ -242,10 +242,9 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         bottom_inset: bottom_inset(reader),
         covered: reader.drawers().overlaid(),
         scrollbar: super::scrolls_down(reader),
-        progress: reader.progress(),
+        progress: reader.progress_line.then(|| reader.progress()).flatten(),
         chapters: reader.progress_chapters(),
         jumps: active,
-        labelled: reader.bar.visible(),
     })
 }
 
@@ -280,8 +279,6 @@ struct Strips {
     chapters: Vec<Chapter>,
     /// A press on the line jumps; otherwise it only shows the position.
     jumps: bool,
-    /// The reading bar shows, so the line shows its label too.
-    labelled: bool,
 }
 
 /// A part of the layer that acts on the pointer.
@@ -593,7 +590,6 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
                     progress,
                     chapters: &self.chapters,
                     pointer: cursor.position().filter(|_| hovered).map(|point| point.x),
-                    labelled: self.labelled,
                 },
             );
         }

@@ -76,6 +76,8 @@ pub(super) fn controls(reader: &Reader, section: Section) -> Vec<Control> {
             controls.extend([
                 Control::Appearance(Appearance::Light),
                 Control::Appearance(Appearance::Dark),
+                Control::ProgressLine(true),
+                Control::ProgressLine(false),
                 Control::Fullscreen,
             ]);
         }
@@ -143,6 +145,22 @@ fn appearance_choice<'a>(
     )
 }
 
+/// One half of the Show and Hide choice for the progress line.
+fn progress_line_choice<'a>(
+    reader: &Reader,
+    shown: bool,
+    label: &'static str,
+) -> Element<'a, Message> {
+    toned_button(
+        reader,
+        Control::ProgressLine(shown),
+        text(label).size(12),
+        Some(Message::SetProgressLine(shown)),
+        ui::ButtonTone::Surface,
+        reader.progress_line == shown,
+    )
+}
+
 fn note(value: &'static str) -> iced::widget::Text<'static> {
     text(value)
         .size(12)
@@ -183,6 +201,14 @@ fn pane(reader: &Reader, section: Section) -> Element<'_, Message> {
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
+            row![
+                text("Progress line").font(ui::MEDIUM).size(13).width(Length::Fill),
+                progress_line_choice(reader, true, "Show"),
+                progress_line_choice(reader, false, "Hide"),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+            note("The thin line along the bottom of a book or PDF. It shows how far you are, and a press on it jumps to that page."),
             row![
                 text("Fullscreen").font(ui::MEDIUM).size(13).width(Length::Fill),
                 control_button(
@@ -353,10 +379,12 @@ mod tests {
         let _ = update(&mut reader, Message::SettingsSection(Section::Appearance));
         let controls: Vec<_> = reader.controls().collect();
         assert_eq!(
-            controls[controls.len() - 3..],
+            controls[controls.len() - 5..],
             [
                 Control::Appearance(Appearance::Light),
                 Control::Appearance(Appearance::Dark),
+                Control::ProgressLine(true),
+                Control::ProgressLine(false),
                 Control::Fullscreen,
             ]
         );

@@ -302,6 +302,11 @@ impl Reader {
 
     /// How many pages lie above the bottom of the view, counting the part
     /// of the page that the bottom crosses.
+    /// The size of the view and how far down the document it is.
+    pub fn place_in_view(&self) -> (Size, f32) {
+        (self.viewport, self.offset.y)
+    }
+
     pub fn pages_seen(&self) -> f32 {
         if self.geometry.is_empty() {
             return 0.0;

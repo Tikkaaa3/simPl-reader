@@ -122,11 +122,7 @@ fn icon(
     let selected = focused == Some(action);
     let control = button(
         text(name)
-            .font(if action == Action::ToggleAppearance {
-                iced::Font::with_name("Segoe UI Symbol")
-            } else {
-                ui::ICONS
-            })
+            .font(ui::ICONS)
             .size(19)
             .line_height(1.0)
             .shaping(text::Shaping::Advanced),
@@ -247,10 +243,11 @@ fn tools(
         icon(Action::Settings, "\u{e8b8}", focused, hints, "Settings"),
         icon(
             Action::ToggleAppearance,
+            // The same pair as the reading tools.
             if appearance == reader_document::preferences::Appearance::Dark {
-                "☼"
+                "\u{e518}"
             } else {
-                "☾"
+                "\u{e51c}"
             },
             focused,
             hints,
