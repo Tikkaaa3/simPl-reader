@@ -23,6 +23,7 @@ const GAP: f32 = 2.0;
 const MIN_PIECE: f32 = 6.0;
 /// The fade behind the hovered line, so its labels read over page text.
 const SCRIM: f32 = 104.0;
+const SCRIM_SOLID: f32 = 48.0;
 /// The light that rises from the line under the pointer.
 const BEAM: Size = Size::new(64.0, 52.0);
 const BEAM_STEPS: u8 = 8;
@@ -203,15 +204,15 @@ pub(super) fn draw(
     };
     let bottom = track.y + track.height;
     if let Some(pointer) = pointer {
+        // Solid behind the labels, where a flat fill is cheap, and fading
+        // out above them.
         renderer.fill_quad(
-            quad(fade, bottom - SCRIM, SCRIM),
-            Background::Gradient(
-                gradient::Linear::new(Radians(0.0))
-                    .add_stop(0.0, palette.background)
-                    .add_stop(0.45, palette.background)
-                    .add_stop(1.0, palette.background.scale_alpha(0.0))
-                    .into(),
-            ),
+            quad(fade, bottom - SCRIM_SOLID, SCRIM_SOLID),
+            palette.background,
+        );
+        renderer.fill_quad(
+            quad(fade, bottom - SCRIM, SCRIM - SCRIM_SOLID),
+            rising(palette.background),
         );
         // A quad takes one gradient, so the light's soft sides are steps
         // too faint to see apart.
