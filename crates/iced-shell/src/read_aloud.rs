@@ -29,6 +29,15 @@ pub(super) enum Action {
     Voice(VoiceChoice),
 }
 
+/// Where reading starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Start {
+    /// The top of the page in view, through the book.
+    Page,
+    /// Only the selected text. With nothing selected, as `Page`.
+    Selection,
+}
+
 /// An entry of the voice picker; an empty id chooses the voice automatically.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct VoiceChoice {
@@ -250,8 +259,8 @@ impl Reader {
                 self.read_aloud.stop();
                 Task::none()
             }
-            Action::Toggle => self.start_reading(false),
-            Action::Selection => self.start_reading(true),
+            Action::Toggle => self.start_reading(Start::Page),
+            Action::Selection => self.start_reading(Start::Selection),
             Action::Pause => {
                 if let Some(speaker) = self.read_aloud.speaker.as_mut() {
                     speaker.pause();
@@ -293,7 +302,7 @@ impl Reader {
                 let restart = match &self.read_aloud.session {
                     Some(session) if !session.selection => {
                         self.read_aloud.stop();
-                        self.start_reading(false)
+                        self.start_reading(Start::Page)
                     }
                     _ => Task::none(),
                 };
@@ -302,14 +311,14 @@ impl Reader {
         }
     }
 
-    fn start_reading(&mut self, prefer_selection: bool) -> Task<Message> {
+    fn start_reading(&mut self, start: Start) -> Task<Message> {
         self.read_aloud.stop();
         let Some(document) = self.reading_document() else {
             return Task::none();
         };
         if let Some(pdf) = &self.pdf {
             let source = pdf.document().clone();
-            let selection = pdf.selection().filter(|_| prefer_selection);
+            let selection = pdf.selection().filter(|_| start == Start::Selection);
             let page = pdf.page_index();
             if !source.can_copy {
                 self.error = Some(
@@ -349,7 +358,7 @@ impl Reader {
         let Some(book) = &self.book else {
             return Task::none();
         };
-        let selected = prefer_selection
+        let selected = (start == Start::Selection)
             .then(|| self.selection.copy_text(&book.items))
             .flatten()
             .filter(|text| !text.trim().is_empty());
@@ -600,7 +609,7 @@ impl Reader {
             return Task::none();
         }
         if opening.is_none() && expected.is_some() && self.place() != expected {
-            return self.start_reading(false);
+            return self.start_reading(Start::Page);
         }
         if let Some(chapter) = opening {
             let ready = self.book_chapter() == chapter;
