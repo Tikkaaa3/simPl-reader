@@ -46,8 +46,8 @@ impl Section {
     }
 }
 
-const MAX_WIDTH: f32 = 900.0;
-const MAX_HEIGHT: f32 = 720.0;
+const MAX_WIDTH: f32 = 760.0;
+const MAX_HEIGHT: f32 = 560.0;
 /// Below this window width the modal gives the pane more room: less padding
 /// and a narrower list.
 const COMPACT_BELOW: f32 = 720.0;
