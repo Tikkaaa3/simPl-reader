@@ -789,6 +789,29 @@ mod tests {
         assert_eq!(reader.heights.height(1), estimate + 40.0);
         assert_eq!(canonical_height(&reader), estimate + 40.0);
     }
+    /// Rows corrected on screen in the default look change the canonical row
+    /// starts. A look chosen afterwards must still cut at the same rows.
+    #[test]
+    fn a_look_chosen_after_reading_a_pdf_book_keeps_every_source_page() {
+        let Some(mut reader) = pdf_book_reader() else {
+            return;
+        };
+        stored(&mut reader, None);
+        let shown = [61.7, 203.3, 198.9, 47.1, 211.3, 207.7, 190.1];
+        let reports = shown
+            .into_iter()
+            .enumerate()
+            .map(|(row, height)| (row, height, reader.width, reader.generation));
+        reader.measurements.lock().extend(reports);
+        let _ = reader.refine_geometry();
+        assert_eq!(reader.heights.height(4), 211.3);
+        assert_eq!(page_rows(&reader), source_pages());
+        for theme in [1, 2, 3] {
+            let _ = reader.reading_action(Target::Book, Action::Theme(theme));
+            settle_theme(&mut reader);
+            assert_eq!(page_rows(&reader), source_pages(), "theme {theme}");
+        }
+    }
     #[test]
     fn stale_loads_and_save_failures_do_not_overwrite_other_books_or_loop() {
         let mut reader = reader();
