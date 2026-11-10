@@ -32,8 +32,10 @@ As of 2026-11-10:
 | #24 | UX-7 wheel to next page | Merged |
 | #25 | The UX-7 record in this plan | Merged |
 | #26 | UX-8 page surface and state styling, with equal page-turn strips and one current contents entry | Merged |
-| #27 | The UX-8 record in this plan | This PR |
-| | UX-9 library header | Next, on the operator's go |
+| #27 | The UX-8 record in this plan | Merged |
+| #28 | UX-9 library header | Merged |
+| #29 | The UX-9 record in this plan | This PR |
+| | UX-10 settings sections | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
 
@@ -45,6 +47,8 @@ How the program actually runs, where it differs from the checklist below:
 - The perf baseline is the detached worktree `..\simPl-trunk`, moved to `main` and release-built before each milestone.
 - The perf probe runs last, on the final head, for at least ten alternating rounds. Its p95 moves by about 15 percent between identical runs, so the frame medians carry the verdict.
 - The session copies each merge-ready build to one folder outside the repository, and the **simPl latest** shortcut on the Desktop opens it. The operator tests there before merging.
+- The build machine's display runs at 125 percent. Lane sizes are logical, so a 1280x800 lane uses a 1600x1000 window.
+- `scripts\ui-drive.ps1 -Launch` needs a document. A lane that starts on the Library starts the app itself, with `LOCALAPPDATA` set to a seeded lane profile.
 
 A milestone's boxes are ticked from its PR's Verification section. A box left open in a merged milestone says why.
 
@@ -77,11 +81,11 @@ A milestone's boxes are ticked from its PR's Verification section. A box left op
   - [x] UX-6 after UX-5.
   - [x] UX-7 after UX-6.
   - [x] UX-8 after UX-7.
-  - [ ] UX-9 after UX-8 in the stack. Its owner may build in parallel from UX-1, because it touches only the library.
+  - [x] UX-9 after UX-8 in the stack. Its owner may build in parallel from UX-1, because it touches only the library. *It branched from `main` after UX-8 merged.*
   - [ ] UX-10 after UX-9.
 - [ ] Hold the file boundaries.
   - [ ] UX-0 touches only `scripts/ui-drive.ps1`, `scripts/subset-icons.py`, `crates/iced-shell/src/book_preview.rs`, `crates/iced-shell/src/reader_profile.rs`, and the `#[cfg(test)]` module list in `crates/iced-shell/src/app.rs`.
-  - [ ] UX-9 touches only `crates/iced-shell/src/shelf.rs` and `README.md`.
+  - [ ] UX-9 touches only `crates/iced-shell/src/shelf.rs` and `README.md`. *It also touched `crates/iced-shell/src/book_preview.rs`, for its tests.*
   - [ ] Every other PR keeps to the paths in its **Files.** block.
 - [ ] Hold the review gate. UX-1 to UX-10 change an interaction. They wait for the operator's review in chat with screenshots and a video before merge.
 
@@ -810,58 +814,71 @@ Lanes added for the two review changes, on the release build:
 
 **Files.**
 
-- [ ] Edit `crates/iced-shell/src/shelf.rs`.
-- [ ] Edit `README.md`.
+- [x] Edit `crates/iced-shell/src/shelf.rs`.
+- [x] Edit `README.md`. *Text only. The screenshots wait until the operator says the UI is final. Also `crates/iced-shell/src/book_preview.rs`, for tests that drive the real widget tree and for the review renders.*
 
 **Build.**
 
-- [ ] Replace the hero block in `Shelf::view` (shelf.rs:921), the `LOCAL WORKSPACE` label (:938), the `simPl Reader` heading (:943), and the tagline with one row. The row holds **Library** in Literata with the book count in muted text, and **Open** and **Add** buttons at the right. Today the two actions are the cards **Open file** (:971) and **Add document** (:977). **Open** reads a file where it is without copying it, and **Add** imports a copy into the library (`lib-fix.md`, LF-1). Dropping a file into the window opens it in place, the same as **Open**, and highlights **Open**.
-- [ ] Delete the `N active` pill (:996), the `Press Space to resume current` hint (:1003), and the `N items` pill (:1084). Space still resumes the latest book (app.rs:5111). The README shortcut table lists it, and UX-10 adds it to the F1 help.
-- [ ] Show **Continue Reading** only when the library holds more than three books. With three or fewer, every book is already visible in the grid.
-- [ ] Move the format badge off the cover art (:1859) into the line under the cover.
-- [ ] Keep the selected look from UX-8. A selected sort segment or shelf chip is an accent tint with no border, and only keyboard focus draws an outline. In Default light the Library page is light grey and its cards are white.
+- [x] Replace the hero block in `Shelf::view` (shelf.rs:921), the `LOCAL WORKSPACE` label (:938), the `simPl Reader` heading (:943), and the tagline with one row. The row holds **Library** in Literata with the book count in muted text, and **Open** and **Add** buttons at the right. Today the two actions are the cards **Open file** (:971) and **Add document** (:977). **Open** reads a file where it is without copying it, and **Add** imports a copy into the library (`lib-fix.md`, LF-1). Dropping a file into the window opens it in place, the same as **Open**, and highlights **Open**. *The count hides in an empty library. Each button has a tooltip that says what it does and its shortcut, because the cards' explanations left with the hero.*
+- [x] Delete the `N active` pill (:996), the `Press Space to resume current` hint (:1003), and the `N items` pill (:1084). Space still resumes the latest book (app.rs:5111). The README shortcut table lists it, and UX-10 adds it to the F1 help. *The `N of M items` count under a shelf filter is deleted too. The shelf chips still show a count for each shelf.*
+- [x] Show **Continue Reading** only when the library holds more than three books. With three or fewer, every book is already visible in the grid. *It also hides when no book is unfinished, so no empty panel shows.*
+- [x] Move the format badge off the cover art (:1859) into the line under the cover. *A library card reads `EPUB · Nov 10`, and a continue card reads the format and the age.*
+- [x] Keep the selected look from UX-8. A selected sort segment or shelf chip is an accent tint with no border, and only keyboard focus draws an outline. In Default light the Library page is light grey and its cards are white.
+
+**As built.** These go beyond the steps above.
+
+- `PageLayout` in `shelf.rs` holds the height of every block above the grid. `Shelf::view` sizes each block from it, and the virtual grid reads the same sums for its row window. Before, the grid's offset repeated the widget tree as literals.
+- `continuing` holds the cards on display, so it is empty at three books or fewer. Space reads the entries directly through `first_resume`, so it resumes in a small library too.
+- The sort sits on the shelf-chip row, above one rule. Below 768px the chips and the sort take two rows.
+- An empty library shows a panel that says "Drop a file here, or use Open or Add." A shelf with no books says how to add one.
+- Under a cover, the date or the shelf names sit beside the format. A book with no recorded open time shows only its format. A narrow card drops the date or the shelf names when fewer than three letters fit, and keeps the format and the size.
+- The Favourites heading shows a muted count, such as "1 book".
+- Known limits. With **Continue Reading** shown, the first cover row starts 22px below the line that lane 1 names. Below 768px the continue cards still stack above the grid, as before. An empty library still shows the shelf chips and the sort above its panel. A book that was imported and never opened counts as unfinished, so a library of four imported books shows **Continue Reading**.
+- The independent review ran once on gpt-6.1-sol and found two low defects. A shelf name that ends in "…" lost its label, and one README sentence was loose. Both are fixed, the first with a test.
 
 **You see.**
 
-- [ ] At 1280x800, the first row of covers sits above the fold.
-- [ ] A new library with one book shows a header and that one cover, with no duplicate card.
+- [x] At 1280x800, the first row of covers sits above the fold. *It starts at y=208, or at y=422 with **Continue Reading**. On trunk it starts at about y=670.*
+- [x] A new library with one book shows a header and that one cover, with no duplicate card. *Seen in the headless render `UX-9-one-light.png`.*
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `shelf.rs` gains `continue_reading_needs_more_than_three_books`. It builds shelves of three and four books with progress and asserts the section is absent and present. Run `cargo test -p iced-shell --locked continue_reading_needs`.
+- [x] `shelf.rs` gains `continue_reading_needs_more_than_three_books`. It builds shelves of three and four books with progress and asserts the section is absent and present. Run `cargo test -p iced-shell --locked continue_reading_needs`. *Also `open_and_add_buttons_lead_the_focus_order` and `card_footer_keeps_a_note_that_fits_and_drops_a_stub`. `book_preview.rs` gains `library_cards_sit_where_the_page_layout_puts_them`, which lays out the real page at 1280 and 540px and compares the card positions with `PageLayout`. It fails when a spacing changes in the view only.*
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe. *The session ran them itself on the release build, at 125 percent display scale.*
 
-- [ ] Lane 1. Regression lane against trunk. Capture the library with eight books at 1280x800 at trunk and head. Save `ux9-regression.png`. Pass when the trunk hero takes about 250px and the head shows the first cover row starting above y=400.
-- [ ] Lane 2. Launch head with an empty profile. Save `ux9-empty.png`. Pass when the header, the **Open** and **Add** buttons, and a drop hint show.
-- [ ] Lane 3. Import three books and open one, then import a fourth. Save `ux9-continue.png`. Pass when **Continue Reading** is absent with three books and present with four.
-- [ ] Lane 4. Capture the EPUB and PDF covers. Save `ux9-badge.png`. Pass when the format label sits under the cover and no label covers the art.
-- [ ] Lane 5. Click **Add**, then **Open**. Save `ux9-add.png`. Pass when each opens the Windows file dialog. Close each with Escape.
-- [ ] Lane 6. With no control focused, press Space. Save `ux9-space.png`. Pass when the latest unfinished book opens.
-- [ ] Lane 7. Click each sort option. Save `ux9-sort.png`. Pass when the grid order changes for **Title** and **Format**.
-- [ ] Lane 8. Hover a card, click favourite, then click remove and cancel. Save `ux9-card.png`. Pass when the book moves to Favourites and the remove confirmation appears and cancels.
-- [ ] Lane 9. Switch to dark appearance. Save `ux9-dark.png`. Pass when the header text, **Open** and **Add** are readable.
-- [ ] Lane 10. Resize to 540x360. Save `ux9-narrow.png`. Pass when the header fits on one row and covers wrap.
+- [ ] Lane 1. Regression lane against trunk. Capture the library with eight books at 1280x800 at trunk and head. Save `ux9-regression.png`. Pass when the trunk hero takes about 250px and the head shows the first cover row starting above y=400. *Trunk's first cover row starts at about y=670. Head starts at y=208 without **Continue Reading** and at y=422 with it, 22px below the line. The operator merged it as built.*
+- [x] Lane 2. Launch head with an empty profile. Save `ux9-empty.png`. Pass when the header, the **Open** and **Add** buttons, and a drop hint show.
+- [x] Lane 3. Import three books and open one, then import a fourth. Save `ux9-continue.png`. Pass when **Continue Reading** is absent with three books and present with four.
+- [x] Lane 4. Capture the EPUB and PDF covers. Save `ux9-badge.png`. Pass when the format label sits under the cover and no label covers the art.
+- [x] Lane 5. Click **Add**, then **Open**. Save `ux9-add.png`. Pass when each opens the Windows file dialog. Close each with Escape. *The dialogs are titled "Add document to library" and "Open document".*
+- [x] Lane 6. With no control focused, press Space. Save `ux9-space.png`. Pass when the latest unfinished book opens. *It opened* Three Rooms.
+- [x] Lane 7. Click each sort option. Save `ux9-sort.png`. Pass when the grid order changes for **Title** and **Format**.
+- [x] Lane 8. Hover a card, click favourite, then click remove and cancel. Save `ux9-card.png`. Pass when the book moves to Favourites and the remove confirmation appears and cancels. *Favourites shows "1 book", and **Cancel** keeps the book.*
+- [x] Lane 9. Switch to dark appearance. Save `ux9-dark.png`. Pass when the header text, **Open** and **Add** are readable.
+- [x] Lane 10. Resize to 540x360. Save `ux9-narrow.png`. Pass when the header fits on one row and covers wrap. *The covers wrap to two columns.*
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `library`.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk `library` p95 first.
-- [ ] Rule. Fail when the head p95 exceeds trunk by more than 10 percent.
+- [x] Metric. `reader_frame_ms` p95 for `library`. *Also `reading-idle` and `settings` as controls.*
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head. *Ten alternating rounds per side.*
+- [x] Baseline. Record the trunk `library` p95 first. *Median 2.38ms and p95 2.55ms, as medians of ten rounds.*
+- [ ] Rule. Fail when the head p95 exceeds trunk by more than 10 percent. *Read literally, it fails. Head reads a 2.71ms median and a 2.81ms p95, which is 13.9 and 10.2 percent over trunk. The two builds do not draw the same content in that window. Trunk shows about the top 130px of each card, and head shows whole cards.*
+  - *Two states were added to the probe for this run and not committed, with six alternating rounds per side. In a 1280x1600 window, where both builds show all five cards, the head median is 2.89ms against 3.86ms, 25 percent faster. With an empty library it is 0.94ms against 1.40ms.*
+  - *`reading-idle` and `settings` moved by 1 percent or less.*
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, 3, and 4 screenshots into `target\ui-ux-review\UX-9-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of the library from empty to four books. Save it as `target\ui-ux-review\UX-9-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 1, 2, 3, and 4 screenshots into `target\ui-ux-review\UX-9-review-<slug>.png`. *The slugs are `regression`, `empty`, `continue-three`, `continue-four`, and `badge`.*
+- [x] Record a 30 to 60 second video of the library from empty to four books. Save it as `target\ui-ux-review\UX-9-review.mp4`. *52 seconds.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click. *The operator merged PR #28 with no changes asked.*
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-9 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA. *The review's two defects are fixed at the final head, and no further round ran on it.*
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-9 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #28.*
 
 ## Split Settings into sections (UX-10)
 
@@ -874,13 +891,15 @@ Lanes added for the two review changes, on the release build:
 - [ ] Edit `crates/iced-shell/src/profile_ui.rs`.
 - [ ] Edit `README.md`.
 
+The other sections come from builders that exist: `read_aloud::settings` (read_aloud.rs:1122), `word_translation::settings` (word_translation.rs:880), and `library_ui::settings` (library_ui.rs:551). Add a file to the list above only when a section's content changes.
+
 **Build.**
 
-- [ ] Give the Settings modal (built in `overlays`, app.rs:5903 onward) a list of sections at its left. The sections are **Reading**, **Appearance**, **Listen**, **Translation**, **Library & data**, and **Shortcuts**. Show one section at a time.
+- [ ] Give the Settings modal (built in `overlays`, app.rs:5785, in the branch that starts at :5957) a list of sections at its left. Today it is one sheet in this order: the theme cards, the reading defaults (`reading_ui::settings`, reading_ui.rs:464), **Fullscreen**, **Read aloud**, **Word translation**, **Library & data**, and a **Keyboard shortcuts** row whose **Show** button opens the F1 help. The sections are **Reading**, **Appearance**, **Listen**, **Translation**, **Library & data**, and **Shortcuts**. Show one section at a time.
 - [ ] Put the reading defaults in **Reading**. When a book is open, **Reading** says that the open book's settings live in **Aa**.
-- [ ] Put the theme cards, light and dark, and **Fullscreen** in **Appearance**.
-- [ ] Delete the **Book zoom** row (app.rs:5926), because zoom lives in **Aa**.
-- [ ] Update the F1 help (app.rs:6711) and **Shortcuts** so F8 reads as keep the bar visible and no line mentions an edge arrow. Add Space, which resumes the latest book from the Library, because UX-9 removes the on-screen hint.
+- [ ] Put the theme cards, light and dark, and **Fullscreen** in **Appearance**. Settings has no light and dark control today. Since UX-5 that switch is `chrome::Action::ToggleAppearance` in the bar, so **Appearance** gains a control for the same message.
+- [x] Delete the **Book zoom** row (app.rs:5926), because zoom lives in **Aa**. *UX-5 already deleted it, in commit 3e87d6d. Lane 2 stays as a check.*
+- [ ] Update the F1 help (app.rs:6581) and **Shortcuts** so F8 reads as keep the bar visible and no line mentions an edge arrow. Add Space, which resumes the latest book from the Library, because UX-9 removes the on-screen hint. Today the F8 line reads "Pin / unpin the reading bar", no line mentions an edge arrow, and Space is listed only as the key that activates a control.
 
 **You see.**
 
@@ -905,10 +924,10 @@ Lanes added for the two review changes, on the release build:
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `settings`, and the per-stage p95 from `profile_settings_scroll` (settings_profile.rs:98).
+- [ ] Metric. `reader_frame_ms` p95 for `settings`, and the per-stage p95 from `profile_settings_scroll` (settings_profile.rs:108).
 - [ ] Probe. Run both probes at trunk, head, trunk, head, trunk, head.
 - [ ] Baseline. Record the trunk values first.
-- [ ] Rule. Fail when a head p95 exceeds trunk by more than 10 percent.
+- [ ] Rule. Fail when a head p95 exceeds trunk by more than 10 percent. Head draws one section where trunk draws the whole sheet. When a number moves, say what each build draws in that frame before reading it as a gain or a loss, as UX-9 had to.
 
 **Review gate.** The operator reviews before merge.
 
