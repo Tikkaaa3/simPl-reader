@@ -370,7 +370,7 @@ impl Reader {
         if !self.word_translation.settings.automatic
             || !self.interactive()
             || self.show_search
-            || self.show_settings
+            || self.settings.is_some()
             || self.notes.editor.is_some()
             || self.confirm_remove.is_some()
         {
@@ -613,52 +613,57 @@ impl Reader {
         }
     }
 
+    /// The word translation controls of Settings.
+    pub(super) fn translation_controls(&self) -> Vec<Control> {
+        let mut controls = vec![Focus::Automatic, Focus::Source, Focus::Target];
+        let state = &self.word_translation;
+        if let Some(picker) = state.picker {
+            let languages = if picker == Picker::Source {
+                Language::ALL.to_vec()
+            } else {
+                state.settings.source.targets()
+            };
+            controls.extend(
+                languages
+                    .into_iter()
+                    .map(|language| Focus::Language(picker, language)),
+            );
+        }
+        let package_focus = |id: PackageId| match state.inventory.get(id.0) {
+            Some(PackageState::Installed) => Some(Focus::Remove(id)),
+            Some(_) => Some(Focus::Download(id)),
+            None => None,
+        };
+        if !state.packages_expanded
+            && state.package_job.is_none()
+            && let Some(id) = dictionary::package_id(state.settings.source, state.settings.target)
+        {
+            controls.extend(package_focus(id));
+        }
+        controls.push(Focus::ManagePackages);
+        if state.package_job.is_none() {
+            controls.push(Focus::ImportPackage);
+        } else if state.package_job.as_ref().is_some_and(|job| {
+            matches!(job.kind, PackageJobKind::Download(_)) && !job.cancel.load(Ordering::Acquire)
+        }) {
+            controls.push(Focus::CancelDownload);
+        }
+        if state.packages_expanded && state.package_job.is_none() {
+            controls.extend(
+                (0..dictionary::packages().len()).filter_map(|i| package_focus(PackageId(i))),
+            );
+        }
+        controls.into_iter().map(Control::Dictionary).collect()
+    }
+
+    /// The translation card's controls.
     pub(super) fn dictionary_controls(&self) -> Vec<Control> {
         let mut controls = Vec::new();
-        if self.show_settings {
-            controls.extend([Focus::Automatic, Focus::Source, Focus::Target]);
-            let state = &self.word_translation;
-            if let Some(picker) = state.picker {
-                let languages = if picker == Picker::Source {
-                    Language::ALL.to_vec()
-                } else {
-                    state.settings.source.targets()
-                };
-                controls.extend(
-                    languages
-                        .into_iter()
-                        .map(|language| Focus::Language(picker, language)),
-                );
-            }
-            let package_focus = |id: PackageId| match state.inventory.get(id.0) {
-                Some(PackageState::Installed) => Some(Focus::Remove(id)),
-                Some(_) => Some(Focus::Download(id)),
-                None => None,
-            };
-            if !state.packages_expanded
-                && state.package_job.is_none()
-                && let Some(id) =
-                    dictionary::package_id(state.settings.source, state.settings.target)
-            {
-                controls.extend(package_focus(id));
-            }
-            controls.push(Focus::ManagePackages);
-            if state.package_job.is_none() {
-                controls.push(Focus::ImportPackage);
-            } else if state.package_job.as_ref().is_some_and(|job| {
-                matches!(job.kind, PackageJobKind::Download(_))
-                    && !job.cancel.load(Ordering::Acquire)
-            }) {
-                controls.push(Focus::CancelDownload);
-            }
-            if state.packages_expanded && state.package_job.is_none() {
-                controls.extend(
-                    (0..dictionary::packages().len()).filter_map(|i| package_focus(PackageId(i))),
-                );
-            }
-        } else if self.word_translation.popup.is_some() {
+        if self.settings.is_none()
+            && let Some(popup) = &self.word_translation.popup
+        {
             controls.push(Focus::Close);
-            if let Some(id) = missing_package(self.word_translation.popup.as_ref().unwrap()) {
+            if let Some(id) = missing_package(popup) {
                 if self.word_translation.package_job.is_none() {
                     controls.push(Focus::Download(id));
                 } else if self

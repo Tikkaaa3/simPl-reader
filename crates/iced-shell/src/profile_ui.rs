@@ -522,7 +522,7 @@ mod tests {
             }),
         );
         assert!(reader.profile.estimate.is_none());
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Library);
         for format in [
             ExportFormat::Markdown,
             ExportFormat::Text,
@@ -631,7 +631,7 @@ mod tests {
         let output = PathBuf::from("../../target/reader-comfort-previews");
         std::fs::create_dir_all(&output).unwrap();
         let mut reader = ready();
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Library);
         reader.library.location = Some(Ok(reader_document::library_location::Location {
             root: PathBuf::from(r"E:\Books\simPl Library"),
             custom: true,

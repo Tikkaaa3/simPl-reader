@@ -497,14 +497,27 @@ fn enabled(reader: &Reader) -> Vec<Focus> {
     focus
 }
 
+fn in_banner(focus: &Focus) -> bool {
+    matches!(
+        focus,
+        Focus::BannerRetry | Focus::BannerCancel | Focus::Dismiss
+    )
+}
+
+/// The banner's controls, which show over any screen while the banner does.
 pub(super) fn controls(reader: &Reader) -> impl Iterator<Item = Control> + Clone + '_ {
     let banner = banner_visible(reader);
     enabled(reader)
         .into_iter()
-        .filter(move |focus| match focus {
-            Focus::BannerRetry | Focus::BannerCancel | Focus::Dismiss => banner,
-            _ => reader.show_settings,
-        })
+        .filter(move |focus| banner && in_banner(focus))
+        .map(Control::Library)
+}
+
+/// The controls of the library folder in Settings.
+pub(super) fn settings_controls(reader: &Reader) -> impl Iterator<Item = Control> {
+    enabled(reader)
+        .into_iter()
+        .filter(|focus| !in_banner(focus))
         .map(Control::Library)
 }
 

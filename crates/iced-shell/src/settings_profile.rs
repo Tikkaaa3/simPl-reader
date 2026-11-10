@@ -6,7 +6,7 @@ use std::time::Instant;
 
 fn scenario(with_book: bool, narrow: bool) -> Reader {
     let mut reader = Reader {
-        show_settings: true,
+        settings: Some(settings::Section::Library),
         ..Default::default()
     };
     reader.library.location = Some(Ok(reader_document::library_location::Location {
@@ -22,6 +22,7 @@ fn scenario(with_book: bool, narrow: bool) -> Reader {
     if narrow {
         reader.window_size = Size::new(640.0, 480.0);
         reader.appearance = reader_document::preferences::Appearance::Light;
+        reader.settings = Some(settings::Section::Translation);
         reader.word_translation.picker = Some(word_translation::Picker::Source);
         reader.word_translation.packages_expanded = true;
         reader.word_translation.inventory = vec![

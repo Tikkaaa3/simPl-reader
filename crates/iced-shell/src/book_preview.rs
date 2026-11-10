@@ -526,7 +526,7 @@ fn render_frame(reader: &mut Reader, output: &Path, scale: f32, cursor: mouse::C
                 }
             });
         }
-        if reader.show_settings && reader.focused.is_some() {
+        if reader.settings.is_some() && reader.focused.is_some() {
             use iced::advanced::widget::{Operation, operation::Outcome};
             let mut operation: Box<dyn Operation<()>> = Box::new(ui::reveal_focus_operation());
             loop {
@@ -3315,7 +3315,7 @@ fn render_book_theme_look() {
         reader.focused = None;
         render(&mut reader, &output.join(format!("theme-aa-{name}.png")));
         let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Appearance);
         render(
             &mut reader,
             &output.join(format!("theme-settings-{name}.png")),
@@ -3367,7 +3367,7 @@ fn render_ux8_look() {
     );
     for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
         reader.appearance = appearance;
-        reader.show_settings = true;
+        reader.settings = Some(settings::Section::Appearance);
         render(
             &mut reader,
             &output.join(format!("UX-8-settings-{name}.png")),
@@ -4768,7 +4768,7 @@ fn render_reading_themes() {
         let mut reader = Reader {
             book: Some(book.clone()),
             appearance,
-            show_settings: true,
+            settings: Some(settings::Section::Appearance),
             window_size: Size::new(1280.0, 800.0),
             ..Reader::default()
         };

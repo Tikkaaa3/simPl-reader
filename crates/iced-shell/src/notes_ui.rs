@@ -510,7 +510,7 @@ impl Reader {
         if !self.interactive()
             || self.notes.editor.is_some()
             || self.show_search
-            || self.show_settings
+            || self.settings.is_some()
             || self.confirm_remove.is_some()
         {
             return;

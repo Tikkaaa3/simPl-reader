@@ -210,7 +210,7 @@ fn reading_contents_epub() -> Reader {
 
 fn settings() -> Reader {
     Reader {
-        show_settings: true,
+        settings: Some(settings::Section::Reading),
         ..reading()
     }
 }

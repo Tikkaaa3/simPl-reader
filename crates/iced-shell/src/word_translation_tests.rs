@@ -207,7 +207,7 @@ fn long_selections_use_normal_tools_and_late_results_never_reopen_cards() {
 #[test]
 fn language_controls_offer_available_pairs_and_keep_settings_valid() {
     let mut reader = reader();
-    reader.show_settings = true;
+    reader.settings = Some(settings::Section::Translation);
     let _ = reader.dictionary_action(Action::Picker(Picker::Source));
     for language in Language::ALL {
         assert!(reader.controls().any(
@@ -217,7 +217,7 @@ fn language_controls_offer_available_pairs_and_keep_settings_valid() {
     let _ = reader.dictionary_action(Action::Language(Picker::Source, Language::Korean));
     assert_eq!(reader.word_translation.settings.target, Language::English);
     let _ = reader.dictionary_action(Action::Picker(Picker::Target));
-    let choices = reader.dictionary_controls();
+    let choices: Vec<_> = reader.controls().collect();
     assert!(choices.contains(&Control::Dictionary(Focus::Language(
         Picker::Target,
         Language::English
@@ -583,7 +583,7 @@ fn render_dictionary_previews() {
         reader.pointer = iced::Point::new(size.width - 50.0, size.height - 50.0);
         for (tone, appearance) in [("light", Appearance::Light), ("dark", Appearance::Dark)] {
             reader.appearance = appearance;
-            reader.show_settings = false;
+            reader.settings = None;
             select(&mut reader, 7, 11);
             let _ = reader.translate_selection();
             reader.dictionary_ready(
@@ -598,7 +598,7 @@ fn render_dictionary_previews() {
                 &output.join(format!("card-{name}-{tone}.png")),
             );
             reader.word_translation.dismiss();
-            reader.show_settings = true;
+            reader.settings = Some(settings::Section::Translation);
             reader.word_translation.picker = Some(Picker::Source);
             reader.focused = Some(Control::Dictionary(Focus::Language(
                 Picker::Source,
@@ -634,7 +634,7 @@ fn render_downloadable_dictionary_previews() {
         reader.window_size = size;
         for (tone, appearance) in [("light", Appearance::Light), ("dark", Appearance::Dark)] {
             reader.appearance = appearance;
-            reader.show_settings = true;
+            reader.settings = Some(settings::Section::Translation);
             reader.word_translation.packages_expanded = false;
             reader.focused = Some(Control::Dictionary(Focus::Download(id)));
             super::super::book_preview::render(
@@ -649,7 +649,7 @@ fn render_downloadable_dictionary_previews() {
                     &output.join(format!("manager-{}-{name}-{tone}.png", package.0)),
                 );
             }
-            reader.show_settings = false;
+            reader.settings = None;
             reader.pointer = iced::Point::new(size.width - 60.0, size.height - 60.0);
             select(&mut reader, 7, 11);
             let _ = reader.auto_translate_selection();
