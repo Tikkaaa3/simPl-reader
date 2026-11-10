@@ -34,6 +34,9 @@ pub(super) struct State {
     pub epoch: u64,
     pub busy: bool,
     pub notice: Option<String>,
+    /// The notice is about an export, so it shows under Export, not under
+    /// the backup buttons.
+    notice_on_export: bool,
     pub options: Options,
     pub estimate: Option<Summary>,
     estimate_error: Option<String>,
@@ -47,6 +50,7 @@ impl Default for State {
             epoch: 0,
             busy: false,
             notice: None,
+            notice_on_export: false,
             options: Options {
                 documents: true,
                 dictionaries: false,
@@ -97,6 +101,7 @@ impl Reader {
                     self.profile.estimate = None;
                     self.profile.estimate_error = Some(error.clone());
                     self.profile.notice = Some(error);
+                    self.profile.notice_on_export = false;
                 }
             }
         }
@@ -126,6 +131,7 @@ impl Reader {
             Action::Create | Action::Restore if self.profile_ready() => {
                 self.profile.busy = true;
                 self.profile.notice = Some("Preparing and verifying the chosen backup…".into());
+                self.profile.notice_on_export = false;
                 let save = matches!(action, Action::Create);
                 let options = self.profile.options;
                 Task::perform(
@@ -152,6 +158,7 @@ impl Reader {
                 };
                 self.profile.busy = true;
                 self.profile.notice = Some("Restoring verified backup…".into());
+                self.profile.notice_on_export = false;
                 Task::perform(
                     async move { backup::restore(&path).map(Reply::Restored) },
                     Message::ProfileReply,
@@ -175,6 +182,7 @@ impl Reader {
                 let format = self.profile.format;
                 self.profile.busy = true;
                 self.profile.notice = Some("Exporting reading notes…".into());
+                self.profile.notice_on_export = true;
                 Task::perform(
                     async move {
                         let Some(path) =
@@ -352,9 +360,17 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
         ]
         .spacing(8),
     );
-    // Under the buttons, where it stays in view however far the pane scrolls.
-    if let Some(notice) = &reader.profile.notice {
-        content = content.push(text(notice).size(12).style(ui::secondary_text));
+    // Under the buttons that caused it, where the reader is looking.
+    let notice = |on_export: bool| {
+        reader
+            .profile
+            .notice
+            .as_ref()
+            .filter(|_| reader.profile.notice_on_export == on_export)
+            .map(|notice| text(notice).size(12).style(ui::secondary_text))
+    };
+    if let Some(notice) = notice(false) {
+        content = content.push(notice);
     }
     if reader.library.pending() {
         content = content.push(
@@ -391,6 +407,9 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
     content=content.push(text("Export reading notes").font(ui::MEDIUM).size(13)).push(formats)
         .push(control_button(reader, Control::Profile(Focus::Export),text("Export…").size(12),(!reader.profile.busy && reader.notes.data.is_some() && reader.reading_title().is_some() && reader.notes.editor.is_none()).then_some(action(Action::Export))))
         .push(text("Open a book to export its saved bookmarks, highlighted quotes and notes, including page/chapter information.").size(12).style(ui::muted_text));
+    if let Some(notice) = notice(true) {
+        content = content.push(notice);
+    }
     content.into()
 }
 
