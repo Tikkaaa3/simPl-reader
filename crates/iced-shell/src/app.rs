@@ -1031,6 +1031,10 @@ struct Reader {
     /// The pin was changed while the preferences were still loading. The
     /// loaded record then keeps everything else it holds.
     pin_before_load: bool,
+    /// Light or dark, and the progress line, chosen while the preferences
+    /// were still loading. They are laid over the loaded record.
+    appearance_before_load: Option<Appearance>,
+    progress_line_before_load: Option<bool>,
     /// The progress line along the bottom of a book is drawn.
     progress_line: bool,
     /// Where the reader last jumped to. Until the view moves, the contents
@@ -1153,6 +1157,8 @@ impl Default for Reader {
             pending_anchor: None,
             look_place: None,
             pin_before_load: false,
+            appearance_before_load: None,
+            progress_line_before_load: None,
             progress_line: true,
             arrival: None,
             bottom_landing: None,
@@ -3443,7 +3449,8 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     let previous_panels = (reader.show_recent, reader.show_contents);
     let previous_bar = reader.bar.visible();
     let input = reading_chrome::Input::of(&message);
-    let place_before = reading_chrome::moves_the_page(&message).then(|| reader.place_in_view());
+    let place_before = reading_chrome::moves_the_page(&message)
+        .then(|| (reader.place_in_view(), reader.pending_navigation.is_some()));
     let resized = matches!(
         &message,
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
@@ -3454,9 +3461,12 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     let now = std::time::Instant::now();
     reader.sync_bar(now, input);
     // The page moved under the reader's hand: the tools go at once.
-    if let Some((viewport, place)) = place_before {
+    // A turn into another section of an EPUB arrives later, so it counts
+    // from the moment it starts.
+    if let Some(((viewport, place), turning)) = place_before {
         let (now_viewport, now_place) = reader.place_in_view();
-        if viewport == now_viewport && (place - now_place).abs() > 0.5 {
+        let scrolled = viewport == now_viewport && (place - now_place).abs() > 0.5;
+        if scrolled || (!turning && reader.pending_navigation.is_some()) {
             let held = reader.bar_held();
             reader.bar.dismiss(now, held);
         }
@@ -3927,6 +3937,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::SetProgressLine(shown) if reader.progress_line != shown => {
             reader.progress_line = shown;
+            if reader.preferences_loading {
+                // Saving now would write defaults over the record on disk.
+                reader.progress_line_before_load = Some(shown);
+                return Task::none();
+            }
             reader.preferences_dirty = true;
             reader.persist_preferences()
         }
@@ -3943,6 +3958,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::ToggleAppearance if reader.interactive() => {
             reader.appearance = reader.appearance.toggled();
+            if reader.preferences_loading {
+                reader.appearance_before_load = Some(reader.appearance);
+                return Task::none();
+            }
             reader.preferences_dirty = true;
             reader.persist_preferences()
         }
@@ -3953,6 +3972,8 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::PreferencesLoaded(result) => {
             reader.preferences_loading = false;
             let pin_before_load = std::mem::take(&mut reader.pin_before_load);
+            let appearance_before_load = reader.appearance_before_load.take();
+            let progress_line_before_load = reader.progress_line_before_load.take();
             let mut theme_task = Task::none();
             match result {
                 Ok(loaded) if !reader.preferences_dirty => {
@@ -3963,9 +3984,17 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.progress_line = !loaded.hide_progress_line;
                     reader.read_aloud.voice = loaded.voice;
                     reader.read_aloud.rate = loaded.speech_rate;
+                    // The reader's own choices stand, and are saved with
+                    // the rest of the loaded record.
+                    if let Some(appearance) = appearance_before_load {
+                        reader.appearance = appearance;
+                        reader.preferences_dirty = true;
+                    }
+                    if let Some(shown) = progress_line_before_load {
+                        reader.progress_line = shown;
+                        reader.preferences_dirty = true;
+                    }
                     if pin_before_load {
-                        // The reader's own choice stands, and is saved
-                        // with the rest of the loaded record.
                         reader.preferences_dirty = true;
                     } else if reader.bar.pinned() != loaded.pin_tools {
                         reader.bar.toggle_pin(std::time::Instant::now());

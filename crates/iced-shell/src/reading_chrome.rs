@@ -371,15 +371,24 @@ impl Input {
 
 /// Messages by which the reader moves the page: the wheel, the scrollbar,
 /// a key, a page strip or the progress line. A layout that settles the page
-/// is not one of them, so opening a book keeps its two seconds.
+/// is not one of them, so opening a book keeps its two seconds. Nor is a
+/// PDF zoom, which keeps the point under the pointer where it is.
 pub(super) fn moves_the_page(message: &Message) -> bool {
     matches!(
         message,
         Message::Scroll { .. }
             | Message::PageWheel(_)
+            | Message::ChromeWheel(_)
             | Message::BookPage(_)
             | Message::ProgressJump(_)
-            | Message::Pdf { .. }
+            | Message::Pdf {
+                message: pdf_reader::Message::Scroll { .. }
+                    | pdf_reader::Message::Previous
+                    | pdf_reader::Message::Next
+                    | pdf_reader::Message::GoTo(_)
+                    | pdf_reader::Message::PageSubmit,
+                ..
+            }
             | Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }), _)
     )
 }
@@ -1530,6 +1539,17 @@ mod tests {
             mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 }
         )));
         assert!(moves_the_page(&Message::BookPage(true)));
+        assert!(moves_the_page(&Message::Pdf {
+            document: 0,
+            message: pdf_reader::Message::Next,
+        }));
+        assert!(
+            !moves_the_page(&Message::Pdf {
+                document: 0,
+                message: pdf_reader::Message::ZoomIn,
+            }),
+            "a zoom keeps the tools"
+        );
         assert!(
             !moves_the_page(&Message::LayoutReady(0)),
             "a layout that settles the page keeps the tools"
@@ -1564,6 +1584,34 @@ mod tests {
         };
         let _ = update_inner(&mut next, Message::PreferencesLoaded(Ok(saved)));
         assert!(!next.progress_line);
+    }
+
+    #[test]
+    fn choices_made_while_preferences_load_keep_the_saved_settings() {
+        let mut reader = reading();
+        reader.preferences_loading = true;
+        let _ = update_inner(&mut reader, Message::SetProgressLine(false));
+        let _ = update_inner(&mut reader, Message::ToggleAppearance);
+        assert_eq!(reader.appearance, Appearance::Dark);
+        assert!(!reader.preferences_dirty && !reader.preferences_saving);
+
+        let saved = reader_document::preferences::Preferences {
+            theme: "soft".into(),
+            speech_rate: 3,
+            pin_tools: true,
+            ..Default::default()
+        };
+        let _ = update_inner(&mut reader, Message::PreferencesLoaded(Ok(saved)));
+        assert_eq!(reader.default_theme.id, "soft");
+        assert_eq!(reader.read_aloud.rate, 3);
+        assert!(reader.bar.pinned());
+        assert_eq!(
+            reader.appearance,
+            Appearance::Dark,
+            "the reader's choice stands"
+        );
+        assert!(!reader.progress_line, "and so does the hidden line");
+        assert!(reader.preferences_saving, "saved with the loaded record");
     }
 
     #[test]
