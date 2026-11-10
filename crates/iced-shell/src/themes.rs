@@ -6,7 +6,9 @@ use iced::Theme;
 use reader_document::preferences::Appearance;
 
 use crate::ui::{self, Palette};
-pub use reader_layout::themes::{DEFAULT_ID, ReadingTheme, THEMES, by_id, default_theme, find};
+pub use reader_layout::themes::{
+    DEFAULT_ID, ReadingTheme, THEMES, by_id, default_theme, effective_family, effective_style, find,
+};
 
 fn theme_name(theme: &ReadingTheme, appearance: Appearance) -> String {
     format!(

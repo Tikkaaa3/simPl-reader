@@ -581,7 +581,7 @@ pub fn adapt_section_with(
     }
     let old = virtual_reader::HeightIndex::new(canonical.heights.clone());
     let new = virtual_reader::HeightIndex::new(heights.clone());
-    let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
+    let style = themes::effective_style(theme, options);
     // Lines of a paragraph in a layout: (line height, space above the text, line count).
     let grid = |style: &BookStyle,
                 index: &virtual_reader::HeightIndex,

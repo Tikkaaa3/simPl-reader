@@ -8,7 +8,9 @@ use reader_layout::{
     atlas::{self, Atlas, Section},
     book::{self, Book},
     index::HeightIndex,
-    measure, themes,
+    measure,
+    style::{BookStyle, MINIMAL},
+    themes,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -322,6 +324,24 @@ pub(crate) fn section_book(book: &Arc<Book>, section: usize) -> Result<Arc<Book>
     }
 }
 
+/// The typography of a book's rows: the theme's and the reader's options,
+/// except that `OpenBook::adapt` does not lay a PDF book out again here, so
+/// its rows keep the default typography its atlas was built with.
+pub(crate) fn typography(
+    book: &Book,
+    theme: &'static themes::ReadingTheme,
+    options: Options,
+) -> (BookStyle, Option<&'static str>) {
+    if book.pdf_source.is_some() {
+        (MINIMAL, None)
+    } else {
+        (
+            themes::effective_style(theme, options),
+            themes::effective_family(theme, options),
+        )
+    }
+}
+
 pub(crate) fn paragraph_cut(
     book: &Book,
     index: &HeightIndex,
@@ -339,7 +359,7 @@ pub(crate) fn paragraph_cut(
     }
     let item = book.items.get(row)?;
     item.text()?;
-    let style = themes::effective_style(theme, book.pdf_source.is_some(), options);
+    let (style, _) = typography(book, theme, options);
     let body = options.size as f32;
     let width = atlas::PAPER - options.margin as f32 * 2.0;
     let line = measure::styled_item_size(&style, book, row, item, body) * style.line_height;
