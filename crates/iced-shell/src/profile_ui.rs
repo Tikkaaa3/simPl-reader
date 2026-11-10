@@ -130,7 +130,7 @@ impl Reader {
                 let options = self.profile.options;
                 Task::perform(
                     async move {
-                        let path = crate::platform::transfer_dialog(save, None)?;
+                        let path = crate::platform::transfer_dialog(save, None).await?;
                         if let Some(path) = path {
                             if save {
                                 backup::create(&path, options)?;
@@ -177,7 +177,8 @@ impl Reader {
                 self.profile.notice = Some("Exporting reading notes…".into());
                 Task::perform(
                     async move {
-                        let Some(path) = crate::platform::transfer_dialog(true, Some(format))?
+                        let Some(path) =
+                            crate::platform::transfer_dialog(true, Some(format)).await?
                         else {
                             return Ok(Reply::Cancelled);
                         };

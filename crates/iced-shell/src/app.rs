@@ -2264,7 +2264,7 @@ impl Reader {
         self.dialog = Some(how);
         self.selection.end_drag();
         Task::perform(
-            async move { crate::platform::open_document_dialog(title) },
+            crate::platform::open_document_dialog(title),
             Message::DialogChosen,
         )
     }

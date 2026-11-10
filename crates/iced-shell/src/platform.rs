@@ -14,21 +14,70 @@ pub fn mark_reader_running() {
     }
 }
 
-/// Display the native Windows picker. Call this from an application worker task,
-/// not from the UI update/view thread. Cancellation is not an error.
+/// Runs a native dialog on a thread of its own and resolves when it closes.
+///
+/// iced polls a new task once on the UI thread before the executor gets it, so
+/// a dialog called straight from a task ran its modal loop inside the window's
+/// event handler. There the shell never finished listing the Downloads folder
+/// when it was chosen from the dialog's side list. The thread gets a COM
+/// apartment of its own, which the shell dialogs need.
 #[cfg(windows)]
-pub fn open_document_dialog(title: &str) -> Result<Option<PathBuf>, String> {
-    open_file_dialog(title, false)
+async fn on_dialog_thread<T: Send + 'static>(
+    name: &'static str,
+    dialog: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            // SAFETY: initializes this new thread's apartment once.
+            let result =
+                unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
+                    .ok()
+                    .map_err(|error| format!("Cannot open the dialog: {error}"))
+                    .and_then(|()| {
+                        let result = dialog();
+                        // SAFETY: balances the successful CoInitializeEx above.
+                        unsafe { CoUninitialize() };
+                        result
+                    });
+            let _ = sender.send(result);
+        })
+        .map_err(|error| format!("Cannot open the dialog: {error}"))?;
+    receiver
+        .await
+        .map_err(|_| "The dialog stopped unexpectedly.".to_string())?
 }
 
+/// Display the native Windows picker. Cancellation is not an error.
+#[cfg(windows)]
+pub async fn open_document_dialog(title: &'static str) -> Result<Option<PathBuf>, String> {
+    on_dialog_thread("document-dialog", move || open_file_dialog(title, false)).await
+}
+
+/// Blocks until the picker closes. Call it from a worker thread, never from a task.
 #[cfg(windows)]
 pub fn open_dictionary_dialog() -> Result<Option<PathBuf>, String> {
     open_file_dialog("Import dictionary package", true)
 }
 
-/// Native backup/export picker, run on a worker so the reader stays responsive.
+/// Native backup/export picker.
 #[cfg(windows)]
-pub fn transfer_dialog(
+pub async fn transfer_dialog(
+    save: bool,
+    format: Option<reader_document::backup::ExportFormat>,
+) -> Result<Option<PathBuf>, String> {
+    on_dialog_thread("transfer-dialog", move || {
+        show_transfer_dialog(save, format)
+    })
+    .await
+}
+
+#[cfg(windows)]
+fn show_transfer_dialog(
     save: bool,
     format: Option<reader_document::backup::ExportFormat>,
 ) -> Result<Option<PathBuf>, String> {
@@ -122,7 +171,7 @@ pub fn transfer_dialog(
 }
 
 #[cfg(not(windows))]
-pub fn transfer_dialog(
+pub async fn transfer_dialog(
     _save: bool,
     _format: Option<reader_document::backup::ExportFormat>,
 ) -> Result<Option<PathBuf>, String> {
@@ -187,14 +236,13 @@ fn open_file_dialog(title: &str, dictionary: bool) -> Result<Option<PathBuf>, St
     Ok(Some(OsString::from_wide(&filename[..end]).into()))
 }
 
-/// Runs on its own thread so the dialog gets a COM apartment of its own.
 #[cfg(windows)]
-pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf>, String> {
+pub async fn pick_folder(
+    title: &'static str,
+    initial: Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
     use std::os::windows::ffi::OsStringExt;
-    use windows::Win32::System::Com::{
-        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-        CoInitializeEx, CoTaskMemFree, CoUninitialize,
-    };
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
     use windows::Win32::UI::Shell::{
         FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
         IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
@@ -207,8 +255,8 @@ pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf
         HSTRING::from_wide(&path.as_os_str().encode_wide().collect::<Vec<_>>())
     });
     let picker = move || -> windows::core::Result<Option<PathBuf>> {
-        // SAFETY: every COM call below runs on this thread after a successful
-        // CoInitializeEx, and the strings they borrow outlive the calls.
+        // SAFETY: every COM call below runs on the dialog thread, whose
+        // apartment is initialized, and the strings they borrow outlive the calls.
         unsafe {
             let dialog: IFileOpenDialog =
                 CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
@@ -236,25 +284,17 @@ pub fn pick_folder(title: &str, initial: Option<&Path>) -> Result<Option<PathBuf
             Ok(Some(path.into()))
         }
     };
-    std::thread::Builder::new()
-        .name("folder-picker".into())
-        .spawn(move || {
-            // SAFETY: initializes this new thread's apartment once.
-            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
-                .ok()
-                .map_err(|error| format!("Cannot open the folder picker: {error}"))?;
-            let result = picker().map_err(|error| format!("Folder picker failed: {error}"));
-            // SAFETY: balances the successful CoInitializeEx above.
-            unsafe { CoUninitialize() };
-            result
-        })
-        .map_err(|error| format!("Cannot open the folder picker: {error}"))?
-        .join()
-        .map_err(|_| "The folder picker stopped unexpectedly.".to_string())?
+    on_dialog_thread("folder-picker", move || {
+        picker().map_err(|error| format!("Folder picker failed: {error}"))
+    })
+    .await
 }
 
 #[cfg(not(windows))]
-pub fn pick_folder(_title: &str, _initial: Option<&Path>) -> Result<Option<PathBuf>, String> {
+pub async fn pick_folder(
+    _title: &'static str,
+    _initial: Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
     Err("the native folder picker requires Windows".into())
 }
 
@@ -267,11 +307,39 @@ pub fn open_in_explorer(folder: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn open_document_dialog(_title: &str) -> Result<Option<PathBuf>, String> {
+pub async fn open_document_dialog(_title: &'static str) -> Result<Option<PathBuf>, String> {
     Err("the native document picker requires Windows".into())
 }
 
 #[cfg(not(windows))]
 pub fn open_dictionary_dialog() -> Result<Option<PathBuf>, String> {
     Err("the native dictionary picker requires Windows".into())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use iced::futures::{FutureExt, executor::block_on, task::noop_waker_ref};
+    use std::task::{Context, Poll};
+
+    #[test]
+    fn a_dialog_never_runs_on_the_thread_that_polls_its_task() {
+        let polling = std::thread::current().id();
+        let mut dialog =
+            on_dialog_thread("test-dialog", || Ok(std::thread::current().id())).boxed();
+        // iced polls a new task once on the UI thread, as this poll does.
+        let ran_on = match dialog.poll_unpin(&mut Context::from_waker(noop_waker_ref())) {
+            Poll::Ready(ran_on) => ran_on,
+            Poll::Pending => block_on(dialog),
+        };
+        assert_ne!(ran_on, Ok(polling));
+        assert!(ran_on.is_ok());
+    }
+
+    #[test]
+    fn a_dialog_that_fails_reports_its_error() {
+        let failed: Result<(), String> =
+            block_on(on_dialog_thread("test-dialog", || Err("no picker".into())));
+        assert_eq!(failed, Err("no picker".into()));
+    }
 }

@@ -172,7 +172,7 @@ impl Reader {
             Purpose::Find => "Find your simPl Library folder",
         };
         Task::perform(
-            async move { crate::platform::pick_folder(title, initial.as_deref()) },
+            crate::platform::pick_folder(title, initial),
             move |result| Message::LibraryReply(Reply::Picked(purpose, result)),
         )
     }
