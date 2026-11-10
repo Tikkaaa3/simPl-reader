@@ -2392,7 +2392,7 @@ fn right_click(ui: &mut Harness, reader: &mut Reader, at: Point) -> Vec<Message>
     )
 }
 
-/// Right-clicks `at` and clicks "Start reading from here" in the menu.
+/// Right-clicks `at` and clicks "Read aloud from here" in the menu.
 fn start_reading_from(ui: &mut Harness, reader: &mut Reader, at: Point) {
     right_click(ui, reader, at);
     let entry = bounds_of(

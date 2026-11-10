@@ -1219,7 +1219,7 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
             PopupItem::ReadFromHere => Some(menu_button(
                 reader,
                 entry,
-                "Start reading from here",
+                "Read aloud from here",
                 "",
                 ui::ButtonTone::Subtle,
             )),
