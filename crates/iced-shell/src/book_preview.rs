@@ -2972,7 +2972,15 @@ fn progress_jump_lands_on_the_page() {
     assert_eq!(page_field(&reader), "7");
     assert_eq!(reader.active_page().unwrap().number + 1, 7);
     // Six pages, and the part of the seventh that is in view.
-    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 48%");
+    let progress = reader.progress().unwrap();
+    assert_eq!(
+        (
+            progress.page,
+            progress.total,
+            shelf::percent(progress.fraction)
+        ),
+        (7, 14, 48)
+    );
 }
 
 #[test]
@@ -3033,7 +3041,7 @@ fn the_progress_line_is_full_at_the_end_of_the_book() {
     reader.offset = (last.top + text(&last) - reader.viewport).max(last.top);
     let end = reader.progress().unwrap();
     assert_eq!(end.fraction, 1.0, "the last line of the book is in view");
-    assert_eq!(end.label(), format!("Page {total} of {total} · 100%"));
+    assert_eq!((end.page, end.total), (total as u32, total as u32));
 
     let Some(mut reader) = test_pdf(
         crate::pdf_reader::tests::pages_pdf(3),

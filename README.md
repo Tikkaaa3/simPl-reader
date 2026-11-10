@@ -162,14 +162,14 @@ single notch does not turn it.
 A thin line along the bottom shows how far through the book or PDF you are, cut
 into the book's chapters. Point at it to see two places: the page you are on, and
 the chapter and page a click would jump to. The stretch between them shows the jump
-before you make it.
+before you make it. **Settings → Appearance → Progress line** hides the line.
 While you read, the scrollbar hides; it appears when you scroll or point at the right
 edge, and fades about a second after you stop.
 
 The title bar stays on screen: the Library, the book's title, search, Settings and
 the window buttons never hide in a window. The reading tools (contents, the page
 field, find, listen, notes, **Aa** and light or dark) are a small pill under it that
-hides while you read. Point at the title bar to bring it back. The pin in the title
+hides as soon as you scroll or turn a page. Point at the title bar to bring it back. The pin in the title
 bar, or **F8**, keeps the tools on screen, and simPl remembers that choice. Fullscreen
 (**F11**, or its button in the title bar) is the one mode that hides everything; move
 the pointer to the top of the screen to bring both back.

@@ -1301,7 +1301,7 @@ mod tests {
             &serde_json::to_vec(&json!({"version":1,"entries":[document]})).unwrap(),
         );
         root.write("source/library.json", &serde_json::to_vec(&json!({"version":1,"entries":[{"document": document, "author": "Reader", "byte_len": 23,"opened_at": 1,"progress": 0.5,"current": 2,"total": 4,"cover": false,"favourite": true,"source_kind": "Markdown"}]})).unwrap());
-        root.write("source/preferences.json", br#"{"version":1,"appearance":"dark","reading":{"font":"spectral","size":26,"spacing":180,"margin":64}}"#);
+        root.write("source/preferences.json", br#"{"version":1,"appearance":"dark","theme":"compact","voice":"voice-token","speech_rate":3,"dictionary":{"automatic":true,"source":"english","target":"turkish"},"reading":{"font":"spectral","size":26,"spacing":180,"margin":64},"pin_tools":true,"hide_progress_line":true}"#);
         let reflow =
             json!({"fingerprint":key,"item_id":"paragraph-0","within":0.5,"font_size":20.0});
         for suffix in ["json", "pdf-book.json"] {
@@ -1324,7 +1324,7 @@ mod tests {
             &serde_json::to_vec(&json!({"version":1,"position":{"fingerprint":key,"mode":"Book"}}))
                 .unwrap(),
         );
-        root.write(&format!("source/reading/{key}.json"), &serde_json::to_vec(&json!({"version":1,"fingerprint":key,"options":{"font":"fira_sans","size":24,"spacing":160,"margin":32}})).unwrap());
+        root.write(&format!("source/reading/{key}.json"), &serde_json::to_vec(&json!({"version":1,"fingerprint":key,"options":{"font":"fira_sans","size":24,"spacing":160,"margin":32,"theme":"soft"}})).unwrap());
         root.write("source/shelves.json", &serde_json::to_vec(&json!({"version":1,"next_id":1,"shelves":[{"id":1,"name":"Okunacak — 日本語","books":[key]}]})).unwrap());
         root.write(&format!("source/annotations/{key}.json"), &serde_json::to_vec(&json!({
             "version":1,"fingerprint":key,"next_id":3,
@@ -1413,6 +1413,25 @@ mod tests {
         assert_eq!(
             fs::read(destination.join("documents/book/asset.png")).unwrap(),
             b"resource"
+        );
+        // Every setting comes back as it was saved, and so does the theme
+        // the reader chose for this one book.
+        assert_eq!(
+            crate::preferences::load_from(&destination.join("preferences.json")).unwrap(),
+            crate::preferences::load_from(&dir.0.join("source/preferences.json")).unwrap()
+        );
+        let preferences =
+            crate::preferences::load_from(&destination.join("preferences.json")).unwrap();
+        assert_eq!(preferences.theme, "compact");
+        assert_eq!(preferences.voice, "voice-token");
+        assert_eq!(preferences.speech_rate, 3);
+        assert!(preferences.pin_tools && preferences.hide_progress_line);
+        assert_eq!(
+            crate::reading::load_from(&destination.join(format!("reading/{key}.json")), &key)
+                .unwrap()
+                .unwrap()
+                .theme,
+            Some(crate::reading::ThemeId::Soft)
         );
         let annotations =
             crate::annotations::load_from(&destination.join("annotations"), &key).unwrap();

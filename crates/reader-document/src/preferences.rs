@@ -46,6 +46,8 @@ pub struct Preferences {
     pub reading: crate::reading::Options,
     /// The reading tools stay on screen while reading.
     pub pin_tools: bool,
+    /// The progress line along the bottom of a book is not drawn.
+    pub hide_progress_line: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +67,8 @@ struct Record {
     reading: crate::reading::Options,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pin_tools: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hide_progress_line: bool,
 }
 
 fn is_zero(value: &i8) -> bool {
@@ -118,6 +122,7 @@ pub(crate) fn load_from(path: &Path) -> Result<Preferences, String> {
         dictionary: record.dictionary.validated(),
         reading: record.reading.validated().without_theme(),
         pin_tools: record.pin_tools,
+        hide_progress_line: record.hide_progress_line,
     })
 }
 
@@ -131,6 +136,7 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         dictionary: preferences.dictionary.validated(),
         reading: preferences.reading.validated().without_theme(),
         pin_tools: preferences.pin_tools,
+        hide_progress_line: preferences.hide_progress_line,
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -174,6 +180,7 @@ mod tests {
                     target: crate::dictionary::Language::English,
                 },
                 pin_tools: appearance == Appearance::Dark,
+                hide_progress_line: appearance == Appearance::Dark,
             };
             save_to(&path, preferences.clone()).unwrap();
             let saved: serde_json::Value =

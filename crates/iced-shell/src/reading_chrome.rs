@@ -287,8 +287,9 @@ impl Bar {
         }
     }
 
-    /// Escape hides a shown bar unless the pointer is on it or something holds it.
-    /// `held` is passed fresh because Escape has just cleared the focus.
+    /// Escape, or the page moving under the reader's hand, hides a shown bar
+    /// unless the pointer is on it or something holds it. `held` is passed
+    /// fresh because Escape has just cleared the focus.
     pub(super) fn dismiss(&mut self, now: Instant, held: bool) -> bool {
         self.advance(now);
         self.held = held;
@@ -368,6 +369,21 @@ impl Input {
     }
 }
 
+/// Messages by which the reader moves the page: the wheel, the scrollbar,
+/// a key, a page strip or the progress line. A layout that settles the page
+/// is not one of them, so opening a book keeps its two seconds.
+pub(super) fn moves_the_page(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Scroll { .. }
+            | Message::PageWheel(_)
+            | Message::BookPage(_)
+            | Message::ProgressJump(_)
+            | Message::Pdf { .. }
+            | Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }), _)
+    )
+}
+
 pub(super) fn is_bar_control(control: Control) -> bool {
     matches!(
         control,
@@ -395,6 +411,15 @@ pub(super) fn area_top(reader: &Reader) -> f32 {
 }
 
 impl Reader {
+    /// The size of the view and how far down the open document it is, in
+    /// the document's own units. A view that changed size has not scrolled.
+    pub(super) fn place_in_view(&self) -> (Size, f32) {
+        match &self.pdf {
+            Some(pdf) => pdf.place_in_view(),
+            None => (Size::new(0.0, self.viewport), self.offset),
+        }
+    }
+
     fn document_path(&self) -> Option<&Path> {
         self.pdf
             .as_ref()
@@ -648,13 +673,20 @@ pub(super) fn items(reader: &Reader, active: bool) -> Vec<Item> {
         }));
     }
     items.push(Item::Pages);
-    items.push(tool(Button::new(
-        Control::Find,
-        glyph::FIND,
-        "Find in document",
-        Some("Ctrl+F"),
-        active.then_some(Message::FindOpen),
-    )));
+    items.push(tool(Button {
+        selected: reader.find.is_some(),
+        ..Button::new(
+            Control::Find,
+            glyph::FIND,
+            if reader.find.is_some() {
+                "Close find"
+            } else {
+                "Find in document"
+            },
+            Some("Ctrl+F"),
+            active.then_some(Message::FindToggle),
+        )
+    }));
     items.push(Item::Divider);
     let listening = reader.read_aloud.active();
     items.push(tool(Button {
@@ -1454,6 +1486,84 @@ mod tests {
             BarState::Shown { hide_at: None },
             "the top of the screen brings both back"
         );
+    }
+
+    #[test]
+    fn the_tools_hide_as_soon_as_the_page_scrolls() {
+        let mut reader = reading();
+        reader.viewport = 600.0;
+        let now = Instant::now();
+        reader.sync_bar(now, pointer(200.0, HEIGHT - 4.0));
+        reader.sync_bar(now, pointer(640.0, 400.0));
+        assert!(matches!(
+            reader.bar.state(),
+            BarState::Shown { hide_at: Some(_) }
+        ));
+        let (viewport, place) = reader.place_in_view();
+        let scrolled = |reader: &mut Reader, by: f32| {
+            reader.offset += by;
+            let (now_viewport, now_place) = reader.place_in_view();
+            if viewport == now_viewport && (place - now_place).abs() > 0.5 {
+                let held = reader.bar_held();
+                reader.bar.dismiss(Instant::now(), held);
+            }
+        };
+        scrolled(&mut reader, 0.2);
+        assert_ne!(
+            reader.bar.state(),
+            BarState::Hidden,
+            "the view only settled"
+        );
+        scrolled(&mut reader, 40.0);
+        assert_eq!(reader.bar.state(), BarState::Hidden);
+
+        // Pinned tools, and tools under the pointer, stay.
+        let _ = update_inner(&mut reader, Message::TogglePinnedBar);
+        scrolled(&mut reader, 40.0);
+        assert_eq!(reader.bar.state(), BarState::Pinned);
+        let _ = update_inner(&mut reader, Message::TogglePinnedBar);
+        reader.sync_bar(Instant::now(), pointer(200.0, HEIGHT - 4.0));
+        scrolled(&mut reader, 40.0);
+        assert_eq!(reader.bar.state(), BarState::Shown { hide_at: None });
+
+        assert!(moves_the_page(&Message::PageWheel(
+            mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 }
+        )));
+        assert!(moves_the_page(&Message::BookPage(true)));
+        assert!(
+            !moves_the_page(&Message::LayoutReady(0)),
+            "a layout that settles the page keeps the tools"
+        );
+    }
+
+    #[test]
+    fn the_find_tool_opens_and_closes_find() {
+        let mut reader = reading();
+        let _ = update_inner(&mut reader, Message::FindToggle);
+        assert!(reader.find.is_some());
+        let _ = update_inner(&mut reader, Message::FindToggle);
+        assert!(reader.find.is_none(), "a second press closes it");
+    }
+
+    #[test]
+    fn the_progress_line_can_be_hidden_and_the_choice_is_saved() {
+        let mut reader = reading();
+        let _ = update_inner(
+            &mut reader,
+            Message::PreferencesLoaded(Ok(Default::default())),
+        );
+        let _ = update_inner(&mut reader, Message::PreferencesSaved(Ok(())));
+        assert!(reader.progress_line, "shown unless the reader hides it");
+        let _ = update_inner(&mut reader, Message::SetProgressLine(false));
+        assert!(!reader.progress_line && reader.preferences_saving);
+
+        let mut next = reading();
+        let saved = reader_document::preferences::Preferences {
+            hide_progress_line: true,
+            ..Default::default()
+        };
+        let _ = update_inner(&mut next, Message::PreferencesLoaded(Ok(saved)));
+        assert!(!next.progress_line);
     }
 
     #[test]

@@ -37,9 +37,6 @@ const TITLE_LINE: f32 = 14.0;
 const TITLE_CHARS: usize = 40;
 /// From the line up to the labels' bottom.
 const LABEL_LIFT: f32 = 10.0;
-const LABEL_SIZE: f32 = 11.0;
-const LABEL_LINE: f32 = 14.0;
-const LABEL_PADDING: [f32; 2] = [2.0, 6.0];
 
 /// How far through the open book or PDF the reader is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,17 +47,6 @@ pub(super) struct Progress {
     /// How much of the book lies above the bottom of the view: 1 with the
     /// last line of the last page in view.
     pub(super) fraction: f32,
-}
-
-impl Progress {
-    pub(super) fn label(&self) -> String {
-        format!(
-            "Page {} of {} · {}%",
-            self.page,
-            self.total,
-            shelf::percent(self.fraction)
-        )
-    }
 }
 
 /// A stretch of the book that the line draws as one piece.
@@ -163,8 +149,6 @@ pub(super) struct Shown<'a> {
     pub(super) chapters: &'a [Chapter],
     /// The x of a pointer in the band, which a press would jump to.
     pub(super) pointer: Option<f32>,
-    /// The reading bar shows, so the resting line shows its label too.
-    pub(super) labelled: bool,
 }
 
 /// Draws the line in `band`. Under a pointer its fade spans `fade`, the x
@@ -182,7 +166,6 @@ pub(super) fn draw(
         progress,
         chapters,
         pointer,
-        labelled,
     } = shown;
     let track = line(band, pointer.is_some());
     let here = track.x + track.width * progress.fraction;
@@ -252,10 +235,8 @@ pub(super) fn draw(
             renderer.fill_quad(quad(within(stretch), track.y, track.height), colour);
         }
     }
+    // At rest the line is all there is: the page field holds the numbers.
     let Some(pointer) = pointer else {
-        if labelled {
-            draw_resting_label(renderer, &palette, band, track, progress);
-        }
         return;
     };
     renderer.fill_quad(
@@ -377,57 +358,6 @@ impl Label {
             bottom -= height;
         }
     }
-}
-
-fn draw_resting_label(
-    renderer: &mut iced::Renderer,
-    palette: &ui::Palette,
-    band: Rectangle,
-    track: Rectangle,
-    progress: Progress,
-) {
-    use iced::advanced::Renderer as _;
-    use iced::advanced::text::Renderer as _;
-    let label = progress.label();
-    let text_width = selection::text_width(&label, ui::SANS, LABEL_SIZE).ceil();
-    let [padding_y, padding_x] = LABEL_PADDING;
-    let size = Size::new(text_width + 2.0 * padding_x, LABEL_LINE + 2.0 * padding_y);
-    let backing = Rectangle {
-        x: (band.center_x() - size.width / 2.0).round(),
-        y: track.y - size.height,
-        width: size.width,
-        height: size.height,
-    };
-    renderer.fill_quad(
-        renderer::Quad {
-            bounds: backing,
-            border: iced::Border {
-                color: palette.border,
-                width: 1.0,
-                // The label stands on the line, so no page text shows
-                // between them.
-                radius: iced::border::Radius::default().top(4.0),
-            },
-            ..renderer::Quad::default()
-        },
-        palette.background,
-    );
-    renderer.fill_text(
-        iced::advanced::Text {
-            content: label,
-            bounds: backing.size(),
-            size: iced::Pixels(LABEL_SIZE),
-            line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(LABEL_LINE)),
-            font: ui::SANS,
-            align_x: iced::advanced::text::Alignment::Center,
-            align_y: iced::alignment::Vertical::Center,
-            shaping: iced::advanced::text::Shaping::Advanced,
-            wrapping: iced::advanced::text::Wrapping::None,
-        },
-        backing.center(),
-        palette.muted,
-        backing,
-    );
 }
 
 impl Reader {

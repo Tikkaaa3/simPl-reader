@@ -1031,6 +1031,8 @@ struct Reader {
     /// The pin was changed while the preferences were still loading. The
     /// loaded record then keeps everything else it holds.
     pin_before_load: bool,
+    /// The progress line along the bottom of a book is drawn.
+    progress_line: bool,
     /// Where the reader last jumped to. Until the view moves, the contents
     /// take it as the reader's place: a page may end before a heading low on
     /// it reaches the top of the view.
@@ -1151,6 +1153,7 @@ impl Default for Reader {
             pending_anchor: None,
             look_place: None,
             pin_before_load: false,
+            progress_line: true,
             arrival: None,
             bottom_landing: None,
             overscroll: None,
@@ -1199,6 +1202,8 @@ enum Control {
     DismissOverlay,
     SettingsSection(settings::Section),
     Appearance(Appearance),
+    /// Show or hide the progress line, in Settings.
+    ProgressLine(bool),
     Theme(reading_ui::Target, usize),
     Close,
     Back,
@@ -1358,6 +1363,8 @@ enum Message {
     ToggleAppearance,
     /// Settings' Light and Dark: switch only when this is not the current one.
     SetAppearance(Appearance),
+    SetProgressLine(bool),
+    FindToggle,
     PreferencesLoaded(Result<Preferences, String>),
     WindowMaximized(bool),
     PreferencesSaved(Result<(), String>),
@@ -2264,6 +2271,7 @@ impl Reader {
             dictionary: self.word_translation.settings,
             reading: self.reading.defaults,
             pin_tools: self.bar.pinned(),
+            hide_progress_line: !self.progress_line,
         };
         Task::perform(
             async move { preferences::save(preferences) },
@@ -2504,6 +2512,7 @@ impl Reader {
             Control::DismissOverlay => Message::DismissOverlay,
             Control::SettingsSection(section) => Message::SettingsSection(section),
             Control::Appearance(appearance) => Message::SetAppearance(appearance),
+            Control::ProgressLine(shown) => Message::SetProgressLine(shown),
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
             Control::Theme(target, index) => theme_message(target, index),
@@ -2534,7 +2543,7 @@ impl Reader {
                     "book-page",
                 ));
             }
-            Control::Find => Message::FindOpen,
+            Control::Find => Message::FindToggle,
             Control::ReadAloud => Message::ReadAloud(read_aloud::Action::Toggle),
             Control::ReadAloudPause => Message::ReadAloud(
                 if self
@@ -3434,6 +3443,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     let previous_panels = (reader.show_recent, reader.show_contents);
     let previous_bar = reader.bar.visible();
     let input = reading_chrome::Input::of(&message);
+    let place_before = reading_chrome::moves_the_page(&message).then(|| reader.place_in_view());
     let resized = matches!(
         &message,
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
@@ -3443,6 +3453,14 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     let task = Task::batch([task, reader.drain_inbox()]);
     let now = std::time::Instant::now();
     reader.sync_bar(now, input);
+    // The page moved under the reader's hand: the tools go at once.
+    if let Some((viewport, place)) = place_before {
+        let (now_viewport, now_place) = reader.place_in_view();
+        if viewport == now_viewport && (place - now_place).abs() > 0.5 {
+            let held = reader.bar_held();
+            reader.bar.dismiss(now, held);
+        }
+    }
     reader.sync_strips(now);
     if reader.word_translation.popup.is_some()
         && (reader.generation != previous_generation
@@ -3907,6 +3925,19 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.focus_pending = false;
             ui::reveal_focus()
         }
+        Message::SetProgressLine(shown) if reader.progress_line != shown => {
+            reader.progress_line = shown;
+            reader.preferences_dirty = true;
+            reader.persist_preferences()
+        }
+        Message::FindToggle => update_inner(
+            reader,
+            if reader.find.is_some() {
+                Message::FindClose
+            } else {
+                Message::FindOpen
+            },
+        ),
         Message::SetAppearance(appearance) if reader.appearance != appearance => {
             update_inner(reader, Message::ToggleAppearance)
         }
@@ -3929,6 +3960,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.reading.defaults = loaded.reading.validated();
                     reader.default_theme = themes::find(&loaded.theme);
                     reader.appearance = loaded.appearance;
+                    reader.progress_line = !loaded.hide_progress_line;
                     reader.read_aloud.voice = loaded.voice;
                     reader.read_aloud.rate = loaded.speech_rate;
                     if pin_before_load {
@@ -4878,14 +4910,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             && !reader.show_search
                             && reader.settings.is_none() =>
                     {
-                        return update_inner(
-                            reader,
-                            if reader.find.is_some() {
-                                Message::FindClose
-                            } else {
-                                Message::FindOpen
-                            },
-                        );
+                        return update_inner(reader, Message::FindToggle);
                     }
                     Key::Named(key::Named::Enter)
                         if reader.find.is_some()
@@ -9963,15 +9988,9 @@ mod tests {
                 (0..shown.width()).all(|x| shown.get_pixel(x, y) == hidden.get_pixel(x, y))
             })
         };
-        // The progress line's band labels the line while the tools show.
-        let band = shown.height() - 24;
         assert!(
-            same(tools..band),
-            "everything between the tools and the progress line is identical whether they show or not"
-        );
-        assert!(
-            !same(band..shown.height()),
-            "the progress label shows with the tools"
+            same(tools..shown.height()),
+            "everything under the tools, the progress line too, is identical whether they show or not"
         );
         assert!(
             same(0..bar),
