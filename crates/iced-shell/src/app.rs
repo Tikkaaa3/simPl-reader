@@ -3515,8 +3515,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 .and_then(|b| b.pdf_source.as_ref())
                 .is_some_and(|s| s.document.id == document)
                 && reader.active_page().is_some_and(|p| p.number == page);
-            if current && reader.pdf_book_pending == Some((document, page)) {
+            // A reply that arrives while the book is laid out again has no
+            // page to show on. Its request is forgotten, so the page asks again.
+            let pending = reader.pdf_book_pending == Some((document, page));
+            if pending {
                 reader.pdf_book_pending = None;
+            }
+            if current && pending {
                 reader.pdf_book_raster = Some((
                     document,
                     page,
@@ -8475,15 +8480,41 @@ mod tests {
     }
 
     #[test]
-    fn a_looks_layout_is_left_to_the_thread_pool() {
+    fn an_illustration_that_arrives_during_a_new_layout_is_asked_for_again() {
+        let Some(book) = pdf_book() else { return };
+        let document = book.pdf_source.as_ref().unwrap().document.id;
+        let mut reader = reader_showing(book);
+        reader.pdf_book_pending = Some((document, 0));
+        // A look change empties the layout until the new one is measured.
+        reader.theme = &themes::THEMES[1];
+        let _ = reader.rebuild_geometry(reader.anchor());
+        assert!(reader.active_page().is_none());
+
+        let _ = update_inner(
+            &mut reader,
+            Message::PdfBookRaster {
+                document,
+                page: 0,
+                result: Err("rendered for the old layout".into()),
+            },
+        );
+        assert_eq!(
+            reader.pdf_book_pending, None,
+            "the page can ask for its illustration again"
+        );
+        assert!(reader.pdf_book_raster.is_none());
+    }
+
+    #[test]
+    fn a_looks_layout_runs_on_a_worker_thread() {
         use iced_futures::futures::{StreamExt, executor::block_on, task::noop_waker_ref};
         use iced_runtime::{Action, task::into_stream};
         let mut reader = themed_reader(30);
         reader.theme = &themes::THEMES[1];
         let mut layout = into_stream(reader.rebuild_geometry(reader.anchor())).unwrap();
-        // iced polls a new task once on the UI thread, as this poll does.
+        // iced polls a new task on the UI thread, as this poll does.
         let first = layout.poll_next_unpin(&mut std::task::Context::from_waker(noop_waker_ref()));
-        assert!(first.is_pending(), "nothing is measured on the first poll");
+        assert!(first.is_pending(), "the UI thread measures nothing");
         let Some(Action::Output(ready)) = block_on(layout.next()) else {
             panic!("the layout reports its result");
         };
