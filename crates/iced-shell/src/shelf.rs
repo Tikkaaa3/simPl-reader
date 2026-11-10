@@ -1063,12 +1063,8 @@ impl Shelf {
                 .padding([4, 10])
                 .on_press_maybe(active.then_some(Message::Activate(control)))
                 .style(move |theme, status| {
-                    let tone = if selected {
-                        ui::ButtonTone::Quiet
-                    } else {
-                        ui::ButtonTone::Subtle
-                    };
-                    let mut style = ui::button_style(theme, status, tone, focused, false);
+                    let mut style =
+                        ui::button_style(theme, status, ui::ButtonTone::Subtle, focused, selected);
                     style.border.radius = 2.0.into();
                     style
                 });
@@ -1525,12 +1521,8 @@ impl Shelf {
                 .padding([5, 12])
                 .on_press_maybe(active.then_some(Message::Activate(control)))
                 .style(move |theme, status| {
-                    let tone = if selected {
-                        ui::ButtonTone::Quiet
-                    } else {
-                        ui::ButtonTone::Surface
-                    };
-                    let mut style = ui::button_style(theme, status, tone, focus, false);
+                    let mut style =
+                        ui::button_style(theme, status, ui::ButtonTone::Surface, focus, selected);
                     style.border.radius = 14.0.into();
                     style
                 }),

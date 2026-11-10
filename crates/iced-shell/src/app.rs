@@ -681,6 +681,15 @@ struct Anchor {
     fraction: f32,
 }
 
+/// Where a jump or a newly opened book was asked to arrive.
+#[derive(Clone, Copy, Debug)]
+struct Arrival {
+    anchor: Anchor,
+    /// The view's offset when it was last seen there. A resize or a
+    /// zoom can change how far the page scrolls without moving the view.
+    settled: Option<f32>,
+}
+
 #[derive(Clone, Debug)]
 struct ReturnLocation {
     chapter: Option<usize>,
@@ -991,6 +1000,10 @@ struct Reader {
     heights: virtual_reader::HeightIndex,
     measurements: virtual_reader::Measurements,
     pending_anchor: Option<Anchor>,
+    /// Where the reader last jumped to. Until the view moves, the contents
+    /// take it as the reader's place: a page may end before a heading low on
+    /// it reaches the top of the view.
+    arrival: Option<Arrival>,
     /// The generation of a page turned back to by the wheel, which shows its
     /// bottom once laid out. No content anchor can pin a bottom below the text.
     bottom_landing: Option<u64>,
@@ -1105,6 +1118,7 @@ impl Default for Reader {
             heights: virtual_reader::HeightIndex::new(Vec::new()),
             measurements: Default::default(),
             pending_anchor: None,
+            arrival: None,
             bottom_landing: None,
             overscroll: None,
             pagination: None,
@@ -1490,12 +1504,9 @@ impl Reader {
                 .section(chapter.index)
                 .map(|c| c.title.clone())
         } else {
-            let row = self.anchor().row;
-            self.contents()
-                .iter()
-                .rev()
-                .find(|c| c.chapter <= row)
-                .map(|c| c.label.clone())
+            let contents = self.contents();
+            drawers::current_heading(contents, self.anchor().row)
+                .map(|index| contents[index].label.clone())
         };
         Some(match section.filter(|s| s != &book.title) {
             Some(section) => format!("{} ~ {section}", book.title),
@@ -1748,6 +1759,37 @@ impl Reader {
         }
     }
 
+    /// Lays the book out to show `anchor`, and remembers it as the arrival.
+    fn arrive_at(&mut self, anchor: Anchor) -> Task<Message> {
+        self.arrival = Some(Arrival {
+            anchor,
+            settled: None,
+        });
+        self.rebuild_geometry(anchor)
+    }
+
+    /// Drops the arrival once the view has settled anywhere else.
+    fn forget_arrival_once_moved(&mut self) {
+        let Some(arrival) = self.arrival else {
+            return;
+        };
+        if self.pending_anchor.is_some() || self.heights.is_empty() {
+            return;
+        }
+        let offset = self.offset;
+        let near = |other: f32| (offset - other).abs() <= 1.0;
+        self.arrival = if near(self.offset_for(arrival.anchor)) {
+            Some(Arrival {
+                settled: Some(offset),
+                ..arrival
+            })
+        } else if arrival.settled.is_some_and(near) {
+            Some(arrival)
+        } else {
+            None
+        };
+    }
+
     fn offset_for(&self, anchor: Anchor) -> f32 {
         if self.heights.is_empty() {
             return 0.0;
@@ -1852,6 +1894,7 @@ impl Reader {
         self.heights = virtual_reader::HeightIndex::new(Vec::new());
         self.measurements.lock().clear();
         self.pending_anchor = None;
+        self.arrival = None;
         self.offset = 0.0;
         self.generation = self.generation.wrapping_add(1);
         self.show_contents = false;
@@ -2621,7 +2664,7 @@ impl Reader {
             self.close_overlaid_contents();
             self.selection.clear();
             self.focused = None;
-            return self.rebuild_geometry(Anchor { row, fraction: 0.0 });
+            return self.arrive_at(Anchor { row, fraction: 0.0 });
         }
         let target = if let Some(chapter) = &book.epub {
             chapter
@@ -2660,7 +2703,7 @@ impl Reader {
         {
             self.focused = None;
             self.selection.clear();
-            return self.rebuild_geometry(Anchor {
+            return self.arrive_at(Anchor {
                 row: index,
                 fraction: 0.0,
             });
@@ -2700,7 +2743,7 @@ impl Reader {
             self.selection.clear();
             self.focused = None;
             self.error = None;
-            return self.rebuild_geometry(anchor);
+            return self.arrive_at(anchor);
         }
         let Some(chapter) = &book.epub else {
             return Task::none();
@@ -3327,6 +3370,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::Event(iced::Event::Window(window::Event::Resized(_)), _)
     );
     let task = update_inner(reader, message);
+    reader.forget_arrival_once_moved();
     let task = Task::batch([task, reader.drain_inbox()]);
     let now = std::time::Instant::now();
     reader.sync_bar(now, input);
@@ -4132,7 +4176,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         reader.reset_find();
                         reader.adapted.clear();
                     }
-                    let task = reader.rebuild_geometry(anchor);
+                    let task = reader.arrive_at(anchor);
                     match end {
                         Some(landing) if reader.pagination.is_some() => {
                             reader.pagination_end = Some(landing);
@@ -6110,7 +6154,7 @@ fn floating_lane(reader: &Reader) -> FloatingLane {
     let strip = page_strips::width(window.width);
     let inset = page_strips::bottom_inset(reader);
     let overlaid = drawers.overlaid();
-    let [previous, next] = page_strips::regions(area, strip, inset, overlaid);
+    let [previous, next] = page_strips::regions(area, strip, inset, overlaid).strips;
     let band = progress_line::band(area, strip, inset, overlaid);
     let between = previous.x + previous.width..next.x;
     let lane = if between.end - between.start >= FLOATING_MIN_WIDTH {
@@ -6344,6 +6388,15 @@ fn scrolls_sideways(reader: &Reader) -> bool {
     book_desk_width(reader, available) > available
 }
 
+/// Whether the open page scrolls down, so the vertical scrollbar has a rail
+/// at the reading area's right edge. A PDF's pages are one long scroll.
+fn scrolls_down(reader: &Reader) -> bool {
+    reader.pdf.is_some()
+        || reader
+            .active_page()
+            .is_some_and(|page| page.height > reader.viewport)
+}
+
 fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Message> {
     if reader.pagination.is_some() {
         return container(text("Preparing pages…").size(14).style(ui::muted_text))
@@ -6418,11 +6471,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     let available_width = reader.document_view_size().width;
     let desk_width = book_desk_width(reader, available_width);
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
-        .center_x(available_width.max(desk_width))
-        .padding(iced::Padding {
-            right: 14.0,
-            ..Default::default()
-        });
+        .center_x(available_width.max(desk_width));
     let generation = reader.generation;
     // A right click on text opens the note menu from the paragraph; a click on
     // the desk or margins reaches this area instead.
@@ -6908,10 +6957,8 @@ mod settings_profile;
 mod tests {
     use super::*;
 
-    /// A three-chapter EPUB like `fixtures/chapters/build_epub.py`, written to
-    /// a temporary file because the EPUB reader opens a path.
+    /// A three-chapter EPUB like `fixtures/chapters/build_epub.py`.
     fn three_chapter_epub() -> Arc<reader_document::epub::Epub> {
-        use std::io::Write as _;
         let sentence = "The lamp burned low while the house settled into its evening sounds, and the reader turned another page without noticing how late it had become. ";
         let chapters: Vec<String> = (1..=3)
             .map(|number| {
@@ -6926,23 +6973,30 @@ mod tests {
             })
             .collect();
         let package = r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-test-three-rooms</dc:identifier><dc:title>Three Rooms</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c1" href="chapter-1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="chapter-2.xhtml" media-type="application/xhtml+xml"/><item id="c3" href="chapter-3.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/></spine></package>"#;
-        let path =
-            std::env::temp_dir().join(format!("simpl-three-rooms-{}.epub", std::process::id()));
+        let mut files = vec![("OPS/package.opf".to_owned(), package.to_owned())];
+        for (index, chapter) in chapters.into_iter().enumerate() {
+            files.push((format!("OPS/chapter-{}.xhtml", index + 1), chapter));
+        }
+        epub_of("three-rooms", files)
+    }
+
+    /// Opens an EPUB of `files`, each an archive path and its text, behind
+    /// the mimetype and a container that points at `OPS/package.opf`. It is
+    /// written to a temporary file because the EPUB reader opens a path.
+    fn epub_of(name: &str, files: Vec<(String, String)>) -> Arc<reader_document::epub::Epub> {
+        use std::io::Write as _;
+        let path = std::env::temp_dir().join(format!("simpl-{name}-{}.epub", std::process::id()));
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         let stored = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        let mut files = vec![
+        let container = [
             ("mimetype".to_owned(), "application/epub+zip".to_owned()),
             (
                 "META-INF/container.xml".to_owned(),
                 r#"<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#.to_owned(),
             ),
-            ("OPS/package.opf".to_owned(), package.to_owned()),
         ];
-        for (index, chapter) in chapters.into_iter().enumerate() {
-            files.push((format!("OPS/chapter-{}.xhtml", index + 1), chapter));
-        }
-        for (name, contents) in files {
+        for (name, contents) in container.into_iter().chain(files) {
             zip.start_file(name, stored).unwrap();
             zip.write_all(contents.as_bytes()).unwrap();
         }
@@ -6950,6 +7004,48 @@ mod tests {
         let epub = Arc::new(reader_document::epub::open(&path).unwrap());
         let _ = std::fs::remove_file(&path);
         epub
+    }
+
+    /// An EPUB with one XHTML file per body, `file-0.xhtml` onwards, and a
+    /// navigation document that lists `entries`, each an href and a label.
+    pub(super) fn nav_epub(
+        name: &str,
+        bodies: &[String],
+        entries: &[(String, String)],
+    ) -> Arc<reader_document::epub::Epub> {
+        let manifest: String = (0..bodies.len())
+            .map(|file| {
+                format!(
+                    r#"<item id="f{file}" href="file-{file}.xhtml" media-type="application/xhtml+xml"/>"#
+                )
+            })
+            .collect();
+        let spine: String = (0..bodies.len())
+            .map(|file| format!(r#"<itemref idref="f{file}"/>"#))
+            .collect();
+        let package = format!(
+            r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-test-{name}</dc:identifier><dc:title>{name}</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>{manifest}</manifest><spine>{spine}</spine></package>"#
+        );
+        let list: String = entries
+            .iter()
+            .map(|(href, label)| format!(r#"<li><a href="{href}">{label}</a></li>"#))
+            .collect();
+        let nav = format!(
+            r#"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>{list}</ol></nav></body></html>"#
+        );
+        let mut files = vec![
+            ("OPS/package.opf".to_owned(), package),
+            ("OPS/nav.xhtml".to_owned(), nav),
+        ];
+        files.extend(bodies.iter().enumerate().map(|(file, body)| {
+            (
+                format!("OPS/file-{file}.xhtml"),
+                format!(
+                    r#"<html xmlns="http://www.w3.org/1999/xhtml"><head><title>File {file}</title></head><body>{body}</body></html>"#
+                ),
+            )
+        }));
+        epub_of(name, files)
     }
 
     #[test]
@@ -7619,6 +7715,7 @@ mod tests {
             epub: None,
             pdf_source: None,
             contents: OnceLock::new(),
+            contents_rows: OnceLock::new(),
         })
     }
 

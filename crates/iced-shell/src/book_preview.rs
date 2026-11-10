@@ -8,10 +8,16 @@ struct PaperViewport {
     bounds: Rectangle,
     content: Rectangle,
     offset: iced::Vector,
+    paper: Rectangle,
 }
 impl iced::advanced::widget::Operation for PaperViewport {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
         operate(self);
+    }
+    fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle) {
+        if id == Some(&iced_shell::selection::reading_paper_id()) {
+            self.paper = bounds;
+        }
     }
     fn scrollable(
         &mut self,
@@ -1466,11 +1472,11 @@ fn hide_bar(reader: &mut Reader) {
     assert!(!reader.bar.visible(), "the bar has faded out");
 }
 
-/// Where the right strip ends: inside the scrollbar rail beside a docked notes
-/// drawer, or at an overlaid one's edge.
+/// Where the right strip ends: at the reading area's right edge, over the
+/// scrollbar rail, or at an overlaid drawer's edge.
 fn right_strip_end(reader: &Reader) -> f32 {
     let drawers = reader.drawers();
-    reader.window_size.width - (drawers.docked().right + 14.0).max(drawers.overlaid().right)
+    reader.window_size.width - drawers.docked().right - drawers.overlaid().right
 }
 
 /// A point at height `y` in the middle of the right strip.
@@ -1748,6 +1754,83 @@ fn strip_wheel_scrolls_the_page() {
 }
 
 #[test]
+fn right_strip_shares_the_edge_with_the_scrollbar() {
+    let mut reader = strip_book(1280.0, 700.0);
+    assert!(reader.can_turn(true));
+    let mut ui = Harness::new();
+    let (offset, end) = native_scroll(&mut ui, &reader);
+    assert_eq!(offset, 0.0);
+    assert!(end > 0.0, "the page scrolls down");
+
+    let rail = Point::new(1280.0 - 5.0, 690.0);
+    let moved = ui.send(
+        &mut reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: rail }),
+        rail,
+    );
+    assert!(
+        moved
+            .iter()
+            .any(|message| matches!(message, Message::StripHover(Some(page_strips::Side::Next)))),
+        "the rail is part of the hovered strip"
+    );
+    reader.strips.settle();
+    assert_eq!(reader.strips.alpha(page_strips::Side::Next), 1.0);
+
+    let wheeled = ui.send_all(&mut reader, &wheel_notches(1), rail);
+    assert_eq!(wheels(&wheeled), (0, 1), "the page takes the wheel");
+    assert_eq!(native_scroll(&mut ui, &reader).0, 60.0);
+
+    let pressed = ui.press(&mut reader, rail);
+    assert!(
+        page_turns(&pressed).is_empty(),
+        "the rail press is not a turn"
+    );
+    let (paged, _) = native_scroll(&mut ui, &reader);
+    assert!(
+        (end - paged).abs() < 1.0,
+        "the press near the rail's bottom pages to the end: {paged} of {end}"
+    );
+    ui.release(&mut reader, rail);
+    app_event(
+        &mut reader,
+        mouse::Event::ButtonReleased(mouse::Button::Left),
+    );
+    assert_eq!(reader.active_page().unwrap().number, 0);
+
+    let strip = Point::new(1280.0 - 30.0, 350.0);
+    assert_eq!(page_turns(&ui.press(&mut reader, strip)), [true]);
+    assert_eq!(reader.active_page().unwrap().number, 1);
+}
+
+#[test]
+fn a_page_that_fits_gives_the_whole_right_strip_to_the_turn() {
+    let mut seen = [false; 2];
+    for zoom in [1.0, 0.8, 2.0, 0.6, 0.4] {
+        let mut reader = strip_book(1280.0, 700.0);
+        let _ = update(&mut reader, Message::Zoom(zoom));
+        let generation = reader.generation;
+        let _ = update(&mut reader, Message::LayoutReady(generation));
+        let mut ui = Harness::new();
+        let (_, end) = native_scroll(&mut ui, &reader);
+        let scrolls = end > 0.0;
+        seen[usize::from(scrolls)] = true;
+        assert_eq!(
+            scrolls_down(&reader),
+            scrolls,
+            "at zoom {zoom}: the page scrolls {end}"
+        );
+        let edge = Point::new(1280.0 - 5.0, 350.0);
+        assert_eq!(
+            page_turns(&ui.press(&mut reader, edge)),
+            if scrolls { vec![] } else { vec![true] },
+            "at zoom {zoom}: the edge turns the page only without a scrollbar"
+        );
+    }
+    assert_eq!(seen, [true, true], "a page that fits and one that scrolls");
+}
+
+#[test]
 fn ctrl_wheel_over_a_strip_zooms_like_over_the_bar() {
     let wheel = mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 };
     let zoom_at = |pinned: bool, at: fn(&Reader) -> Point| {
@@ -1808,8 +1891,9 @@ fn a_strip_that_cant_turn_draws_nothing_on_hover() {
             .get_pixel(x as u32, 100)[0]
     };
     let darkened = |x| i32::from(red(&idle, x)) - i32::from(red(&hovered, x));
+    // Left of the scrollbar's thumb, which the shade also covers.
     let outer = 1000.0 - 14.0 - 2.0;
-    let inner = outer - page_strips::width(1000.0) + 4.0;
+    let inner = 1000.0 - page_strips::width(1000.0) + 4.0;
     let (outer, inner) = (darkened(outer), darkened(inner));
     assert!(
         outer >= 20,
@@ -1830,16 +1914,17 @@ fn the_right_strip_ends_at_the_notes_drawer_inside_the_rail() {
         Message::Notes(crate::notes::Action::ToggleList),
     );
     assert_eq!(reader.document_view_size().width, 860.0);
-    let strip_right = 1200.0 - 340.0 - 14.0;
+    let strip_right = 1200.0 - 340.0;
     let strip_left = strip_right - page_strips::width(1200.0);
-    assert_eq!(strip_left, 762.0);
+    assert_eq!(strip_left, 776.0);
+    let rail = strip_right - 14.0;
     let mut ui = Harness::new();
     for (x, turns) in [
         (strip_left - 1.0, false),
         (strip_left + 1.0, true),
-        (strip_right - 1.0, true),
-        (strip_right + 1.0, false),
-        (1200.0 - 340.0 + 10.0, false),
+        (rail - 1.0, true),
+        (rail + 1.0, false),
+        (strip_right + 10.0, false),
     ] {
         let messages = ui.click(&mut reader, Point::new(x, 350.0));
         app_event(
@@ -2644,6 +2729,405 @@ pub(super) fn full_bar_book(width: f32, height: f32) -> Reader {
 }
 
 #[test]
+fn paper_is_centred_in_the_reading_area() {
+    ui::load_test_fonts();
+    let contents = Message::ToggleContents;
+    let notes = Message::Notes(crate::notes::Action::ToggleList);
+    for (width, drawer, name) in [
+        (1400.0, None, "no drawer"),
+        (860.0, None, "no drawer"),
+        (1400.0, Some(notes), "notes docked"),
+        (1400.0, Some(contents), "contents docked"),
+    ] {
+        let mut reader = full_bar_book(width, 900.0);
+        if let Some(drawer) = drawer {
+            let _ = update(&mut reader, drawer);
+            settle_pagination(&mut reader);
+            assert!(reader.drawers().docked().total() > 0.0, "{name} at {width}");
+        }
+        let viewport = paper_viewport(&reader);
+        let (area, paper) = (viewport.bounds, viewport.paper);
+        assert!(
+            paper.width > 0.0,
+            "{name} at {width}: the paper is laid out"
+        );
+        let left = paper.x - area.x;
+        let right = area.x + area.width - (paper.x + paper.width);
+        assert!(
+            (left - right).abs() <= 0.5,
+            "{name} at {width}: gutters {left} and {right}"
+        );
+    }
+}
+
+#[test]
+fn contents_marks_only_the_heading_the_reader_is_in() {
+    ui::load_test_fonts();
+    let mut source = Arc::try_unwrap(super::tests::book("Three Headings")).unwrap();
+    for (row, label) in [(0, "One"), (4, "Two"), (8, "Three")] {
+        source.items[row] = Item::Heading {
+            id: format!("paragraph-{row}"),
+            text: label.into(),
+            level: 1,
+        };
+    }
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 6,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let _ = update(&mut reader, Message::ToggleContents);
+    assert_eq!(reader.anchor().row, 6);
+    let entries: Vec<_> = (0..3)
+        .map(|index| bounds_of(&mut reader, Control::ContentsEntry(index)))
+        .collect();
+    let output = std::env::temp_dir().join(format!("simpl-contents-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("contents.png"));
+    let image = ::image::open(output.join("contents.png"))
+        .unwrap()
+        .to_rgba8();
+    let _ = std::fs::remove_dir_all(&output);
+    let fills: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            image
+                .get_pixel(entry.x as u32 + 2, entry.center_y() as u32)
+                .0
+        })
+        .collect();
+    let (paper, tint) = ([255, 255, 255, 255], [220, 234, 250, 255]);
+    assert_eq!(fills, [paper, tint, paper]);
+}
+
+/// A short "Two Wings", as `fixtures/chapters/build_epub.py` writes it: a
+/// chapter file with two sections, a file that continues the chapter with no
+/// contents entry of its own, and a file whose second entry points at an
+/// anchor that is not there.
+fn two_wings() -> Arc<reader_document::epub::Epub> {
+    let sentence = "The lamp burned low while the house settled into its evening sounds. ";
+    let paragraphs = |name: &str| -> String {
+        (1..=4)
+            .map(|index| format!("<p>{name}, paragraph {index}. {}</p>", sentence.repeat(12)))
+            .collect()
+    };
+    let bodies = [
+        format!(
+            r#"<h1>The east wing</h1>{}<h2 id="hall">The long hall</h2>{}<h2 id="gallery">The gallery</h2>{}"#,
+            paragraphs("East wing"),
+            paragraphs("Long hall"),
+            paragraphs("Gallery")
+        ),
+        paragraphs("East wing continued"),
+        format!("<h1>The west wing</h1>{}", paragraphs("West wing")),
+    ];
+    let entries = [
+        ("file-0.xhtml", "The east wing"),
+        ("file-0.xhtml#hall", "The long hall"),
+        ("file-0.xhtml#gallery", "The gallery"),
+        ("file-2.xhtml", "The west wing"),
+        ("file-2.xhtml#missing", "A room that is not there"),
+    ]
+    .map(|(href, label)| (href.to_owned(), label.to_owned()));
+    super::tests::nav_epub("two-wings", &bodies, &entries)
+}
+
+/// Two Wings open at `row` of `file`, with the contents drawer docked.
+fn two_wings_at(file: usize, row: usize) -> Reader {
+    let mut reader = Reader {
+        book: Some(Arc::new(
+            load_epub_chapter(two_wings(), file, None).unwrap(),
+        )),
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor { row, fraction: 0.0 });
+    settle_pagination(&mut reader);
+    let _ = update(&mut reader, Message::ToggleContents);
+    assert!(reader.show_contents);
+    assert_eq!(reader.anchor().row, row, "file {file}");
+    reader
+}
+
+#[test]
+fn epub_contents_mark_the_entry_the_reader_is_in() {
+    // The east wing's rows: its heading 0, the long hall 5, the gallery 10.
+    for (file, row, current, what) in [
+        (0, 0, Some(0), "the top of the chapter"),
+        (0, 4, Some(0), "the chapter's own text"),
+        (0, 5, Some(1), "the long hall's heading"),
+        (0, 12, Some(2), "inside the gallery"),
+        (1, 0, Some(2), "a file with no entry continues the last one"),
+        (1, 3, Some(2), "further into that file"),
+        (2, 0, Some(3), "the west wing"),
+        (2, 4, Some(3), "past where a missing anchor would be"),
+    ] {
+        let reader = two_wings_at(file, row);
+        assert_eq!(reader.current_contents_entry(), current, "{what}");
+    }
+}
+
+/// Lets the view settle where the scrollable stops it, as the next frames
+/// of the app would.
+fn settle_scroll(reader: &mut Reader) {
+    settle_pagination(reader);
+    let generation = reader.generation;
+    let _ = update(reader, Message::LayoutReady(generation));
+    let viewport = paper_viewport(reader);
+    let page_top = reader.active_page().unwrap().top;
+    let offset = (reader.local_offset() * reader.zoom)
+        .min((viewport.content.height - viewport.bounds.height).max(0.0));
+    let _ = update(
+        reader,
+        Message::Scroll {
+            generation,
+            page_top,
+            offset,
+            viewport: viewport.bounds.height,
+        },
+    );
+}
+
+#[test]
+fn a_contents_entry_stays_current_after_jumping_to_it() {
+    let jump = |reader: &mut Reader, fragment: Option<&str>| {
+        let _ = update(
+            reader,
+            Message::EpubChapter {
+                index: 0,
+                fragment: fragment.map(str::to_owned),
+            },
+        );
+        settle_scroll(reader);
+    };
+
+    let body = format!(
+        r#"<h1>Chapter</h1><h2 id="section">Section</h2><p>{}</p>"#,
+        "A few words. ".repeat(30)
+    );
+    let entries = [
+        ("file-0.xhtml", "Chapter"),
+        ("file-0.xhtml#section", "Section"),
+    ]
+    .map(|(href, label)| (href.to_owned(), label.to_owned()));
+    let mut reader = Reader {
+        book: Some(Arc::new(
+            load_epub_chapter(
+                super::tests::nav_epub("adjacent", &[body], &entries),
+                0,
+                None,
+            )
+            .unwrap(),
+        )),
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_scroll(&mut reader);
+    assert_eq!(reader.current_contents_entry(), Some(0));
+    for (fragment, current) in [(Some("section"), Some(1)), (None, Some(0))] {
+        jump(&mut reader, fragment);
+        assert_eq!(
+            reader.anchor().row,
+            0,
+            "both headings lie on one page that cannot scroll"
+        );
+        assert_eq!(reader.current_contents_entry(), current, "{fragment:?}");
+    }
+    jump(&mut reader, Some("section"));
+    let top = reader.anchor();
+    let _ = reader.rebuild_geometry(top);
+    settle_scroll(&mut reader);
+    assert_eq!(
+        reader.current_contents_entry(),
+        Some(1),
+        "laying the same view out again, as a new font does, is not a move"
+    );
+
+    let mut reader = two_wings_at(0, 0);
+    let _ = update(&mut reader, Message::Zoom(0.4));
+    jump(&mut reader, Some("hall"));
+    let generation = reader.generation;
+    let page_top = reader.active_page().unwrap().top;
+    for (offset, current, what) in [
+        (
+            0.0,
+            Some(1),
+            "a shorter window lets the page scroll, and the view stays put",
+        ),
+        (10.0, Some(0), "scrolling is a move"),
+    ] {
+        let _ = update(
+            &mut reader,
+            Message::Scroll {
+                generation,
+                page_top,
+                offset,
+                viewport: 100.0,
+            },
+        );
+        assert_eq!(reader.anchor().row, 4);
+        assert_eq!(reader.current_contents_entry(), current, "{what}");
+    }
+
+    let mut reader = two_wings_at(0, 0);
+    let _ = update(&mut reader, Message::Zoom(0.4));
+    jump(&mut reader, Some("hall"));
+    assert_eq!(
+        (
+            reader.anchor().row,
+            reader.active_page().unwrap().rows.clone()
+        ),
+        (4, 4..6),
+        "the long hall's heading, row 5, is below the top of a page that cannot scroll"
+    );
+    assert_eq!(reader.current_contents_entry(), Some(1));
+    for next in [true, false] {
+        let _ = update(&mut reader, Message::BookPage(next));
+        settle_scroll(&mut reader);
+    }
+    assert_eq!(reader.active_page().unwrap().rows.clone(), 4..6);
+    assert_eq!(
+        reader.current_contents_entry(),
+        Some(0),
+        "back on the page after reading on, its top is still in the chapter's own text"
+    );
+}
+#[test]
+fn epub_contents_follow_the_book_when_the_list_is_out_of_order() {
+    let bodies = ["Cover", "One", "Two"].map(|name| format!("<p>{name}.</p>"));
+    let entries = [
+        ("file-1.xhtml", "One"),
+        ("file-2.xhtml", "Two"),
+        ("file-0.xhtml", "Cover"),
+    ]
+    .map(|(href, label)| (href.to_owned(), label.to_owned()));
+    let epub = super::tests::nav_epub("cover-last", &bodies, &entries);
+    for (file, current) in [(0, Some(2)), (1, Some(0)), (2, Some(1))] {
+        let reader = Reader {
+            book: Some(Arc::new(
+                load_epub_chapter(epub.clone(), file, None).unwrap(),
+            )),
+            ..Reader::default()
+        };
+        assert_eq!(reader.current_contents_entry(), current, "file {file}");
+    }
+}
+
+#[test]
+fn epub_contents_tint_only_the_section_the_reader_is_in() {
+    ui::load_test_fonts();
+    let mut reader = two_wings_at(0, 12);
+    let entries: Vec<_> = (0..5)
+        .map(|index| bounds_of(&mut reader, Control::ContentsEntry(index)))
+        .collect();
+    let output = std::env::temp_dir().join(format!("simpl-wings-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("contents.png"));
+    let image = ::image::open(output.join("contents.png"))
+        .unwrap()
+        .to_rgba8();
+    let _ = std::fs::remove_dir_all(&output);
+    let fills: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            image
+                .get_pixel(entry.x as u32 + 2, entry.center_y() as u32)
+                .0
+        })
+        .collect();
+    let (paper, tint) = ([255, 255, 255, 255], [220, 234, 250, 255]);
+    assert_eq!(fills, [paper, paper, tint, paper, paper]);
+}
+
+#[test]
+fn selected_sort_and_shelf_chip_are_tinted_without_an_outline() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let mut reader = Reader {
+        window_size: Size::new(1280.0, 800.0),
+        ..Reader::default()
+    };
+    let entries = shelf::sample_entries(&[
+        ("Frankenstein", DocumentKind::Epub),
+        ("Dream Analysis", DocumentKind::Pdf),
+    ]);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(reader.window_size);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::NewShelf));
+    let _ = reader
+        .shelf
+        .update(shelf::Message::NameInput("Done".into()));
+    let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::Sort(
+            shelf::Sort::Title,
+        )));
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::Filter(None)));
+    let sort = bounds_of(
+        &mut reader,
+        Control::Shelf(shelf::Control::Sort(shelf::Sort::Title)),
+    );
+    let all = bounds_of(&mut reader, Control::Shelf(shelf::Control::Filter(None)));
+    let done = bounds_of(&mut reader, Control::Shelf(shelf::Control::Filter(Some(1))));
+    let output = std::env::temp_dir().join(format!("simpl-selected-{}", std::process::id()));
+    std::fs::create_dir_all(&output).unwrap();
+    render(&mut reader, &output.join("library.png"));
+    let image = ::image::open(output.join("library.png"))
+        .unwrap()
+        .to_rgba8();
+    let _ = std::fs::remove_dir_all(&output);
+    let pixel = |x: f32, y: f32| image.get_pixel(x as u32, y as u32).0;
+    let edge_and_fill = |bounds: Rectangle| {
+        let y = bounds.center_y();
+        (pixel(bounds.x.ceil(), y), pixel(bounds.x.ceil() + 4.0, y))
+    };
+    let (sort_edge, sort_fill) = edge_and_fill(sort);
+    let (all_edge, all_fill) = edge_and_fill(all);
+    let (done_edge, done_fill) = edge_and_fill(done);
+    let accent_tint_on_desk = [210, 224, 240, 255];
+    assert_eq!(
+        sort_fill, accent_tint_on_desk,
+        "the selected sort is tinted"
+    );
+    assert_eq!(
+        sort_edge, accent_tint_on_desk,
+        "the selected sort has no outline"
+    );
+    assert_eq!(all_fill, accent_tint_on_desk, "the selected chip is tinted");
+    assert_eq!(
+        all_edge, accent_tint_on_desk,
+        "the selected chip has no outline"
+    );
+    assert_eq!(
+        done_fill,
+        [255, 255, 255, 255],
+        "an unselected chip is paper"
+    );
+    assert_eq!(
+        done_edge,
+        [252, 252, 252, 255],
+        "an unselected chip keeps its hairline"
+    );
+}
+
+#[test]
 #[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
 fn render_ux5_bar_look() {
     ui::load_test_fonts();
@@ -2705,6 +3189,83 @@ fn render_book_theme_look() {
     settle_theme(&mut reader);
     let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
     render(&mut reader, &output.join("theme-aa-following-compact.png"));
+}
+
+#[test]
+#[ignore = "UX-8 review: writes the paper, selected and focused looks to target/ui-ux-review"]
+fn render_ux8_look() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        for (index, theme) in crate::themes::THEMES.iter().enumerate() {
+            let mut reader = full_bar_book(1400.0, 900.0);
+            reader.appearance = appearance;
+            let _ = update(&mut reader, Message::SetTheme(index));
+            settle_theme(&mut reader);
+            render(
+                &mut reader,
+                &output.join(format!("UX-8-reading-{}-{name}.png", theme.id)),
+            );
+        }
+    }
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    render(&mut reader, &output.join("UX-8-aa-light.png"));
+    let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    let _ = update(&mut reader, Message::ToggleContents);
+    reader.focused = Some(Control::ContentsEntry(0));
+    render(&mut reader, &output.join("UX-8-contents-light.png"));
+    reader.focused = None;
+    let _ = update(&mut reader, Message::ToggleContents);
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    render(&mut reader, &output.join("UX-8-notes-light.png"));
+    let _ = update(
+        &mut reader,
+        Message::Notes(crate::notes::Action::ToggleList),
+    );
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        reader.appearance = appearance;
+        reader.show_settings = true;
+        render(
+            &mut reader,
+            &output.join(format!("UX-8-settings-{name}.png")),
+        );
+    }
+
+    let mut reader = Reader {
+        window_size: Size::new(1400.0, 900.0),
+        ..Reader::default()
+    };
+    let entries = shelf::sample_entries(&[
+        ("Pride and Prejudice", DocumentKind::Epub),
+        ("Frankenstein", DocumentKind::Epub),
+        ("Dream Analysis", DocumentKind::Pdf),
+        ("Let's Go", DocumentKind::Html),
+    ]);
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(reader.window_size);
+    for name in ["To read", "Done"] {
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::NewShelf));
+        let _ = reader.shelf.update(shelf::Message::NameInput(name.into()));
+        let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    }
+    for control in [
+        shelf::Control::Sort(shelf::Sort::Title),
+        shelf::Control::Filter(None),
+    ] {
+        let _ = reader.shelf.update(shelf::Message::Activate(control));
+    }
+    render(&mut reader, &output.join("UX-8-library-light.png"));
 }
 
 #[test]

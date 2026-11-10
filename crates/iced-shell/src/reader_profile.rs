@@ -37,6 +37,7 @@ const STATES: &[State] = &[
     ("reading-aa-open", reading_aa_open, still, away),
     ("reading-listen", reading_listen, still, away),
     ("reading-contents", reading_contents, still, away),
+    ("reading-contents-epub", reading_contents_epub, still, away),
     ("settings", settings, still, away),
 ];
 
@@ -140,6 +141,73 @@ fn reading_contents() -> Reader {
     reader
 }
 
+/// The file of [`long_epub`] the reader opens.
+const OPEN: usize = 25;
+
+/// An EPUB of 50 files whose 2,018 contents entries include 450 sections of
+/// the file [`OPEN`].
+fn long_epub() -> Arc<reader_document::epub::Epub> {
+    const FILES: usize = 50;
+    const SECTIONS: usize = 450;
+    const OTHER_SECTIONS: usize = 32;
+    let sentence = "The lamp burned low while the house settled into its evening sounds. ";
+    let bodies: Vec<String> = (0..FILES)
+        .map(|file| {
+            if file == OPEN {
+                (0..SECTIONS)
+                    .map(|section| {
+                        format!(
+                            r#"<h2 id="s{section}">Section {section}</h2><p>{}</p>"#,
+                            sentence.repeat(3)
+                        )
+                    })
+                    .collect()
+            } else {
+                format!("<p>File {file}.</p>")
+            }
+        })
+        .collect();
+    let entries: Vec<(String, String)> = (0..FILES)
+        .flat_map(|file| {
+            let sections = if file == OPEN {
+                SECTIONS
+            } else {
+                OTHER_SECTIONS
+            };
+            (0..sections).map(move |section| {
+                (
+                    format!("file-{file}.xhtml#s{section}"),
+                    format!("File {file}, section {section}"),
+                )
+            })
+        })
+        .collect();
+    let epub = super::tests::nav_epub("profile-contents", &bodies, &entries);
+    assert_eq!(epub.contents.len(), 2_018);
+    epub
+}
+
+/// The contents drawer is docked beside the middle of the open file of
+/// [`long_epub`].
+fn reading_contents_epub() -> Reader {
+    let book = load_epub_chapter(long_epub(), OPEN, None).unwrap();
+    let middle = book.items.len() / 2;
+    let mut reader = Reader {
+        book: Some(Arc::new(book)),
+        window_size: Size::new(1280.0, 800.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: middle,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let _ = update(&mut reader, Message::ToggleContents);
+    assert!(reader.show_contents && reader.drawers().docked().left > 0.0);
+    assert_eq!(reader.anchor().row, middle);
+    reader
+}
+
 fn settings() -> Reader {
     Reader {
         show_settings: true,
@@ -174,6 +242,12 @@ fn profile_reader_frames() {
         let (median, p95) = frame_times(setup(), step, cursor);
         println!("reader_frame_ms state={name} median={median:.2} p95={p95:.2}");
     }
+    let book = load_epub_chapter(long_epub(), OPEN, None).unwrap();
+    let started = Instant::now();
+    let rows = drawers::epub_rows(&book, book.epub.as_ref().unwrap());
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(rows.iter().flatten().count(), 450);
+    println!("reader_contents_rows_ms={elapsed:.3}");
 }
 
 fn frame_times(

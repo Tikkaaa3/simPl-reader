@@ -172,11 +172,95 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'_, Message> {
     .into()
 }
 
+/// The heading the reader is in: the last one at or before `row`.
+pub(super) fn current_heading(
+    contents: &[reader_document::epub::TocEntry],
+    row: usize,
+) -> Option<usize> {
+    contents.iter().rposition(|entry| entry.chapter <= row)
+}
+
+/// For the open EPUB file, the row each entry of the book's contents points
+/// at: the top of the file without a fragment, else its anchor's item.
+/// `None` for an entry in another file, or whose anchor is not in this one.
+/// Built once per loaded file.
+pub(super) fn epub_rows<'a>(
+    book: &'a Book,
+    chapter: &reader_layout::book::EpubChapter,
+) -> &'a [Option<usize>] {
+    book.contents_rows.get_or_init(|| {
+        let mut rows = HashMap::with_capacity(book.items.len());
+        for (row, item) in book.items.iter().enumerate() {
+            rows.entry(item.id()).or_insert(row);
+        }
+        chapter
+            .document
+            .contents
+            .iter()
+            .map(|entry| {
+                if entry.chapter != chapter.index {
+                    return None;
+                }
+                match &entry.fragment {
+                    None => Some(0),
+                    Some(fragment) => book
+                        .anchors
+                        .get(fragment)
+                        .and_then(|id| rows.get(id.as_str()).copied()),
+                }
+            })
+            .collect()
+    })
+}
+
+impl Reader {
+    /// The row the contents take as the reader's place: where the reader last
+    /// jumped to while the view is still there, else the first row in view.
+    fn contents_row(&self) -> usize {
+        self.arrival
+            .map_or_else(|| self.anchor().row, |arrival| arrival.anchor.row)
+    }
+
+    /// The contents entry the reader is in: the one furthest into the book
+    /// that is at or before the reader's row. An EPUB entry in an earlier
+    /// file is before it; one in the open file is at the row its anchor
+    /// points at. A publisher may list entries out of reading order, so the
+    /// list's order only settles ties. Rows in an earlier file are not known
+    /// without loading it, so its last listed entry stands for that file.
+    pub(super) fn current_contents_entry(&self) -> Option<usize> {
+        let row = self.contents_row();
+        let Some((book, chapter)) = self
+            .book
+            .as_ref()
+            .and_then(|book| Some((book, book.epub.as_ref()?)))
+        else {
+            return current_heading(self.contents(), row);
+        };
+        chapter
+            .document
+            .contents
+            .iter()
+            .zip(epub_rows(book, chapter))
+            .enumerate()
+            .filter_map(|(index, (entry, at))| {
+                let at = if entry.chapter < chapter.index {
+                    Some(0)
+                } else {
+                    at.filter(|at| *at <= row)
+                };
+                at.map(|at| ((entry.chapter, at), index))
+            })
+            .max_by_key(|(place, _)| *place)
+            .map(|(_, index)| index)
+    }
+}
+
 fn contents(reader: &Reader, active: bool) -> Element<'_, Message> {
     let contents = reader.contents();
     if !reader.show_contents || contents.is_empty() {
         return Space::new().width(0).into();
     }
+    let current = reader.current_contents_entry();
     let range = reader.contents_range();
     let (start, end) = (range.start, range.end);
     let mut entries = column![Space::new().height(start as f32 * CONTENT_ROW_HEIGHT)];
@@ -194,13 +278,7 @@ fn contents(reader: &Reader, active: bool) -> Element<'_, Message> {
                     fragment: entry.fragment.clone(),
                 }),
                 ui::ButtonTone::Subtle,
-                reader
-                    .book
-                    .as_ref()
-                    .and_then(|b| b.epub.as_ref())
-                    .map_or(entry.chapter <= reader.anchor().row, |c| {
-                        entry.chapter == c.index
-                    }),
+                current == Some(start + relative),
             ))
             .height(CONTENT_ROW_HEIGHT)
             .width(Length::Fill)
