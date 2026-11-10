@@ -1948,9 +1948,9 @@ impl Reader {
                 let reading = self.reading_options();
                 let generation = self.generation;
                 return Task::perform(
-                    async move {
+                    crate::platform::off_ui_thread(move || {
                         book_map::adapt_section_with(book, &canonical, theme, reading, &cancel)
-                    },
+                    }),
                     move |result| Message::ThemeLayoutReady {
                         generation,
                         section,
@@ -8469,6 +8469,28 @@ mod tests {
                 "theme {index}: same page"
             );
         }
+    }
+
+    #[test]
+    fn a_looks_layout_is_left_to_the_thread_pool() {
+        use iced_futures::futures::{StreamExt, executor::block_on, task::noop_waker_ref};
+        use iced_runtime::{Action, task::into_stream};
+        let mut reader = themed_reader(30);
+        reader.theme = &themes::THEMES[1];
+        let mut layout = into_stream(reader.rebuild_geometry(reader.anchor())).unwrap();
+        // iced polls a new task once on the UI thread, as this poll does.
+        let first = layout.poll_next_unpin(&mut std::task::Context::from_waker(noop_waker_ref()));
+        assert!(first.is_pending(), "nothing is measured on the first poll");
+        let Some(Action::Output(ready)) = block_on(layout.next()) else {
+            panic!("the layout reports its result");
+        };
+        let _ = update_inner(&mut reader, ready);
+        assert!(reader.pagination.is_none());
+        assert_eq!(
+            reader.heights.len(),
+            30,
+            "the book is laid out for the theme"
+        );
     }
 
     #[test]

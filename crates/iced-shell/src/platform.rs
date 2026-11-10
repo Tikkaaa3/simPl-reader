@@ -14,6 +14,25 @@ pub fn mark_reader_running() {
     }
 }
 
+/// Runs blocking `work` once its task has left the UI thread.
+///
+/// iced polls a new task once on the UI thread before the executor gets it, so
+/// work with no await ahead of it ran inside the window's event handler and
+/// froze the window until it finished. This yields on that first poll, and
+/// the executor's thread pool makes the next one.
+pub async fn off_ui_thread<T>(work: impl FnOnce() -> T) -> T {
+    let mut yielded = false;
+    std::future::poll_fn(|context| {
+        if std::mem::replace(&mut yielded, true) {
+            return std::task::Poll::Ready(());
+        }
+        context.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+    .await;
+    work()
+}
+
 /// Runs a native dialog on a thread of its own and resolves when it closes.
 ///
 /// iced polls a new task once on the UI thread before the executor gets it, so
@@ -327,6 +346,26 @@ mod tests {
     use super::*;
     use iced::futures::{FutureExt, executor::block_on, task::noop_waker_ref};
     use std::task::{Context, Poll};
+
+    #[test]
+    fn work_off_the_ui_thread_waits_for_the_pool_to_poll_its_task() {
+        let polling = std::thread::current().id();
+        let mut work = off_ui_thread(|| std::thread::current().id()).boxed();
+        // iced polls a new task once on the UI thread, as this poll does, and
+        // hands a pending one to its thread pool.
+        assert_eq!(
+            work.poll_unpin(&mut Context::from_waker(noop_waker_ref())),
+            Poll::Pending
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        iced::futures::executor::ThreadPool::new()
+            .unwrap()
+            .spawn_ok(async move {
+                let _ = sender.send(work.await);
+            });
+        let ran_on = receiver.recv().unwrap();
+        assert_ne!(ran_on, polling);
+    }
 
     #[test]
     fn a_dialog_never_runs_on_the_thread_that_polls_its_task() {
