@@ -44,6 +44,8 @@ pub struct Preferences {
     pub speech_rate: i8,
     pub dictionary: crate::dictionary::Settings,
     pub reading: crate::reading::Options,
+    /// The reading tools stay on screen while reading.
+    pub pin_tools: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,6 +63,8 @@ struct Record {
     dictionary: crate::dictionary::Settings,
     #[serde(default)]
     reading: crate::reading::Options,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pin_tools: bool,
 }
 
 fn is_zero(value: &i8) -> bool {
@@ -113,6 +117,7 @@ pub(crate) fn load_from(path: &Path) -> Result<Preferences, String> {
         speech_rate: record.speech_rate.clamp(-10, 10),
         dictionary: record.dictionary.validated(),
         reading: record.reading.validated().without_theme(),
+        pin_tools: record.pin_tools,
     })
 }
 
@@ -125,6 +130,7 @@ fn save_to(path: &Path, preferences: Preferences) -> Result<(), String> {
         speech_rate: preferences.speech_rate,
         dictionary: preferences.dictionary.validated(),
         reading: preferences.reading.validated().without_theme(),
+        pin_tools: preferences.pin_tools,
     })
     .map_err(|error| format!("Cannot encode preferences: {error}"))?;
     crate::position::atomic_write(path, &bytes, "preferences", "preferences", ".preferences")
@@ -167,11 +173,17 @@ mod tests {
                     source: crate::dictionary::Language::Spanish,
                     target: crate::dictionary::Language::English,
                 },
+                pin_tools: appearance == Appearance::Dark,
             };
             save_to(&path, preferences.clone()).unwrap();
             let saved: serde_json::Value =
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             assert_eq!(saved["theme"], "soft");
+            assert_eq!(
+                saved.get("pin_tools").and_then(serde_json::Value::as_bool),
+                preferences.pin_tools.then_some(true),
+                "written only when the tools are pinned"
+            );
             assert!(saved.get("window_controls").is_none());
             assert_eq!(load_from(&path).unwrap(), preferences);
         }

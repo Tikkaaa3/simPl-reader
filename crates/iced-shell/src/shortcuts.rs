@@ -16,7 +16,7 @@ pub(super) const GROUPS: &[Group] = &[
             ("Enter / Space", "Activate the focused control"),
             ("Escape", "Close a menu, panel or dialog"),
             ("F1", "Open or close this list"),
-            ("F8", "Keep the reading bar visible"),
+            ("F8", "Keep the reading tools on screen"),
             ("F11", "Enter or leave fullscreen"),
         ],
     },
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn the_shortcut_list_names_the_keys_the_reader_handles() {
-        assert_eq!(action("F8"), Some("Keep the reading bar visible"));
+        assert_eq!(action("F8"), Some("Keep the reading tools on screen"));
         assert_eq!(
             action("Space in the Library"),
             Some("Resume the latest unfinished book, when no control has focus")
