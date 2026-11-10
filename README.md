@@ -21,18 +21,19 @@ and keep your highlights and notes with your books.
   or right edge to turn the page, and a page field that can jump across the whole book.
 - **Stable pages.** Zoom changes the size of the page without changing its number
   or the total. Switching PDF views keeps your current source page.
-- **Reading themes.** Pick Default, Soft, Clear or Compact in **Aa** or Settings: each sets the
+- **Reading themes.** Pick Default, Soft, Clear or Compact in **Aa** or Settings → Appearance: each sets the
   reading font, line and paragraph spacing, and its own light and dark colors. Page
   numbers and page boundaries stay the same in every theme, and text size stays your
   own. All fonts are bundled, so nothing is downloaded.
-- **Reading comfort.** The **Aa** button in the reading bar opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading defaults sets them for every book without its own. Press F11 for fullscreen.
+- **Reading comfort.** The **Aa** button in the reading bar opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading sets them for every book without its own. Press F11 for fullscreen.
 - **Listen and follow along.** Windows' installed voices read continuously across pages and EPUB chapters. The viewport follows the spoken line, and a temporary word highlight shows your place. Pause, resume and adjust the speed; select the stop icon in the bar to stop.
 - **Offline word lookup.** Double-click a word or select → right-click → Translate. Choose your language pair and automatic lookup preference. Download only the dictionaries you need; the 13 optional directions cover English, Turkish, Spanish, German, French, Japanese, Korean and Chinese. Lookup works locally after installation.
 - **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
 - **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
+- **Settings in sections.** The gear opens Settings on **Reading**, with its sections listed at the left: **Reading** for the defaults every book follows, **Appearance** for the theme, light or dark and fullscreen, **Listen** for the voice and speed, **Translation** for the languages and dictionaries, **Library & data** for the library folder, backup and export, and **Shortcuts** for every key. Tab reaches the list, and the up and down arrows move between sections.
 - **Less chrome.** While you read, one row of quiet icons holds the window and reading
   controls and fades away when idle; point at the top edge to bring it back, or press
-  F8 to pin it. Every icon names its action and shortcut when you point at it. A
+  F8 to keep it visible. Every icon names its action and shortcut when you point at it. A
   narrow window hides the book title first, then folds the light and dark toggle,
   Search and Settings into **More**. The page never moves when the bar shows or hides.
   The bar keeps standard Windows minimize, maximize and close buttons. Geist for the interface,
@@ -193,14 +194,14 @@ automatically.
 The spoken word has a temporary accent fill and outline in Book and PDF Document views. Pause keeps it visible; stopping clears it. It does not change selection or saved highlights.
 Select the same icon, now a stop sign, or press **Ctrl+Shift+U** to stop.
 Use **Read aloud** in the selection menu or on a saved highlight to read only
-that passage. Choose a voice and speed in Settings; both are saved. Speech uses
+that passage. Choose a voice and speed in Settings → Listen; both are saved. Speech uses
 Windows' installed voices
 offline. Automatic voice selection estimates the text's language and falls back
 to the Windows default. PDF reading needs a permitted text layer; image-only pages
 are skipped.
 
 Double-click a word, or finish selecting a short phrase, to open its **offline
-translation card**. In Settings → Word translation, choose the input/output
+translation card**. In Settings → Translation, choose the input/output
 languages and turn automatic lookup on or off. With automatic off, use
 selection → right-click → **Translate**. The defaults are automatic lookup and
 English → Turkish. Escape, an outside click or page navigation closes the card.
@@ -209,7 +210,7 @@ permission; scanned pages need OCR.
 
 The downloadable pairs are English ↔ Turkish, Spanish, German, French, Japanese
 and Chinese, plus Korean → English. Chinese → English includes simplified and
-traditional forms. Settings → Word translation shows each direction’s size and
+traditional forms. Settings → Translation shows each direction’s size and
 Download/Remove controls; Manage dictionaries lists all 13. A missing-word card
 also offers Download and retries the selected word after installation. Downloads
 are explicit, support progress/cancel/retry, and send no document text. Import ZIP
@@ -314,7 +315,7 @@ JSON also preserves their full anchors, IDs and timestamps.
 | **Ctrl+B** | Show or hide bookmarks, highlights and notes |
 | **Ctrl+Shift+F** | Toggle fit width / previous zoom in Book or PDF Document |
 | **F11** | Enter / exit fullscreen; Esc exits after dismissing open panels |
-| **F8** | Pin / unpin the reading bar |
+| **F8** | Keep the reading bar visible |
 | **Tab / Shift+Tab** | Move between controls |
 | **F1** | Show shortcut help |
 
