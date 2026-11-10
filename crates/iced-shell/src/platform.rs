@@ -29,6 +29,14 @@ async fn on_dialog_thread<T: Send + 'static>(
     use windows::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
     };
+    /// Leaves the apartment when the dialog returns or panics.
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            // SAFETY: balances the successful CoInitializeEx that made this value.
+            unsafe { CoUninitialize() };
+        }
+    }
     let (sender, receiver) = iced::futures::channel::oneshot::channel();
     std::thread::Builder::new()
         .name(name.into())
@@ -39,10 +47,8 @@ async fn on_dialog_thread<T: Send + 'static>(
                     .ok()
                     .map_err(|error| format!("Cannot open the dialog: {error}"))
                     .and_then(|()| {
-                        let result = dialog();
-                        // SAFETY: balances the successful CoInitializeEx above.
-                        unsafe { CoUninitialize() };
-                        result
+                        let _apartment = Apartment;
+                        dialog()
                     });
             let _ = sender.send(result);
         })
