@@ -287,15 +287,26 @@ struct Label {
 
 impl Label {
     fn new(band: Rectangle, at: f32, title: &str, page: u32) -> Self {
-        let title = if title.chars().count() > TITLE_CHARS {
-            let cut: String = title.chars().take(TITLE_CHARS - 1).collect();
-            format!("{}…", cut.trim_end())
-        } else {
-            title.to_owned()
+        let measure = |title: &str| selection::text_width(title, ui::SANS, TITLE_SIZE);
+        let mut kept = title.chars().count().min(TITLE_CHARS);
+        let cut = |kept: usize| {
+            if kept == title.chars().count() {
+                title.to_owned()
+            } else {
+                let cut: String = title.chars().take(kept.saturating_sub(1)).collect();
+                format!("{}…", cut.trim_end())
+            }
         };
+        // A narrow band, as beside an open drawer, holds less of a title.
+        let mut shown = cut(kept);
+        while kept > 1 && measure(&shown) > band.width {
+            kept = ((kept as f32 * band.width / measure(&shown)) as usize).clamp(1, kept - 1);
+            shown = cut(kept);
+        }
+        let title = shown;
         let number = page.to_string();
         let width = selection::text_width(&number, ui::MEDIUM, NUMBER_SIZE)
-            .max(selection::text_width(&title, ui::SANS, TITLE_SIZE))
+            .max(measure(&title))
             .ceil();
         let half = (width / 2.0).min(band.width / 2.0);
         Self {
@@ -604,6 +615,29 @@ mod tests {
             pieces(band, &crowded, 1000),
             [[100.0, 597.0], [599.0, 1100.0]]
         );
+    }
+
+    #[test]
+    fn a_label_stays_inside_a_narrow_band() {
+        ui::load_test_fonts();
+        // The band at a 540 px window with the contents drawer open.
+        let band = Rectangle::new(Point::new(300.0, 676.0), Size::new(214.0, 24.0));
+        let long = "Wide Words Make Many Whole Wide Windows Wider";
+        for at in [300.0, 407.0, 514.0] {
+            let label = Label::new(band, at, long, 12);
+            assert!(label.title.ends_with('…'), "cut: {:?}", label.title);
+            assert!(label.title.chars().count() > 8, "kept: {:?}", label.title);
+            assert!(
+                label.centre - label.width / 2.0 >= band.x
+                    && label.centre + label.width / 2.0 <= band.x + band.width,
+                "at {at}: {} wide around {}",
+                label.width,
+                label.centre
+            );
+        }
+        let wide = Rectangle::new(Point::new(100.0, 676.0), Size::new(1000.0, 24.0));
+        assert_eq!(Label::new(wide, 600.0, "The Tide", 12).title, "The Tide");
+        assert_eq!(Label::new(wide, 600.0, long, 12).title.chars().count(), 40);
     }
 
     #[test]
