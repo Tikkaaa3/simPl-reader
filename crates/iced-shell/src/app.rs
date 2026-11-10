@@ -1344,8 +1344,11 @@ enum Message {
     SelectMove(Endpoint),
     /// Right click on text of a reflowed book.
     Context(Endpoint),
-    /// Right click on the page but not on text.
-    ContextBlank,
+    /// Right click beside a line of text; the endpoint is where the line starts.
+    ContextBeside(Endpoint),
+    /// Right click on the page but not on text, with the first row that
+    /// begins at or below the pointer when the page's rows could tell.
+    ContextBlank(Option<usize>),
     Notes(notes::Action),
     NotesLoaded {
         profile: u64,
@@ -3430,6 +3433,13 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     }
 }
 
+fn context_message(endpoint: Endpoint, press: selection::ContextPress) -> Message {
+    match press {
+        selection::ContextPress::Text => Message::Context(endpoint),
+        selection::ContextPress::BesideLine => Message::ContextBeside(endpoint),
+    }
+}
+
 fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
     if matches!(
         &message,
@@ -3441,7 +3451,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             | Message::BookMode
             | Message::ChooseFile(_)
             | Message::Chrome(_)
-            | Message::ContextBlank
+            | Message::ContextBlank(_)
             | Message::FindOpen
     ) {
         reader.word_translation.reset();
@@ -4466,9 +4476,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.context_at(endpoint);
             Task::none()
         }
-        Message::ContextBlank => {
+        Message::ContextBeside(endpoint) => {
+            reader.context_beside(endpoint);
+            Task::none()
+        }
+        Message::ContextBlank(below) => {
             if reader.book.is_some() {
-                reader.open_popup(notes::Target::Page, true);
+                let here = below.map(|row| reader.place_below(row));
+                reader.open_popup(notes::Target::Page, Some(notes::Menu { here }));
             }
             Task::none()
         }
@@ -5477,7 +5492,7 @@ fn render_item(
                     Message::SelectStart,
                     |endpoint, _| Message::SelectMove(endpoint),
                     Some(Message::FollowLink),
-                    Some(Message::Context),
+                    Some(context_message),
                 ),
                 Err(error) => text(format!("Cannot display this entry: {error}")).into(),
             }
@@ -5576,7 +5591,7 @@ fn render_item(
         Message::SelectStart,
         |endpoint, _| Message::SelectMove(endpoint),
         Some(Message::FollowLink),
-        Some(Message::Context),
+        Some(context_message),
     );
     let kind = semantics.map(|s| s.kind).unwrap_or_default();
     let quote = semantics.is_some_and(|s| s.quote_depth > 0);
@@ -6440,7 +6455,8 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
                 counters: None,
             },
         )
-        .slice(page.content.clone());
+        .slice(page.content.clone())
+        .on_blank_context(|row| Message::ContextBlank(Some(row)));
         let content_height = page.content.end - content_start;
         let fallback = book
             .pdf_source
@@ -6479,8 +6495,9 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
     let centered = container(book_zoom::wrap(sheets.into(), paper_width, reader.zoom))
         .center_x(available_width.max(desk_width));
     let generation = reader.generation;
-    // A right click on text opens the note menu from the paragraph; a click on
-    // the desk or margins reaches this area instead.
+    // A right click on text opens the note menu from the paragraph, and one on
+    // the desk or margins from the page's rows, which know the row below it.
+    // This area takes what neither does, such as a click on a scrollbar.
     iced::widget::mouse_area(
         container(crate::document_scroll::wrap(
             Message::ZoomBy,
@@ -6505,7 +6522,7 @@ fn paged_book_view<'a>(reader: &'a Reader, book: &'a Book) -> Element<'a, Messag
         .clip(true)
         .height(Length::Fill),
     )
-    .on_right_press(Message::ContextBlank)
+    .on_right_press(Message::ContextBlank(None))
     .into()
 }
 

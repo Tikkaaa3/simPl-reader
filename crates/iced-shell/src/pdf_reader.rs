@@ -109,11 +109,21 @@ pub enum Message {
     ZoomBy(f32),
     SelectStart(TextPoint),
     SelectMove(TextPoint),
-    /// Right click on a page; the point is set when it is on text.
-    Context(Option<TextPoint>),
+    /// Right click on a page; `None` while the page's text is not loaded.
+    Context(Option<Clicked>),
     ClearSelection,
     Copy,
     CopyFinished(Result<String, String>),
+}
+
+/// Where a right click landed in a page's text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clicked {
+    /// On this character.
+    Text(TextPoint),
+    /// On no text. `below` is the first character at or below the pointer,
+    /// or the position after the page's last character when there is none.
+    Blank { below: TextPoint },
 }
 
 /// A saved highlight drawn on the pages: inclusive glyph range from `from` to `to`.
@@ -729,6 +739,15 @@ impl Reader {
             .map(|mark| mark.id)
     }
 
+    /// Where a saved highlight begins.
+    pub fn mark_start(&self, id: u64) -> Option<TextPoint> {
+        let mark = self.marks.iter().find(|mark| mark.id == id)?;
+        Some(TextPoint {
+            page: mark.from.page,
+            index: mark.from.index,
+        })
+    }
+
     /// Turns to a page.
     pub fn go_to_page(&mut self, page: usize) -> Task<Message> {
         self.jump(page.min(self.document.pages.len().saturating_sub(1)))
@@ -771,6 +790,12 @@ impl Reader {
     #[cfg(test)]
     pub(crate) fn has_spoken_word(&self) -> bool {
         self.spoken.is_some()
+    }
+
+    /// The page and the first and last glyph of the spoken word.
+    #[cfg(test)]
+    pub(crate) fn spoken_glyphs(&self) -> Option<(u32, usize, usize)> {
+        self.spoken
     }
 
     pub(crate) fn clear_spoken_word(&mut self) {

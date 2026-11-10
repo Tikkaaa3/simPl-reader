@@ -35,11 +35,23 @@ pub struct VisibleRows<'a, Message> {
     item_count: usize,
     rows: Vec<Element<'a, Message>>,
     reports: LayoutReports,
+    on_blank_context: Option<Box<dyn Fn(usize) -> Message + 'a>>,
 }
 
 #[derive(Debug)]
 struct VisibleRowsState {
     first: usize,
+}
+
+/// Where a row's content begins: under the padding of the boxes that wrap it.
+fn content_top(mut row: Layout<'_>) -> f32 {
+    loop {
+        let mut children = row.children();
+        match (children.next(), children.next()) {
+            (Some(only), None) => row = only,
+            _ => return row.bounds().y,
+        }
+    }
 }
 
 impl<'a, Message> VisibleRows<'a, Message> {
@@ -62,7 +74,16 @@ impl<'a, Message> VisibleRows<'a, Message> {
             item_count: index.len(),
             rows,
             reports,
+            on_blank_context: None,
         }
+    }
+
+    /// Reports a right press that no row took. The message gets the first row
+    /// whose content begins at or below the pointer, or the row after the
+    /// last one here when there is none.
+    pub fn on_blank_context(mut self, message: impl Fn(usize) -> Message + 'a) -> Self {
+        self.on_blank_context = Some(Box::new(message));
+        self
     }
     /// Render a page's portion of the global index, retaining global row identities.
     pub fn within(self, scope: Range<usize>, index: &HeightIndex) -> Self {
@@ -173,21 +194,34 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VisibleRows<'_, Message
         shell: &mut iced::advanced::Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let Some(viewport) = viewport.intersection(&layout.bounds()) else {
-            return;
-        };
-        let viewport = &viewport;
-        for ((row, state), row_layout) in self
-            .rows
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-        {
-            if row_layout.bounds().intersects(viewport) {
-                row.as_widget_mut().update(
-                    state, event, row_layout, cursor, renderer, clipboard, shell, viewport,
-                );
+        if let Some(viewport) = &viewport.intersection(&layout.bounds()) {
+            for ((row, state), row_layout) in self
+                .rows
+                .iter_mut()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+            {
+                if row_layout.bounds().intersects(viewport) {
+                    row.as_widget_mut().update(
+                        state, event, row_layout, cursor, renderer, clipboard, shell, viewport,
+                    );
+                }
             }
+        }
+        if let Some(on_blank_context) = &self.on_blank_context
+            && matches!(
+                event,
+                iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+            )
+            && !shell.is_event_captured()
+            && let Some(pointer) = cursor.position()
+        {
+            let below = layout
+                .children()
+                .position(|row| content_top(row) >= pointer.y)
+                .unwrap_or(self.rows.len());
+            shell.publish(on_blank_context(self.first + below));
+            shell.capture_event();
         }
     }
 

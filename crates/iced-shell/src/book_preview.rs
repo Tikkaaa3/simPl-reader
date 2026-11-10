@@ -776,7 +776,9 @@ fn render_annotation_views() {
     reader.notes.popup = Some(notes::Popup {
         at: Point::new(500.0, 250.0),
         target: notes::Target::Highlight(id),
-        menu: true,
+        menu: Some(notes::Menu {
+            here: Some(notes::TextPlace::Book { row, byte: 0 }),
+        }),
     });
     render(&mut reader, &output.join("annotations-menu.png"));
     reader.notes.popup = None;
@@ -2304,6 +2306,558 @@ fn starting_to_listen_shows_the_bar_and_the_pill_briefly() {
     );
 }
 
+/// The text of paragraph `number` of `sentence_book`.
+fn three_sentences(number: usize) -> String {
+    format!("Paragraph {number} opens. Paragraph {number} goes on. Paragraph {number} closes.")
+}
+
+/// A book of 40 paragraphs of three sentences over several pages, open on
+/// its first page with speech silenced, in a window that shows the whole
+/// page. Paragraph `n` is row `n - 1`, with the id `paragraph-n`.
+fn sentence_book() -> Reader {
+    sentence_book_with(|_| {})
+}
+
+/// `sentence_book` with its rows changed before it is laid out.
+fn sentence_book_with(change: impl FnOnce(&mut Vec<Item>)) -> Reader {
+    let mut source = Arc::try_unwrap(super::tests::book("from-here")).unwrap();
+    // Saved highlights need a real fingerprint.
+    source.fingerprint = "ab".repeat(32);
+    source.items = (1..=40)
+        .map(|number| Item::Paragraph {
+            id: format!("paragraph-{number}"),
+            text: three_sentences(number),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        })
+        .collect();
+    change(&mut source.items);
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(1280.0, 1200.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    reader.silence_speech();
+    reader
+}
+
+/// A point on the character at `byte` of the paragraph `item`, nearer its
+/// leading edge, so a press there lands before it.
+fn text_point(reader: &Reader, item: &str, byte: usize) -> Point {
+    let glyph = glyph_bounds(reader, item, byte);
+    Point::new(glyph.x + 1.0, glyph.center_y())
+}
+
+/// Where the window shows the character at `byte` of the paragraph `item`.
+/// The page must be at its top at 100%, as a book just opened is.
+fn glyph_bounds(reader: &Reader, item: &str, byte: usize) -> Rectangle {
+    use iced::advanced::widget::operation::{Outcome, black_box};
+    assert_eq!((reader.zoom, reader.local_offset()), (1.0, 0.0));
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(reader.window_size, reader.window_size),
+    );
+    let mut line = iced_shell::selection::reading_line(Endpoint {
+        item_id: item.into(),
+        byte_offset: byte,
+    });
+    element.as_widget_mut().operate(
+        &mut tree,
+        Layout::new(&node),
+        &renderer,
+        &mut black_box(&mut line),
+    );
+    drop(element);
+    let Outcome::Some(Some(glyph)) = iced::advanced::widget::Operation::finish(&line) else {
+        panic!("{item} byte {byte} is on screen");
+    };
+    glyph + (paper_viewport(reader).paper.position() - Point::ORIGIN)
+}
+
+fn right_click(ui: &mut Harness, reader: &mut Reader, at: Point) -> Vec<Message> {
+    move_pointer(reader, at);
+    ui.send(
+        reader,
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+        at,
+    )
+}
+
+/// Right-clicks `at` and clicks "Read aloud from here" in the menu.
+fn start_reading_from(ui: &mut Harness, reader: &mut Reader, at: Point) {
+    right_click(ui, reader, at);
+    let entry = bounds_of(
+        reader,
+        Control::Notes(notes::Focus::Popup(notes::PopupItem::ReadFromHere)),
+    )
+    .center();
+    move_pointer(reader, entry);
+    ui.click(reader, entry);
+}
+
+/// The silenced engine reaches the text it was given as `stream`.
+fn engine_reaches(reader: &mut Reader, stream: u32) {
+    reader.engine_at(crate::speech::Status {
+        stream,
+        word_len: 9,
+        ..Default::default()
+    });
+    let _ = update(reader, Message::ReadAloudTick);
+}
+
+#[test]
+fn start_reading_from_here_reads_from_the_clicked_sentence_through_the_book() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let second_page = reader.pages()[1].rows.start;
+    assert!(
+        (4..=36).contains(&second_page),
+        "paragraph 3 is on page 1 and four paragraphs follow the turn, got {second_page}"
+    );
+    // The word "goes", in the second sentence of the third paragraph.
+    let goes = text_point(
+        &reader,
+        "paragraph-3",
+        "Paragraph 3 opens. Paragraph 3 ".len(),
+    );
+    start_reading_from(&mut ui, &mut reader, goes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 3 goes on. Paragraph 3 closes.".to_owned(),
+            three_sentences(4),
+            three_sentences(5),
+        ]
+    );
+    assert_eq!(
+        reader.notes.popup, None,
+        "choosing the entry closes the menu"
+    );
+    assert!(
+        bounds_of(&mut reader, Control::ReadAloudPause).width > 0.0,
+        "the listening pill shows"
+    );
+    assert_eq!(reader.read_aloud_caption(), "Reading page 1");
+
+    // Text `n` is paragraph `n + 2`, so the first paragraph of page 2, on
+    // row `second_page`, is text `second_page - 1`.
+    let turn = second_page as u32 - 1;
+    for stream in 2..turn {
+        engine_reaches(&mut reader, stream);
+    }
+    assert_eq!(page_field(&reader), "1");
+    assert_eq!(
+        reader.spoken_word(&format!("paragraph-{}", second_page)),
+        Some(0..9),
+        "the last paragraph of page 1 has its spoken word marked"
+    );
+    engine_reaches(&mut reader, turn);
+    assert_eq!(page_field(&reader), "2", "reading turns the page");
+    let mut expected = vec!["Paragraph 3 goes on. Paragraph 3 closes.".to_owned()];
+    expected.extend((4..=second_page + 3).map(three_sentences));
+    assert_eq!(reader.said(), expected);
+}
+
+/// Selects from `from` to `to` with the left button held.
+fn drag_select(ui: &mut Harness, reader: &mut Reader, from: Point, to: Point) {
+    move_pointer(reader, from);
+    ui.press(reader, from);
+    app_event(reader, mouse::Event::ButtonPressed(mouse::Button::Left));
+    ui.send(
+        reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: to }),
+        to,
+    );
+    move_pointer(reader, to);
+    ui.release(reader, to);
+    app_event(reader, mouse::Event::ButtonReleased(mouse::Button::Left));
+}
+
+#[test]
+fn start_reading_from_here_on_a_selection_starts_at_its_first_sentence() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let second_sentence = "Paragraph 3 opens. Paragraph 3 ".len();
+    let third_sentence = "Paragraph 3 opens. Paragraph 3 goes on. ".len();
+    let goes = text_point(&reader, "paragraph-3", second_sentence);
+    let closes = text_point(
+        &reader,
+        "paragraph-3",
+        third_sentence + "Paragraph 3 ".len(),
+    );
+    drag_select(&mut ui, &mut reader, goes, closes);
+    let items = &reader.book.as_ref().unwrap().items;
+    assert_eq!(
+        reader.selection.copy_text(items).as_deref(),
+        Some("goes on. Paragraph 3 ")
+    );
+
+    // Inside the selection, in the third sentence.
+    let inside = text_point(&reader, "paragraph-3", third_sentence + "Paragraph ".len());
+    right_click(&mut ui, &mut reader, inside);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Selection)
+    );
+    start_reading_from(&mut ui, &mut reader, inside);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 3 goes on. Paragraph 3 closes.".to_owned(),
+            three_sentences(4),
+            three_sentences(5),
+        ],
+        "from the sentence the selection starts in, past the selection's end"
+    );
+    assert!(!reader.read_aloud.session.as_ref().unwrap().selection);
+}
+
+#[test]
+fn start_reading_from_here_on_a_highlight_starts_at_its_first_sentence() {
+    use reader_document::annotations::{Annotations, HighlightColor, Place, ReflowPoint};
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+    let second_sentence = "Paragraph 7 opens. Paragraph 7 ".len();
+    let third_sentence = "Paragraph 7 opens. Paragraph 7 goes on. ".len();
+    let point = |byte| ReflowPoint {
+        item_id: "paragraph-7".into(),
+        byte,
+    };
+    let mut data = Annotations::new(&fingerprint).unwrap();
+    let id = data
+        .add_highlight(
+            Place::Reflow {
+                chapter: None,
+                from: point(second_sentence),
+                to: point(three_sentences(7).len()),
+            },
+            HighlightColor::Yellow,
+            "1".into(),
+            "goes on. Paragraph 7 closes.".into(),
+        )
+        .unwrap();
+    reader.notes.book = Some(fingerprint);
+    reader.notes.data = Some(data);
+    reader.refresh_marks();
+
+    // On the highlight, in the third sentence.
+    let closes = text_point(
+        &reader,
+        "paragraph-7",
+        third_sentence + "Paragraph 7 ".len(),
+    );
+    right_click(&mut ui, &mut reader, closes);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Highlight(id))
+    );
+    start_reading_from(&mut ui, &mut reader, closes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 7 goes on. Paragraph 7 closes.".to_owned(),
+            three_sentences(8),
+            three_sentences(9),
+        ]
+    );
+}
+
+#[test]
+fn start_reading_from_here_while_reading_starts_again_at_the_new_place() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let third_sentence = "Paragraph 2 opens. Paragraph 2 goes on. ".len();
+    let closes = text_point(
+        &reader,
+        "paragraph-2",
+        third_sentence + "Paragraph 2 ".len(),
+    );
+    start_reading_from(&mut ui, &mut reader, closes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 2 closes.".to_owned(),
+            three_sentences(3),
+            three_sentences(4),
+        ]
+    );
+    engine_reaches(&mut reader, 2);
+    assert_eq!(reader.spoken_word("paragraph-3"), Some(0..9));
+
+    let goes = text_point(
+        &reader,
+        "paragraph-5",
+        "Paragraph 5 opens. Paragraph 5 ".len(),
+    );
+    start_reading_from(&mut ui, &mut reader, goes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 5 goes on. Paragraph 5 closes.".to_owned(),
+            three_sentences(6),
+            three_sentences(7),
+        ]
+    );
+    assert!(reader.read_aloud.active());
+    assert_eq!(
+        reader.spoken_word("paragraph-3"),
+        None,
+        "the word of the reading that was stopped is no longer marked"
+    );
+}
+
+/// The window's y halfway between the end of paragraph `above` and the
+/// start of paragraph `below`.
+fn between(reader: &Reader, above: usize, below: usize) -> f32 {
+    let last = three_sentences(above).len() - 1;
+    let end = glyph_bounds(reader, &format!("paragraph-{above}"), last);
+    let start = glyph_bounds(reader, &format!("paragraph-{below}"), 0);
+    (end.y + end.height + start.y) / 2.0
+}
+
+#[test]
+fn start_reading_from_here_off_the_text_starts_at_the_line_beside_it_or_the_next_paragraph() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let paper = paper_viewport(&reader).paper;
+    let third = glyph_bounds(&reader, "paragraph-3", 0);
+    let from_the_fourth = [three_sentences(4), three_sentences(5), three_sentences(6)];
+
+    let gap = Point::new(third.x + 40.0, between(&reader, 3, 4));
+    start_reading_from(&mut ui, &mut reader, gap);
+    assert_eq!(reader.said(), from_the_fourth, "between two paragraphs");
+
+    let from_the_third = [three_sentences(3), three_sentences(4), three_sentences(5)];
+    let margin = Point::new(paper.x + 12.0, third.center_y());
+    start_reading_from(&mut ui, &mut reader, margin);
+    assert_eq!(
+        reader.said(),
+        from_the_third,
+        "in the page's margin beside the third paragraph's line"
+    );
+
+    let desk = Point::new(paper.x - 60.0, third.center_y());
+    start_reading_from(&mut ui, &mut reader, desk);
+    assert_eq!(
+        reader.said(),
+        from_the_third,
+        "on the desk beside the third paragraph's line"
+    );
+
+    let second_page = reader.pages()[1].rows.start;
+    let footer = Point::new(paper.center_x(), paper.y + paper.height - 20.0);
+    start_reading_from(&mut ui, &mut reader, footer);
+    assert_eq!(
+        reader.said(),
+        [
+            three_sentences(second_page + 1),
+            three_sentences(second_page + 2),
+            three_sentences(second_page + 3),
+        ],
+        "under the page's last paragraph, from the next page's first"
+    );
+    assert_eq!(page_field(&reader), "1");
+    engine_reaches(&mut reader, 1);
+    assert_eq!(page_field(&reader), "2", "the page turns once it is spoken");
+
+    // A right click that reached no row, as one on a scrollbar.
+    let _ = update(&mut reader, Message::ContextBlank(None));
+    assert_eq!(
+        reader.notes.popup.as_ref().unwrap().entries(),
+        [notes::PopupItem::ToggleBookmark]
+    );
+}
+
+#[test]
+fn start_reading_from_here_in_a_first_sentence_starts_with_the_paragraph() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    // The word "opens", in the first sentence of the third paragraph.
+    let opens = text_point(&reader, "paragraph-3", "Paragraph 3 ".len());
+    start_reading_from(&mut ui, &mut reader, opens);
+    assert_eq!(
+        reader.said(),
+        [three_sentences(3), three_sentences(4), three_sentences(5)]
+    );
+}
+
+#[test]
+fn start_reading_from_here_under_a_paragraph_that_goes_on_reads_its_next_page() {
+    let long: String = (1..=400)
+        .map(|number| format!("Sentence {number} of the long paragraph. "))
+        .collect();
+    let long = long.trim_end().to_owned();
+    let mut reader = sentence_book_with(|rows| {
+        rows[0] = Item::Paragraph {
+            id: "paragraph-1".into(),
+            text: long.clone(),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        }
+    });
+    assert_eq!(
+        reader.pages()[1].rows.start,
+        0,
+        "the long paragraph goes on over the page"
+    );
+    let mut ui = Harness::new();
+    let paper = paper_viewport(&reader).paper;
+    let footer = Point::new(paper.center_x(), paper.y + paper.height - 20.0);
+    start_reading_from(&mut ui, &mut reader, footer);
+
+    let said = reader.said();
+    let first = &said[0];
+    assert!(
+        first.starts_with("Sentence ") && long.ends_with(first.as_str()),
+        "reading goes on with a whole sentence of the same paragraph, got {first:?}"
+    );
+    assert!(
+        !first.starts_with("Sentence 1 ") && first.len() < long.len(),
+        "it starts where the next page does and does not read the first page again"
+    );
+    assert_eq!(said[1], three_sentences(2), "then the next paragraph");
+}
+
+#[test]
+fn start_reading_from_here_beside_a_line_starts_at_the_sentence_the_line_begins_in() {
+    let long: String = (1..=60)
+        .map(|number| format!("Sentence {number} of the long paragraph. "))
+        .collect();
+    let long = long.trim_end().to_owned();
+    let mut reader = sentence_book_with(|rows| {
+        rows[0] = Item::Paragraph {
+            id: "paragraph-1".into(),
+            text: long.clone(),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        }
+    });
+    let mut ui = Harness::new();
+    let paper = paper_viewport(&reader).paper;
+    // The line that holds the start of the paragraph's thirtieth sentence.
+    let thirtieth = long.find("Sentence 30 ").unwrap();
+    let line = glyph_bounds(&reader, "paragraph-1", thirtieth);
+    let margin = Point::new(paper.x + 12.0, line.center_y());
+    start_reading_from(&mut ui, &mut reader, margin);
+
+    let said = reader.said();
+    let first = &said[0];
+    assert!(
+        long.ends_with(first.as_str()),
+        "reading goes on to the end of the paragraph, got {first:?}"
+    );
+    assert!(
+        ["Sentence 28 ", "Sentence 29 ", "Sentence 30 "]
+            .iter()
+            .any(|start| first.starts_with(start)),
+        "it starts with the sentence that line begins in, got {first:?}"
+    );
+    assert_eq!(said[1], three_sentences(2), "then the next paragraph");
+}
+
+#[test]
+fn start_reading_from_here_on_a_picture_starts_at_the_paragraph_after_it() {
+    let mut reader = sentence_book_with(|rows| {
+        rows[3] = Item::Image {
+            id: "picture".into(),
+            asset_path: "missing.png".into(),
+        }
+    });
+    let mut ui = Harness::new();
+    let third = glyph_bounds(&reader, "paragraph-3", 0);
+    let picture = Point::new(third.x + 40.0, between(&reader, 3, 5));
+    start_reading_from(&mut ui, &mut reader, picture);
+    assert_eq!(
+        reader.said(),
+        [three_sentences(5), three_sentences(6), three_sentences(7),]
+    );
+}
+
+#[test]
+fn start_reading_from_here_in_the_space_over_a_heading_starts_at_the_heading() {
+    let mut reader = sentence_book_with(|rows| {
+        rows[3] = Item::Heading {
+            id: "heading".into(),
+            text: "A new part".into(),
+            // A heading of level 1 or 2 would start a new page.
+            level: 3,
+        }
+    });
+    let mut ui = Harness::new();
+    let heading = glyph_bounds(&reader, "heading", 0);
+    // Inside the heading's own space above its text, not the gap before it.
+    let over = Point::new(heading.x + 40.0, heading.y - 5.0);
+    start_reading_from(&mut ui, &mut reader, over);
+    assert_eq!(
+        reader.said(),
+        [
+            "A new part".to_owned(),
+            three_sentences(5),
+            three_sentences(6),
+        ]
+    );
+}
+
+#[test]
+#[ignore = "Read from here review: writes the right-click menu on a page and on a selection to target/ui-ux-review"]
+fn render_read_from_here_menu() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    let entry = Control::Notes(notes::Focus::Popup(notes::PopupItem::ReadFromHere));
+    let sentence = "A readable paragraph with enough words to wrap. ";
+
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let mut ui = Harness::new();
+    let place = text_point(
+        &reader,
+        "paragraph-1",
+        sentence.len() * 4 + "A readable ".len(),
+    );
+    right_click(&mut ui, &mut reader, place);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Page)
+    );
+    let hovered = bounds_of(&mut reader, entry).center();
+    render_with_cursor(
+        &mut reader,
+        &output.join("read-from-here-menu-page.png"),
+        hovered,
+    );
+
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let mut ui = Harness::new();
+    let from = text_point(
+        &reader,
+        "paragraph-1",
+        sentence.len() * 4 + "A readable ".len(),
+    );
+    let to = text_point(&reader, "paragraph-1", sentence.len() * 9);
+    drag_select(&mut ui, &mut reader, from, to);
+    right_click(&mut ui, &mut reader, place);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Selection)
+    );
+    let hovered = bounds_of(&mut reader, entry).center();
+    render_with_cursor(
+        &mut reader,
+        &output.join("read-from-here-menu-selection.png"),
+        hovered,
+    );
+}
+
 #[test]
 fn strips_reach_the_bottom_unless_the_page_scrolls_sideways() {
     let mut reader = strip_book(1000.0, 600.0);
@@ -2553,10 +3107,11 @@ fn a_right_click_on_a_strip_still_opens_the_page_menu() {
         at,
     );
     assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, Message::ContextBlank)),
-        "the margin under the strip gets the right click: {messages:?}"
+        messages.iter().any(|message| matches!(
+            message,
+            Message::ContextBlank(_) | Message::ContextBeside(_)
+        )),
+        "the page under the strip gets the right click: {messages:?}"
     );
     assert!(page_turns(&messages).is_empty());
     let released = ui.send(
