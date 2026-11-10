@@ -1,5 +1,4 @@
-//! Which keys do what. The F1 help and the Shortcuts section of Settings both
-//! read this one table, so the two lists cannot disagree.
+//! Which keys do what, as the Shortcuts section of Settings lists them.
 use super::*;
 use iced::widget::Column;
 
@@ -16,7 +15,7 @@ pub(super) const GROUPS: &[Group] = &[
             ("Tab / Shift+Tab", "Move between controls"),
             ("Enter / Space", "Activate the focused control"),
             ("Escape", "Close a menu, panel or dialog"),
-            ("F1", "Show or hide the shortcut help"),
+            ("F1", "Open or close this list"),
             ("F8", "Keep the reading bar visible"),
             ("F11", "Enter or leave fullscreen"),
         ],
@@ -88,56 +87,9 @@ pub(super) const GROUPS: &[Group] = &[
     },
 ];
 
-/// One group as a single line of the F1 help.
-fn help_line(group: &Group) -> String {
-    group
-        .rows
-        .iter()
-        .map(|(keys, action)| format!("{keys}  {action}"))
-        .collect::<Vec<_>>()
-        .join("    ·    ")
-}
-
-/// The body of the F1 help: one wrapping line for each group.
-pub(super) fn help<'a>() -> Element<'a, Message> {
+/// The Shortcuts section: one row for each shortcut, under its group.
+pub(super) fn table<'a>() -> Element<'a, Message> {
     Column::with_children(GROUPS.iter().map(|group| {
-        row![
-            text(group.title).font(ui::MEDIUM).size(12).width(88),
-            text(help_line(group))
-                .size(12)
-                .width(Length::Fill)
-                .style(ui::muted_text),
-        ]
-        .spacing(8)
-        .into()
-    }))
-    .spacing(6)
-    .into()
-}
-
-/// The Shortcuts section: one row for each shortcut, under its group. Two
-/// columns, when the pane is wide enough, keep the list to about one screen.
-pub(super) fn table<'a>(two_columns: bool) -> Element<'a, Message> {
-    if !two_columns {
-        return groups(GROUPS);
-    }
-    let total: usize = GROUPS.iter().map(|group| group.rows.len()).sum();
-    let mut before = 0;
-    let split = GROUPS
-        .iter()
-        .position(|group| {
-            let past_half = 2 * before >= total;
-            before += group.rows.len();
-            past_half
-        })
-        .unwrap_or(GROUPS.len());
-    row![groups(&GROUPS[..split]), groups(&GROUPS[split..])]
-        .spacing(24)
-        .into()
-}
-
-fn groups<'a>(groups: &'static [Group]) -> Element<'a, Message> {
-    Column::with_children(groups.iter().map(|group| {
         Column::with_children(
             std::iter::once(
                 text(group.title.to_uppercase())
@@ -190,14 +142,6 @@ mod tests {
                 .iter()
                 .flat_map(|group| group.rows)
                 .all(|(keys, action)| !format!("{keys} {action}").to_lowercase().contains("edge"))
-        );
-        assert!(
-            help_line(&GROUPS[0]).contains("F8  Keep the reading bar visible"),
-            "the F1 help reads the same rows"
-        );
-        assert_eq!(
-            help_line(&GROUPS[GROUPS.len() - 1]),
-            "Ctrl+Shift+U  Read aloud from the current page, or stop"
         );
     }
 }

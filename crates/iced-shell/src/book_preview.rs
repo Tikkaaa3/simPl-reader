@@ -3419,10 +3419,6 @@ fn render_ux10_look() {
         &mut reader,
         &output.join("UX-10-library-narrow-end-light.png"),
     );
-    let mut reader = full_bar_book(wide.width, wide.height);
-    let _ = update(&mut reader, Message::ToggleHelp);
-    reader.focused = None;
-    render(&mut reader, &output.join("UX-10-help-light.png"));
 }
 
 #[test]

@@ -978,7 +978,6 @@ struct Reader {
     bar: reading_chrome::Bar,
     menu: Option<reading_chrome::Menu>,
     strips: page_strips::Hover,
-    show_help: bool,
     focused: Option<Control>,
     focus_generation: u64,
     focus_pending: bool,
@@ -1093,7 +1092,6 @@ impl Default for Reader {
             dialog: None,
             pending_open: None,
             show_recent: false,
-            show_help: false,
             bar: Default::default(),
             menu: None,
             strips: Default::default(),
@@ -1192,7 +1190,6 @@ enum Control {
     AddRecent(usize),
     LocateRecent(usize),
     RemoveRecent(usize),
-    HideHelp,
     Notes(notes::Focus),
     ReadAloud,
     ReadAloudPause,
@@ -1265,7 +1262,8 @@ enum Message {
     ProgressJump(u32),
     /// The book page field gained or lost keyboard focus.
     BookPageFocus(bool),
-    ToggleHelp,
+    /// F1: open Settings on Shortcuts, or close Settings when it shows them.
+    ToggleShortcuts,
     FocusReady(u64),
     OpenRecent(usize),
     AddRecent(usize),
@@ -1430,6 +1428,19 @@ fn image_size(image: &DisplayImage, width: f32) -> Size {
 }
 
 impl Reader {
+    /// Open Settings on `section` and load what its panes show.
+    fn open_settings(&mut self, section: settings::Section) -> Task<Message> {
+        self.settings = Some(section);
+        self.show_search = false;
+        self.voice_choices = self.read_aloud.choices();
+        Task::batch([
+            self.refresh_dictionaries(),
+            self.estimate_backup(),
+            self.refresh_library(),
+            scroll_to_widget(overlay_id(), 0.0),
+        ])
+    }
+
     fn interactive(&self) -> bool {
         self.opening.is_none()
             && !self.saving
@@ -2379,11 +2390,6 @@ impl Reader {
                     }),
             )
             .chain(
-                self.show_help
-                    .then_some(Control::HideHelp)
-                    .filter(move |_| !overlay),
-            )
-            .chain(
                 self.notes_controls()
                     .into_iter()
                     .filter(move |_| has_document && !overlay),
@@ -2441,7 +2447,6 @@ impl Reader {
             Control::Appearance(appearance) => Message::SetAppearance(appearance),
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
-            Control::HideHelp => Message::ToggleHelp,
             Control::Theme(target, index) => theme_message(target, index),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
@@ -3363,7 +3368,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         .as_ref()
         .map(|pdf| (pdf.document().id, pdf.page_index()));
     let previous_focus = reader.focused;
-    let previous_panels = (reader.show_recent, reader.show_help, reader.show_contents);
+    let previous_panels = (reader.show_recent, reader.show_contents);
     let previous_bar = reader.bar.visible();
     let input = reading_chrome::Input::of(&message);
     let resized = matches!(
@@ -3403,8 +3408,7 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
         reader.refit_book(),
         reader.resize_pdf_view(),
     ]);
-    let panels_changed =
-        previous_panels != (reader.show_recent, reader.show_help, reader.show_contents);
+    let panels_changed = previous_panels != (reader.show_recent, reader.show_contents);
     if reader.focused != previous_focus
         || resized
         || panels_changed
@@ -3575,28 +3579,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                 }
             }
             chrome::Action::Settings if reader.interactive() => {
-                reader.settings = match reader.settings {
-                    Some(_) => None,
-                    None => Some(settings::Section::Reading),
-                };
-                if reader.settings.is_some() {
-                    reader.voice_choices = reader.read_aloud.choices();
-                }
-                reader.show_search = false;
-                reader.focused = Some(if reader.settings.is_some() {
-                    Control::DismissOverlay
-                } else {
-                    reading_chrome::return_focus(reader, Control::Chrome(chrome::Action::Settings))
-                });
-                if reader.settings.is_some() {
-                    Task::batch([
-                        reader.refresh_dictionaries(),
-                        reader.estimate_backup(),
-                        reader.refresh_library(),
-                        scroll_to_widget(overlay_id(), 0.0),
-                    ])
-                } else {
+                if reader.settings.take().is_some() {
+                    reader.show_search = false;
+                    reader.focused = Some(reading_chrome::return_focus(
+                        reader,
+                        Control::Chrome(chrome::Action::Settings),
+                    ));
                     Task::none()
+                } else {
+                    reader.focused = Some(Control::DismissOverlay);
+                    reader.open_settings(settings::Section::Reading)
                 }
             }
             action => reader.window.map_or_else(Task::none, |id| match action {
@@ -4005,12 +3997,18 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             };
             restore_viewport(reader)
         }
-        Message::ToggleHelp if reader.interactive() => {
-            reader.settings = None;
-            reader.show_search = false;
-            reader.show_help = !reader.show_help;
-            reader.focused = reader.show_help.then_some(Control::HideHelp);
-            restore_viewport(reader)
+        Message::ToggleShortcuts if reader.interactive() => {
+            use settings::Section::Shortcuts;
+            if reader.settings == Some(Shortcuts) {
+                return update_inner(reader, Message::DismissOverlay);
+            }
+            let task = if reader.settings.is_some() {
+                update_inner(reader, Message::SettingsSection(Shortcuts))
+            } else {
+                reader.open_settings(Shortcuts)
+            };
+            reader.focused = Some(Control::SettingsSection(Shortcuts));
+            task
         }
         Message::OpenRecent(index) if reader.interactive() => {
             let Some(entry) = reader.recent.get(index).cloned() else {
@@ -4909,7 +4907,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                         return update_inner(reader, Message::TogglePinnedBar);
                     }
                     Key::Named(key::Named::F1) if !repeat => {
-                        return update_inner(reader, Message::ToggleHelp);
+                        return update_inner(reader, Message::ToggleShortcuts);
                     }
                     Key::Named(key::Named::Escape) if !repeat => {
                         if reader.show_conversion {
@@ -4924,9 +4922,6 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                             return Task::none();
                         }
                         reader.focused = None;
-                        if reader.show_help {
-                            return update_inner(reader, Message::ToggleHelp);
-                        }
                         if reader.show_recent {
                             return update_inner(reader, Message::ToggleRecent);
                         }
@@ -5663,8 +5658,7 @@ fn toned_button<'a>(
     if focused
         && !matches!(
             control,
-            Control::HideHelp
-                | Control::OpenRecent(_)
+            Control::OpenRecent(_)
                 | Control::AddRecent(_)
                 | Control::LocateRecent(_)
                 | Control::RemoveRecent(_)
@@ -6594,28 +6588,6 @@ fn view(reader: &Reader) -> Element<'_, Message> {
     }
     if reader.show_recent {
         auxiliary = auxiliary.push(recent_panel(reader, active, has_document));
-    }
-    if reader.show_help {
-        let help = column![
-            row![
-                text("Shortcuts").size(16).font(ui::SEMIBOLD),
-                iced::widget::Space::new().width(Length::Fill),
-                control_button(
-                    reader,
-                    Control::HideHelp,
-                    text("Hide").font(ui::MEDIUM).size(12),
-                    Some(Message::ToggleHelp)
-                ),
-            ]
-            .align_y(iced::Alignment::Center),
-            shortcuts::help(),
-        ]
-        .spacing(6);
-        let mut panel = container(help).padding(12).style(ui::panel);
-        if reader.focused == Some(Control::HideHelp) {
-            panel = panel.id(iced::advanced::widget::Id::new(ui::FOCUSED_CONTROL));
-        }
-        auxiliary = auxiliary.push(panel);
     }
     if let Some(notice) = &reader.preferences_notice {
         auxiliary = auxiliary.push(
@@ -9557,7 +9529,7 @@ mod tests {
         let mut reader = Reader {
             book: Some(book("reading")),
             focused: Some(Control::Find),
-            show_help: true,
+            show_recent: true,
             ..Reader::default()
         };
         let _ = reader.rebuild_geometry(Anchor {
@@ -9568,7 +9540,7 @@ mod tests {
         let original = reader.saved_position().unwrap().1;
         let _ = update(&mut reader, f8());
         assert_eq!(reader.bar.state(), BarState::Pinned);
-        assert!(reader.show_help, "pinning closes no panel");
+        assert!(reader.show_recent, "pinning closes no panel");
         assert_eq!(reader.focused, Some(Control::Find));
         assert!(reader.controls().any(|control| control == Control::Find));
         let pinned = reader.saved_position().unwrap().1;
@@ -9579,10 +9551,10 @@ mod tests {
         assert_eq!(
             reader.bar.state(),
             BarState::Shown { hide_at: None },
-            "the open help panel hangs below the bar and holds it"
+            "the open recent panel hangs below the bar and holds it"
         );
         let _ = update(&mut reader, f8());
-        reader.show_help = false;
+        reader.show_recent = false;
         let _ = update(&mut reader, f8());
         assert!(
             matches!(reader.bar.state(), BarState::Shown { hide_at: Some(_) }),

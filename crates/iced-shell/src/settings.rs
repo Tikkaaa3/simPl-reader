@@ -109,11 +109,10 @@ pub(super) fn modal(reader: &Reader, section: Section) -> Element<'_, Message> {
     });
     let (padding, list_width, gap) = geometry(reader);
     let width = (reader.window_size.width - 32.0).min(MAX_WIDTH);
-    let pane_width = width - 2.0 * padding - list_width - gap - MODAL_SCROLLBAR_GUTTER;
     let list = Column::with_children(entries).spacing(2).width(list_width);
     let body = row![
         list,
-        modal_scroll(pane(reader, section, pane_width)).height(Length::Fill)
+        modal_scroll(pane(reader, section)).height(Length::Fill)
     ]
     .spacing(gap);
     // A whole-pixel heading keeps the pane's top edge on a whole pixel, where
@@ -158,7 +157,7 @@ fn rule<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn pane(reader: &Reader, section: Section, width: f32) -> Element<'_, Message> {
+fn pane(reader: &Reader, section: Section) -> Element<'_, Message> {
     match section {
         Section::Reading => {
             let mut content = column![].spacing(12);
@@ -208,8 +207,8 @@ fn pane(reader: &Reader, section: Section, width: f32) -> Element<'_, Message> {
         .spacing(16)
         .into(),
         Section::Shortcuts => column![
-            note("Press F1 anywhere to show this list at the top of the window."),
-            shortcuts::table(width >= 520.0),
+            note("Press F1 anywhere to open this list."),
+            shortcuts::table(),
         ]
         .spacing(16)
         .into(),
@@ -295,6 +294,28 @@ mod tests {
 
         press(&mut reader, key::Named::Escape, key::Code::Escape);
         assert_eq!(reader.settings, None);
+    }
+
+    #[test]
+    fn f1_opens_the_shortcuts_and_closes_them_again() {
+        let mut reader = Reader::default();
+        press(&mut reader, key::Named::F1, key::Code::F1);
+        assert_eq!(reader.settings, Some(Section::Shortcuts));
+        assert_eq!(
+            reader.focused,
+            Some(Control::SettingsSection(Section::Shortcuts))
+        );
+        press(&mut reader, key::Named::F1, key::Code::F1);
+        assert_eq!(reader.settings, None);
+
+        toggle_settings(&mut reader);
+        assert_eq!(reader.settings, Some(Section::Reading));
+        press(&mut reader, key::Named::F1, key::Code::F1);
+        assert_eq!(reader.settings, Some(Section::Shortcuts));
+        assert_eq!(
+            reader.focused,
+            Some(Control::SettingsSection(Section::Shortcuts))
+        );
     }
 
     #[test]

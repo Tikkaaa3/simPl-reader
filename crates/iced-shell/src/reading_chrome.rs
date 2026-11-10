@@ -423,13 +423,12 @@ impl Reader {
             || library_ui::banner_visible(self)
     }
 
-    /// Help, recent documents or notices. Find, the read-aloud player and the
+    /// Recent documents or notices. Find, the read-aloud player and the
     /// drawers float over the page instead, so they never hold the bar.
     fn has_held_panels(&self) -> bool {
         self.error.is_some()
             || self.history_notice.is_some()
             || self.show_recent
-            || self.show_help
             || self.preferences_notice.is_some()
             || self.shelf.notice.is_some()
             || self.saving
@@ -1431,12 +1430,12 @@ mod tests {
             BarState::Hidden,
             "the bar idles away over open panels that float"
         );
-        reader.show_help = true;
+        reader.show_recent = true;
         reader.sync_bar(opened + seconds(3.0), Input::default());
         assert_eq!(
             reader.bar.state(),
             BarState::Shown { hide_at: None },
-            "help still hangs below the bar and holds it"
+            "recent documents still hang below the bar and hold it"
         );
     }
 
