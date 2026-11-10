@@ -14,7 +14,7 @@ and keep your highlights and notes with your books.
 ## Made for reading
 
 - **Your library, on your machine.** Import documents, mark favourites, search by
-  title or author, and resume from Continue Reading.
+  title or author, and press Space to resume the book you were reading.
 - **Two ways to read PDFs.** Keep the original page in Document view or use Book
   view for reconstructed prose and extracted illustrations.
 - **One page at a time.** Visible paper boundaries, a click anywhere along the left
@@ -46,9 +46,10 @@ and keep your highlights and notes with your books.
 | --- | --- |
 | ![simPl library in the light theme](docs/screenshots/web/library-light.webp) | ![simPl library in the dark theme](docs/screenshots/web/library-dark.webp) |
 
-Import EPUB, PDF, HTML, TXT and Markdown, search your library, organize shelves,
-and return to Continue Reading. The original demonstration books shown here are
-not included with the application.
+Import EPUB, PDF, HTML, TXT and Markdown, search your library and organize shelves.
+Once the library holds more than three books, Continue Reading lists the ones you
+have started. In any library, Space resumes the latest unfinished book. The
+original demonstration books shown here are not included with the application.
 
 ## Find your reading style
 
@@ -111,8 +112,8 @@ To create the portable application, follow [Build from source](#build-from-sourc
 If you already have a portable folder:
 
 1. Run `simPl.exe`. Keep `pdfium.dll` and the `third-party` folder beside it.
-2. Select **Open file**, press **Ctrl+O**, or drop a supported file into the window to read it where it is.
-   Select **Add Document** or press **Ctrl+I** to copy it into your library.
+2. Select **Open**, press **Ctrl+O**, or drop a supported file into the window to read it where it is.
+   Select **Add** or press **Ctrl+I** to copy it into your library.
 3. Read, then return to **Library**. Your position and reading preferences are saved.
 
 The portable executable needs no Rust installation. Move or copy the **whole
@@ -221,9 +222,9 @@ plugins remain future work. [Data sources and license](assets/dictionaries/READM
 
 ## Library and local data
 
-**Open file** (Ctrl+O), file drops, and double-clicking a file or using **Open with**
+**Open** (Ctrl+O), file drops, and double-clicking a file or using **Open with**
 read the document where it is. Nothing is copied, and the book appears in **Recent**.
-**Add Document** (Ctrl+I) and **Add to library** on a Recent row copy the document into
+**Add** (Ctrl+I) and **Add to library** on a Recent row copy the document into
 the library folder and add it to the library. A dropped HTML book folder is always
 copied, because simPl packages it as an EPUB.
 
