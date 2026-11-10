@@ -143,8 +143,9 @@ fn run_case(name: &str, reader: Reader, scale: f32, profile: bool) {
     let size = reader.window_size;
     let step = if size.width < 800.0 { 32.0 } else { 12.0 };
     let (pane, content) = super::book_preview::scrollable_bounds(&reader, overlay_id());
+    let range = content.height - pane.height;
     assert!(
-        content.height - pane.height >= 5.0 * step,
+        range >= 5.0 * step,
         "{name}: the pane must scroll through every checked frame, {content:?} in {pane:?}"
     );
     let bounds = Rectangle::with_size(size);
@@ -174,11 +175,11 @@ fn run_case(name: &str, reader: Reader, scale: f32, profile: bool) {
                 .as_widget_mut()
                 .layout(&mut tree, &renderer, &layout::Limits::new(size, size));
         let built = started.elapsed();
-        let offset = if frame < 35 {
-            frame as f32 * step
-        } else {
-            (70 - frame) as f32 * step
-        };
+        let travel = if frame < 35 { frame } else { 70 - frame } as f32 * step;
+        // A pane shorter than the travel turns back at its ends, so every
+        // frame still moves and none is timed standing still.
+        let lap = travel % (2.0 * range);
+        let offset = if lap <= range { lap } else { 2.0 * range - lap };
         element.as_widget_mut().operate(
             &mut tree,
             Layout::new(&node),
