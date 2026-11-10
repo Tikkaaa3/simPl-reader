@@ -405,7 +405,6 @@ pub(super) fn controls(
         Some(Focus::Picker(Picker::Font)),
         Some(Focus::Picker(Picker::Spacing)),
         Some(Focus::Picker(Picker::Margin)),
-        Some(Focus::Reset),
     ]
     .into_iter()
     .flatten()
@@ -427,6 +426,7 @@ pub(super) fn controls(
             .filter(move |_| picker == Some(Picker::Margin))
             .map(Focus::Margin),
     )
+    .chain([Focus::Reset])
     .filter(move |_| enabled(reader, target))
     .map(move |focus| Control::Reading(target, focus))
 }
