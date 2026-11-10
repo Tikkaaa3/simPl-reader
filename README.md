@@ -47,8 +47,8 @@ and keep your highlights and notes with your books.
 | ![simPl library in the light theme](docs/screenshots/web/library-light.webp) | ![simPl library in the dark theme](docs/screenshots/web/library-dark.webp) |
 
 Import EPUB, PDF, HTML, TXT and Markdown, search your library and organize shelves.
-Once the library holds more than three books, Continue Reading lists the ones you
-have started. In any library, Space resumes the latest unfinished book. The
+Once the library holds more than three books, Continue Reading lists up to three
+unfinished books. In any library, Space resumes the latest unfinished book. The
 original demonstration books shown here are not included with the application.
 
 ## Find your reading style
