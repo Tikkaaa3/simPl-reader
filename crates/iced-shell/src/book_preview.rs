@@ -3127,6 +3127,143 @@ fn selected_sort_and_shelf_chip_are_tinted_without_an_outline() {
     );
 }
 
+/// A loaded library in a window of `size`; a book read to a fraction of 0
+/// has never been opened.
+fn library_reader(
+    size: Size,
+    books: &[(&str, reader_document::recent::DocumentKind, f32)],
+) -> Reader {
+    let mut reader = Reader {
+        window_size: size,
+        ..Reader::default()
+    };
+    let kinds: Vec<_> = books
+        .iter()
+        .map(|(title, kind, _)| (*title, *kind))
+        .collect();
+    let mut entries = shelf::sample_entries(&kinds);
+    for (entry, (_, _, progress)) in entries.iter_mut().zip(books) {
+        if *progress > 0.0 {
+            entry.progress = *progress;
+            entry.total = 240;
+            entry.current = (*progress * 240.0) as u32;
+        }
+    }
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(size);
+    reader
+}
+
+/// Four books, three of them part read: enough for Continue Reading.
+fn four_in_progress() -> [(&'static str, reader_document::recent::DocumentKind, f32); 4] {
+    use reader_document::recent::DocumentKind;
+    [
+        ("Pride and Prejudice", DocumentKind::Epub, 0.42),
+        ("Dream Analysis", DocumentKind::Pdf, 0.18),
+        ("Let's Go", DocumentKind::Html, 0.0),
+        ("Frankenstein", DocumentKind::Epub, 0.73),
+    ]
+}
+
+#[test]
+fn library_cards_sit_where_the_page_layout_puts_them() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let app_bar = 48.0;
+    let (wide, narrow) = (Size::new(1280.0, 800.0), Size::new(540.0, 700.0));
+    let three = [
+        ("Pride and Prejudice", DocumentKind::Epub, 0.42),
+        ("Dream Analysis", DocumentKind::Pdf, 0.18),
+        ("Let's Go", DocumentKind::Html, 0.6),
+    ];
+    for (name, mut reader) in [
+        ("three at 1280", library_reader(wide, &three)),
+        ("four at 1280", library_reader(wide, &four_in_progress())),
+        ("four at 540", library_reader(narrow, &four_in_progress())),
+    ] {
+        let card = bounds_of(&mut reader, Control::Shelf(shelf::Control::Document(0)));
+        let (grid, _) = reader.shelf.first_card_text_tops();
+        assert_eq!(card.y, app_bar + grid, "{name}");
+    }
+
+    let mut reader = library_reader(wide, &four_in_progress());
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::Favourite(
+            2, false,
+        )));
+    let card = bounds_of(
+        &mut reader,
+        Control::Shelf(shelf::Control::FavouriteDocument(2)),
+    );
+    let (_, favourites) = reader.shelf.first_card_text_tops();
+    assert_eq!(card.y, app_bar + favourites, "the first favourite");
+}
+
+#[test]
+#[ignore = "UX-9 review: writes the library looks to target/ui-ux-review"]
+fn render_ux9_look() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    let wide = Size::new(1280.0, 800.0);
+    let save = |reader: &mut Reader, name: &str| render(reader, &output.join(name));
+
+    save(&mut library_reader(wide, &[]), "UX-9-empty-light.png");
+    save(
+        &mut library_reader(wide, &[("Frankenstein", DocumentKind::Epub, 0.3)]),
+        "UX-9-one-light.png",
+    );
+    save(
+        &mut library_reader(wide, &four_in_progress()[..3]),
+        "UX-9-three-light.png",
+    );
+
+    let mut reader = library_reader(wide, &four_in_progress());
+    for name in ["To read", "Done"] {
+        let _ = reader
+            .shelf
+            .update(shelf::Message::Activate(shelf::Control::NewShelf));
+        let _ = reader.shelf.update(shelf::Message::NameInput(name.into()));
+        let _ = reader.shelf.update(shelf::Message::NameSubmit);
+    }
+    for control in [
+        shelf::Control::ToggleShelf(1, false, 1),
+        shelf::Control::Favourite(3, false),
+    ] {
+        let _ = reader.shelf.update(shelf::Message::Activate(control));
+    }
+    reader.shelf.entries[2].source_kind = Some(reader_document::library::SourceFormat::Markdown);
+    save(&mut reader, "UX-9-four-light.png");
+
+    let eight = [
+        ("Pride and Prejudice", DocumentKind::Epub, 0.42),
+        ("Dream Analysis", DocumentKind::Pdf, 0.0),
+        ("Let's Go", DocumentKind::Html, 0.0),
+        ("Frankenstein", DocumentKind::Epub, 0.73),
+        ("The Picture of Dorian Gray", DocumentKind::Epub, 0.0),
+        ("Notes for a quiet afternoon", DocumentKind::Html, 0.0),
+        ("Meditations", DocumentKind::Pdf, 0.0),
+        ("A Room of One's Own", DocumentKind::Epub, 0.0),
+    ];
+    for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+        let mut reader = library_reader(wide, &eight);
+        reader.appearance = appearance;
+        save(&mut reader, &format!("UX-9-eight-{name}.png"));
+    }
+    save(
+        &mut library_reader(Size::new(540.0, 700.0), &four_in_progress()),
+        "UX-9-narrow-light.png",
+    );
+    let mut reader = library_reader(wide, &four_in_progress()[..1]);
+    reader.dropping = Some(Storage::InPlace);
+    save(&mut reader, "UX-9-drop-light.png");
+}
+
 #[test]
 #[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
 fn render_ux5_bar_look() {
