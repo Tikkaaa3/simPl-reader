@@ -2312,9 +2312,14 @@ fn three_sentences(number: usize) -> String {
 }
 
 /// A book of 40 paragraphs of three sentences over several pages, open on
-/// its first page with speech silenced. Paragraph `n` is row `n - 1`, with
-/// the id `paragraph-n`.
+/// its first page with speech silenced, in a window that shows the whole
+/// page. Paragraph `n` is row `n - 1`, with the id `paragraph-n`.
 fn sentence_book() -> Reader {
+    sentence_book_with(|_| {})
+}
+
+/// `sentence_book` with its rows changed before it is laid out.
+fn sentence_book_with(change: impl FnOnce(&mut Vec<Item>)) -> Reader {
     let mut source = Arc::try_unwrap(super::tests::book("from-here")).unwrap();
     // Saved highlights need a real fingerprint.
     source.fingerprint = "ab".repeat(32);
@@ -2326,9 +2331,10 @@ fn sentence_book() -> Reader {
             style_runs: Vec::new(),
         })
         .collect();
+    change(&mut source.items);
     let mut reader = Reader {
         book: Some(Arc::new(source)),
-        window_size: Size::new(1280.0, 900.0),
+        window_size: Size::new(1280.0, 1200.0),
         ..Reader::default()
     };
     let _ = reader.rebuild_geometry(Anchor {
@@ -2341,9 +2347,15 @@ fn sentence_book() -> Reader {
 }
 
 /// A point on the character at `byte` of the paragraph `item`, nearer its
-/// leading edge, so a press there lands before it. The page must be at its
-/// top at 100%, as a book just opened is.
+/// leading edge, so a press there lands before it.
 fn text_point(reader: &Reader, item: &str, byte: usize) -> Point {
+    let glyph = glyph_bounds(reader, item, byte);
+    Point::new(glyph.x + 1.0, glyph.center_y())
+}
+
+/// Where the window shows the character at `byte` of the paragraph `item`.
+/// The page must be at its top at 100%, as a book just opened is.
+fn glyph_bounds(reader: &Reader, item: &str, byte: usize) -> Rectangle {
     use iced::advanced::widget::operation::{Outcome, black_box};
     assert_eq!((reader.zoom, reader.local_offset()), (1.0, 0.0));
     let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
@@ -2368,8 +2380,7 @@ fn text_point(reader: &Reader, item: &str, byte: usize) -> Point {
     let Outcome::Some(Some(glyph)) = iced::advanced::widget::Operation::finish(&line) else {
         panic!("{item} byte {byte} is on screen");
     };
-    let paper = paper_viewport(reader).paper;
-    Point::new(paper.x + glyph.x + 1.0, paper.y + glyph.center_y())
+    glyph + (paper_viewport(reader).paper.position() - Point::ORIGIN)
 }
 
 fn right_click(ui: &mut Harness, reader: &mut Reader, at: Point) -> Vec<Message> {
@@ -2602,6 +2613,107 @@ fn start_reading_from_here_while_reading_starts_again_at_the_new_place() {
         reader.spoken_word("paragraph-3"),
         None,
         "the word of the reading that was stopped is no longer marked"
+    );
+}
+
+/// The window's y halfway between the end of paragraph `above` and the
+/// start of paragraph `below`.
+fn between(reader: &Reader, above: usize, below: usize) -> f32 {
+    let last = three_sentences(above).len() - 1;
+    let end = glyph_bounds(reader, &format!("paragraph-{above}"), last);
+    let start = glyph_bounds(reader, &format!("paragraph-{below}"), 0);
+    (end.y + end.height + start.y) / 2.0
+}
+
+#[test]
+fn start_reading_from_here_off_the_text_starts_at_the_next_paragraph() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let paper = paper_viewport(&reader).paper;
+    let third = glyph_bounds(&reader, "paragraph-3", 0);
+    let from_the_fourth = [three_sentences(4), three_sentences(5), three_sentences(6)];
+
+    let gap = Point::new(third.x + 40.0, between(&reader, 3, 4));
+    start_reading_from(&mut ui, &mut reader, gap);
+    assert_eq!(reader.said(), from_the_fourth, "between two paragraphs");
+
+    let margin = Point::new(paper.x + 12.0, third.center_y());
+    start_reading_from(&mut ui, &mut reader, margin);
+    assert_eq!(
+        reader.said(),
+        from_the_fourth,
+        "in the page's margin beside the third paragraph"
+    );
+
+    let desk = Point::new(paper.x - 60.0, third.center_y());
+    start_reading_from(&mut ui, &mut reader, desk);
+    assert_eq!(
+        reader.said(),
+        from_the_fourth,
+        "on the desk beside the third paragraph"
+    );
+
+    let second_page = reader.pages()[1].rows.start;
+    let footer = Point::new(paper.center_x(), paper.y + paper.height - 20.0);
+    start_reading_from(&mut ui, &mut reader, footer);
+    assert_eq!(
+        reader.said(),
+        [
+            three_sentences(second_page + 1),
+            three_sentences(second_page + 2),
+            three_sentences(second_page + 3),
+        ],
+        "under the page's last paragraph, from the next page's first"
+    );
+
+    // A right click that reached no row, as one on a scrollbar.
+    let _ = update(&mut reader, Message::ContextBlank(None));
+    assert_eq!(
+        reader.notes.popup.as_ref().unwrap().entries(),
+        [notes::PopupItem::ToggleBookmark]
+    );
+}
+
+#[test]
+fn start_reading_from_here_on_a_picture_starts_at_the_paragraph_after_it() {
+    let mut reader = sentence_book_with(|rows| {
+        rows[3] = Item::Image {
+            id: "picture".into(),
+            asset_path: "missing.png".into(),
+        }
+    });
+    let mut ui = Harness::new();
+    let third = glyph_bounds(&reader, "paragraph-3", 0);
+    let picture = Point::new(third.x + 40.0, between(&reader, 3, 5));
+    start_reading_from(&mut ui, &mut reader, picture);
+    assert_eq!(
+        reader.said(),
+        [three_sentences(5), three_sentences(6), three_sentences(7),]
+    );
+}
+
+#[test]
+fn start_reading_from_here_in_the_space_over_a_heading_starts_at_the_heading() {
+    let mut reader = sentence_book_with(|rows| {
+        rows[3] = Item::Heading {
+            id: "heading".into(),
+            text: "A new part".into(),
+            // A heading of level 1 or 2 would start a new page.
+            level: 3,
+        }
+    });
+    let mut ui = Harness::new();
+    let heading = glyph_bounds(&reader, "heading", 0);
+    // Inside the heading's own space above its text, not the gap before it.
+    let over = Point::new(heading.x + 40.0, heading.y - 5.0);
+    start_reading_from(&mut ui, &mut reader, over);
+    assert_eq!(
+        reader.said(),
+        [
+            "A new part".to_owned(),
+            three_sentences(5),
+            three_sentences(6),
+        ]
     );
 }
 
@@ -2856,7 +2968,7 @@ fn a_right_click_on_a_strip_still_opens_the_page_menu() {
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, Message::ContextBlank)),
+            .any(|message| matches!(message, Message::ContextBlank(_))),
         "the margin under the strip gets the right click: {messages:?}"
     );
     assert!(page_turns(&messages).is_empty());
