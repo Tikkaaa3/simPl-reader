@@ -1948,7 +1948,9 @@ impl Reader {
 
     fn clear_content(&mut self) {
         self.show_conversion = false;
-        self.page_input = None;
+        // The page field goes with the document and reports no lost focus,
+        // so its hold on the tools is dropped here.
+        self.book_page_focus(false);
         self.look_place = None;
         self.book = None;
         self.returns.clear();
@@ -4411,6 +4413,14 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             if reader.pdf.as_ref().map(|pdf| pdf.document().id) != Some(document) {
                 return Task::none();
             }
+            if (reader.settings.is_some() || reader.show_search)
+                && matches!(
+                    message,
+                    pdf_reader::Message::PageInput(_) | pdf_reader::Message::PageSubmit
+                )
+            {
+                return Task::none();
+            }
             let mut double_word = None;
             match &message {
                 pdf_reader::Message::Context(point) => {
@@ -4555,6 +4565,13 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     Task::batch([saved, reader.rebuild_geometry(anchor)])
                 }
             }
+        }
+        // A page field that kept the keyboard under Settings or Search must
+        // not turn the book behind them.
+        Message::PageInput(_) | Message::PageSubmit
+            if reader.settings.is_some() || reader.show_search =>
+        {
+            Task::none()
         }
         Message::PageInput(value) => {
             reader.page_input = Some(value.chars().take(32).collect());
@@ -6877,9 +6894,11 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             .height(Length::Fill)
             .into()
     };
-    chrome::frame(overlays(reader, base), |direction| {
-        Message::Chrome(chrome::Action::Resize(direction))
-    })
+    chrome::frame(
+        overlays(reader, base),
+        !reader.maximized && !reader.fullscreen,
+        |direction| Message::Chrome(chrome::Action::Resize(direction)),
+    )
 }
 
 fn title(reader: &Reader) -> String {

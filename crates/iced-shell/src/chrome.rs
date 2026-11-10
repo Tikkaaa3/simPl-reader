@@ -490,16 +490,31 @@ impl<M> Widget<M, Theme, iced::Renderer> for DragHeader<'_, M> {
 
 /// Transparent native resize affordances. Retains the child's exact layout and
 /// forwards its overlays, events and widget operations everywhere except edges.
+/// A maximized or fullscreen window has no edge to drag, so with `resizable`
+/// off the edges belong to the content, as the progress line along the bottom.
 pub fn frame<'a, M: Clone + 'a>(
     content: Element<'a, M>,
+    resizable: bool,
     on_resize: fn(window::Direction) -> M,
 ) -> Element<'a, M> {
-    Element::new(ResizeFrame { content, on_resize })
+    Element::new(ResizeFrame {
+        content,
+        resizable,
+        on_resize,
+    })
 }
 
 struct ResizeFrame<'a, M> {
     content: Element<'a, M>,
+    resizable: bool,
     on_resize: fn(window::Direction) -> M,
+}
+
+impl<M> ResizeFrame<'_, M> {
+    fn direction(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<window::Direction> {
+        let position = cursor.position().filter(|_| self.resizable)?;
+        resize_direction(bounds, position)
+    }
 }
 
 fn resize_direction(bounds: Rectangle, position: iced::Point) -> Option<window::Direction> {
@@ -585,9 +600,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for ResizeFrame<'_, M> {
         viewport: &Rectangle,
     ) {
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
-            && let Some(direction) = cursor
-                .position()
-                .and_then(|p| resize_direction(layout.bounds(), p))
+            && let Some(direction) = self.direction(layout.bounds(), cursor)
         {
             shell.publish((self.on_resize)(direction));
             shell.capture_event();
@@ -612,10 +625,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for ResizeFrame<'_, M> {
         viewport: &Rectangle,
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
-        if let Some(direction) = cursor
-            .position()
-            .and_then(|p| resize_direction(layout.bounds(), p))
-        {
+        if let Some(direction) = self.direction(layout.bounds(), cursor) {
             resizing_cursor(direction)
         } else {
             self.content.as_widget().mouse_interaction(

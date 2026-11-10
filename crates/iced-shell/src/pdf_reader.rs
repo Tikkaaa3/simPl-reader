@@ -1111,7 +1111,12 @@ impl Reader {
                     && self.glyph_position(page, first, last).is_some()
                 {
                     self.pending_reveal = None;
-                    return self.scroll_to_glyph(page, first, last);
+                    // A match already in view scrolls nowhere, so the page's
+                    // picture is asked for here as well.
+                    return Task::batch([
+                        self.scroll_to_glyph(page, first, last),
+                        self.request_next(),
+                    ]);
                 }
                 self.request_next()
             }
