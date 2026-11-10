@@ -94,6 +94,13 @@ pub enum Target {
     Page,
 }
 
+/// A place in the text of the open document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextPlace {
+    /// A byte of a row of the loaded book (of an EPUB, its loaded chapter).
+    Book { row: usize, byte: usize },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupItem {
     Translate,
@@ -101,6 +108,8 @@ pub enum PopupItem {
     Note,
     Copy,
     ReadAloud,
+    /// Read aloud from the menu's place through the book.
+    ReadFromHere,
     RemoveHighlight,
     ToggleBookmark,
 }
@@ -111,7 +120,19 @@ pub struct Popup {
     pub at: Point,
     pub target: Target,
     /// Opened with the right button: also offers the page actions.
-    pub menu: bool,
+    pub menu: Option<Menu>,
+}
+
+/// What only a pop-up opened with the right button knows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Menu {
+    /// Where reading aloud starts from this menu: the start of its selection
+    /// or highlight, otherwise the place under the pointer. `None` when the
+    /// click could not be placed in the text.
+    ///
+    /// The click fixes it. By the time an entry is chosen the pointer is on
+    /// the menu, and the page under the menu may have turned.
+    pub here: Option<TextPlace>,
 }
 
 pub const POPUP_WIDTH: f32 = 232.0;
@@ -131,7 +152,10 @@ impl Popup {
             entries.push(PopupItem::ReadAloud);
             entries.push(PopupItem::Translate);
         }
-        if self.menu || matches!(self.target, Target::Page) {
+        if self.menu.is_some_and(|menu| menu.here.is_some()) {
+            entries.push(PopupItem::ReadFromHere);
+        }
+        if self.menu.is_some() || matches!(self.target, Target::Page) {
             entries.push(PopupItem::ToggleBookmark);
         }
         if matches!(self.target, Target::Highlight(_)) {
@@ -940,7 +964,7 @@ mod tests {
         let selection = Popup {
             at: Point::new(100.0, 100.0),
             target: Target::Selection,
-            menu: false,
+            menu: None,
         };
         assert_eq!(
             selection.entries(),
@@ -955,14 +979,62 @@ mod tests {
                 PopupItem::Translate,
             ]
         );
-        let menu = Popup {
-            menu: true,
-            target: Target::Highlight(3),
+        let placed = Some(Menu {
+            here: Some(TextPlace::Book { row: 2, byte: 7 }),
+        });
+        let selection_menu = Popup {
+            menu: placed,
             ..selection.clone()
         };
-        assert!(menu.entries().contains(&PopupItem::RemoveHighlight));
-        assert!(menu.entries().contains(&PopupItem::ToggleBookmark));
-        assert_eq!(menu.entries().last(), Some(&PopupItem::RemoveHighlight));
+        assert_eq!(
+            selection_menu.entries(),
+            [
+                PopupItem::Color(HighlightColor::Yellow),
+                PopupItem::Color(HighlightColor::Green),
+                PopupItem::Color(HighlightColor::Blue),
+                PopupItem::Color(HighlightColor::Pink),
+                PopupItem::Note,
+                PopupItem::Copy,
+                PopupItem::ReadAloud,
+                PopupItem::Translate,
+                PopupItem::ReadFromHere,
+                PopupItem::ToggleBookmark,
+            ]
+        );
+        let menu = Popup {
+            target: Target::Highlight(3),
+            ..selection_menu.clone()
+        };
+        assert_eq!(
+            menu.entries(),
+            [
+                PopupItem::Color(HighlightColor::Yellow),
+                PopupItem::Color(HighlightColor::Green),
+                PopupItem::Color(HighlightColor::Blue),
+                PopupItem::Color(HighlightColor::Pink),
+                PopupItem::Note,
+                PopupItem::Copy,
+                PopupItem::ReadAloud,
+                PopupItem::Translate,
+                PopupItem::ReadFromHere,
+                PopupItem::ToggleBookmark,
+                PopupItem::RemoveHighlight,
+            ]
+        );
+        let page_menu = Popup {
+            target: Target::Page,
+            ..selection_menu.clone()
+        };
+        assert_eq!(
+            page_menu.entries(),
+            [PopupItem::ReadFromHere, PopupItem::ToggleBookmark]
+        );
+        // A right click that could not be placed in the text offers no start.
+        let unplaced = Popup {
+            menu: Some(Menu::default()),
+            ..page_menu.clone()
+        };
+        assert_eq!(unplaced.entries(), [PopupItem::ToggleBookmark]);
         let page = Popup {
             target: Target::Page,
             ..selection.clone()

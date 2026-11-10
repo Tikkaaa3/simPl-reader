@@ -500,7 +500,7 @@ impl Reader {
                         .is_none() =>
             {
                 self.word_translation.dismiss();
-                self.open_popup(notes::Target::Selection, false);
+                self.open_popup(notes::Target::Selection, None);
                 Task::none()
             }
             Ok(text) => {
@@ -577,7 +577,7 @@ impl Reader {
                     return Task::none();
                 }
                 self.word_translation.dismiss();
-                self.open_popup(notes::Target::Selection, false);
+                self.open_popup(notes::Target::Selection, None);
                 self.notes_action(notes::Action::Popup(notes::PopupItem::Color(
                     self.notes.color,
                 )))

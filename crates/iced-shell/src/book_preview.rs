@@ -776,7 +776,9 @@ fn render_annotation_views() {
     reader.notes.popup = Some(notes::Popup {
         at: Point::new(500.0, 250.0),
         target: notes::Target::Highlight(id),
-        menu: true,
+        menu: Some(notes::Menu {
+            here: Some(notes::TextPlace::Book { row, byte: 0 }),
+        }),
     });
     render(&mut reader, &output.join("annotations-menu.png"));
     reader.notes.popup = None;
@@ -2301,6 +2303,305 @@ fn starting_to_listen_shows_the_bar_and_the_pill_briefly() {
     assert!(
         !reader.bar.visible(),
         "while reading goes on, the bar stays hidden"
+    );
+}
+
+/// The text of paragraph `number` of `sentence_book`.
+fn three_sentences(number: usize) -> String {
+    format!("Paragraph {number} opens. Paragraph {number} goes on. Paragraph {number} closes.")
+}
+
+/// A book of 40 paragraphs of three sentences over several pages, open on
+/// its first page with speech silenced. Paragraph `n` is row `n - 1`, with
+/// the id `paragraph-n`.
+fn sentence_book() -> Reader {
+    let mut source = Arc::try_unwrap(super::tests::book("from-here")).unwrap();
+    // Saved highlights need a real fingerprint.
+    source.fingerprint = "ab".repeat(32);
+    source.items = (1..=40)
+        .map(|number| Item::Paragraph {
+            id: format!("paragraph-{number}"),
+            text: three_sentences(number),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        })
+        .collect();
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(1280.0, 900.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    reader.silence_speech();
+    reader
+}
+
+/// A point on the character at `byte` of the paragraph `item`, nearer its
+/// leading edge, so a press there lands before it. The page must be at its
+/// top at 100%, as a book just opened is.
+fn text_point(reader: &Reader, item: &str, byte: usize) -> Point {
+    use iced::advanced::widget::operation::{Outcome, black_box};
+    assert_eq!((reader.zoom, reader.local_offset()), (1.0, 0.0));
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(reader.window_size, reader.window_size),
+    );
+    let mut line = iced_shell::selection::reading_line(Endpoint {
+        item_id: item.into(),
+        byte_offset: byte,
+    });
+    element.as_widget_mut().operate(
+        &mut tree,
+        Layout::new(&node),
+        &renderer,
+        &mut black_box(&mut line),
+    );
+    drop(element);
+    let Outcome::Some(Some(glyph)) = iced::advanced::widget::Operation::finish(&line) else {
+        panic!("{item} byte {byte} is on screen");
+    };
+    let paper = paper_viewport(reader).paper;
+    Point::new(paper.x + glyph.x + 1.0, paper.y + glyph.center_y())
+}
+
+fn right_click(ui: &mut Harness, reader: &mut Reader, at: Point) -> Vec<Message> {
+    move_pointer(reader, at);
+    ui.send(
+        reader,
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+        at,
+    )
+}
+
+/// Right-clicks `at` and clicks "Start reading from here" in the menu.
+fn start_reading_from(ui: &mut Harness, reader: &mut Reader, at: Point) {
+    right_click(ui, reader, at);
+    let entry = bounds_of(
+        reader,
+        Control::Notes(notes::Focus::Popup(notes::PopupItem::ReadFromHere)),
+    )
+    .center();
+    move_pointer(reader, entry);
+    ui.click(reader, entry);
+}
+
+/// The silenced engine reaches the text it was given as `stream`.
+fn engine_reaches(reader: &mut Reader, stream: u32) {
+    reader.engine_at(crate::speech::Status {
+        stream,
+        word_len: 9,
+        ..Default::default()
+    });
+    let _ = update(reader, Message::ReadAloudTick);
+}
+
+#[test]
+fn start_reading_from_here_reads_from_the_clicked_sentence_through_the_book() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let second_page = reader.pages()[1].rows.start;
+    assert!(
+        (4..=36).contains(&second_page),
+        "paragraph 3 is on page 1 and four paragraphs follow the turn, got {second_page}"
+    );
+    // The word "goes", in the second sentence of the third paragraph.
+    let goes = text_point(
+        &reader,
+        "paragraph-3",
+        "Paragraph 3 opens. Paragraph 3 ".len(),
+    );
+    start_reading_from(&mut ui, &mut reader, goes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 3 goes on. Paragraph 3 closes.".to_owned(),
+            three_sentences(4),
+            three_sentences(5),
+        ]
+    );
+    assert_eq!(
+        reader.notes.popup, None,
+        "choosing the entry closes the menu"
+    );
+    assert!(
+        bounds_of(&mut reader, Control::ReadAloudPause).width > 0.0,
+        "the listening pill shows"
+    );
+    assert_eq!(reader.read_aloud_caption(), "Reading page 1");
+
+    // Text `n` is paragraph `n + 2`, so the first paragraph of page 2, on
+    // row `second_page`, is text `second_page - 1`.
+    let turn = second_page as u32 - 1;
+    for stream in 2..turn {
+        engine_reaches(&mut reader, stream);
+    }
+    assert_eq!(page_field(&reader), "1");
+    assert_eq!(
+        reader.spoken_word(&format!("paragraph-{}", second_page)),
+        Some(0..9),
+        "the last paragraph of page 1 has its spoken word marked"
+    );
+    engine_reaches(&mut reader, turn);
+    assert_eq!(page_field(&reader), "2", "reading turns the page");
+    let mut expected = vec!["Paragraph 3 goes on. Paragraph 3 closes.".to_owned()];
+    expected.extend((4..=second_page + 3).map(three_sentences));
+    assert_eq!(reader.said(), expected);
+}
+
+/// Selects from `from` to `to` with the left button held.
+fn drag_select(ui: &mut Harness, reader: &mut Reader, from: Point, to: Point) {
+    move_pointer(reader, from);
+    ui.press(reader, from);
+    app_event(reader, mouse::Event::ButtonPressed(mouse::Button::Left));
+    ui.send(
+        reader,
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: to }),
+        to,
+    );
+    move_pointer(reader, to);
+    ui.release(reader, to);
+    app_event(reader, mouse::Event::ButtonReleased(mouse::Button::Left));
+}
+
+#[test]
+fn start_reading_from_here_on_a_selection_starts_at_its_first_sentence() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let second_sentence = "Paragraph 3 opens. Paragraph 3 ".len();
+    let third_sentence = "Paragraph 3 opens. Paragraph 3 goes on. ".len();
+    let goes = text_point(&reader, "paragraph-3", second_sentence);
+    let closes = text_point(
+        &reader,
+        "paragraph-3",
+        third_sentence + "Paragraph 3 ".len(),
+    );
+    drag_select(&mut ui, &mut reader, goes, closes);
+    let items = &reader.book.as_ref().unwrap().items;
+    assert_eq!(
+        reader.selection.copy_text(items).as_deref(),
+        Some("goes on. Paragraph 3 ")
+    );
+
+    // Inside the selection, in the third sentence.
+    let inside = text_point(&reader, "paragraph-3", third_sentence + "Paragraph ".len());
+    right_click(&mut ui, &mut reader, inside);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Selection)
+    );
+    start_reading_from(&mut ui, &mut reader, inside);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 3 goes on. Paragraph 3 closes.".to_owned(),
+            three_sentences(4),
+            three_sentences(5),
+        ],
+        "from the sentence the selection starts in, past the selection's end"
+    );
+    assert!(!reader.read_aloud.session.as_ref().unwrap().selection);
+}
+
+#[test]
+fn start_reading_from_here_on_a_highlight_starts_at_its_first_sentence() {
+    use reader_document::annotations::{Annotations, HighlightColor, Place, ReflowPoint};
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let fingerprint = reader.book.as_ref().unwrap().fingerprint.clone();
+    let second_sentence = "Paragraph 7 opens. Paragraph 7 ".len();
+    let third_sentence = "Paragraph 7 opens. Paragraph 7 goes on. ".len();
+    let point = |byte| ReflowPoint {
+        item_id: "paragraph-7".into(),
+        byte,
+    };
+    let mut data = Annotations::new(&fingerprint).unwrap();
+    let id = data
+        .add_highlight(
+            Place::Reflow {
+                chapter: None,
+                from: point(second_sentence),
+                to: point(three_sentences(7).len()),
+            },
+            HighlightColor::Yellow,
+            "1".into(),
+            "goes on. Paragraph 7 closes.".into(),
+        )
+        .unwrap();
+    reader.notes.book = Some(fingerprint);
+    reader.notes.data = Some(data);
+    reader.refresh_marks();
+
+    // On the highlight, in the third sentence.
+    let closes = text_point(
+        &reader,
+        "paragraph-7",
+        third_sentence + "Paragraph 7 ".len(),
+    );
+    right_click(&mut ui, &mut reader, closes);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Highlight(id))
+    );
+    start_reading_from(&mut ui, &mut reader, closes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 7 goes on. Paragraph 7 closes.".to_owned(),
+            three_sentences(8),
+            three_sentences(9),
+        ]
+    );
+}
+
+#[test]
+fn start_reading_from_here_while_reading_starts_again_at_the_new_place() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    let third_sentence = "Paragraph 2 opens. Paragraph 2 goes on. ".len();
+    let closes = text_point(
+        &reader,
+        "paragraph-2",
+        third_sentence + "Paragraph 2 ".len(),
+    );
+    start_reading_from(&mut ui, &mut reader, closes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 2 closes.".to_owned(),
+            three_sentences(3),
+            three_sentences(4),
+        ]
+    );
+    engine_reaches(&mut reader, 2);
+    assert_eq!(reader.spoken_word("paragraph-3"), Some(0..9));
+
+    let goes = text_point(
+        &reader,
+        "paragraph-5",
+        "Paragraph 5 opens. Paragraph 5 ".len(),
+    );
+    start_reading_from(&mut ui, &mut reader, goes);
+    assert_eq!(
+        reader.said(),
+        [
+            "Paragraph 5 goes on. Paragraph 5 closes.".to_owned(),
+            three_sentences(6),
+            three_sentences(7),
+        ]
+    );
+    assert!(reader.read_aloud.active());
+    assert_eq!(
+        reader.spoken_word("paragraph-3"),
+        None,
+        "the word of the reading that was stopped is no longer marked"
     );
 }
 

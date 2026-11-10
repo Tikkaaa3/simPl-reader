@@ -4468,7 +4468,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::ContextBlank => {
             if reader.book.is_some() {
-                reader.open_popup(notes::Target::Page, true);
+                reader.open_popup(notes::Target::Page, Some(notes::Menu::default()));
             }
             Task::none()
         }

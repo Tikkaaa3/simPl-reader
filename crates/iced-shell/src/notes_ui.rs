@@ -506,7 +506,7 @@ impl Reader {
     // ------------------------------------------------------------ pop-ups
 
     /// Shows the menu at the pointer. Nothing opens over a modal or while loading.
-    pub(super) fn open_popup(&mut self, target: Target, menu: bool) {
+    pub(super) fn open_popup(&mut self, target: Target, menu: Option<notes::Menu>) {
         if !self.interactive()
             || self.notes.editor.is_some()
             || self.show_search
@@ -541,9 +541,9 @@ impl Reader {
             return task;
         }
         if self.has_passage() {
-            self.open_popup(Target::Selection, false);
+            self.open_popup(Target::Selection, None);
         } else if let Some(id) = self.notes.pressed.take() {
-            self.open_popup(Target::Highlight(id), false);
+            self.open_popup(Target::Highlight(id), None);
         }
         Task::none()
     }
@@ -560,19 +560,28 @@ impl Reader {
             return;
         };
         let point = (row, endpoint.byte_offset);
-        let inside = self.selection.bounds(&book.items).is_some_and(|bounds| {
+        let selected = self.selection.bounds(&book.items).filter(|bounds| {
             (bounds.start_item, bounds.start_byte) != (bounds.end_item, bounds.end_byte)
                 && (bounds.start_item, bounds.start_byte) <= point
                 && point <= (bounds.end_item, bounds.end_byte)
         });
-        let target = if inside {
-            Target::Selection
+        let (target, (row, byte)) = if let Some(bounds) = selected {
+            (Target::Selection, (bounds.start_item, bounds.start_byte))
         } else if let Some(id) = notes::mark_at(&self.notes.marks, &book.items, &endpoint) {
-            Target::Highlight(id)
+            let start = self
+                .notes
+                .marks
+                .iter()
+                .find(|mark| mark.id == id)
+                .map_or(point, |mark| {
+                    (mark.bounds.start_item, mark.bounds.start_byte)
+                });
+            (Target::Highlight(id), start)
         } else {
-            Target::Page
+            (Target::Page, point)
         };
-        self.open_popup(target, true);
+        let here = Some(notes::TextPlace::Book { row, byte });
+        self.open_popup(target, Some(notes::Menu { here }));
     }
 
     /// A right click on a PDF page: on a highlight or the selection, or anywhere else.
@@ -594,7 +603,7 @@ impl Reader {
         } else {
             Target::Page
         };
-        self.open_popup(target, true);
+        self.open_popup(target, Some(notes::Menu::default()));
     }
 
     fn open_editor(&mut self, id: u64) -> Task<Message> {
@@ -643,8 +652,8 @@ impl Reader {
         self.persist_notes()
     }
 
-    fn popup_item(&mut self, target: Target, item: PopupItem) -> Task<Message> {
-        match (target, item) {
+    fn popup_item(&mut self, popup: Popup, item: PopupItem) -> Task<Message> {
+        match (popup.target, item) {
             (Target::Selection, PopupItem::Translate) => self.translate_selection(),
             (Target::Highlight(id), PopupItem::Translate) => {
                 let quote = self
@@ -706,6 +715,10 @@ impl Reader {
             (Target::Highlight(id), PopupItem::RemoveHighlight) => {
                 self.remove_entry(Entry::Highlight(id))
             }
+            (_, PopupItem::ReadFromHere) => match popup.menu.and_then(|menu| menu.here) {
+                Some(place) => self.read_aloud(read_aloud::Action::From(place)),
+                None => Task::none(),
+            },
             (_, PopupItem::ToggleBookmark) => self.toggle_bookmark(),
             _ => Task::none(),
         }
@@ -748,7 +761,7 @@ impl Reader {
                     return Task::none();
                 };
                 self.focused = None;
-                self.popup_item(popup.target, item)
+                self.popup_item(popup, item)
             }
             Action::EditNote(id) => self.open_editor(id),
             Action::Editing(edit) => {
@@ -1190,6 +1203,13 @@ pub(super) fn popup_layer(reader: &Reader) -> Option<Element<'_, Message>> {
                 reader,
                 entry,
                 "Translate",
+                "",
+                ui::ButtonTone::Subtle,
+            )),
+            PopupItem::ReadFromHere => Some(menu_button(
+                reader,
+                entry,
+                "Start reading from here",
                 "",
                 ui::ButtonTone::Subtle,
             )),
