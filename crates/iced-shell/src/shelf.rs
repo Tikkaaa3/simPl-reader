@@ -973,7 +973,11 @@ impl Shelf {
                 .size(26)
                 .line_height(iced::Pixels(34.0))
                 .shaping(text::Shaping::Advanced),
-            muted_count(self.entries.len(), 12.0),
+            if self.entries.is_empty() {
+                Element::from(Space::new())
+            } else {
+                muted_count(self.entries.len(), 12.0)
+            },
             Space::new().width(Length::Fill),
             action(
                 Control::Open,
@@ -1337,15 +1341,17 @@ impl Shelf {
             .collect();
         let format = format_name(entry.format());
         let size = file_size(entry.byte_len);
-        let (placed, shelved) = if on_shelves.is_empty() {
-            (short_date(entry.opened_at), false)
-        } else {
+        let (placed, shelved) = if !on_shelves.is_empty() {
             (on_shelves.join(" · "), true)
+        } else if entry.opened_at == 0 {
+            (String::new(), false)
+        } else {
+            (short_date(entry.opened_at), false)
         };
         let room = cover_width - estimated_width(&format!("{format} · {size}"), 11.0);
         let placed = ellipsize(&placed, room, 11.0);
         // A narrow card drops the date or shelves rather than show a stub like "N…".
-        let readable = !placed.ends_with('…') || placed.chars().count() > 3;
+        let readable = !placed.is_empty() && (!placed.ends_with('…') || placed.chars().count() > 3);
         let mut footer = row![label(format, 11).style(ui::secondary_text)];
         footer = if readable {
             footer
