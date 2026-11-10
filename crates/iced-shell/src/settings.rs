@@ -79,7 +79,7 @@ pub(super) fn controls(reader: &Reader, section: Section) -> Vec<Control> {
             controls.extend(library_ui::settings_controls(reader));
             controls.extend(profile_ui::controls(reader));
         }
-        Section::Shortcuts => controls.push(Control::SettingsHelp),
+        Section::Shortcuts => {}
     }
     controls
 }
@@ -194,22 +194,11 @@ fn pane(reader: &Reader, section: Section) -> Element<'_, Message> {
         ]
         .spacing(16)
         .into(),
-        Section::Shortcuts => row![
-            column![
-                text("Keyboard shortcuts").font(ui::MEDIUM).size(13),
-                note("Every action has a key; press F1 at any time."),
-            ]
-            .spacing(4),
-            Space::new().width(Length::Fill),
-            control_button(
-                reader,
-                Control::SettingsHelp,
-                text("Show").font(ui::MEDIUM).size(12),
-                Some(Message::ToggleHelp),
-            ),
+        Section::Shortcuts => column![
+            note("Press F1 anywhere to show this list at the top of the window."),
+            shortcuts::table(),
         ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center)
+        .spacing(16)
         .into(),
     }
 }

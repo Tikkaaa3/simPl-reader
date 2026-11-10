@@ -49,6 +49,8 @@ mod reading_panel;
 mod reading_ui;
 #[path = "settings.rs"]
 mod settings;
+#[path = "shortcuts.rs"]
+mod shortcuts;
 #[path = "word_translation.rs"]
 pub(crate) mod word_translation;
 
@@ -1164,7 +1166,6 @@ enum Control {
     RemoveLibrary(usize),
     ConfirmRemove,
     DismissOverlay,
-    SettingsHelp,
     SettingsSection(settings::Section),
     Appearance(Appearance),
     Theme(reading_ui::Target, usize),
@@ -2440,7 +2441,7 @@ impl Reader {
             Control::Appearance(appearance) => Message::SetAppearance(appearance),
             Control::HideRecent => Message::ToggleRecent,
             Control::Close => Message::Close(CloseAction::Document),
-            Control::HideHelp | Control::SettingsHelp => Message::ToggleHelp,
+            Control::HideHelp => Message::ToggleHelp,
             Control::Theme(target, index) => theme_message(target, index),
             Control::BookMode => Message::BookMode,
             Control::DocumentMode => Message::DocumentMode { source_page: true },
@@ -6589,25 +6590,15 @@ fn view(reader: &Reader) -> Element<'_, Message> {
             row![
                 text("Shortcuts").size(16).font(ui::SEMIBOLD),
                 iced::widget::Space::new().width(Length::Fill),
-                control_button(reader, Control::HideHelp, text("Hide").font(ui::MEDIUM).size(12),
-                    Some(Message::ToggleHelp)),
+                control_button(
+                    reader,
+                    Control::HideHelp,
+                    text("Hide").font(ui::MEDIUM).size(12),
+                    Some(Message::ToggleHelp)
+                ),
             ]
             .align_y(iced::Alignment::Center),
-            text("Tab / Shift+Tab  ·  Controls    Enter / Space  ·  Activate    Escape  ·  Dismiss    F1  ·  Help")
-                .size(12).style(ui::muted_text),
-            text("Ctrl+O  Open    Ctrl+I  Add to library    Ctrl+K  Quick switcher    Ctrl+R  Recent    Ctrl+W  Library    Ctrl+C  Copy    Ctrl+A  Select all")
-                .size(12).style(ui::muted_text),
-            text("Page Up / Down  Read    Ctrl+Home / End  Ends    Ctrl+plus / minus / 0  Zoom")
-                .size(12).style(ui::muted_text),
-            text("Book  Left / Right: previous / next page · Up / Down: scroll within page").size(12).style(ui::secondary_text),
-            text("Ctrl+L  Page    Ctrl+F  Find, again to close (Enter / Shift+Enter next / previous)    EPUB  Ctrl+T contents · Ctrl+Page Up / Down chapters    Ctrl+Shift+F fit width / previous zoom · F11 fullscreen")
-                .size(12).style(ui::muted_text),
-            text("Select text to highlight or add a note    Right-click a highlight to edit or remove it    Right-click a page to bookmark    Ctrl+H  Highlight    Ctrl+D  Bookmark page    Ctrl+B  Notes sidebar")
-                .size(12).style(ui::muted_text),
-            text("Ctrl+Shift+U  Read aloud / stop    Listen reads the selection, or continues from the current page")
-                .size(12).style(ui::muted_text),
-            text("Hold middle button  Scroll · Move away to change speed · Release / Escape to stop    F8  Pin / unpin the reading bar")
-                .size(12).style(ui::muted_text),
+            shortcuts::help(),
         ]
         .spacing(6);
         let mut panel = container(help).padding(12).style(ui::panel);
