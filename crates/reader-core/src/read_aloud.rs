@@ -129,9 +129,21 @@ pub fn speed(rate: i8) -> f32 {
     3.0_f32.powf(f32::from(rate) / 10.0)
 }
 
-/// The start of the sentence holding byte `at`, or the next word start if the
-/// sentence began far back.
+/// Where reading resumes at byte `at`, as at the top of a page: the start of
+/// the sentence holding it, or the next word start if no sentence ended before
+/// it or the sentence began far back.
 pub fn sentence_start(text: &str, at: usize) -> usize {
+    start_near(text, at, false)
+}
+
+/// The start of the sentence holding byte `at`, where a reader pointed at it.
+/// The first sentence starts with the text. A sentence that began far back
+/// gives the next word start, as `sentence_start` does.
+pub fn sentence_holding(text: &str, at: usize) -> usize {
+    start_near(text, at, true)
+}
+
+fn start_near(text: &str, at: usize, text_starts_a_sentence: bool) -> usize {
     let mut at = at.min(text.len());
     while !text.is_char_boundary(at) {
         at -= 1;
@@ -150,7 +162,8 @@ pub fn sentence_start(text: &str, at: usize) -> usize {
         .map(|(index, c)| {
             let after = index + c.len_utf8();
             after + (before[after..].len() - before[after..].trim_start().len())
-        });
+        })
+        .or(text_starts_a_sentence.then_some(0));
     match sentence {
         Some(start) if at - start < 400 => start,
         _ => before
@@ -164,6 +177,23 @@ pub fn sentence_start(text: &str, at: usize) -> usize {
 #[cfg(test)]
 mod planning_tests {
     use super::*;
+
+    #[test]
+    fn a_place_in_the_first_sentence_starts_with_the_text() {
+        assert_eq!(sentence_holding("Alpha beta gamma. Delta.", 11), 0);
+        assert_eq!(sentence_holding("Alpha beta gamma. Delta.", 20), 18);
+        let unbroken = "word ".repeat(200);
+        assert_eq!(
+            sentence_holding(&unbroken, 802),
+            800,
+            "far from any sentence start, the word start"
+        );
+        assert_eq!(
+            sentence_start("Alpha beta gamma. Delta.", 11),
+            11,
+            "the top of a page keeps to the word"
+        );
+    }
 
     #[test]
     fn chunks_fit_utf16_and_preserve_every_source_byte() {

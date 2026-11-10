@@ -4,7 +4,7 @@
 //! timer asks the engine which one it is speaking and turns the page to
 //! follow it; moving to another page yourself restarts reading there.
 
-use reader_core::read_aloud::sentence_start;
+use reader_core::read_aloud::{sentence_holding, sentence_start};
 use std::collections::VecDeque;
 
 use super::*;
@@ -456,7 +456,7 @@ impl Reader {
                 book.items
                     .get(row)
                     .and_then(Item::text)
-                    .map_or(0, |text| sentence_start(text, byte)),
+                    .map_or(0, |text| sentence_holding(text, byte)),
             ),
             // A character of a PDF's own page is no place in a book's rows.
             Start::Place(TextPlace::Pdf(_)) => return Task::none(),
@@ -837,7 +837,7 @@ impl Reader {
                     fetching: false,
                 };
                 let from = match text.char_indices().nth(skip) {
-                    Some((byte, _)) => sentence_start(&text, byte),
+                    Some((byte, _)) => sentence_holding(&text, byte),
                     // The place is after the page's last character.
                     None => text.len(),
                 };
