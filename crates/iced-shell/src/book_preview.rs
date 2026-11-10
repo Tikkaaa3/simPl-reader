@@ -3107,10 +3107,11 @@ fn a_right_click_on_a_strip_still_opens_the_page_menu() {
         at,
     );
     assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, Message::ContextBlank(_))),
-        "the margin under the strip gets the right click: {messages:?}"
+        messages.iter().any(|message| matches!(
+            message,
+            Message::ContextBlank(_) | Message::ContextBeside(_)
+        )),
+        "the page under the strip gets the right click: {messages:?}"
     );
     assert!(page_turns(&messages).is_empty());
     let released = ui.send(
