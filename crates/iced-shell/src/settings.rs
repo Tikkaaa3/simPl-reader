@@ -298,6 +298,18 @@ mod tests {
     }
 
     #[test]
+    fn leaving_a_section_closes_its_open_dropdown() {
+        let mut reader = Reader::default();
+        toggle_settings(&mut reader);
+        reader.reading.picker = Some((reading_ui::Target::Defaults, reading_ui::Picker::Font));
+        let _ = update(&mut reader, Message::SettingsSection(Section::Translation));
+        assert_eq!(reader.reading.picker, None);
+        reader.word_translation.picker = Some(word_translation::Picker::Source);
+        let _ = update(&mut reader, Message::SettingsSection(Section::Reading));
+        assert_eq!(reader.word_translation.picker, None);
+    }
+
+    #[test]
     fn appearance_switches_only_from_the_other_choice() {
         let mut reader = Reader::default();
         toggle_settings(&mut reader);

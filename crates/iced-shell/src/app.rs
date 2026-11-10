@@ -3832,6 +3832,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::SettingsSection(section) if reader.settings.is_some() => {
             reader.settings = Some(section);
+            // An open dropdown belongs to the pane that is leaving.
+            reader.reading.picker = None;
+            reader.word_translation.picker = None;
             if matches!(reader.focused, Some(Control::SettingsSection(_))) {
                 reader.focused = Some(Control::SettingsSection(section));
             }
