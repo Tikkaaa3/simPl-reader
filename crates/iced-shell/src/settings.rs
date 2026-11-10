@@ -51,9 +51,6 @@ const MAX_HEIGHT: f32 = 720.0;
 /// Below this window width the modal gives the pane more room: less padding
 /// and a narrower list.
 const COMPACT_BELOW: f32 = 720.0;
-/// The right padding `modal_scroll` keeps clear for its scrollbar.
-const SCROLLBAR_GUTTER: f32 = 14.0;
-
 /// The modal's padding, the list's width and the gap between list and pane.
 fn geometry(reader: &Reader) -> (f32, f32, f32) {
     if reader.window_size.width < COMPACT_BELOW {
@@ -112,7 +109,7 @@ pub(super) fn modal(reader: &Reader, section: Section) -> Element<'_, Message> {
     });
     let (padding, list_width, gap) = geometry(reader);
     let width = (reader.window_size.width - 32.0).min(MAX_WIDTH);
-    let pane_width = width - 2.0 * padding - list_width - gap - SCROLLBAR_GUTTER;
+    let pane_width = width - 2.0 * padding - list_width - gap - MODAL_SCROLLBAR_GUTTER;
     let list = Column::with_children(entries).spacing(2).width(list_width);
     let body = row![
         list,

@@ -6035,6 +6035,9 @@ fn modal_sheet(reader: &Reader) -> Element<'_, Message> {
         .into()
 }
 
+/// The right padding `modal_scroll` keeps clear for its scrollbar.
+const MODAL_SCROLLBAR_GUTTER: f32 = 14.0;
+
 /// The scrolling part of a modal. Focus reveal and the tests find it by its id.
 fn modal_scroll<'a>(
     contents: impl Into<Element<'a, Message>>,
@@ -6042,7 +6045,7 @@ fn modal_scroll<'a>(
     scrollable(
         container(contents)
             .padding(iced::Padding {
-                right: 14.0,
+                right: MODAL_SCROLLBAR_GUTTER,
                 ..Default::default()
             })
             // Keep scrolling damage contiguous. Otherwise tiny-skia repaints
