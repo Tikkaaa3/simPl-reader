@@ -29,19 +29,25 @@ pub(super) const GROUPS: &[Group] = &[
             ("Ctrl+K", "Search and switch books"),
             ("Ctrl+R", "Show recent documents"),
             ("Ctrl+W", "Save and return to the Library"),
-            ("Space in the Library", "Resume the latest unfinished book"),
+            (
+                "Space in the Library",
+                "Resume the latest unfinished book, when no control has focus",
+            ),
         ],
     },
     Group {
         title: "Pages",
         rows: &[
-            ("Left / Right", "Previous or next page in Book view"),
+            ("Left / Right", "Previous or next page"),
             ("Up / Down", "Scroll within the page"),
-            ("Page Up / Page Down", "Scroll a screen at a time"),
-            ("Ctrl+Home / Ctrl+End", "Go to the start or the end"),
+            ("Page Up / Down / Space", "Scroll a screen at a time"),
+            (
+                "Ctrl+Home / Ctrl+End",
+                "Top or bottom of the page; first or last page of a PDF document",
+            ),
             ("Ctrl+L", "Go to a page"),
             ("Ctrl+T", "Show or hide the contents of an EPUB"),
-            ("Ctrl+Page Up / Page Down", "Previous or next EPUB chapter"),
+            ("Ctrl+Page Up / Down", "Previous or next EPUB chapter"),
             ("Alt+Left", "Return from an internal link"),
         ],
     },
@@ -54,7 +60,7 @@ pub(super) const GROUPS: &[Group] = &[
                 "Next or previous match while finding",
             ),
             ("Ctrl+plus / minus / 0", "Zoom in, out or back to 100%"),
-            ("Ctrl+wheel", "Zoom in or out"),
+            ("Ctrl+wheel / pinch", "Zoom in or out"),
             ("Ctrl+Shift+F", "Fit width, or back to the previous zoom"),
             (
                 "Hold the middle button",
@@ -68,9 +74,10 @@ pub(super) const GROUPS: &[Group] = &[
             ("Ctrl+C", "Copy the selected text"),
             ("Ctrl+A", "Select all"),
             ("Ctrl+H", "Highlight the selection"),
-            ("Ctrl+D", "Bookmark the page"),
+            ("Ctrl+D", "Add or remove a bookmark on the page"),
             ("Ctrl+B", "Show or hide bookmarks, highlights and notes"),
             ("Select text", "Highlight it or add a note"),
+            ("Ctrl+Enter in a note", "Save the note"),
             ("Right-click a highlight", "Edit or remove it"),
             ("Right-click a page", "Bookmark it"),
         ],
@@ -176,7 +183,7 @@ mod tests {
         assert_eq!(action("F8"), Some("Keep the reading bar visible"));
         assert_eq!(
             action("Space in the Library"),
-            Some("Resume the latest unfinished book")
+            Some("Resume the latest unfinished book, when no control has focus")
         );
         assert!(
             GROUPS
