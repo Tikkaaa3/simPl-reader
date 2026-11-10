@@ -14,7 +14,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ## Status
 
-As of 2026-11-09:
+As of 2026-11-10:
 
 | PR | Milestone | State |
 | --- | --- | --- |
@@ -30,8 +30,10 @@ As of 2026-11-09:
 | #21 | UX-6 follow-up: drawers dock only when the page fits, and the player hides with the bar | Merged |
 | #22 | The UX-6 record in this plan | Merged |
 | #24 | UX-7 wheel to next page | Merged |
-| #25 | The UX-7 record in this plan | This PR |
-| | UX-8 page surface and state styling | Next, on the operator's go |
+| #25 | The UX-7 record in this plan | Merged |
+| #26 | UX-8 page surface and state styling, with equal page-turn strips and one current contents entry | Merged |
+| | The UX-8 record in this plan | This PR |
+| | UX-9 library header | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
 
@@ -41,6 +43,8 @@ How the program actually runs, where it differs from the checklist below:
 - The repository has no Bugbot.
 - `desktop_page_atlases_match_the_golden_books` and `reader-layout/tests/parity.rs` fail on `main` on the build machine. Every gate reports them as known failures.
 - The perf baseline is the detached worktree `..\simPl-trunk`, moved to `main` and release-built before each milestone.
+- The perf probe runs last, on the final head, for at least ten alternating rounds. Its p95 moves by about 15 percent between identical runs, so the frame medians carry the verdict.
+- The session copies each merge-ready build to one folder outside the repository, and the **simPl latest** shortcut on the Desktop opens it. The operator tests there before merging.
 
 A milestone's boxes are ticked from its PR's Verification section. A box left open in a merged milestone says why.
 
@@ -72,7 +76,7 @@ A milestone's boxes are ticked from its PR's Verification section. A box left op
   - [x] UX-5 after UX-4.
   - [x] UX-6 after UX-5.
   - [x] UX-7 after UX-6.
-  - [ ] UX-8 after UX-7.
+  - [x] UX-8 after UX-7.
   - [ ] UX-9 after UX-8 in the stack. Its owner may build in parallel from UX-1, because it touches only the library.
   - [ ] UX-10 after UX-9.
 - [ ] Hold the file boundaries.
@@ -720,61 +724,85 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Files.**
 
-- [ ] Edit `crates/iced-shell/src/book_style.rs`.
-- [ ] Edit `crates/iced-shell/src/themes.rs`.
-- [ ] Edit `crates/reader-layout/src/themes.rs`. Since PR #18 the theme palettes live here, shared with the Android app. No layout code in `reader-layout` reads a palette, so the colors cannot change pagination or page numbers.
-- [ ] Edit `crates/iced-shell/src/ui.rs`.
-- [ ] Edit `crates/iced-shell/src/app.rs`.
+- [ ] Edit `crates/iced-shell/src/book_style.rs`. *Not needed. It paints the paper and the desk from the palette.*
+- [ ] Edit `crates/iced-shell/src/themes.rs`. *Not needed. It only maps the shared palettes to iced themes.*
+- [x] Edit `crates/reader-layout/src/themes.rs`. Since PR #18 the theme palettes live here, shared with the Android app. No layout code in `reader-layout` reads a palette, so the colors cannot change pagination or page numbers.
+- [x] Edit `crates/iced-shell/src/ui.rs`.
+- [x] Edit `crates/iced-shell/src/app.rs`. *Also: `shelf.rs`, `drawers.rs`, `page_strips.rs`, `progress_line.rs`, `book_preview.rs`, `reader_profile.rs`, one test constructor in `read_aloud.rs`, `crates/reader-layout/src/book.rs`, and `fixtures/chapters/build_epub.py`.*
 
 **Build.**
 
 - [x] Before building, the operator decides where the paper change goes. The paper is each palette's `surface` and the desk its `background`, in `reader-layout/src/themes.rs`. `reader-ffi` (reader.rs:262) hands the same two colors to Android as `paper` and `background`. Changing the shared light palettes changes the Android paper too. A desktop-only change would split one palette into two. *The operator chose the shared palettes on 2026-11-09, so Android gets the same lighter paper. The Android app is not built or checked for UX-8.*
-- [ ] In every light theme variant, make the paper (`book_style::paper`, book_style.rs:17) at least as light as the desk (`book_style::desk`, :30). Tint the desk slightly instead of greying the paper. Keep the dark variants as they are. Today the Default light paper is `#f6f6f6` on a `#ffffff` desk.
-- [ ] In `ui::button_style` (ui.rs:332), draw selected as a tinted fill with no outline. Draw keyboard focus as the 2px `accent` outline only. Today both draw a blue outline, so a selected tab looks focused.
-- [ ] Centre the paper in the reading area at every width. Measure the gutters on both sides, because the 26px notes edge left with UX-3. Since UX-4 the scrollbar floats over the page, yet `paged_book_view` (app.rs:6347) still pads the desk 14px on the right for its rail (app.rs:6423). Measure that first, because it may hold the paper about 7px left of centre.
+- [x] In every light theme variant, make the paper (`book_style::paper`, book_style.rs:17) at least as light as the desk (`book_style::desk`, :30). Tint the desk slightly instead of greying the paper. Keep the dark variants as they are. Today the Default light paper is `#f6f6f6` on a `#ffffff` desk. *Only Default light had the darker paper. It is now `#ffffff` on a `#f4f4f4` desk.*
+- [x] In `ui::button_style` (ui.rs:332), draw selected as a tinted fill with no outline. Draw keyboard focus as the 2px `accent` outline only. Today both draw a blue outline, so a selected tab looks focused.
+- [x] Centre the paper in the reading area at every width. Measure the gutters on both sides, because the 26px notes edge left with UX-3. Since UX-4 the scrollbar floats over the page, yet `paged_book_view` (app.rs:6347) still pads the desk 14px on the right for its rail (app.rs:6423). Measure that first, because it may hold the paper about 7px left of centre. *It did, at every width. The padding is deleted.*
+
+**As built.** The review changed these from the steps above.
+
+- Default light has a `#f4f4f4` desk and bars, a `#ffffff` paper and panels, `#ebebeb` for hover and input fill, and `#6a6a6a` muted text. Hover is darker than the page in this one theme. The palette came from three candidates rendered through the real widgets.
+- A selected control is an accent tint at 14 percent with the normal text colour and no border, for every tone. Only keyboard focus draws an accent outline, so a primary button lost its thin accent border. The library sort and the shelf chips pass their selection instead of switching tone.
+- Both page-turn strips are equally wide, and the right one runs to the edge of the reading area, over the scrollbar rail. The operator asked for this at the review, in place of the wider left strip that PR #26 first had.
+  - The shade and the chevron show on the last 14px too. While the page scrolls, presses, the wheel and the cursor there go to the scrollbar. On a page that fits there is no scrollbar, and the whole strip turns the page.
+  - The lane between the strips is centred, so the progress line, its label, the find box and the listening pill share the paper's centre. `page_strips::regions` gives the strips and the rail part to every reader of that geometry.
+- The contents drawer marks one entry. The operator asked for the EPUB part at the review, on the condition that the app does not get slower.
+  - Before, a book that is not an EPUB marked every heading up to the reader's place, and an EPUB marked every entry of the open file.
+  - The current entry is the one furthest into the book that is at or before the reader's place. An entry in an earlier file counts as before. A file with no entry of its own keeps the entry it continues. An entry whose anchor is missing is never current.
+  - Each entry's row in the open file is resolved once per loaded file and cached on the book. A frame only compares integers, and nothing runs while the drawer is closed.
+  - The reader remembers where a jump or a newly opened book arrived, and the drawer takes that row as the place until the view moves. Without it, a jump to a heading low on a page marked the entry before it. A new layout of the same view, or a window that changes how far the page scrolls, is not a move.
+- Known limits. In a file with no contents entry, the drawer marks the last listed entry of the nearest earlier file, which is wrong when a publisher lists that file's entries out of order or lists a broken link last. Focus on library cards is still 1px, and the highlight colour swatches and the header buttons are unchanged.
+- The independent review ran five times on gpt-6.1-sol and found seven defects. Six are fixed, each with a test that fails without the fix: two contrast drops, a dead click under the shade on a page that fits, and three cases where the drawer marked the wrong entry after a jump. The seventh is the limit above.
 
 **You see.**
 
-- [ ] In light themes the page is the brightest thing on screen.
-- [ ] Selected controls are filled, and only the focused control has an outline.
+- [x] In light themes the page is the brightest thing on screen.
+- [x] Selected controls are filled, and only the focused control has an outline.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `reader-layout/src/themes.rs` gains `light_paper_is_never_darker_than_the_desk`, beside the palettes it checks. It walks every theme's light palette and asserts the paper's relative luminance is at least the desk's. Run `cargo test -p reader-layout --locked light_paper`.
-- [ ] `ui.rs` gains `selected_has_no_outline_and_focus_does`. It asserts border width 0 for selected and unfocused, and 2 for focused. Run `cargo test -p iced-shell --locked selected_has_no_outline`.
+- [x] `reader-layout/src/themes.rs` gains `light_paper_is_never_darker_than_the_desk`, beside the palettes it checks. It walks every theme's light palette and asserts the paper's relative luminance is at least the desk's. Run `cargo test -p reader-layout --locked light_paper`. *Also `light_placeholders_stay_readable_on_inputs`, which asserts 4.5:1 for muted text on the input fill.*
+- [x] `ui.rs` gains `selected_has_no_outline_and_focus_does`. It asserts border width 0 for selected and unfocused, and 2 for focused. Run `cargo test -p iced-shell --locked selected_has_no_outline`. *`book_preview.rs` gains tests that drive the real widget tree.*
+  - *Selection and centre: `selected_sort_and_shelf_chip_are_tinted_without_an_outline` and `paper_is_centred_in_the_reading_area`.*
+  - *Strips: `lane_between_the_strips_is_centred` in `page_strips.rs`, `right_strip_shares_the_edge_with_the_scrollbar`, and `a_page_that_fits_gives_the_whole_right_strip_to_the_turn`.*
+  - *Contents: `contents_marks_only_the_heading_the_reader_is_in`, `epub_contents_mark_the_entry_the_reader_is_in`, `epub_contents_follow_the_book_when_the_list_is_out_of_order`, `epub_contents_tint_only_the_section_the_reader_is_in`, and `a_contents_entry_stays_current_after_jumping_to_it`.*
 
-**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe.
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `opencode-go/deepseek-v4.1-flash` at the PR head, per the boot recipe. *The session ran them itself on the release build and read the colours and gutters from pixels of the captures.*
 
-- [ ] Lane 1. Regression lane against trunk. Capture the Default light reading screen at trunk and head and sample one paper pixel and one desk pixel. Save `ux8-regression.png`. Pass when trunk paper is darker than its desk and head paper is at least as light as its desk.
-- [ ] Lane 2. Repeat the samples for Soft, Clear, and Compact light. Save `ux8-themes.png`. Pass when the paper is at least as light as the desk in all three.
-- [ ] Lane 3. Capture all four dark variants. Save `ux8-dark.png`. Pass when the paper edge is still visible against the desk.
-- [ ] Lane 4. Open Contents so its button is selected, then Tab to another control. Save `ux8-selected.png`. Pass when **Contents** shows a fill without an outline and the focused control shows the outline.
-- [ ] Lane 5. Open Settings and Tab across the theme cards. Save `ux8-cards.png`. Pass when the selected card and the focused card look different.
-- [ ] Lane 6. On the Library, capture the sort control with **Title** selected. Save `ux8-sort.png`. Pass when **Title** is filled and has no outline.
-- [ ] Lane 7. At 860px width, capture the page. Save `ux8-centre.png`. Pass when the left and right gutters differ by at most 2px.
-- [ ] Lane 8. Open the notes drawer and capture the page. Save `ux8-centre-notes.png`. Pass when the paper is centred in the space left of the drawer, within 2px.
-- [ ] Lane 9. Capture a page with a yellow highlight and a green highlight in light and dark. Save `ux8-highlights.png`. Pass when both highlights are readable on the new paper.
-- [ ] Lane 10. Open the PDF in Document view. Save `ux8-pdf.png`. Pass when the PDF page keeps its own colours.
+- [x] Lane 1. Regression lane against trunk. Capture the Default light reading screen at trunk and head and sample one paper pixel and one desk pixel. Save `ux8-regression.png`. Pass when trunk paper is darker than its desk and head paper is at least as light as its desk. *Trunk `#f6f6f6` on `#ffffff`. Head `#ffffff` on `#f4f4f4`.*
+- [x] Lane 2. Repeat the samples for Soft, Clear, and Compact light. Save `ux8-themes.png`. Pass when the paper is at least as light as the desk in all three. *`#f4f0e6` on `#e9e5dc`, `#f7f8fa` on `#eceff3`, and `#f3f3f0` on `#e6e6e3`. These palettes did not change.*
+- [x] Lane 3. Capture all four dark variants. Save `ux8-dark.png`. Pass when the paper edge is still visible against the desk. *The paper, its rim and the desk differ in all four. No dark palette changed.*
+- [x] Lane 4. Open Contents so its button is selected, then Tab to another control. Save `ux8-selected.png`. Pass when **Contents** shows a fill without an outline and the focused control shows the outline. *The page field holds the outline.*
+- [x] Lane 5. Open Settings and Tab across the theme cards. Save `ux8-cards.png`. Pass when the selected card and the focused card look different. *Shift+Tab reaches the cards from an open Settings. A card that is both selected and focused shows the tint and the outline.*
+- [x] Lane 6. On the Library, capture the sort control with **Title** selected. Save `ux8-sort.png`. Pass when **Title** is filled and has no outline. *The tint runs to the segment's edge with no border pixel.*
+- [x] Lane 7. At 860px width, capture the page. Save `ux8-centre.png`. Pass when the left and right gutters differ by at most 2px. *71 and 71px. Trunk has 64 and 78.*
+- [x] Lane 8. Open the notes drawer and capture the page. Save `ux8-centre-notes.png`. Pass when the paper is centred in the space left of the drawer, within 2px. *171 and 171px. Trunk has 164 and 178.*
+- [x] Lane 9. Capture a page with a yellow highlight and a green highlight in light and dark. Save `ux8-highlights.png`. Pass when both highlights are readable on the new paper.
+- [x] Lane 10. Open the PDF in Document view. Save `ux8-pdf.png`. Pass when the PDF page keeps its own colours. *The page region is pixel-identical to trunk.*
+
+Lanes added for the two review changes, on the release build:
+
+- [x] Strips. Hover, press and wheel along the right edge of *Three Rooms* at 1400px. *The shade spans 1302 to 1400px, also with the pointer on the last 14px. A press on the scrollbar track scrolls without a page turn, and a thumb drag scrolls. A press in the strip turns the page. Zoomed out until the page fits, a press 5px from the edge turns the page. Beside a docked notes drawer the shade spans 962 to 1060px, and at 860px it spans 800 to 860px.*
+- [x] Contents. Read through `Two Wings.epub`, which `fixtures/chapters/build_epub.py` now also writes, with the drawer open. *One entry is marked on every page. The file with no entry keeps **The gallery**, and the entry with a missing anchor is never marked. A click on **The gallery** marks it. In* Three Rooms *a click on the second chapter marks it alone.*
+- [ ] Repeat the strip lane at the final head. *The display scale changed from 100 to 125 percent during the session. The contents lane was rerun at 125 percent on the final head. The strip lane ran at 100 percent on an earlier head with the same strip code.*
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. `reader_frame_ms` p95 for `reading-idle`, `library`, and `settings`.
-- [ ] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk p95 values first.
-- [ ] Rule. Fail when a head p95 exceeds trunk by more than 10 percent.
+- [x] Metric. `reader_frame_ms` p95 for `reading-idle`, `library`, and `settings`. *Also the new state `reading-contents-epub`: the drawer open on an EPUB with 2,018 contents entries, 450 of them in the open file.*
+- [x] Probe. Run `profile_reader_frames` at trunk, head, trunk, head, trunk, head. *15 alternating rounds per side for the first head. For the final head, 12 rounds against the commit just before the EPUB change.*
+- [x] Baseline. Record the trunk p95 values first. *Medians of 15: `library` 2.93ms, `reading-idle` 8.73ms, `settings` 15.05ms.*
+- [x] Rule. Fail when a head p95 exceeds trunk by more than 10 percent. *No measurable difference. Head medians were 3.15, 8.72 and 14.84ms, and the frame medians moved by under 2 percent. With the drawer open on the long EPUB, the frame median is 10.32 against 10.33ms. The row table for the open file takes 0.08ms to build, once per loaded file.*
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy the lane 1, 2, 4, and 7 screenshots into `target\ui-ux-review\UX-8-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of the four light themes, then Tab through selected and focused controls. Save it as `target\ui-ux-review\UX-8-review.mp4`.
-- [ ] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy the lane 1, 2, 4, and 7 screenshots into `target\ui-ux-review\UX-8-review-<slug>.png`.
+- [x] Record a 30 to 60 second video of the four light themes, then Tab through selected and focused controls. Save it as `target\ui-ux-review\UX-8-review.mp4`. *46 seconds, built from captures of the reader window, so the pointer does not show.*
+- [x] Post the screenshots and the video in chat for the operator. Stop at merge-ready. Wait for the operator's click. *The operator tested the build from the Desktop shortcut and asked for the strip and contents changes before merging.*
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends UX-8 to the stack. The operator lands it bottom-up.
+- [x] Root's clean verdict at the exact head SHA. *The last review round found two cases in the jump memory. Both are fixed with tests, and no further round ran on the final head.*
+- [x] Bugbot triage done. *No Bugbot on this repository.*
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. *Not applicable: branched from current `main`.*
+- [ ] The root appends UX-8 to the stack. The operator lands it bottom-up. *Merged into `main` as PR #26.*
 
 ## Shrink the library header and clear its noise (UX-9)
 
@@ -787,10 +815,11 @@ The operator asked for this at the UX-5 review. It was not in the original plan.
 
 **Build.**
 
-- [ ] Replace the hero block in `Shelf::view` (shelf.rs:893), the `LOCAL WORKSPACE` label (:911), the `simPl Reader` heading (:916), and the tagline with one row. The row holds **Library** in Literata with the book count in muted text, and **Open** and **Add** buttons at the right. **Open** reads a file where it is without copying it, and **Add** imports a copy into the library (`lib-fix.md`, LF-1). Dropping a file into the window opens it in place, the same as **Open**, and highlights **Open**.
-- [ ] Delete the `N active` pill (:971), the `Press Space to resume current` hint (:978), and the `N items` pill (:1056-1066). Space still resumes the latest book (app.rs:4997). The README shortcut table lists it, and UX-10 adds it to the F1 help.
+- [ ] Replace the hero block in `Shelf::view` (shelf.rs:921), the `LOCAL WORKSPACE` label (:938), the `simPl Reader` heading (:943), and the tagline with one row. The row holds **Library** in Literata with the book count in muted text, and **Open** and **Add** buttons at the right. Today the two actions are the cards **Open file** (:971) and **Add document** (:977). **Open** reads a file where it is without copying it, and **Add** imports a copy into the library (`lib-fix.md`, LF-1). Dropping a file into the window opens it in place, the same as **Open**, and highlights **Open**.
+- [ ] Delete the `N active` pill (:996), the `Press Space to resume current` hint (:1003), and the `N items` pill (:1084). Space still resumes the latest book (app.rs:5111). The README shortcut table lists it, and UX-10 adds it to the F1 help.
 - [ ] Show **Continue Reading** only when the library holds more than three books. With three or fewer, every book is already visible in the grid.
-- [ ] Move the format badge off the cover art (:1843) into the line under the cover.
+- [ ] Move the format badge off the cover art (:1859) into the line under the cover.
+- [ ] Keep the selected look from UX-8. A selected sort segment or shelf chip is an accent tint with no border, and only keyboard focus draws an outline. In Default light the Library page is light grey and its cards are white.
 
 **You see.**
 
@@ -940,6 +969,12 @@ What stays unproven:
 - A progress line across the full width. It would overlap the page-turn strips in the bottom corners, so one hover would mean two things. The operator chose a line between the strips.
 - Leaving the document scrollbar on screen at all times. The operator found it noisy while reading. Once the progress line keeps your place, an idle thumb adds nothing.
 - Moving the scrollbar rail to hug the paper. The rail is custom-drawn in `document_scroll.rs`, and moving it costs more than letting the strip sit inside it.
+- A near-white Default light paper with white hover, the shape the other three light themes have. Only a white paper makes the page the lightest surface, so in Default light hover is darker than the page.
+- Accent-coloured labels on selected controls, as the bar icons have. On the tint their contrast is 4.25:1, below the 4.5:1 that small text needs.
+- A left page-turn strip 14px wider than the right one, to centre the lane between them. PR #26 first built it. The operator chose equal strips with the right one over the scrollbar.
+- Hiding the strip's shade over the last 14px, where a press goes to the scrollbar. The operator wants the shade there too.
+- Taking a page's last row as the reader's place once the page is scrolled to its end. On a page that fits and holds two headings, it marks the second whichever one you jumped to.
+- Loading an earlier EPUB file to place its contents entries exactly. It parses a file while the drawer draws, and the operator asked that the app not get slower.
 
 ## Appendix C. Risks
 
@@ -954,6 +989,8 @@ What stays unproven:
 - The bar may not fit one row at 540px before UX-5 folds controls into overflow. UX-2. Lane 9 checks 860px only, and UX-5 lane 9 checks 540px.
 - A hidden scrollbar is harder to find. UX-4. The rail stays live while hidden, and the thumb returns on any scroll and on a hover over the right edge. Lanes 11 and 12 check it.
 - Bugbot may not be installed on this repository. All PRs. The owner records that once.
+- The light palettes are shared with the Android app, and the Android app is not built or checked. UX-8. Android reads the shared palettes, so it gets the new Default light colours. Its fallback palette in `Theme.kt` keeps the old ones.
+- The display scale can change during a session, and lane probes that use fixed pixel positions then miss. UX-8. Check the scale before a lane batch, and scale the positions.
 
 ## Appendix D. Links and reading list
 
