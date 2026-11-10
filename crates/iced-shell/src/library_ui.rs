@@ -467,17 +467,6 @@ fn enabled(reader: &Reader) -> Vec<Focus> {
         focus.extend([Focus::Cancel, Focus::BannerCancel]);
         return focus;
     }
-    match &state.phase {
-        Phase::Confirm(_) => {
-            focus.extend(ready.then_some(Focus::Move));
-            focus.push(Focus::Cancel);
-        }
-        Phase::ConfirmForget => {
-            focus.extend(settled.then_some(Focus::ConfirmForget));
-            focus.push(Focus::Cancel);
-        }
-        _ => {}
-    }
     if let Some(location) = location {
         focus.extend((ready && location.available).then_some(Focus::Change));
         focus.extend((location.available && !reader.profile.busy).then_some(Focus::OpenFolder));
@@ -493,6 +482,17 @@ fn enabled(reader: &Reader) -> Vec<Focus> {
         (settled && unavailable && !matches!(state.phase, Phase::ConfirmForget))
             .then_some(Focus::Forget),
     );
+    match &state.phase {
+        Phase::Confirm(_) => {
+            focus.extend(ready.then_some(Focus::Move));
+            focus.push(Focus::Cancel);
+        }
+        Phase::ConfirmForget => {
+            focus.extend(settled.then_some(Focus::ConfirmForget));
+            focus.push(Focus::Cancel);
+        }
+        _ => {}
+    }
     focus.extend(state.notice.is_some().then_some(Focus::Dismiss));
     focus
 }

@@ -281,11 +281,6 @@ pub(super) fn controls(reader: &Reader) -> impl Iterator<Item = Control> + Clone
         reader.profile_ready().then_some(Focus::Restore),
         (reader.profile.pending.is_some() && reader.profile_ready()).then_some(Focus::Confirm),
         (reader.profile.pending.is_some() && !reader.profile.busy).then_some(Focus::Cancel),
-        (!reader.profile.busy
-            && reader.notes.data.is_some()
-            && reader.reading_title().is_some()
-            && reader.notes.editor.is_none())
-        .then_some(Focus::Export),
     ]
     .into_iter()
     .flatten()
@@ -298,6 +293,13 @@ pub(super) fn controls(reader: &Reader) -> impl Iterator<Item = Control> + Clone
         .into_iter()
         .filter(move |_| !reader.profile.busy)
         .map(Focus::Format),
+    )
+    .chain(
+        (!reader.profile.busy
+            && reader.notes.data.is_some()
+            && reader.reading_title().is_some()
+            && reader.notes.editor.is_none())
+        .then_some(Focus::Export),
     )
     .map(Control::Profile)
 }
