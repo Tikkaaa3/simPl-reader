@@ -555,8 +555,9 @@ impl Shelf {
         self.ensure_covers()
     }
 
+    /// The latest unfinished book, whether or not Continue Reading is on display.
     pub fn first_resume(&self) -> Option<usize> {
-        self.continuing.first().copied()
+        self.entries.iter().position(unfinished)
     }
 
     pub fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
@@ -712,14 +713,18 @@ impl Shelf {
     }
 
     fn reorder(&mut self) {
-        self.continuing = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.total > 0 && entry.progress < 1.0)
-            .map(|(index, _)| index)
-            .take(3)
-            .collect();
+        // With three books or fewer every one is already in view in the grid.
+        self.continuing = if self.entries.len() > 3 {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| unfinished(entry))
+                .map(|(index, _)| index)
+                .take(3)
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.order = (0..self.entries.len()).collect();
         if self.filter.is_some_and(|id| self.shelves.get(id).is_none()) {
             self.filter = None;
@@ -1988,6 +1993,10 @@ fn name_id() -> iced::advanced::widget::Id {
 /// Card padding, cover and gap beside the text of a Continue Reading card.
 const CONTINUE_CHROME: f32 = 32.0 + 80.0 + 16.0;
 
+fn unfinished(entry: &Entry) -> bool {
+    entry.total > 0 && entry.progress < 1.0
+}
+
 fn author_of(entry: &Entry) -> String {
     entry
         .author
@@ -2511,48 +2520,80 @@ mod tests {
         assert!(long < 19.0 && long * 0.58 * 12.0 <= 112.0, "{long}");
     }
 
+    /// Entries that have been opened, each at its reading fraction.
+    fn read(books: &[(&str, DocumentKind, f32)]) -> Vec<Entry> {
+        let kinds: Vec<_> = books
+            .iter()
+            .map(|(title, kind, _)| (*title, *kind))
+            .collect();
+        let mut entries = sample_entries(&kinds);
+        for (entry, (_, _, progress)) in entries.iter_mut().zip(books) {
+            entry.progress = *progress;
+            entry.current = 1;
+            entry.total = 2;
+        }
+        entries
+    }
+
+    fn resumable(shelf: &Shelf) -> Vec<Control> {
+        shelf
+            .controls()
+            .filter(|control| matches!(control, Control::Resume(_)))
+            .collect()
+    }
+
+    #[test]
+    fn continue_reading_needs_more_than_three_books() {
+        let three = loaded(read(&[
+            ("Zulu", DocumentKind::Epub, 0.5),
+            ("Alpha", DocumentKind::Pdf, 0.25),
+            ("Beta", DocumentKind::Html, 0.75),
+        ]));
+        assert_eq!(resumable(&three), []);
+        assert!(three.continuing.is_empty());
+
+        let four = loaded(read(&[
+            ("Zulu", DocumentKind::Epub, 0.5),
+            ("Alpha", DocumentKind::Pdf, 1.0),
+            ("Beta", DocumentKind::Html, 0.75),
+            ("Mike", DocumentKind::Html, 0.25),
+        ]));
+        assert_eq!(
+            resumable(&four),
+            [Control::Resume(0), Control::Resume(2), Control::Resume(3)]
+        );
+
+        let one = loaded(read(&[("Zulu", DocumentKind::Epub, 0.5)]));
+        assert_eq!(resumable(&one), []);
+        assert_eq!(
+            one.first_resume(),
+            Some(0),
+            "Space resumes without the section"
+        );
+        let finished = loaded(read(&[("Zulu", DocumentKind::Epub, 1.0)]));
+        assert_eq!(finished.first_resume(), None);
+    }
+
     #[test]
     fn continuing_documents_remain_in_every_library_sort() {
-        let mut shelf = Shelf {
-            entries: [
-                ("Zulu", DocumentKind::Epub, 0.5),
-                ("Alpha", DocumentKind::Pdf, 1.0),
-                ("Beta", DocumentKind::Html, 0.25),
-            ]
-            .into_iter()
-            .map(|(title, kind, progress)| Entry {
-                document: reader_document::recent::Entry {
-                    path: format!("{title}.book").into(),
-                    title: title.into(),
-                    fingerprint: String::new(),
-                    kind,
-                },
-                author: None,
-                byte_len: 0,
-                opened_at: 0,
-                progress,
-                current: 1,
-                total: 2,
-                cover: false,
-                favourite: false,
-                source_kind: None,
-            })
-            .collect(),
-            ..Shelf::default()
-        };
+        let mut shelf = loaded(read(&[
+            ("Zulu", DocumentKind::Epub, 0.5),
+            ("Alpha", DocumentKind::Pdf, 1.0),
+            ("Beta", DocumentKind::Html, 0.25),
+            ("Mike", DocumentKind::Html, 1.0),
+        ]));
         for (sort, expected) in [
-            (Sort::Recent, [0, 1, 2]),
-            (Sort::Title, [1, 2, 0]),
-            (Sort::Format, [0, 2, 1]),
+            (Sort::Recent, [0, 1, 2, 3]),
+            (Sort::Title, [1, 2, 3, 0]),
+            (Sort::Format, [0, 2, 3, 1]),
         ] {
-            shelf.sort = sort;
-            shelf.reorder();
+            let _ = shelf.update(Message::Activate(Control::Sort(sort)));
             assert_eq!(shelf.continuing, [0, 2]);
             assert_eq!(shelf.order, expected);
         }
         shelf.entries[0].progress = 1.0;
         shelf.reorder();
         assert_eq!(shelf.continuing, [2]);
-        assert_eq!(shelf.order, [0, 2, 1]);
+        assert_eq!(shelf.order, [0, 2, 3, 1]);
     }
 }
