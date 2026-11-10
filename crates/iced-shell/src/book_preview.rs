@@ -3264,6 +3264,167 @@ fn render_ux9_look() {
     save(&mut reader, "UX-9-drop-light.png");
 }
 
+/// The bounds of the scrollable with `id` and of its content, as laid out.
+pub(super) fn scrollable_bounds(
+    reader: &Reader,
+    id: iced::advanced::widget::Id,
+) -> (Rectangle, Rectangle) {
+    struct Find(iced::advanced::widget::Id, Option<(Rectangle, Rectangle)>);
+    impl iced::advanced::widget::Operation for Find {
+        fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+            visit(self);
+        }
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::advanced::widget::Id>,
+            bounds: Rectangle,
+            content: Rectangle,
+            _: iced::Vector,
+            _: &mut dyn iced::advanced::widget::operation::scrollable::Scrollable,
+        ) {
+            if id == Some(&self.0) {
+                self.1 = Some((bounds, content));
+            }
+        }
+    }
+    let renderer = iced::Renderer::new(ui::SANS, iced::Pixels(13.0));
+    let mut element = view(reader);
+    let mut tree = Tree::new(&element);
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(reader.window_size, reader.window_size),
+    );
+    let mut find = Find(id, None);
+    element
+        .as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut find);
+    find.1.expect("the scrollable is on screen")
+}
+
+/// A library with a custom folder and a backup estimate, open on `section`
+/// of Settings the way the gear opens it.
+fn settings_reader(size: Size, section: settings::Section) -> Reader {
+    let mut reader = library_reader(size, &four_in_progress());
+    reader.library.location = Some(Ok(reader_document::library_location::Location {
+        root: PathBuf::from(r"E:\Books\simPl Library"),
+        custom: true,
+        available: true,
+        moving: false,
+    }));
+    reader.library.summary = Some(reader_document::library_location::Summary {
+        books: 42,
+        bytes: 1_288_490_189,
+    });
+    open_settings(&mut reader, section);
+    reader
+}
+
+fn open_settings(reader: &mut Reader, section: settings::Section) {
+    let _ = update(reader, Message::Chrome(chrome::Action::Settings));
+    let _ = update(reader, Message::SettingsSection(section));
+    assert_eq!(reader.settings, Some(section));
+}
+
+#[test]
+fn the_settings_section_list_stays_put_whichever_section_is_open() {
+    use settings::Section;
+    ui::load_test_fonts();
+    let wide = Size::new(1280.0, 800.0);
+    let entries = |section| {
+        let mut reader = settings_reader(wide, section);
+        Section::ALL.map(|entry| bounds_of(&mut reader, Control::SettingsSection(entry)))
+    };
+    let reading = entries(Section::Reading);
+    assert!(
+        reading[0].x > 0.0 && reading[0].width > 100.0,
+        "{reading:?}"
+    );
+    for section in Section::ALL {
+        assert_eq!(entries(section), reading, "{section:?}");
+    }
+}
+
+#[test]
+fn a_narrow_settings_pane_keeps_its_controls_inside_the_modal() {
+    use settings::Section;
+    ui::load_test_fonts();
+    for section in [Section::Library, Section::Translation] {
+        let mut reader = settings_reader(Size::new(540.0, 360.0), section);
+        let (pane, content) = scrollable_bounds(&reader, overlay_id());
+        assert!(
+            content.height > pane.height,
+            "{section:?} scrolls inside the modal"
+        );
+        assert!(
+            content.width <= pane.width + 0.5,
+            "{section:?} never scrolls sideways"
+        );
+        let controls = settings::controls(&reader, section);
+        assert!(controls.len() > 5, "{controls:?}");
+        for control in controls {
+            let bounds = bounds_of(&mut reader, control);
+            assert!(
+                bounds.x >= 0.0 && bounds.x + bounds.width <= pane.x + pane.width + 0.5,
+                "{control:?} at {bounds:?} leaves the pane {pane:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "UX-10 review: writes the Settings sections to target/ui-ux-review"]
+fn render_ux10_look() {
+    use settings::Section;
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    let wide = Size::new(1280.0, 800.0);
+    let narrow = Size::new(540.0, 360.0);
+    let slug = |section: Section| match section {
+        Section::Reading => "reading",
+        Section::Appearance => "appearance",
+        Section::Listen => "listen",
+        Section::Translation => "translation",
+        Section::Library => "library",
+        Section::Shortcuts => "shortcuts",
+    };
+    for section in Section::ALL {
+        let mut reader = settings_reader(wide, section);
+        render(
+            &mut reader,
+            &output.join(format!("UX-10-{}-light.png", slug(section))),
+        );
+    }
+    let mut reader = full_bar_book(wide.width, wide.height);
+    open_settings(&mut reader, Section::Reading);
+    render(&mut reader, &output.join("UX-10-reading-book-light.png"));
+
+    let mut reader = settings_reader(wide, Section::Appearance);
+    let _ = reader.activate(Control::Appearance(Appearance::Dark));
+    render(&mut reader, &output.join("UX-10-appearance-dark.png"));
+
+    for section in Section::ALL {
+        let mut reader = settings_reader(narrow, section);
+        render(
+            &mut reader,
+            &output.join(format!("UX-10-{}-narrow-light.png", slug(section))),
+        );
+    }
+    let mut reader = settings_reader(narrow, Section::Library);
+    reader.focused = settings::controls(&reader, Section::Library)
+        .last()
+        .copied();
+    render(
+        &mut reader,
+        &output.join("UX-10-library-narrow-end-light.png"),
+    );
+    let mut reader = full_bar_book(wide.width, wide.height);
+    let _ = update(&mut reader, Message::ToggleHelp);
+    reader.focused = None;
+    render(&mut reader, &output.join("UX-10-help-light.png"));
+}
+
 #[test]
 #[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
 fn render_ux5_bar_look() {
