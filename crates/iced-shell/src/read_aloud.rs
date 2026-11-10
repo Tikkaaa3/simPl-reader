@@ -505,6 +505,25 @@ impl Reader {
         });
     }
 
+    /// Where reading starts from a right click on no text, given the first
+    /// row that begins at or below the pointer. Under the page's last row that
+    /// is the top of the next page, which may be inside that same paragraph.
+    pub(super) fn place_below(&self, row: usize) -> TextPlace {
+        let pages = self.pages();
+        let next = self
+            .active_page()
+            .filter(|page| row >= page.rows.end)
+            .and_then(|page| pages.iter().find(|next| next.number == page.number + 1))
+            .filter(|next| next.rows.start < row);
+        match next {
+            Some(next) => TextPlace::Book {
+                row: next.rows.start,
+                byte: self.page_start_byte(next),
+            },
+            None => TextPlace::Book { row, byte: 0 },
+        }
+    }
+
     /// Where on its first paragraph a page starts: a paragraph that began on
     /// the previous page is read from the sentence the page starts in.
     fn page_start_byte(&self, page: &book_pages::Page) -> usize {

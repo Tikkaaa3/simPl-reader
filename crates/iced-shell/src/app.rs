@@ -4469,7 +4469,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::ContextBlank(below) => {
             if reader.book.is_some() {
-                let here = below.map(|row| notes::TextPlace::Book { row, byte: 0 });
+                let here = below.map(|row| reader.place_below(row));
                 reader.open_popup(notes::Target::Page, Some(notes::Menu { here }));
             }
             Task::none()

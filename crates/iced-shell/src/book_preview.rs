@@ -2678,6 +2678,56 @@ fn start_reading_from_here_off_the_text_starts_at_the_next_paragraph() {
 }
 
 #[test]
+fn start_reading_from_here_in_a_first_sentence_starts_with_the_paragraph() {
+    let mut reader = sentence_book();
+    let mut ui = Harness::new();
+    // The word "opens", in the first sentence of the third paragraph.
+    let opens = text_point(&reader, "paragraph-3", "Paragraph 3 ".len());
+    start_reading_from(&mut ui, &mut reader, opens);
+    assert_eq!(
+        reader.said(),
+        [three_sentences(3), three_sentences(4), three_sentences(5)]
+    );
+}
+
+#[test]
+fn start_reading_from_here_under_a_paragraph_that_goes_on_reads_its_next_page() {
+    let long: String = (1..=400)
+        .map(|number| format!("Sentence {number} of the long paragraph. "))
+        .collect();
+    let long = long.trim_end().to_owned();
+    let mut reader = sentence_book_with(|rows| {
+        rows[0] = Item::Paragraph {
+            id: "paragraph-1".into(),
+            text: long.clone(),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        }
+    });
+    assert_eq!(
+        reader.pages()[1].rows.start,
+        0,
+        "the long paragraph goes on over the page"
+    );
+    let mut ui = Harness::new();
+    let paper = paper_viewport(&reader).paper;
+    let footer = Point::new(paper.center_x(), paper.y + paper.height - 20.0);
+    start_reading_from(&mut ui, &mut reader, footer);
+
+    let said = reader.said();
+    let first = &said[0];
+    assert!(
+        first.starts_with("Sentence ") && long.ends_with(first.as_str()),
+        "reading goes on with a whole sentence of the same paragraph, got {first:?}"
+    );
+    assert!(
+        !first.starts_with("Sentence 1 ") && first.len() < long.len(),
+        "it starts where the next page does and does not read the first page again"
+    );
+    assert_eq!(said[1], three_sentences(2), "then the next paragraph");
+}
+
+#[test]
 fn start_reading_from_here_on_a_picture_starts_at_the_paragraph_after_it() {
     let mut reader = sentence_book_with(|rows| {
         rows[3] = Item::Image {
