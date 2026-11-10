@@ -2952,7 +2952,7 @@ fn progress_jump_lands_on_the_page() {
     assert_eq!(page_field(&reader), "7");
     assert_eq!(reader.active_page().unwrap().number + 1, 7);
     // Six pages, and the part of the seventh that is in view.
-    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 47%");
+    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 48%");
 }
 
 #[test]
@@ -2986,15 +2986,33 @@ fn the_progress_line_is_full_at_the_end_of_the_book() {
     );
 
     let _ = update(&mut reader, Message::ProgressJump(total as u32));
-    let last = reader.pages().last().unwrap().clone();
-    let top_of_last = reader.progress().unwrap();
-    assert_eq!(top_of_last.page as f32, total);
-    assert!(last.height > reader.viewport, "the last page scrolls");
-    assert!(top_of_last.fraction < 1.0, "its end is not in view yet");
+    let text = |page: &book_pages::Page| book_pages::TOP + page.content.end - page.content.start;
+    // A page with more text than the view holds: the view's bottom one
+    // pixel above its last line's end, then on it.
+    let long = reader
+        .pages()
+        .iter()
+        .find(|page| text(page) > reader.viewport + 1.0)
+        .expect("a page longer than the view")
+        .clone();
+    let read = |reader: &Reader| reader.progress().unwrap().fraction * total;
+    reader.offset = long.top + text(&long) - reader.viewport - 1.0;
+    let before = read(&reader);
+    assert!(
+        before < long.number as f32 + 1.0,
+        "not all in view: {before}"
+    );
+    reader.offset += 1.0;
+    assert_eq!(read(&reader).round(), long.number as f32 + 1.0);
+    assert!((read(&reader) - (long.number as f32 + 1.0)).abs() < 0.001);
+    // The blank paper under the last line adds nothing.
+    reader.offset = long.top + long.height - reader.viewport;
+    assert!((read(&reader) - (long.number as f32 + 1.0)).abs() < 0.001);
 
-    reader.offset = last.top + last.height - reader.viewport;
+    let last = reader.pages().last().unwrap().clone();
+    reader.offset = (last.top + text(&last) - reader.viewport).max(last.top);
     let end = reader.progress().unwrap();
-    assert_eq!(end.fraction, 1.0, "the end of the last page is in view");
+    assert_eq!(end.fraction, 1.0, "the last line of the book is in view");
     assert_eq!(end.label(), format!("Page {total} of {total} · 100%"));
 
     let Some(mut reader) = test_pdf(

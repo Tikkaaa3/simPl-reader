@@ -48,7 +48,7 @@ pub(super) struct Progress {
     pub(super) page: u32,
     pub(super) total: u32,
     /// How much of the book lies above the bottom of the view: 1 with the
-    /// end of the last page in view.
+    /// last line of the last page in view.
     pub(super) fraction: f32,
 }
 
@@ -461,7 +461,10 @@ impl Reader {
             )
         } else {
             let page = book_pages::current(self.pages(), self.offset)?;
-            let within = (self.offset + self.viewport - page.top) / page.height.max(1.0);
+            // A page is a whole sheet, so a short one ends in blank paper.
+            // It is read once its last line is in view.
+            let text = book_pages::TOP + page.content.end - page.content.start;
+            let within = (self.offset + self.viewport - page.top) / text.max(1.0);
             (
                 page.number,
                 page.number as f32 + within.clamp(0.0, 1.0),
