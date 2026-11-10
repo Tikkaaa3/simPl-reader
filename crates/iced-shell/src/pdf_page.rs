@@ -70,11 +70,21 @@ pub(super) fn hit(
 /// last character.
 fn below(text: &TextLayer, page: u32, bounds: Rectangle, position: Point) -> TextPoint {
     let y = (position.y - bounds.y) / bounds.height;
-    let index = text
-        .glyphs
-        .iter()
-        .position(|glyph| glyph.bounds.is_some_and(|rect| rect.bottom >= y))
-        .unwrap_or(text.glyphs.len());
+    let level_or_under = || {
+        text.glyphs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, glyph)| Some((index, glyph.bounds?)))
+            .filter(move |(_, rect)| rect.bottom >= y)
+    };
+    // A PDF may store a footer before the body, so the line is the highest
+    // one on the page, not the first one in the text.
+    let top = level_or_under()
+        .map(|(_, rect)| rect.top)
+        .fold(f32::INFINITY, f32::min);
+    let index = level_or_under()
+        .find(|(_, rect)| rect.top <= top + (rect.bottom - rect.top))
+        .map_or(text.glyphs.len(), |(index, _)| index);
     TextPoint { page, index }
 }
 
@@ -534,6 +544,33 @@ mod tests {
             right_click(None, Point::new(15.0, 23.0)),
             None,
             "the page's text is not loaded"
+        );
+
+        // A footer that the PDF stores before its body.
+        let glyph = |start, top| Glyph {
+            start,
+            end: start + 1,
+            bounds: Some(Rect {
+                left: 0.1,
+                top,
+                right: 0.2,
+                bottom: top + 0.03,
+            }),
+            style: None,
+        };
+        let footer_first = Arc::new(TextLayer::new(
+            "FAB".into(),
+            vec![glyph(0, 0.9), glyph(1, 0.1), glyph(2, 0.5)],
+        ));
+        assert_eq!(
+            right_click(Some(&footer_first), Point::new(60.0, 60.0)),
+            Some(Clicked::Blank { below: at(2) }),
+            "between the body's lines: the next line, not the footer stored first"
+        );
+        assert_eq!(
+            right_click(Some(&footer_first), Point::new(60.0, 150.0)),
+            Some(Clicked::Blank { below: at(0) }),
+            "under the body: the footer"
         );
     }
 }
