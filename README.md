@@ -160,8 +160,10 @@ scrolls the page. The same edges turn pages in PDF Document view.
 Keep turning the wheel a little past the end of a Book page to go on to the top of
 the next page, or past its top to go back to the bottom of the previous page; a
 single notch does not turn it.
-A thin line along the bottom shows how far through the book or PDF you are. Point at
-it to see the page and percent, or click it to jump to that point.
+A thin line along the bottom shows how far through the book or PDF you are, cut
+into the book's chapters. Point at it to see two places: the page you are on, and
+the chapter and page a click would jump to. The stretch between them shows the jump
+before you make it.
 While you read, the scrollbar hides; it appears when you scroll or point at the right
 edge, and fades about a second after you stop.
 

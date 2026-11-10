@@ -2951,7 +2951,8 @@ fn progress_jump_lands_on_the_page() {
     let _ = update(&mut reader, Message::ProgressJump(7));
     assert_eq!(page_field(&reader), "7");
     assert_eq!(reader.active_page().unwrap().number + 1, 7);
-    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 43%");
+    // Six pages, and the part of the seventh that is in view.
+    assert_eq!(reader.progress().unwrap().label(), "Page 7 of 14 · 48%");
 }
 
 #[test]
@@ -2970,6 +2971,60 @@ fn a_press_on_the_progress_line_jumps_to_its_page() {
     let above = middle - iced::Vector::new(0.0, 24.0);
     assert!(progress_jumps(&ui.click(&mut reader, above)).is_empty());
     assert_eq!(page_field(&reader), "14", "the band is 24px tall");
+}
+
+#[test]
+fn the_progress_line_is_full_at_the_end_of_the_book() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let total = reader.page_total() as f32;
+    let start = reader.progress().unwrap();
+    assert_eq!(start.page, 1);
+    assert!(
+        start.fraction > 0.0 && start.fraction <= 1.0 / total,
+        "the part of the first page in view: {}",
+        start.fraction
+    );
+
+    let _ = update(&mut reader, Message::ProgressJump(total as u32));
+    let text = |page: &book_pages::Page| book_pages::TOP + page.content.end - page.content.start;
+    // A page with more text than the view holds: the view's bottom one
+    // pixel above its last line's end, then on it.
+    let long = reader
+        .pages()
+        .iter()
+        .find(|page| text(page) > reader.viewport + 1.0)
+        .expect("a page longer than the view")
+        .clone();
+    let read = |reader: &Reader| reader.progress().unwrap().fraction * total;
+    reader.offset = long.top + text(&long) - reader.viewport - 1.0;
+    let before = read(&reader);
+    assert!(
+        before < long.number as f32 + 1.0,
+        "not all in view: {before}"
+    );
+    reader.offset += 1.0;
+    assert_eq!(read(&reader).round(), long.number as f32 + 1.0);
+    assert!((read(&reader) - (long.number as f32 + 1.0)).abs() < 0.001);
+    // The blank paper under the last line adds nothing.
+    reader.offset = long.top + long.height - reader.viewport;
+    assert!((read(&reader) - (long.number as f32 + 1.0)).abs() < 0.001);
+
+    let last = reader.pages().last().unwrap().clone();
+    reader.offset = (last.top + text(&last) - reader.viewport).max(last.top);
+    let end = reader.progress().unwrap();
+    assert_eq!(end.fraction, 1.0, "the last line of the book is in view");
+    assert_eq!(end.label(), format!("Page {total} of {total} · 100%"));
+
+    let Some(mut reader) = test_pdf(
+        crate::pdf_reader::tests::pages_pdf(3),
+        Size::new(1000.0, 700.0),
+    ) else {
+        return;
+    };
+    let top = reader.progress().unwrap().fraction;
+    assert!(top > 0.0 && top < 1.0, "a PDF at its top: {top}");
+    reader.pdf.as_mut().unwrap().scroll_to_end();
+    assert_eq!(reader.progress().unwrap().fraction, 1.0, "a PDF at its end");
 }
 
 #[test]
@@ -3026,7 +3081,84 @@ fn render_progress_line_look() {
             let at = on_the_line(&reader, 0.5);
             render_with_cursor(&mut reader, &file("hover"), at);
         }
+        // A book with chapters, pointed at ahead of the reader and behind.
+        let mut reader = two_wings_at(1, 0);
+        let _ = update(&mut reader, Message::ToggleContents);
+        reader.appearance = appearance;
+        reader.bar = reading_chrome::Bar::hidden();
+        let file = |state: &str| output.join(format!("progress-chapters-{name}-{state}.png"));
+        render(&mut reader, &file("rest"));
+        for (fraction, state) in [(0.8, "ahead"), (0.1, "behind")] {
+            let at = on_the_line(&reader, fraction);
+            render_with_cursor(&mut reader, &file(state), at);
+        }
     }
+}
+
+#[test]
+fn the_progress_line_is_cut_into_the_books_chapters() {
+    // Two Wings: the east wing's file, a file that continues it with no
+    // contents entry, then the west wing's file.
+    let reader = two_wings_at(1, 0);
+    let chapters = reader.progress_chapters();
+    let atlas = reader.atlas.as_ref().unwrap();
+    let west = atlas.sections[2].pages[0].number + 1;
+    assert!(west > 2, "the east wing is more than a page long");
+    assert_eq!(
+        chapters,
+        [
+            progress_line::Chapter {
+                first: 1,
+                title: "The east wing".into()
+            },
+            progress_line::Chapter {
+                first: west,
+                title: "The west wing".into()
+            },
+        ],
+        "entries inside a file, and a file with no entry, start no chapter"
+    );
+
+    // A book that is not an EPUB starts a chapter at each heading.
+    let mut source = Arc::try_unwrap(super::tests::book("progress-chapters")).unwrap();
+    let rows = source.items.len();
+    let (id, level) = ("paragraph-heading".to_owned(), 1);
+    source.items[rows / 2] = Item::Heading {
+        id,
+        text: "Part Two".into(),
+        level,
+    };
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(1280.0, 800.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let page = reader
+        .pages()
+        .iter()
+        .find(|page| page.rows.contains(&(rows / 2)))
+        .unwrap()
+        .number
+        + 1;
+    assert!(page > 1, "the heading is past the first page");
+    assert_eq!(
+        reader.progress_chapters(),
+        [
+            progress_line::Chapter {
+                first: 1,
+                title: String::new()
+            },
+            progress_line::Chapter {
+                first: page,
+                title: "Part Two".into()
+            },
+        ]
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@
 //! like the reading bar, takes an explicit [`Instant`] for every transition.
 //! The same layer hosts the progress line between the strips' bottom ends.
 
-use super::progress_line::{self, Progress};
+use super::progress_line::{self, Chapter, Progress};
 use super::*;
 use iced::Animation;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, renderer, widget};
@@ -243,6 +243,7 @@ pub(super) fn layer(reader: &Reader, active: bool) -> Element<'static, Message> 
         covered: reader.drawers().overlaid(),
         scrollbar: super::scrolls_down(reader),
         progress: reader.progress(),
+        chapters: reader.progress_chapters(),
         jumps: active,
         labelled: reader.bar.visible(),
     })
@@ -276,6 +277,7 @@ struct Strips {
     /// rail part. Without one, that part turns the page like the rest.
     scrollbar: bool,
     progress: Option<Progress>,
+    chapters: Vec<Chapter>,
     /// A press on the line jumps; otherwise it only shows the position.
     jumps: bool,
     /// The reading bar shows, so the line shows its label too.
@@ -517,6 +519,13 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
                         shell.request_redraw();
                     }
                 }
+                // The line shows where a press would land, so it follows
+                // the pointer along it.
+                if over == Some(Zone::Line)
+                    && matches!(event, iced::Event::Mouse(mouse::Event::CursorMoved { .. }))
+                {
+                    shell.request_redraw();
+                }
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 if !matches!(state.gesture, Gesture::Page)
@@ -569,23 +578,29 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Strips {
     ) {
         let bounds = layout.bounds();
         let strips = regions(bounds, self.width, self.bottom_inset, self.covered).strips;
-        for ((side, region), alpha) in SIDES.into_iter().zip(strips).zip(self.alpha) {
-            if alpha > 0.0 && self.turns.get(side).is_some() {
-                self.draw_strip(renderer, theme, side, region, alpha);
-            }
-        }
+        // The line's fade lies under the strips, so their shade stays clear.
         if let Some(progress) = self.progress {
             let state = tree.state.downcast_ref::<State>();
             let hovered = !matches!(state.gesture, Gesture::Page)
                 && self.zone_at(bounds, cursor) == Some(Zone::Line);
+            let [previous, next] = strips;
             progress_line::draw(
                 renderer,
                 theme,
                 self.band(bounds),
-                progress,
-                hovered,
-                hovered || self.labelled,
+                [previous.x, next.x + next.width],
+                progress_line::Shown {
+                    progress,
+                    chapters: &self.chapters,
+                    pointer: cursor.position().filter(|_| hovered).map(|point| point.x),
+                    labelled: self.labelled,
+                },
             );
+        }
+        for ((side, region), alpha) in SIDES.into_iter().zip(strips).zip(self.alpha) {
+            if alpha > 0.0 && self.turns.get(side).is_some() {
+                self.draw_strip(renderer, theme, side, region, alpha);
+            }
         }
     }
 }
