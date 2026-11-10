@@ -352,6 +352,10 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
         ]
         .spacing(8),
     );
+    // Under the buttons, where it stays in view however far the pane scrolls.
+    if let Some(notice) = &reader.profile.notice {
+        content = content.push(text(notice).size(12).style(ui::secondary_text));
+    }
     if reader.library.pending() {
         content = content.push(
             text("Finish the library move first.")
@@ -387,9 +391,6 @@ pub(super) fn settings(reader: &Reader) -> Element<'_, Message> {
     content=content.push(text("Export reading notes").font(ui::MEDIUM).size(13)).push(formats)
         .push(control_button(reader, Control::Profile(Focus::Export),text("Export…").size(12),(!reader.profile.busy && reader.notes.data.is_some() && reader.reading_title().is_some() && reader.notes.editor.is_none()).then_some(action(Action::Export))))
         .push(text("Open a book to export its saved bookmarks, highlighted quotes and notes, including page/chapter information.").size(12).style(ui::muted_text));
-    if let Some(notice) = &reader.profile.notice {
-        content = content.push(text(notice).size(12).style(ui::secondary_text));
-    }
     content.into()
 }
 
