@@ -1212,7 +1212,11 @@ impl Shelf {
         let control = Control::Resume(index);
         let hovered = self.hovered == Some(control);
         let heading = row![
-            label(age(entry.opened_at), 11).style(ui::muted_text),
+            label(
+                format!("{} · {}", format_name(entry.format()), age(entry.opened_at)),
+                11
+            )
+            .style(ui::muted_text),
             Space::new().width(Length::Fill),
             label(format!("{}%", percent(entry.progress)), 11).style(ui::accent_text)
         ]
@@ -1322,7 +1326,7 @@ impl Shelf {
         .width(Length::Fill)
         .clip(true);
         let author = clipped(
-            label(ellipsize(&author_of(entry), m.card_width - 26.0, 12.0), 12)
+            label(ellipsize(&author_of(entry), cover_width, 12.0), 12)
                 .style(ui::secondary_text)
                 .wrapping(text::Wrapping::None),
         );
@@ -1331,26 +1335,36 @@ impl Shelf {
             .of(&entry.document.fingerprint)
             .map(|shelf| shelf.name.as_str())
             .collect();
-        let placed: Element<'_, Message> = if on_shelves.is_empty() {
-            label(short_date(entry.opened_at), 11)
-                .style(ui::muted_text)
-                .into()
+        let format = format_name(entry.format());
+        let size = file_size(entry.byte_len);
+        let (placed, shelved) = if on_shelves.is_empty() {
+            (short_date(entry.opened_at), false)
         } else {
-            clipped(
-                label(
-                    ellipsize(&on_shelves.join(" · "), m.card_width - 26.0 - 56.0, 11.0),
-                    11,
-                )
-                .style(ui::accent_text)
-                .wrapping(text::Wrapping::None),
-            )
+            (on_shelves.join(" · "), true)
         };
-        let footer = row![
-            placed,
-            Space::new().width(Length::Fill),
-            label(file_size(entry.byte_len), 11).style(ui::muted_text)
-        ]
-        .align_y(Alignment::Center);
+        let room = cover_width - estimated_width(&format!("{format} · {size}"), 11.0);
+        let placed = ellipsize(&placed, room, 11.0);
+        // A narrow card drops the date or shelves rather than show a stub like "N…".
+        let readable = !placed.ends_with('…') || placed.chars().count() > 3;
+        let mut footer = row![label(format, 11).style(ui::secondary_text)];
+        footer = if readable {
+            footer
+                .push(label(" · ", 11).style(ui::muted_text))
+                .push(clipped(
+                    label(placed, 11)
+                        .style(if shelved {
+                            ui::accent_text
+                        } else {
+                            ui::muted_text
+                        })
+                        .wrapping(text::Wrapping::None),
+                ))
+        } else {
+            footer.push(Space::new().width(Length::Fill))
+        };
+        let footer = footer
+            .push(label(size, 11).style(ui::muted_text))
+            .align_y(Alignment::Center);
         let details = column![title, author, Space::new().height(Length::Fill), footer]
             .spacing(4)
             .height(CARD_DETAILS);
@@ -1807,30 +1821,8 @@ impl Shelf {
                     })
                     .into()
             };
-        let badge = container(
-            label(format_name(entry.format()), 10)
-                .font(ui::SEMIBOLD)
-                .style(move |theme| iced::widget::text::Style {
-                    color: Some(if entry.format() == SourceFormat::Epub {
-                        ui::palette(theme).accent
-                    } else {
-                        ui::palette(theme).secondary
-                    }),
-                }),
-        )
-        .padding([2, 6])
-        .style(|theme| fill(ui::palette(theme).background.scale_alpha(0.9), 2.0));
-        let overlay = container(badge)
-            .padding(if small { 6 } else { 8 })
-            .width(width)
-            .height(height)
-            .align_y(if small {
-                iced::alignment::Vertical::Bottom
-            } else {
-                iced::alignment::Vertical::Top
-            });
         // Put artwork on a clipped renderer layer; Container::clip only narrows its viewport.
-        let mut cover = stack![Space::new().width(width).height(height), artwork, overlay]
+        let mut cover = stack![Space::new().width(width).height(height), artwork]
             .width(width)
             .height(height)
             .clip(true);
@@ -2026,10 +2018,16 @@ fn display_author(author: &str) -> String {
     }
 }
 
+/// iced 0.14 cannot measure or ellipsize text here, so widths use an average glyph.
+const GLYPH_WIDTH: f32 = 0.56;
+
+fn estimated_width(value: &str, size: f32) -> f32 {
+    value.chars().count() as f32 * size * GLYPH_WIDTH
+}
+
 /// Shortens `value` with an ellipsis when it would overflow `width` at `size`.
-/// iced 0.14 cannot ellipsize text, so this estimates an average glyph width.
 fn ellipsize(value: &str, width: f32, size: f32) -> String {
-    let fits = ((width / (size * 0.56)).floor() as usize).max(2);
+    let fits = ((width / (size * GLYPH_WIDTH)).floor() as usize).max(2);
     if value.chars().count() <= fits {
         return value.to_owned();
     }
