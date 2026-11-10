@@ -46,9 +46,22 @@ impl Section {
     }
 }
 
-const MAX_WIDTH: f32 = 840.0;
-const MAX_HEIGHT: f32 = 640.0;
-const LIST_WIDTH: f32 = 160.0;
+const MAX_WIDTH: f32 = 900.0;
+const MAX_HEIGHT: f32 = 720.0;
+/// Below this window width the modal gives the pane more room: less padding
+/// and a narrower list.
+const COMPACT_BELOW: f32 = 720.0;
+/// The right padding `modal_scroll` keeps clear for its scrollbar.
+const SCROLLBAR_GUTTER: f32 = 14.0;
+
+/// The modal's padding, the list's width and the gap between list and pane.
+fn geometry(reader: &Reader) -> (f32, f32, f32) {
+    if reader.window_size.width < COMPACT_BELOW {
+        (16.0, 124.0, 12.0)
+    } else {
+        (24.0, 160.0, 20.0)
+    }
+}
 
 /// The open section's entry in the list, then the controls of its pane in
 /// visual order. The list is one Tab stop, so the other entries are left out.
@@ -97,18 +110,21 @@ pub(super) fn modal(reader: &Reader, section: Section) -> Element<'_, Message> {
             entry == section,
         )
     });
-    let list = Column::with_children(entries).spacing(2).width(LIST_WIDTH);
+    let (padding, list_width, gap) = geometry(reader);
+    let width = (reader.window_size.width - 32.0).min(MAX_WIDTH);
+    let pane_width = width - 2.0 * padding - list_width - gap - SCROLLBAR_GUTTER;
+    let list = Column::with_children(entries).spacing(2).width(list_width);
     let body = row![
         list,
-        modal_scroll(pane(reader, section)).height(Length::Fill)
+        modal_scroll(pane(reader, section, pane_width)).height(Length::Fill)
     ]
-    .spacing(20);
+    .spacing(gap);
     // A whole-pixel heading keeps the pane's top edge on a whole pixel, where
     // the damage of its clipped rows lines up with the pane's own.
     let heading = container(modal_heading(reader, "Settings", true)).height(38);
     container(column![heading, body].spacing(16))
-        .padding(24)
-        .width((reader.window_size.width - 32.0).min(MAX_WIDTH))
+        .padding(padding)
+        .width(width)
         .height((reader.window_size.height - 64.0).clamp(160.0, MAX_HEIGHT))
         .style(ui::panel)
         .into()
@@ -145,7 +161,7 @@ fn rule<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn pane(reader: &Reader, section: Section) -> Element<'_, Message> {
+fn pane(reader: &Reader, section: Section, width: f32) -> Element<'_, Message> {
     match section {
         Section::Reading => {
             let mut content = column![].spacing(12);
@@ -196,7 +212,7 @@ fn pane(reader: &Reader, section: Section) -> Element<'_, Message> {
         .into(),
         Section::Shortcuts => column![
             note("Press F1 anywhere to show this list at the top of the window."),
-            shortcuts::table(),
+            shortcuts::table(width >= 520.0),
         ]
         .spacing(16)
         .into(),

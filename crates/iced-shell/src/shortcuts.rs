@@ -33,21 +33,26 @@ pub(super) const GROUPS: &[Group] = &[
         ],
     },
     Group {
-        title: "Reading",
+        title: "Pages",
         rows: &[
             ("Left / Right", "Previous or next page in Book view"),
             ("Up / Down", "Scroll within the page"),
             ("Page Up / Page Down", "Scroll a screen at a time"),
             ("Ctrl+Home / Ctrl+End", "Go to the start or the end"),
             ("Ctrl+L", "Go to a page"),
+            ("Ctrl+T", "Show or hide the contents of an EPUB"),
+            ("Ctrl+Page Up / Page Down", "Previous or next EPUB chapter"),
+            ("Alt+Left", "Return from an internal link"),
+        ],
+    },
+    Group {
+        title: "Find and zoom",
+        rows: &[
             ("Ctrl+F", "Find in the book; press again to close"),
             (
                 "Enter / Shift+Enter",
                 "Next or previous match while finding",
             ),
-            ("Ctrl+T", "Show or hide the contents of an EPUB"),
-            ("Ctrl+Page Up / Page Down", "Previous or next EPUB chapter"),
-            ("Alt+Left", "Return from an internal link"),
             ("Ctrl+plus / minus / 0", "Zoom in, out or back to 100%"),
             ("Ctrl+wheel", "Zoom in or out"),
             ("Ctrl+Shift+F", "Fit width, or back to the previous zoom"),
@@ -90,7 +95,7 @@ fn help_line(group: &Group) -> String {
 pub(super) fn help<'a>() -> Element<'a, Message> {
     Column::with_children(GROUPS.iter().map(|group| {
         row![
-            text(group.title).font(ui::MEDIUM).size(12).width(64),
+            text(group.title).font(ui::MEDIUM).size(12).width(88),
             text(help_line(group))
                 .size(12)
                 .width(Length::Fill)
@@ -103,9 +108,29 @@ pub(super) fn help<'a>() -> Element<'a, Message> {
     .into()
 }
 
-/// The Shortcuts section: one row for each shortcut, under its group.
-pub(super) fn table<'a>() -> Element<'a, Message> {
-    Column::with_children(GROUPS.iter().map(|group| {
+/// The Shortcuts section: one row for each shortcut, under its group. Two
+/// columns, when the pane is wide enough, keep the list to about one screen.
+pub(super) fn table<'a>(two_columns: bool) -> Element<'a, Message> {
+    if !two_columns {
+        return groups(GROUPS);
+    }
+    let total: usize = GROUPS.iter().map(|group| group.rows.len()).sum();
+    let mut before = 0;
+    let split = GROUPS
+        .iter()
+        .position(|group| {
+            let past_half = 2 * before >= total;
+            before += group.rows.len();
+            past_half
+        })
+        .unwrap_or(GROUPS.len());
+    row![groups(&GROUPS[..split]), groups(&GROUPS[split..])]
+        .spacing(24)
+        .into()
+}
+
+fn groups<'a>(groups: &'static [Group]) -> Element<'a, Message> {
+    Column::with_children(groups.iter().map(|group| {
         Column::with_children(
             std::iter::once(
                 text(group.title.to_uppercase())
@@ -130,6 +155,7 @@ pub(super) fn table<'a>() -> Element<'a, Message> {
         .into()
     }))
     .spacing(18)
+    .width(Length::Fill)
     .into()
 }
 
@@ -163,7 +189,7 @@ mod tests {
             "the F1 help reads the same rows"
         );
         assert_eq!(
-            help_line(&GROUPS[4]),
+            help_line(&GROUPS[GROUPS.len() - 1]),
             "Ctrl+Shift+U  Read aloud from the current page, or stop"
         );
     }
