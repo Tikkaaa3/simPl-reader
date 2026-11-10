@@ -78,7 +78,10 @@ pub(super) const GROUPS: &[Group] = &[
             ("Select text", "Highlight it or add a note"),
             ("Ctrl+Enter in a note", "Save the note"),
             ("Right-click a highlight", "Edit or remove it"),
-            ("Right-click a page", "Bookmark it"),
+            (
+                "Right-click a page",
+                "Bookmark it, or start reading aloud from that place",
+            ),
         ],
     },
     Group {
