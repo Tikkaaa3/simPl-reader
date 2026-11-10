@@ -16,7 +16,8 @@ and keep your highlights and notes with your books.
 - **Your library, on your machine.** Import documents, mark favourites, search by
   title or author, and press Space to resume the book you were reading.
 - **Two ways to read PDFs.** Keep the original page in Document view or use Book
-  view for reconstructed prose and extracted illustrations.
+  view for reconstructed prose and extracted illustrations, set in your reading theme
+  and text settings.
 - **One page at a time.** Visible paper boundaries, a click anywhere along the left
   or right edge to turn the page, and a page field that can jump across the whole book.
 - **Stable pages.** Zoom changes the size of the page without changing its number
@@ -24,8 +25,9 @@ and keep your highlights and notes with your books.
 - **Reading themes.** Pick Default, Soft, Clear or Compact in **Aa** or Settings → Appearance: each sets the
   reading font, line and paragraph spacing, and its own light and dark colors. Page
   numbers and page boundaries stay the same in every theme, and text size stays your
-  own. All fonts are bundled, so nothing is downloaded.
-- **Reading comfort.** The **Aa** button in the reading bar opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading sets them for every book without its own. Press F11 for fullscreen.
+  own. A PDF in Book view takes the theme like any other book. All fonts are bundled,
+  so nothing is downloaded.
+- **Reading comfort.** The **Aa** button in the reading bar opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading sets them for every book without its own. A PDF in Book view has all of them. In Document view, which shows the original page, **Aa** has zoom and **Fit width** only. Press F11 for fullscreen.
 - **Listen and follow along.** Windows' installed voices read continuously across pages and EPUB chapters. The viewport follows the spoken line, and a temporary word highlight shows your place. Pause, resume and adjust the speed; select the stop icon in the bar to stop.
 - **Offline word lookup.** Double-click a word or select → right-click → Translate. Choose your language pair and automatic lookup preference. Download only the dictionaries you need; the 13 optional directions cover English, Turkish, Spanish, German, French, Japanese, Korean and Chinese. Lookup works locally after installation.
 - **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
@@ -141,7 +143,7 @@ Android MVP. See the [Android guide](android/README.md),
 | Format | What to expect |
 | --- | --- |
 | **PDF · Document** | Original page layout, images and typography, with text selection, zoom and fit-width. Best for academic papers, tables and complex layouts. |
-| **PDF · Book** | Reconstructed text in simPl's reading style, with extracted illustrations and the original source-page count. Switching back to Document keeps the current page. |
+| **PDF · Book** | Reconstructed text in your reading theme, font, text size, line spacing and margins, with extracted illustrations and the original source-page count. Switching back to Document keeps the current page. |
 | **EPUB** | Reflowable EPUB 2/3, contents navigation, internal links and footnotes. Publisher page lists are used when available. |
 | **HTML** | Local UTF-8 HTML/XHTML, supported document structure and local images. HTML book folders can also be imported; scripts and remote resources are not executed or fetched. |
 | **TXT · Markdown** | `.txt`, `.md` and `.markdown` files are converted to a private HTML page when imported, then read like HTML. Encodings: UTF-8, UTF-16 with a byte-order mark, or the Windows ANSI code page. Markdown supports headings, emphasis, lists, tables, code, footnotes and local images; the library retains the original TXT or Markdown label. |
