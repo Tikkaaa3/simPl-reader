@@ -5924,3 +5924,50 @@ fn render_pdf_book_looks() {
     let _ = update(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
     render(&mut reader, &output.join("PDF-book-aa-document-view.png"));
 }
+
+#[test]
+fn a_new_theme_keeps_the_page_and_how_far_it_is_scrolled() {
+    // Paragraphs that each run over several pages.
+    let long: String = (1..=400)
+        .map(|number| format!("Sentence {number} of a long paragraph that runs on. "))
+        .collect();
+    let open = || {
+        let mut reader = sentence_book_with(|rows| {
+            for (row, item) in rows.iter_mut().enumerate().take(3) {
+                *item = Item::Paragraph {
+                    id: format!("paragraph-{}", row + 1),
+                    text: long.clone(),
+                    base_direction: BaseDirection::Ltr,
+                    style_runs: Vec::new(),
+                };
+            }
+        });
+        reader.window_size = Size::new(1280.0, 800.0);
+        reader.viewport = 756.0;
+        reader
+    };
+    let pages = open().page_total();
+    assert!(pages >= 6, "the paragraphs span pages: {pages}");
+    for theme in 1..themes::THEMES.len() {
+        for scrolled in [0.0_f32, 0.4, 1.0] {
+            for page in [1, 5] {
+                let mut reader = open();
+                let _ = reader.go_to_local_page(page);
+                let before = reader.active_page().unwrap();
+                reader.offset = before.top + scrolled * (before.height - reader.viewport);
+                let _ = update(&mut reader, Message::SetTheme(theme));
+                settle_pagination(&mut reader);
+                let after = reader.active_page().unwrap();
+                let what = format!("theme {theme}, page {page}, scrolled {scrolled}");
+                assert_eq!(after.number, before.number, "{what}");
+                let range = after.height - reader.viewport;
+                assert!(range > 0.0, "{what}: the page scrolls");
+                let now = (reader.offset - after.top) / range;
+                assert!((now - scrolled).abs() < 0.08, "{what}: now {now}");
+                if scrolled == 0.0 {
+                    assert_eq!(reader.offset, after.top, "{what}: the top stays the top");
+                }
+            }
+        }
+    }
+}

@@ -685,6 +685,21 @@ struct Anchor {
     fraction: f32,
 }
 
+/// The reader's place across a change of theme or text settings. A new look
+/// keeps every page's number and where it is cut, but not how tall a
+/// paragraph is, so a part of a paragraph's height does not name the same
+/// text in both. A long paragraph runs over several pages, and that part
+/// could land on the page before. The page and how far it is scrolled do
+/// hold.
+#[derive(Clone, Copy, Debug)]
+struct LookPlace {
+    /// The anchor the change was started with, which names this layout pass.
+    anchor: Anchor,
+    page: u32,
+    /// From 0 at the page's top to 1 scrolled to its bottom.
+    scrolled: f32,
+}
+
 /// Where a jump or a newly opened book was asked to arrive.
 #[derive(Clone, Copy, Debug)]
 struct Arrival {
@@ -1007,6 +1022,9 @@ struct Reader {
     heights: virtual_reader::HeightIndex,
     measurements: virtual_reader::Measurements,
     pending_anchor: Option<Anchor>,
+    /// Where the reader was when the book's look last changed, until the
+    /// layout for the new look is ready.
+    look_place: Option<LookPlace>,
     /// Where the reader last jumped to. Until the view moves, the contents
     /// take it as the reader's place: a page may end before a heading low on
     /// it reaches the top of the view.
@@ -1125,6 +1143,7 @@ impl Default for Reader {
             heights: virtual_reader::HeightIndex::new(Vec::new()),
             measurements: Default::default(),
             pending_anchor: None,
+            look_place: None,
             arrival: None,
             bottom_landing: None,
             overscroll: None,
@@ -1562,16 +1581,20 @@ impl Reader {
 
     /// Row heights and pages of the current section for the current theme, if ready.
     fn section_layout(&self) -> Option<&book_map::Section> {
+        self.section_layout_for(self.theme.id, self.needs_adaptation())
+    }
+
+    /// The current section's layout for `theme`: the one adapted to a look,
+    /// or the default one.
+    fn section_layout_for(&self, theme: &str, adapted: bool) -> Option<&book_map::Section> {
         let book = self.book.as_ref()?;
         let section = book.epub.as_ref().map_or(0, |c| c.index);
-        if self.needs_adaptation() {
+        if adapted {
             return self
                 .adapted
                 .iter()
                 .find(|a| {
-                    a.fingerprint == book.fingerprint
-                        && a.section == section
-                        && a.theme == self.theme.id
+                    a.fingerprint == book.fingerprint && a.section == section && a.theme == theme
                 })
                 .map(|a| &a.layout);
         }
@@ -1762,13 +1785,18 @@ impl Reader {
         if let Some(anchor) = self.pending_anchor {
             return anchor;
         }
+        self.anchor_on(self.pages())
+    }
+
+    /// The row at the top of the view, read against `pages`.
+    fn anchor_on(&self, pages: &[book_pages::Page]) -> Anchor {
         if self.heights.is_empty() {
             return Anchor {
                 row: 0,
                 fraction: 0.0,
             };
         }
-        let offset = book_pages::content_offset(self.pages(), &self.heights, self.offset);
+        let offset = book_pages::content_offset(pages, &self.heights, self.offset);
         let row = self.heights.window(offset, 0.0, 0.0).start;
         Anchor {
             row,
@@ -1972,6 +2000,18 @@ impl Reader {
             self.heights = virtual_reader::HeightIndex::new(heights);
             self.measured_layout = Some((self.width, self.font_size));
             self.offset = self.offset_for(anchor);
+            let kept = self.look_place.take().filter(|kept| {
+                kept.anchor.row == anchor.row && kept.anchor.fraction == anchor.fraction
+            });
+            if let Some(kept) = kept
+                && let Some(page) = self.pages().iter().find(|page| page.number == kept.page)
+            {
+                self.offset = page.top + kept.scrolled * (page.height - self.viewport).max(0.0);
+                // What follows restores the view from the anchor, so the
+                // anchor now names this place in the new layout.
+                self.pending_anchor = None;
+                self.pending_anchor = Some(self.anchor());
+            }
             if let Some((fingerprint, target_section, page)) = self.pending_page.take()
                 && fingerprint == book.fingerprint
                 && target_section == section
