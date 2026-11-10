@@ -1948,9 +1948,12 @@ impl Reader {
                 let reading = self.reading_options();
                 let generation = self.generation;
                 return Task::perform(
-                    crate::platform::off_ui_thread(move || {
-                        book_map::adapt_section_with(book, &canonical, theme, reading, &cancel)
-                    }),
+                    async move {
+                        crate::platform::on_worker_thread("book-layout", move || {
+                            book_map::adapt_section_with(book, &canonical, theme, reading, &cancel)
+                        })
+                        .await?
+                    },
                     move |result| Message::ThemeLayoutReady {
                         generation,
                         section,
