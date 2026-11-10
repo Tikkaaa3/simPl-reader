@@ -32,7 +32,7 @@ As of 2026-11-10:
 | #24 | UX-7 wheel to next page | Merged |
 | #25 | The UX-7 record in this plan | Merged |
 | #26 | UX-8 page surface and state styling, with equal page-turn strips and one current contents entry | Merged |
-| | The UX-8 record in this plan | This PR |
+| #27 | The UX-8 record in this plan | This PR |
 | | UX-9 library header | Next, on the operator's go |
 
 How the program actually runs, where it differs from the checklist below:
