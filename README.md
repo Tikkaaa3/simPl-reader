@@ -33,12 +33,11 @@ and keep your highlights and notes with your books.
 - **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
 - **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
 - **Settings in sections.** The gear opens Settings on **Reading**, with its sections listed at the left: **Reading** for the defaults every book follows, **Appearance** for the theme, light or dark and fullscreen, **Listen** for the voice and speed, **Translation** for the languages and dictionaries, **Library & data** for the library folder, backup and export, and **Shortcuts** for the list of keys, which F1 opens from anywhere. Tab reaches the list, and the up and down arrows move between sections.
-- **Less chrome.** While you read, one row of quiet icons holds the window and reading
-  controls and fades away when idle; point at the top edge to bring it back, or press
-  F8 to keep it visible. Every icon names its action and shortcut when you point at it. A
-  narrow window hides the book title first, then folds the light and dark toggle,
-  Search and Settings into **More**. The page never moves when the bar shows or hides.
-  The bar keeps standard Windows minimize, maximize and close buttons. Geist for the interface,
+- **Less chrome.** The title bar stays on screen, with standard Windows minimize,
+  maximize and close buttons. The reading tools are a small pill of quiet icons under
+  it that fades away when idle; point at the title bar to bring it back, or press F8 to
+  keep it. Every icon names its action and shortcut when you point at it. The page
+  never moves when the tools show or hide. Geist for the interface,
   Literata (or the theme's font) for the book, and bundled fonts for offline reading.
 - **Keyboard access.** Navigate controls, switch books, turn pages and copy selected
   text without reaching for the mouse.

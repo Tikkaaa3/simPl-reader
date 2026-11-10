@@ -691,8 +691,11 @@ struct Anchor {
 /// text in both. A long paragraph runs over several pages, and that part
 /// could land on the page before. The page and how far it is scrolled do
 /// hold.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct LookPlace {
+    /// The book and the section the place is in.
+    fingerprint: String,
+    section: usize,
     /// The anchor the change was started with, which names this layout pass.
     anchor: Anchor,
     page: u32,
@@ -1025,6 +1028,9 @@ struct Reader {
     /// Where the reader was when the book's look last changed, until the
     /// layout for the new look is ready.
     look_place: Option<LookPlace>,
+    /// The pin was changed while the preferences were still loading. The
+    /// loaded record then keeps everything else it holds.
+    pin_before_load: bool,
     /// Where the reader last jumped to. Until the view moves, the contents
     /// take it as the reader's place: a page may end before a heading low on
     /// it reaches the top of the view.
@@ -1144,6 +1150,7 @@ impl Default for Reader {
             measurements: Default::default(),
             pending_anchor: None,
             look_place: None,
+            pin_before_load: false,
             arrival: None,
             bottom_landing: None,
             overscroll: None,
@@ -1929,6 +1936,7 @@ impl Reader {
     fn clear_content(&mut self) {
         self.show_conversion = false;
         self.page_input = None;
+        self.look_place = None;
         self.book = None;
         self.returns.clear();
         self.pdf = None;
@@ -2004,7 +2012,10 @@ impl Reader {
             self.measured_layout = Some((self.width, self.font_size));
             self.offset = self.offset_for(anchor);
             let kept = self.look_place.take().filter(|kept| {
-                kept.anchor.row == anchor.row && kept.anchor.fraction == anchor.fraction
+                kept.fingerprint == book.fingerprint
+                    && kept.section == section
+                    && kept.anchor.row == anchor.row
+                    && kept.anchor.fraction == anchor.fraction
             });
             if let Some(kept) = kept
                 && let Some(page) = self.pages().iter().find(|page| page.number == kept.page)
@@ -3910,6 +3921,7 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         }
         Message::PreferencesLoaded(result) => {
             reader.preferences_loading = false;
+            let pin_before_load = std::mem::take(&mut reader.pin_before_load);
             let mut theme_task = Task::none();
             match result {
                 Ok(loaded) if !reader.preferences_dirty => {
@@ -3919,7 +3931,11 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
                     reader.appearance = loaded.appearance;
                     reader.read_aloud.voice = loaded.voice;
                     reader.read_aloud.rate = loaded.speech_rate;
-                    if reader.bar.pinned() != loaded.pin_tools {
+                    if pin_before_load {
+                        // The reader's own choice stands, and is saved
+                        // with the rest of the loaded record.
+                        reader.preferences_dirty = true;
+                    } else if reader.bar.pinned() != loaded.pin_tools {
                         reader.bar.toggle_pin(std::time::Instant::now());
                     }
                     if reader.word_translation.settings != loaded.dictionary.validated() {
@@ -4001,8 +4017,16 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.recent_dirty = true;
             reader.persist_recent()
         }
-        Message::TogglePinnedBar if reader.book.is_some() || reader.pdf.is_some() => {
+        // Fullscreen hides everything, so the pin waits for the window.
+        Message::TogglePinnedBar
+            if (reader.book.is_some() || reader.pdf.is_some()) && !reader.fullscreen =>
+        {
             reader.bar.toggle_pin(std::time::Instant::now());
+            if reader.preferences_loading {
+                // Saving now would write defaults over the record on disk.
+                reader.pin_before_load = true;
+                return Task::none();
+            }
             reader.preferences_dirty = true;
             reader.persist_preferences()
         }

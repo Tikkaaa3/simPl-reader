@@ -6010,3 +6010,29 @@ fn render_title_bar_and_tools() {
         }
     }
 }
+
+#[test]
+fn a_place_kept_for_a_new_theme_does_not_reach_another_book() {
+    let mut reader = strip_book(1280.0, 700.0);
+    let _ = reader.go_to_local_page(3);
+    // The layout for the new theme is still in flight.
+    let _ = update(&mut reader, Message::SetTheme(1));
+    let kept = reader.look_place.clone().expect("the place waits");
+    assert_eq!(kept.page, 3);
+
+    reader.clear_content();
+    assert!(reader.look_place.is_none(), "closing the book drops it");
+
+    // Left behind by any other path, it still names its own book.
+    let mut other = strip_book(1280.0, 700.0);
+    let _ = other.go_to_local_page(1);
+    let anchor = other.anchor();
+    other.look_place = Some(LookPlace {
+        fingerprint: "another book".into(),
+        anchor,
+        ..kept
+    });
+    let _ = other.rebuild_geometry(anchor);
+    assert_eq!(other.active_page().unwrap().number, 1);
+    assert!(other.look_place.is_none());
+}

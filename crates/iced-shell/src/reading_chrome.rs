@@ -155,6 +155,8 @@ pub(super) struct Bar {
     book_field: bool,
     /// Keyboard modifiers, for the wheel over the bar and the page.
     pub(super) modifiers: keyboard::Modifiers,
+    /// The tools are pinned, but fullscreen has set the pin aside.
+    pin_set_aside: bool,
 }
 
 impl Default for Bar {
@@ -170,6 +172,7 @@ impl Default for Bar {
             pointer: None,
             book_field: false,
             modifiers: keyboard::Modifiers::default(),
+            pin_set_aside: false,
         }
     }
 }
@@ -297,8 +300,25 @@ impl Bar {
         }
     }
 
+    /// The reader's choice to keep the tools, which fullscreen sets aside
+    /// without forgetting.
     pub(super) fn pinned(&self) -> bool {
-        self.state == BarState::Pinned
+        self.state == BarState::Pinned || self.pin_set_aside
+    }
+
+    /// Fullscreen hides everything, so there a pin does not hold the bar.
+    /// Back in a window the pin holds again.
+    fn set_pin_aside(&mut self, now: Instant, aside: bool) {
+        if aside && self.state == BarState::Pinned {
+            self.pin_set_aside = true;
+            self.state = BarState::Shown {
+                hide_at: self.idle().then_some(now + LEAVE_HOLD),
+            };
+        } else if !aside && self.pin_set_aside {
+            self.pin_set_aside = false;
+            self.state = BarState::Pinned;
+            self.fade.go_mut(true, now);
+        }
     }
 
     /// The bar's controls are in the widget tree, including while it fades out.
@@ -472,6 +492,7 @@ impl Reader {
                 self.bar.close(now);
             }
         }
+        self.bar.set_pin_aside(now, self.fullscreen);
         let listening = self.read_aloud.active();
         if listening && !self.bar.listening {
             self.bar.open(now);
@@ -1432,6 +1453,56 @@ mod tests {
             reader.bar.state(),
             BarState::Shown { hide_at: None },
             "the top of the screen brings both back"
+        );
+    }
+
+    #[test]
+    fn fullscreen_sets_a_pin_aside_and_the_window_brings_it_back() {
+        let mut reader = reading();
+        let _ = update_inner(&mut reader, Message::TogglePinnedBar);
+        assert_eq!(reader.bar.state(), BarState::Pinned);
+
+        reader.fullscreen = true;
+        let entered = Instant::now();
+        reader.sync_bar(entered, pointer(640.0, 400.0));
+        reader.bar.tick(entered + seconds(3.0));
+        reader.bar.tick(entered + seconds(4.0));
+        assert!(
+            !reader.bar.visible(),
+            "pinned tools still hide in fullscreen"
+        );
+        assert!(reader.bar.pinned(), "the choice is kept");
+        let _ = update_inner(&mut reader, Message::TogglePinnedBar);
+        assert!(reader.bar.pinned(), "F8 waits for the window");
+
+        reader.fullscreen = false;
+        reader.sync_bar(entered + seconds(5.0), Input::default());
+        assert_eq!(reader.bar.state(), BarState::Pinned);
+        assert!(reader.bar.visible());
+    }
+
+    #[test]
+    fn a_pin_made_while_preferences_load_keeps_the_saved_settings() {
+        let mut reader = reading();
+        reader.preferences_loading = true;
+        let _ = update_inner(&mut reader, Message::TogglePinnedBar);
+        assert!(reader.bar.pinned());
+        assert!(!reader.preferences_dirty && !reader.preferences_saving);
+
+        let saved = reader_document::preferences::Preferences {
+            appearance: Appearance::Dark,
+            theme: "soft".into(),
+            speech_rate: 3,
+            ..Default::default()
+        };
+        let _ = update_inner(&mut reader, Message::PreferencesLoaded(Ok(saved)));
+        assert_eq!(reader.appearance, Appearance::Dark);
+        assert_eq!(reader.default_theme.id, "soft");
+        assert_eq!(reader.read_aloud.rate, 3);
+        assert!(reader.bar.pinned(), "the reader's pin stands");
+        assert!(
+            reader.preferences_saving,
+            "and is saved with the loaded record"
         );
     }
 

@@ -95,7 +95,9 @@ impl Reader {
             .and_then(|pages| book_pages::current(pages, self.offset))
         {
             let range = (page.height - self.viewport).max(0.0);
-            self.look_place = Some(super::LookPlace {
+            self.look_place = self.book.as_ref().map(|book| super::LookPlace {
+                fingerprint: book.fingerprint.clone(),
+                section: book.epub.as_ref().map_or(0, |chapter| chapter.index),
                 anchor,
                 page: page.number,
                 scrolled: if range > 0.0 {
