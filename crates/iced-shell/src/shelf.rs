@@ -560,6 +560,18 @@ impl Shelf {
         self.entries.iter().position(unfinished)
     }
 
+    /// Where the text under the first library card and the first favourite
+    /// card starts, measured from the top of the page, per the layout model.
+    #[cfg(test)]
+    pub(crate) fn first_card_text_tops(&self) -> (f32, f32) {
+        let m = self.metrics();
+        let under_cover = CARD_PADDING + m.cover_height + COVER_GAP;
+        (
+            m.page.grid_top() + under_cover,
+            m.page.favourites_top() + under_cover,
+        )
+    }
+
     pub fn controls(&self) -> impl Iterator<Item = Control> + Clone + '_ {
         [Control::Open, Control::Add]
             .into_iter()
@@ -631,7 +643,7 @@ impl Shelf {
                 .iter()
                 .position(|value| *value == index)
                 .map(|index| {
-                    metrics.grid_top + (index / metrics.columns) as f32 * metrics.row_height
+                    metrics.page.grid_top() + (index / metrics.columns) as f32 * metrics.row_height
                 }),
             Control::FavouriteDocument(index)
             | Control::Favourite(index, true)
@@ -640,7 +652,7 @@ impl Shelf {
             | Control::ToggleShelf(index, true, _)
             | Control::MenuNewShelf(index, true) => {
                 self.favourites.iter().position(|i| *i == index).map(|i| {
-                    self.favourites_top(&metrics)
+                    metrics.page.favourites_top()
                         + (i / metrics.columns) as f32 * metrics.row_height
                 })
             }
@@ -648,7 +660,7 @@ impl Shelf {
             | Control::NewShelf
             | Control::RenameShelf
             | Control::DeleteShelf
-            | Control::Sort(_) => Some((metrics.grid_top - LIBRARY_HEADING_WIDE - 40.0).max(0.0)),
+            | Control::Sort(_) => Some(metrics.page.toolbar_top()),
             _ => Some(0.0),
         };
         let Some(y) = y else {
@@ -809,45 +821,45 @@ impl Shelf {
         } else {
             2
         };
-        let card_width = (width - 20.0 * (columns - 1) as f32) / columns as f32;
-        let card_height = (card_width - 26.0) * 1.5 + 119.0;
+        let card_width = (width - CARD_GAP * (columns - 1) as f32) / columns as f32;
+        let cover_height = (card_width - 2.0 * CARD_PADDING) * 1.5;
+        let card_height = cover_height + 2.0 * CARD_PADDING + COVER_GAP + CARD_DETAILS;
+        let row_height = card_height + CARD_GAP;
+        let grid = grid_height(self.order.len(), columns, row_height);
         let wide = self.size.width >= 768.0;
-        let continuation = if wide {
-            146.0
-        } else {
-            (self.continuing.len().max(1) as f32 * 170.0) - 24.0
-        };
-        let grid_top =
-            40.0 + if wide {
-                136.0
+        let cards = self.continuing.len() as f32;
+        let page = PageLayout {
+            top: 24.0,
+            header: 36.0,
+            gap: 28.0,
+            heading: 24.0,
+            under: 16.0,
+            continuing: (!self.continuing.is_empty()).then_some(if wide {
+                CONTINUE_CARD
             } else {
-                136.0 + 32.0 + ACTIONS_HEIGHT
-            } + 56.0
-                + 32.0
-                + 20.0
-                + continuation
-                + 56.0
-                + if wide {
-                    LIBRARY_HEADING_WIDE
-                } else {
-                    LIBRARY_HEADING_WIDE + 40.0
-                }
-                + 24.0;
+                cards * CONTINUE_CARD + (cards - 1.0) * CONTINUE_GAP
+            }),
+            toolbar: if wide {
+                SHELF_BAR
+            } else {
+                2.0 * SHELF_BAR + TOOLBAR_ROW_GAP
+            },
+            rule_gap: 12.0,
+            grid,
+        };
         Metrics {
             gutter,
             width,
+            wide,
             columns,
             card_width,
+            cover_height,
             card_height,
-            row_height: card_height + 20.0,
-            grid_top,
+            row_height,
+            page,
         }
     }
 
-    fn favourites_top(&self, m: &Metrics) -> f32 {
-        let height = (self.order.len().div_ceil(m.columns) as f32 * m.row_height - 20.0).max(0.0);
-        m.grid_top + height + 48.0 + 56.0 + 49.0 + 24.0
-    }
     fn section_rows(&self, metrics: &Metrics, count: usize, top: f32) -> std::ops::Range<usize> {
         let rows = count.div_ceil(metrics.columns);
         let first = (((self.offset - top).max(0.0) / metrics.row_height) as usize)
@@ -860,7 +872,7 @@ impl Shelf {
         first..last.max(first)
     }
     fn visible_rows(&self, metrics: &Metrics) -> std::ops::Range<usize> {
-        self.section_rows(metrics, self.order.len(), metrics.grid_top)
+        self.section_rows(metrics, self.order.len(), metrics.page.grid_top())
     }
 
     fn cover_keys(&self) -> HashSet<String> {
@@ -883,7 +895,7 @@ impl Shelf {
                 let rows = self.section_rows(
                     &metrics,
                     self.favourites.len(),
-                    self.favourites_top(&metrics),
+                    metrics.page.favourites_top(),
                 );
                 self.favourites
                     .iter()
@@ -930,126 +942,82 @@ impl Shelf {
         drop_target: Option<Control>,
     ) -> Element<'_, Message> {
         let m = self.metrics();
-        let wide = self.size.width >= 768.0;
-        let intro_width = if wide {
-            m.width - ACTION_CARD_WIDTH - 24.0
-        } else {
-            m.width
+        let p = m.page;
+        let action = |control: Control, glyph, caption, hint| {
+            let focus = focused == Some(control);
+            let dropping = drop_target == Some(control);
+            mark(
+                iced::widget::tooltip(
+                    button(
+                        row![icon(glyph, 16).style(ui::accent_text), label(caption, 13)]
+                            .spacing(8)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([7, 14])
+                    .on_press_maybe(active.then_some(Message::Activate(control)))
+                    .style(move |theme, status| {
+                        ui::button_style(theme, status, ui::ButtonTone::Surface, focus, dropping)
+                    }),
+                    label(hint, 12),
+                    iced::widget::tooltip::Position::Bottom,
+                )
+                .gap(4)
+                .padding(6)
+                .style(ui::panel),
+                focus,
+            )
         };
-        let intro = column![
-            row![
-                container(Space::new().width(8).height(8))
-                    .style(|theme| fill(ui::palette(theme).accent, 12.0)),
-                label("LOCAL WORKSPACE", 11).style(ui::secondary_text)
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .height(14),
-            text("simPl Reader")
+        let header = row![
+            text("Library")
                 .font(ui::HEADING)
-                .size(30)
-                .line_height(iced::Pixels(38.0))
+                .size(26)
+                .line_height(iced::Pixels(34.0))
                 .shaping(text::Shaping::Advanced),
-            text("Quick, lightweight offline reader for curated thinking\nand serene study.")
-                .font(ui::SANS)
-                .size(16)
-                .line_height(iced::Pixels(26.0))
-                .style(ui::secondary_text)
-                .shaping(text::Shaping::Advanced),
+            muted_count(self.entries.len(), 12.0),
+            Space::new().width(Length::Fill),
+            action(
+                Control::Open,
+                "\u{ea19}",
+                "Open",
+                "Read a file where it is, without copying · Ctrl+O",
+            ),
+            action(
+                Control::Add,
+                "\u{e145}",
+                "Add",
+                "Keep a copy in your simPl library · Ctrl+I",
+            ),
         ]
         .spacing(8)
-        .width(448.0_f32.min(intro_width));
-        let action = |glyph, title, subtitle, control| {
-            action_card(
-                glyph,
-                title,
-                subtitle,
-                control,
-                focused,
-                active,
-                drop_target == Some(control),
-            )
-        };
-        let actions = column![
-            action(
-                "\u{ea19}",
-                "Open file",
-                "Reads it from where it is, without copying",
-                Control::Open,
-            ),
-            action(
-                "\u{e145}",
-                "Add document",
-                "Keeps a copy in your simPl library",
-                Control::Add,
-            ),
-        ]
-        .spacing(ACTION_CARD_GAP);
-        let hero: Element<'_, Message> = if wide {
-            row![intro, Space::new().width(Length::Fill), actions]
-                .align_y(Alignment::Center)
+        .align_y(Alignment::Center)
+        .height(p.header);
+        let mut sections = column![header].spacing(p.gap);
+        if let Some(height) = p.continuing {
+            let cards: Element<'_, Message> = if m.wide {
+                let mut cards = row![].spacing(CONTINUE_GAP);
+                let text_width = (m.width - 2.0 * CONTINUE_GAP) / 3.0 - CONTINUE_CHROME;
+                for index in &self.continuing {
+                    cards = cards.push(self.continue_card(*index, focused, active, text_width));
+                }
+                for _ in self.continuing.len()..3 {
+                    cards = cards.push(Space::new().width(Length::FillPortion(1)));
+                }
+                cards.into()
+            } else {
+                column(self.continuing.iter().map(|index| {
+                    self.continue_card(*index, focused, active, m.width - CONTINUE_CHROME)
+                }))
+                .spacing(CONTINUE_GAP)
                 .into()
-        } else {
-            column![intro, actions].spacing(32).into()
-        };
-        let continue_heading = row![
-            text("Continue Reading")
-                .font(ui::HEADING)
-                .size(22)
-                .line_height(iced::Pixels(32.0))
-                .shaping(text::Shaping::Advanced),
-            pill(format!("{} active", self.continuing.len())),
-            Space::new().width(Length::Fill),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-        let continue_heading: Element<'_, Message> = if wide {
-            continue_heading
-                .push(label("Press Space to resume current", 11).style(ui::muted_text))
-                .into()
-        } else {
-            continue_heading.into()
-        };
-        let continuing: Element<'_, Message> = if self.continuing.is_empty() {
-            container(
+            };
+            sections = sections.push(
                 column![
-                    text(if self.loading {
-                        "Opening your workspace…"
-                    } else {
-                        "A quiet place to pick up where you left off."
-                    })
-                    .font(ui::SANS)
-                    .size(18),
-                    label(
-                        "Add a document, or choose one from your library to begin.",
-                        12
-                    )
-                    .style(ui::muted_text)
+                    section_title("Continue Reading", p.heading),
+                    container(cards).height(height)
                 ]
-                .spacing(10),
-            )
-            .center_x(Length::Fill)
-            .center_y(146)
-            .style(|theme| fill(ui::palette(theme).surface, 8.0))
-            .into()
-        } else if wide {
-            let mut cards = row![].spacing(24);
-            let text_width = (m.width - 48.0) / 3.0 - CONTINUE_CHROME;
-            for index in &self.continuing {
-                cards = cards.push(self.continue_card(*index, focused, active, text_width));
-            }
-            for _ in self.continuing.len()..3 {
-                cards = cards.push(Space::new().width(Length::FillPortion(1)));
-            }
-            cards.into()
-        } else {
-            column(self.continuing.iter().map(|index| {
-                self.continue_card(*index, focused, active, m.width - CONTINUE_CHROME)
-            }))
-            .spacing(24)
-            .into()
-        };
-        let continuation = column![continue_heading, continuing].spacing(20);
+                .spacing(p.under),
+            );
+        }
         let mut sorting = row![label("SORT:", 11).style(ui::muted_text)]
             .spacing(12)
             .align_y(Alignment::Center);
@@ -1080,86 +1048,59 @@ impl Shelf {
                 .padding(2)
                 .style(|theme| boxed(theme, ui::palette(theme).lowest, 0.3, 4.0)),
         );
-        let heading = row![
-            text("Library")
-                .font(ui::HEADING)
-                .size(22)
-                .line_height(iced::Pixels(32.0))
-                .shaping(text::Shaping::Advanced),
-            pill(match self.filter {
-                Some(_) => format!(
-                    "{} of {}",
-                    self.order.len(),
-                    count(self.entries.len(), "item")
-                ),
-                None => count(self.order.len(), "item"),
-            })
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-        let library_heading: Element<'_, Message> = if wide {
-            row![heading, Space::new().width(Length::Fill), sorting]
+        let toolbar: Element<'_, Message> = if m.wide {
+            row![self.shelf_bar(focused, active), sorting]
+                .spacing(16)
                 .align_y(Alignment::Center)
                 .into()
         } else {
-            column![heading, sorting].spacing(12).into()
-        };
-        let library_heading = column![
-            library_heading,
-            self.shelf_bar(focused, active),
-            container(Space::new().height(1))
-                .width(Length::Fill)
-                .style(|theme| fill(ui::palette(theme).border.scale_alpha(0.2), 0.0))
-        ]
-        .spacing(16);
-        let grid = self.grid(&self.order, &m, m.grid_top, focused, active, false);
-        let library = container(column![library_heading, grid].spacing(24)).padding(Padding {
-            bottom: 48.0,
-            ..Padding::default()
-        });
-        let mut sections = column![
-            container(hero).padding(Padding {
-                top: 16.0,
-                ..Padding::default()
-            }),
-            continuation,
-            library
-        ]
-        .spacing(56);
-        if !self.favourites.is_empty() {
-            let heading = column![
-                row![
-                    text("Favourites")
-                        .font(ui::HEADING)
-                        .size(22)
-                        .line_height(iced::Pixels(32.0)),
-                    pill(count(self.favourites.len(), "item"))
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center),
-                container(Space::new().height(1))
-                    .width(Length::Fill)
-                    .style(|theme| fill(ui::palette(theme).border.scale_alpha(0.2), 0.0))
+            column![
+                self.shelf_bar(focused, active),
+                container(sorting)
+                    .height(SHELF_BAR)
+                    .align_y(Alignment::Center)
             ]
-            .spacing(16);
+            .spacing(TOOLBAR_ROW_GAP)
+            .into()
+        };
+        let library = column![
+            column![container(toolbar).height(p.toolbar), rule()].spacing(p.rule_gap),
+            container(self.grid(&self.order, &m, p.grid_top(), focused, active, false))
+                .height(p.grid)
+        ]
+        .spacing(p.under);
+        sections = sections.push(library);
+        if !self.favourites.is_empty() {
+            let heading = row![
+                section_title("Favourites", p.heading),
+                muted_count(self.favourites.len(), 4.0)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .height(p.heading);
             sections = sections.push(
                 column![
-                    heading,
-                    self.grid(
+                    column![heading, rule()].spacing(p.rule_gap),
+                    container(self.grid(
                         &self.favourites,
                         &m,
-                        self.favourites_top(&m),
+                        p.favourites_top(),
                         focused,
                         active,
                         true
-                    )
+                    ))
+                    .height(grid_height(
+                        self.favourites.len(),
+                        m.columns,
+                        m.row_height
+                    ))
                 ]
-                .spacing(24),
+                .spacing(p.under),
             );
         }
         let main = container(sections)
             .padding(Padding {
-                top: 40.0,
+                top: p.top,
                 bottom: 40.0,
                 left: m.gutter,
                 right: m.gutter,
@@ -1174,7 +1115,7 @@ impl Shelf {
         ]
         .spacing(12)
         .align_y(Alignment::Center);
-        let footer: Element<'_, Message> = if wide {
+        let footer: Element<'_, Message> = if m.wide {
             row![footer_left, Space::new().width(Length::Fill), footer_right].into()
         } else {
             column![footer_left, footer_right].spacing(8).into()
@@ -1213,44 +1154,49 @@ impl Shelf {
         active: bool,
         favourites: bool,
     ) -> Element<'a, Message> {
+        if order.is_empty() {
+            let note = |caption| label(caption, 13).style(ui::muted_text);
+            let lines = if self.loading {
+                column![note("Opening your library…")]
+            } else if self.entries.is_empty() {
+                column![
+                    text("Your library is empty.").font(ui::SANS).size(18),
+                    note("Drop a file here, or use Open or Add.")
+                ]
+            } else {
+                column![note(
+                    "No books on this shelf yet. Open a book's ⋯ menu to add it."
+                )]
+            };
+            return container(lines.spacing(10).align_x(Alignment::Center))
+                .center_x(Length::Fill)
+                .center_y(EMPTY_GRID)
+                .style(|theme| fill(ui::palette(theme).surface, 8.0))
+                .into();
+        }
         let range = self.section_rows(m, order.len(), top);
         let rows = order.len().div_ceil(m.columns);
-        let grid_height = (rows as f32 * m.row_height - 20.0).max(0.0);
         let mut grid =
-            column![Space::new().height((range.start as f32 * m.row_height).min(grid_height))];
+            column![
+                Space::new().height((range.start as f32 * m.row_height).min(grid_height(
+                    order.len(),
+                    m.columns,
+                    m.row_height
+                )))
+            ];
         for row_index in range.clone() {
-            let mut cards = row![].spacing(20);
+            let mut cards = row![].spacing(CARD_GAP);
             for index in order.iter().skip(row_index * m.columns).take(m.columns) {
                 cards = cards.push(self.library_card(*index, m, focused, active, favourites));
             }
             grid = grid.push(cards);
             if row_index + 1 < rows {
-                grid = grid.push(Space::new().height(20));
+                grid = grid.push(Space::new().height(CARD_GAP));
             }
         }
         let remaining = rows - range.end;
-        grid = grid.push(Space::new().height(if remaining == 0 {
-            0.0
-        } else {
-            remaining as f32 * m.row_height - 20.0
-        }));
-        if order.is_empty() {
-            grid = grid.push(
-                container(
-                    label(
-                        if self.entries.is_empty() {
-                            "Your library is empty. Add a local document above."
-                        } else if self.filter.is_some() {
-                            "No books on this shelf yet. Open a book's ⋯ menu to add it."
-                        } else {
-                            "Your documents are on the reading desk above."
-                        },
-                        13,
-                    )
-                    .style(ui::muted_text),
-                )
-                .padding([32, 0]),
-            );
+        if remaining > 0 {
+            grid = grid.push(Space::new().height(remaining as f32 * m.row_height - CARD_GAP));
         }
         grid.into()
     }
@@ -1325,7 +1271,7 @@ impl Shelf {
         let button = card_button(content, control, focused, active, false)
             .padding(16)
             .width(Length::FillPortion(1))
-            .height(146);
+            .height(CONTINUE_CARD);
         iced::widget::mouse_area(mark(button, focused == Some(control)))
             .on_enter(Message::Hover(Some(control)))
             .on_exit(Message::Hover(None))
@@ -1357,7 +1303,7 @@ impl Shelf {
                 | Control::Remove(i, f) => i == index && f == favourites,
                 other => other == control,
             });
-        let cover_width = m.card_width - 26.0;
+        let cover_width = m.card_width - 2.0 * CARD_PADDING;
         let title = container(
             text(&entry.document.title)
                 .font(ui::MEDIUM)
@@ -1407,14 +1353,14 @@ impl Shelf {
         .align_y(Alignment::Center);
         let details = column![title, author, Space::new().height(Length::Fill), footer]
             .spacing(4)
-            .height(81);
+            .height(CARD_DETAILS);
         let content = column![
-            self.cover(entry, cover_width, cover_width * 1.5, false, hovered),
+            self.cover(entry, cover_width, m.cover_height, false, hovered),
             mark(details, focused == Some(control))
         ]
-        .spacing(12);
+        .spacing(COVER_GAP);
         let button = card_button(content, control, focused, active, true)
-            .padding(13)
+            .padding(CARD_PADDING)
             .width(m.card_width)
             .height(m.card_height);
         let mut card = stack![button];
@@ -1908,11 +1854,61 @@ impl Shelf {
 struct Metrics {
     gutter: f32,
     width: f32,
+    wide: bool,
     columns: usize,
     card_width: f32,
+    cover_height: f32,
     card_height: f32,
     row_height: f32,
-    grid_top: f32,
+    page: PageLayout,
+}
+
+/// The heights stacked down the Library page. `view` pins each block to its
+/// height here, so scrolling and cover loading can trust the sums below.
+#[derive(Clone, Copy, Debug)]
+struct PageLayout {
+    /// Padding above the header row.
+    top: f32,
+    header: f32,
+    /// Between the header and each section.
+    gap: f32,
+    /// A section title row: Continue Reading, Favourites.
+    heading: f32,
+    /// Between a section's heading block and its cards.
+    under: f32,
+    /// The Continue Reading cards; `None` when the section is not shown.
+    continuing: Option<f32>,
+    /// The shelf chips and sort segments, one row or two.
+    toolbar: f32,
+    /// Above each rule.
+    rule_gap: f32,
+    /// The library grid, or the panel that stands in for an empty one.
+    grid: f32,
+}
+
+impl PageLayout {
+    fn toolbar_top(&self) -> f32 {
+        let continuing = self
+            .continuing
+            .map_or(0.0, |cards| self.heading + self.under + cards + self.gap);
+        self.top + self.header + self.gap + continuing
+    }
+
+    fn grid_top(&self) -> f32 {
+        self.toolbar_top() + self.toolbar + self.rule_gap + RULE + self.under
+    }
+
+    fn favourites_top(&self) -> f32 {
+        self.grid_top() + self.grid + self.gap + self.heading + self.rule_gap + RULE + self.under
+    }
+}
+
+/// Rows of cards with the gaps between them, or the empty panel.
+fn grid_height(count: usize, columns: usize, row_height: f32) -> f32 {
+    match count.div_ceil(columns) {
+        0 => EMPTY_GRID,
+        rows => rows as f32 * row_height - CARD_GAP,
+    }
 }
 
 pub fn format_name(kind: SourceFormat) -> &'static str {
@@ -1981,10 +1977,18 @@ fn file_size(bytes: u64) -> String {
 }
 
 const SORTS: [Sort; 4] = [Sort::Recent, Sort::Title, Sort::Format, Sort::Shelf];
-/// Height of the shelf filter strip.
+/// Height of the shelf filter strip, and of the sort row under it on a narrow window.
 const SHELF_BAR: f32 = 30.0;
-/// Library heading, shelf strip and rule, with their spacing, on a wide window.
-const LIBRARY_HEADING_WIDE: f32 = 32.0 + 16.0 + SHELF_BAR + 16.0 + 1.0;
+const TOOLBAR_ROW_GAP: f32 = 12.0;
+const RULE: f32 = 1.0;
+const CARD_GAP: f32 = 20.0;
+const CARD_PADDING: f32 = 13.0;
+const COVER_GAP: f32 = 12.0;
+/// Title, author and footer under a library cover.
+const CARD_DETAILS: f32 = 81.0;
+const CONTINUE_CARD: f32 = 146.0;
+const CONTINUE_GAP: f32 = 24.0;
+const EMPTY_GRID: f32 = 146.0;
 
 fn name_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("shelf-name")
@@ -2085,20 +2089,37 @@ fn label<'a>(value: impl Into<std::borrow::Cow<'a, str>>, size: u32) -> iced::wi
 fn clipped<'a>(value: iced::widget::Text<'a>) -> Element<'a, Message> {
     container(value).width(Length::Fill).clip(true).into()
 }
-fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
+/// A book count beside a vertically centred heading. Centred, the small text
+/// would sit above the serif's baseline, so `drop` pushes it down to meet it.
+fn muted_count<'a>(books: usize, drop: f32) -> Element<'a, Message> {
+    let caption = if books == 1 {
+        "1 book".to_owned()
     } else {
-        format!("{n} {noun}s")
-    }
-}
-
-fn pill(value: String) -> Element<'static, Message> {
-    container(label(value, 11).style(ui::secondary_text))
-        .padding([2, 8])
-        .style(|theme| boxed(theme, ui::palette(theme).surface, 0.8, 12.0))
+        format!("{books} books")
+    };
+    container(label(caption, 13).style(ui::muted_text))
+        .padding(Padding {
+            top: drop,
+            ..Padding::ZERO
+        })
         .into()
 }
+
+fn section_title(caption: &str, height: f32) -> iced::widget::Text<'_> {
+    text(caption)
+        .font(ui::HEADING)
+        .size(18)
+        .line_height(iced::Pixels(height))
+        .shaping(text::Shaping::Advanced)
+}
+
+fn rule<'a>() -> Element<'a, Message> {
+    container(Space::new().height(RULE))
+        .width(Length::Fill)
+        .style(|theme| fill(ui::palette(theme).border.scale_alpha(0.2), 0.0))
+        .into()
+}
+
 fn scroll_id() -> iced::advanced::widget::Id {
     iced::advanced::widget::Id::new("workspace-library")
 }
@@ -2150,51 +2171,6 @@ fn card_style(
         },
         ..button::Style::default()
     }
-}
-
-const ACTION_CARD_WIDTH: f32 = 320.0;
-const ACTION_CARD_HEIGHT: f32 = 58.0;
-const ACTION_CARD_GAP: f32 = 8.0;
-const ACTIONS_HEIGHT: f32 = 2.0 * ACTION_CARD_HEIGHT + ACTION_CARD_GAP;
-
-fn action_card<'a>(
-    glyph: &'static str,
-    title: &'static str,
-    subtitle: &'static str,
-    control: Control,
-    focused: Option<Control>,
-    active: bool,
-    drop_target: bool,
-) -> Element<'a, Message> {
-    card_button(
-        row![
-            container(icon(glyph, 18).style(ui::accent_text))
-                .center(28)
-                .style(|theme| fill(ui::palette(theme).raised, 4.0)),
-            column![
-                label(title, 13).style(ui::primary_text),
-                label(subtitle, 11).style(ui::secondary_text)
-            ]
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        control,
-        focused,
-        active,
-        false,
-    )
-    .padding([12, 20])
-    .width(ACTION_CARD_WIDTH)
-    .height(ACTION_CARD_HEIGHT)
-    .style(move |theme, status| {
-        card_style(
-            theme,
-            status,
-            drop_target || focused == Some(control),
-            false,
-        )
-    })
-    .into()
 }
 
 fn card_button<'a>(
@@ -2284,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn open_and_add_cards_lead_the_focus_order() {
+    fn open_and_add_buttons_lead_the_focus_order() {
         assert_eq!(
             Shelf::default().controls().take(3).collect::<Vec<_>>(),
             vec![Control::Open, Control::Add, Control::Sort(Sort::Recent)]

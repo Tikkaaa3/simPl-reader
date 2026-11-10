@@ -3127,6 +3127,82 @@ fn selected_sort_and_shelf_chip_are_tinted_without_an_outline() {
     );
 }
 
+/// A loaded library in a window of `size`; a book read to a fraction of 0
+/// has never been opened.
+fn library_reader(
+    size: Size,
+    books: &[(&str, reader_document::recent::DocumentKind, f32)],
+) -> Reader {
+    let mut reader = Reader {
+        window_size: size,
+        ..Reader::default()
+    };
+    let kinds: Vec<_> = books
+        .iter()
+        .map(|(title, kind, _)| (*title, *kind))
+        .collect();
+    let mut entries = shelf::sample_entries(&kinds);
+    for (entry, (_, _, progress)) in entries.iter_mut().zip(books) {
+        if *progress > 0.0 {
+            entry.progress = *progress;
+            entry.total = 240;
+            entry.current = (*progress * 240.0) as u32;
+        }
+    }
+    let _ = reader
+        .shelf
+        .update(shelf::Message::ShelvesLoaded(Ok(Default::default())));
+    let _ = reader.shelf.update(shelf::Message::Loaded(Ok(entries)));
+    let _ = reader.shelf.resize(size);
+    reader
+}
+
+/// Four books, three of them part read: enough for Continue Reading.
+fn four_in_progress() -> [(&'static str, reader_document::recent::DocumentKind, f32); 4] {
+    use reader_document::recent::DocumentKind;
+    [
+        ("Pride and Prejudice", DocumentKind::Epub, 0.42),
+        ("Dream Analysis", DocumentKind::Pdf, 0.18),
+        ("Let's Go", DocumentKind::Html, 0.0),
+        ("Frankenstein", DocumentKind::Epub, 0.73),
+    ]
+}
+
+#[test]
+fn library_cards_sit_where_the_page_layout_puts_them() {
+    use reader_document::recent::DocumentKind;
+    ui::load_test_fonts();
+    let app_bar = 48.0;
+    let (wide, narrow) = (Size::new(1280.0, 800.0), Size::new(540.0, 700.0));
+    let three = [
+        ("Pride and Prejudice", DocumentKind::Epub, 0.42),
+        ("Dream Analysis", DocumentKind::Pdf, 0.18),
+        ("Let's Go", DocumentKind::Html, 0.6),
+    ];
+    for (name, mut reader) in [
+        ("three at 1280", library_reader(wide, &three)),
+        ("four at 1280", library_reader(wide, &four_in_progress())),
+        ("four at 540", library_reader(narrow, &four_in_progress())),
+    ] {
+        let card = bounds_of(&mut reader, Control::Shelf(shelf::Control::Document(0)));
+        let (grid, _) = reader.shelf.first_card_text_tops();
+        assert_eq!(card.y, app_bar + grid, "{name}");
+    }
+
+    let mut reader = library_reader(wide, &four_in_progress());
+    let _ = reader
+        .shelf
+        .update(shelf::Message::Activate(shelf::Control::Favourite(
+            2, false,
+        )));
+    let card = bounds_of(
+        &mut reader,
+        Control::Shelf(shelf::Control::FavouriteDocument(2)),
+    );
+    let (_, favourites) = reader.shelf.first_card_text_tops();
+    assert_eq!(card.y, app_bar + favourites, "the first favourite");
+}
+
 #[test]
 #[ignore = "UX-5 review: writes the icon bar and the Aa panel to target/ui-ux-review"]
 fn render_ux5_bar_look() {
