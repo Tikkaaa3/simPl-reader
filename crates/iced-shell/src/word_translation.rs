@@ -530,6 +530,15 @@ impl Reader {
     }
 
     pub(super) fn dictionary_action(&mut self, action: Action) -> Task<Message> {
+        // A backup or a restore reads the dictionary files while it runs.
+        if self.profile.busy
+            && matches!(
+                action,
+                Action::Download(_) | Action::Remove(_) | Action::ImportPackage
+            )
+        {
+            return Task::none();
+        }
         match action {
             Action::ManagePackages => {
                 self.word_translation.packages_expanded ^= true;

@@ -973,6 +973,9 @@ struct Reader {
     retry_locate: Option<Relocation>,
     missing_recent: Option<Relocation>,
     dialog: Option<OpenAs>,
+    /// The window was asked to close under an open document picker. The
+    /// picker has no owner window, so the reader stays usable beneath it.
+    close_after_dialog: bool,
     pending_open: Option<OpenAs>,
     show_recent: bool,
     bar: reading_chrome::Bar,
@@ -1086,6 +1089,7 @@ impl Default for Reader {
             recent_dirty: false,
             history_corrupt: false,
             pending_exit: false,
+            close_after_dialog: false,
             history_notice: None,
             retry_locate: None,
             missing_recent: None,
@@ -2264,7 +2268,7 @@ impl Reader {
         self.dialog = Some(how);
         self.selection.end_drag();
         Task::perform(
-            async move { crate::platform::open_document_dialog(title) },
+            crate::platform::open_document_dialog(title),
             Message::DialogChosen,
         )
     }
@@ -2885,7 +2889,11 @@ impl Reader {
 
     fn close(&mut self, action: CloseAction) -> Task<Message> {
         self.word_translation.reset();
-        if self.saving || self.dialog.is_some() {
+        if self.dialog.is_some() {
+            self.close_after_dialog |= matches!(action, CloseAction::Window);
+            return Task::none();
+        }
+        if self.saving {
             return Task::none();
         }
         self.failed_close = None;
@@ -4057,6 +4065,9 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
         Message::ChooseFile(storage) if reader.interactive() => reader.choose(OpenAs::New(storage)),
         Message::DialogChosen(result) => {
             let how = reader.dialog.take();
+            if std::mem::take(&mut reader.close_after_dialog) {
+                return reader.close(CloseAction::Window);
+            }
             let task = match (result, how) {
                 (Ok(Some(path)), Some(how)) => {
                     let how = reader.import_over_card(&path, how);
@@ -9521,6 +9532,25 @@ mod tests {
             }),
             window::Id::unique(),
         )
+    }
+
+    #[test]
+    fn a_close_request_under_an_open_picker_waits_for_the_picker() {
+        let mut reader = Reader {
+            dialog: Some(OpenAs::IN_PLACE),
+            ..Reader::default()
+        };
+        let _ = update(&mut reader, Message::Chrome(chrome::Action::Close));
+        assert!(reader.dialog.is_some(), "the picker is still open");
+        assert!(reader.close_after_dialog);
+
+        let chosen = std::env::temp_dir().join("simpl-never-opened.epub");
+        let _ = update(&mut reader, Message::DialogChosen(Ok(Some(chosen))));
+        assert!(reader.dialog.is_none() && !reader.close_after_dialog);
+        assert!(
+            reader.opening.is_none(),
+            "the reader closes and does not open the chosen file"
+        );
     }
 
     #[test]
