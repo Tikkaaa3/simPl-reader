@@ -3026,7 +3026,84 @@ fn render_progress_line_look() {
             let at = on_the_line(&reader, 0.5);
             render_with_cursor(&mut reader, &file("hover"), at);
         }
+        // A book with chapters, pointed at ahead of the reader and behind.
+        let mut reader = two_wings_at(1, 0);
+        let _ = update(&mut reader, Message::ToggleContents);
+        reader.appearance = appearance;
+        reader.bar = reading_chrome::Bar::hidden();
+        let file = |state: &str| output.join(format!("progress-chapters-{name}-{state}.png"));
+        render(&mut reader, &file("rest"));
+        for (fraction, state) in [(0.8, "ahead"), (0.1, "behind")] {
+            let at = on_the_line(&reader, fraction);
+            render_with_cursor(&mut reader, &file(state), at);
+        }
     }
+}
+
+#[test]
+fn the_progress_line_is_cut_into_the_books_chapters() {
+    // Two Wings: the east wing's file, a file that continues it with no
+    // contents entry, then the west wing's file.
+    let reader = two_wings_at(1, 0);
+    let chapters = reader.progress_chapters();
+    let atlas = reader.atlas.as_ref().unwrap();
+    let west = atlas.sections[2].pages[0].number + 1;
+    assert!(west > 2, "the east wing is more than a page long");
+    assert_eq!(
+        chapters,
+        [
+            progress_line::Chapter {
+                first: 1,
+                title: "The east wing".into()
+            },
+            progress_line::Chapter {
+                first: west,
+                title: "The west wing".into()
+            },
+        ],
+        "entries inside a file, and a file with no entry, start no chapter"
+    );
+
+    // A book that is not an EPUB starts a chapter at each heading.
+    let mut source = Arc::try_unwrap(super::tests::book("progress-chapters")).unwrap();
+    let rows = source.items.len();
+    let (id, level) = ("paragraph-heading".to_owned(), 1);
+    source.items[rows / 2] = Item::Heading {
+        id,
+        text: "Part Two".into(),
+        level,
+    };
+    let mut reader = Reader {
+        book: Some(Arc::new(source)),
+        window_size: Size::new(1280.0, 800.0),
+        ..Reader::default()
+    };
+    let _ = reader.rebuild_geometry(Anchor {
+        row: 0,
+        fraction: 0.0,
+    });
+    settle_pagination(&mut reader);
+    let page = reader
+        .pages()
+        .iter()
+        .find(|page| page.rows.contains(&(rows / 2)))
+        .unwrap()
+        .number
+        + 1;
+    assert!(page > 1, "the heading is past the first page");
+    assert_eq!(
+        reader.progress_chapters(),
+        [
+            progress_line::Chapter {
+                first: 1,
+                title: String::new()
+            },
+            progress_line::Chapter {
+                first: page,
+                title: "Part Two".into()
+            },
+        ]
+    );
 }
 
 #[test]
