@@ -283,6 +283,8 @@ struct Label {
     /// The x of its centre, kept inside the band.
     centre: f32,
     width: f32,
+    title_width: f32,
+    number_width: f32,
 }
 
 impl Label {
@@ -305,15 +307,17 @@ impl Label {
         }
         let title = shown;
         let number = page.to_string();
-        let width = selection::text_width(&number, ui::MEDIUM, NUMBER_SIZE)
-            .max(measure(&title))
-            .ceil();
+        let title_width = measure(&title).ceil();
+        let number_width = selection::text_width(&number, ui::MEDIUM, NUMBER_SIZE).ceil();
+        let width = number_width.max(title_width);
         let half = (width / 2.0).min(band.width / 2.0);
         Self {
             title,
             number,
             centre: at.clamp(band.x + half, band.x + band.width - half),
             width,
+            title_width,
+            number_width,
         }
     }
 
@@ -324,17 +328,33 @@ impl Label {
     fn draw(&self, renderer: &mut iced::Renderer, line_bottom: f32, number: Color, title: Color) {
         use iced::advanced::text::Renderer as _;
         let mut bottom = line_bottom - LABEL_LIFT;
-        for (content, font, size, height, colour) in [
-            (&self.number, ui::MEDIUM, NUMBER_SIZE, NUMBER_LINE, number),
-            (&self.title, ui::SANS, TITLE_SIZE, TITLE_LINE, title),
-        ] {
+        let number = (
+            &self.number,
+            self.number_width,
+            ui::MEDIUM,
+            NUMBER_SIZE,
+            NUMBER_LINE,
+            number,
+        );
+        let title = (
+            &self.title,
+            self.title_width,
+            ui::SANS,
+            TITLE_SIZE,
+            TITLE_LINE,
+            title,
+        );
+        for (content, width, font, size, height, colour) in [number, title] {
             if content.is_empty() {
                 continue;
             }
+            // The renderer repaints a text from its position by its bounds,
+            // whatever its alignment. A label that moves is therefore placed
+            // by its own left top corner, or its old pixels would stay.
             let bounds = Rectangle {
-                x: (self.centre - self.width / 2.0).floor(),
+                x: (self.centre - width / 2.0).floor(),
                 y: bottom - height,
-                width: self.width + 1.0,
+                width: width + 1.0,
                 height,
             };
             renderer.fill_text(
@@ -344,12 +364,12 @@ impl Label {
                     size: iced::Pixels(size),
                     line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(height)),
                     font,
-                    align_x: iced::advanced::text::Alignment::Center,
-                    align_y: iced::alignment::Vertical::Center,
+                    align_x: iced::advanced::text::Alignment::Left,
+                    align_y: iced::alignment::Vertical::Top,
                     shaping: iced::advanced::text::Shaping::Advanced,
                     wrapping: iced::advanced::text::Wrapping::None,
                 },
-                bounds.center(),
+                bounds.position(),
                 colour,
                 bounds,
             );
