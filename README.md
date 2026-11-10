@@ -99,9 +99,9 @@ not OS desktop captures. No controls or features were composited into the images
 
 ## Get started
 
-**[Download simPl 0.1.6 for Windows x64](https://github.com/Tikkaaa3/simPl-reader/releases/tag/v0.1.6)**
-— installer and portable ZIP. See the [release notes](docs/releases/0.1.6.md)
-for changes since 0.1.5.
+**[Download simPl 0.1.7 for Windows x64](https://github.com/Tikkaaa3/simPl-reader/releases/tag/v0.1.7)**
+— installer and portable ZIP. See the [release notes](docs/releases/0.1.7.md)
+for changes since 0.1.6.
 
 Desktop releases target **Windows x64**. The setup package is named
 `simPl-<version>-windows-x64-setup.exe`. It installs for your Windows account, offers
@@ -133,9 +133,9 @@ Use `simPl-<version>-android-arm64.apk` on most phones; the optional universal
 APK also supports x86_64 emulators. Allow installation from your browser or file
 manager when prompted, then open the APK. Updates use the same signing key.
 
-Read aloud, dictionaries, backup/export and PDF Book view are planned after the
-Android MVP. See the [Android guide](android/README.md),
-[0.1.0 notes](docs/releases/android-0.1.0.md) and [roadmap](android-roadmap.md).
+Read aloud, dictionaries and backup/export arrived in Android 0.1.1. PDF Book
+view on Android is still planned. See the [Android guide](android/README.md), the
+[0.1.2 notes](docs/releases/android-0.1.2.md) and the [roadmap](android-roadmap.md).
 
 ## Reading modes
 
@@ -286,7 +286,8 @@ access to obtain dependencies and the pinned PDF runtime.
 ## Backup and export
 
 Close the book, then open **Settings → Library & data**. A backup includes settings,
-shelves, history, reading positions, per-book typography, covers and annotations.
+shelves, history, reading positions, each book's own typography and theme, covers
+and annotations.
 **Include book files** bundles imported library copies and their local resources;
 **Include downloaded dictionaries** optionally bundles installed packs. Temporary
 page maps and conversion caches are rebuilt. Linked originals outside the simPl
@@ -323,7 +324,7 @@ JSON also preserves their full anchors, IDs and timestamps.
 | **Ctrl+L** | Focus the page field |
 | **Ctrl+plus / minus / 0** | Zoom in / out / reset |
 | **Ctrl+wheel**, touchpad pinch | Zoom in / out |
-| **Ctrl+T** in EPUB | Show or hide the contents drawer |
+| **Ctrl+T** | Show or hide the contents drawer, in a book that has contents |
 | **Alt+Left** | Return from an internal link |
 | **Ctrl+C** | Copy selected text |
 | **Ctrl+Shift+U** | Start / stop reading aloud |
@@ -358,7 +359,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 check
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
 
 # Build a website installer (also requires Inno Setup 6.7.3).
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.6
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\installer.ps1 -Version 0.1.7
 ```
 
 The portable output is `target\portable\simPl\simPl.exe`. The scripts initialize

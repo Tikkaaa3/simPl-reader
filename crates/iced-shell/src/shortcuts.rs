@@ -45,7 +45,7 @@ pub(super) const GROUPS: &[Group] = &[
                 "Top or bottom of the page; first or last page of a PDF document",
             ),
             ("Ctrl+L", "Go to a page"),
-            ("Ctrl+T", "Show or hide the contents of an EPUB"),
+            ("Ctrl+T", "Show or hide the book's contents"),
             ("Ctrl+Page Up / Down", "Previous or next EPUB chapter"),
             ("Alt+Left", "Return from an internal link"),
         ],

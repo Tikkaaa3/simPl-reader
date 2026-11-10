@@ -15,7 +15,9 @@ The active UI is Iced 0.14 with tiny-skia and softbuffer. WGPU is disabled.
 | `book_pages`, `book_map` | Single-page boundaries and persistent global page maps |
 | `virtual_reader`, `selection` | Visible content, height indexes and source-aware selection |
 | `pdf_reader`, `pdf_page`, `document_scroll` | Original PDF rendering and navigation |
-| `reading_chrome`, `page_strips` | The floating reading bar and the page-turn edge strips |
+| `reading_chrome`, `page_strips` | The title bar, the floating reading tools and the page-turn edge strips |
+| `progress_line` | The progress line along the bottom, cut into chapters |
+| `drawers`, `reading_panel` | The contents and notes drawers, and the **Aa** panel |
 | `speech`, `read_aloud` | Offline Windows SAPI voices, playback and page/chapter following |
 | `book_preview` | Opt-in production-widget rendering to PNG for visual QA |
 
@@ -36,15 +38,18 @@ against the active document/generation so stale work cannot replace a newer view
   than the defaults measure the whole book once and keep the same boundaries.
 - EPUB/HTML use source page markers when available, otherwise a canonical first
   layout. Window resizing and zoom do not change those saved boundaries.
-- In a document, the title bar and the toolbar are one reading bar
-  (`reading_chrome.rs`) stacked over the reading area, which starts at the top
-  of the window, so the page never moves when the bar shows or hides. Panels
-  such as Find hang below the bar and hold it open. It shows for 2 s after
-  opening, while the pointer is in the top 48 px, while one of its controls has
-  focus or a panel is open, and hides 1.5 s after that. F8 pins it. The wheel
-  over the bar scrolls the page. Its controls stay in the keyboard focus order
-  while hidden; focusing one reveals the bar. Its width thresholds are measured
-  by the ignored test `measure_reading_bar_thresholds`.
+- In a document, the title bar (`reading_chrome.rs`) stays on screen in a
+  window and the reading area starts under it. The reading tools are a pill
+  stacked over the page, so the page never moves when they show or hide. The
+  tools show for 2 s after opening, while the pointer is on the title bar or on
+  them, and while one of their controls has focus or a menu is open. They hide
+  1.5 s after that, and at once when the reader scrolls or turns a page. F8, or
+  the pin in the title bar, keeps them, and the choice is saved with the
+  preferences. In fullscreen the title bar floats and hides with the tools; the
+  top of the screen brings both back. The wheel over either scrolls the page.
+  The tools' controls stay in the keyboard focus order while hidden; focusing
+  one reveals them. The title bar fits every window down to the smallest, 640
+  px, so nothing folds away.
 - Full-height strips along the left and right edges of the reading area
   (`page_strips.rs`) turn the page on press, never on release. Each is 7% of the
   window wide (48 to 128 px); the right one stops at the notes drawer and inside
@@ -256,8 +261,8 @@ old measurement and license snapshots are not current release manifests.
 
 ## Downloadable dictionaries
 
-The executable embeds `assets/dictionaries/catalog.json` only. Settings → Word
-translation offers selected-pair downloads and an expandable 13-direction manager,
+The executable embeds `assets/dictionaries/catalog.json` only. Settings →
+Translation offers selected-pair downloads and an expandable 13-direction manager,
 with size, status, progress, cancel/retry, removal and ZIP import. A missing-word
 card offers the same download and retries its current selection after installation.
 No network requests run without an explicit Download action; selection text is
