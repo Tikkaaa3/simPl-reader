@@ -99,6 +99,9 @@ pub enum Target {
 pub enum TextPlace {
     /// A byte of a row of the loaded book (of an EPUB, its loaded chapter).
     Book { row: usize, byte: usize },
+    /// A character of a page of a PDF shown as its own pages. An index one
+    /// past the page's last character stands for the end of the page.
+    Pdf(reader_pdf::TextPoint),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

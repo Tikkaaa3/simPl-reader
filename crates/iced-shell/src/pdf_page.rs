@@ -5,7 +5,7 @@ use iced::{Element, Length, Point, Rectangle, Size};
 use reader_pdf::{Selection, TextLayer, TextPoint};
 use std::sync::Arc;
 
-use super::{Mark, Message};
+use super::{Clicked, Mark, Message};
 
 const HIGHLIGHT: iced::Color = iced::Color::from_rgba8(0x38, 0x80, 0xe0, 0.48);
 const RIBBON: iced::Color = iced::Color::from_rgb(0.78, 0.20, 0.17);
@@ -63,6 +63,18 @@ pub(super) fn hit(
     } else {
         Some(TextPoint { page, index })
     }
+}
+
+/// The first character that begins at or below `position`, or the position
+/// after the page's last character.
+fn below(text: &TextLayer, page: u32, bounds: Rectangle, position: Point) -> TextPoint {
+    let y = (position.y - bounds.y) / bounds.height;
+    let index = text
+        .glyphs
+        .iter()
+        .position(|glyph| glyph.bounds.is_some_and(|rect| rect.top >= y))
+        .unwrap_or(text.glyphs.len());
+    TextPoint { page, index }
 }
 
 impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
@@ -314,10 +326,16 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Page<'_> {
                     .position_over(layout.bounds())
                     .filter(|position| viewport.contains(*position))
                 {
-                    let point = self
-                        .text
-                        .and_then(|text| hit(text, self.number, layout.bounds(), position, true));
-                    shell.publish(Message::Context(point));
+                    let bounds = layout.bounds();
+                    let clicked = self.text.map(|text| {
+                        match hit(text, self.number, bounds, position, true) {
+                            Some(point) => Clicked::Text(point),
+                            None => Clicked::Blank {
+                                below: below(text, self.number, bounds, position),
+                            },
+                        }
+                    });
+                    shell.publish(Message::Context(clicked));
                     shell.capture_event();
                 }
             }
@@ -419,6 +437,102 @@ mod tests {
         assert_eq!(
             hit(&text, 7, bounds, Point::new(23.0, 95.0), false),
             Some(TextPoint { page: 7, index: 0 })
+        );
+    }
+
+    /// One letter on a line a tenth down the page and one on a line halfway
+    /// down, with the space between them.
+    fn two_lines() -> Arc<TextLayer> {
+        let letter = |start, top| Glyph {
+            start,
+            end: start + 1,
+            bounds: Some(Rect {
+                left: 0.1,
+                top,
+                right: 0.2,
+                bottom: top + 0.03,
+            }),
+            style: None,
+        };
+        let space = Glyph {
+            start: 1,
+            end: 2,
+            bounds: None,
+            style: None,
+        };
+        Arc::new(TextLayer::new(
+            "A B".into(),
+            vec![letter(0, 0.1), space, letter(2, 0.5)],
+        ))
+    }
+
+    #[test]
+    fn a_right_click_reports_the_character_under_it_or_the_first_one_below() {
+        use iced::advanced::{Shell, widget::Tree};
+        let text = two_lines();
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 200.0));
+        let right_click = |text: Option<&Arc<TextLayer>>, at: Point| {
+            let mut page: Element<'_, Message> = Page {
+                number: 7,
+                width: bounds.width,
+                height: bounds.height,
+                image: None,
+                text,
+                selection: None,
+                dragging: false,
+                marks: &[],
+                spoken: None,
+                bookmarked: false,
+            }
+            .into();
+            let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(13.0));
+            let mut tree = Tree::new(&page);
+            let node = page.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let mut messages = Vec::new();
+            page.as_widget_mut().update(
+                &mut tree,
+                &iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                Layout::new(&node),
+                mouse::Cursor::Available(at),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &bounds,
+            );
+            match messages.as_slice() {
+                [Message::Context(clicked)] => *clicked,
+                other => panic!("one right-click message, got {other:?}"),
+            }
+        };
+        let at = |index| TextPoint { page: 7, index };
+        assert_eq!(
+            right_click(Some(&text), Point::new(15.0, 23.0)),
+            Some(Clicked::Text(at(0))),
+            "on the first letter"
+        );
+        assert_eq!(
+            right_click(Some(&text), Point::new(60.0, 60.0)),
+            Some(Clicked::Blank { below: at(2) }),
+            "between the lines, beside them"
+        );
+        assert_eq!(
+            right_click(Some(&text), Point::new(80.0, 23.0)),
+            Some(Clicked::Blank { below: at(2) }),
+            "far beside the first line: the line below is the first that begins there"
+        );
+        assert_eq!(
+            right_click(Some(&text), Point::new(15.0, 150.0)),
+            Some(Clicked::Blank { below: at(3) }),
+            "under the last line: the end of the page"
+        );
+        assert_eq!(
+            right_click(None, Point::new(15.0, 23.0)),
+            None,
+            "the page's text is not loaded"
         );
     }
 }

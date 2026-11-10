@@ -585,25 +585,35 @@ impl Reader {
     }
 
     /// A right click on a PDF page: on a highlight or the selection, or anywhere else.
-    pub(super) fn context_pdf(&mut self, point: Option<reader_pdf::TextPoint>) {
+    pub(super) fn context_pdf(&mut self, clicked: Option<pdf_reader::Clicked>) {
+        use pdf_reader::Clicked;
         self.word_translation.dismiss();
         let Some(pdf) = &self.pdf else { return };
-        let selected = pdf.selection().is_some_and(|selection| {
-            let (from, to) = if selection.anchor <= selection.focus {
-                (selection.anchor, selection.focus)
-            } else {
-                (selection.focus, selection.anchor)
-            };
-            point.is_some_and(|point| from <= point && point <= to)
-        });
-        let target = if selected {
-            Target::Selection
-        } else if let Some(id) = point.and_then(|point| pdf.mark_at(point)) {
-            Target::Highlight(id)
-        } else {
-            Target::Page
+        let point = match clicked {
+            Some(Clicked::Text(point)) => Some(point),
+            Some(Clicked::Blank { .. }) | None => None,
         };
-        self.open_popup(target, Some(notes::Menu::default()));
+        let selected = pdf
+            .selection()
+            .map(|selection| {
+                (
+                    selection.anchor.min(selection.focus),
+                    selection.anchor.max(selection.focus),
+                )
+            })
+            .filter(|(from, to)| point.is_some_and(|point| *from <= point && point <= *to));
+        let (target, here) = if let Some((from, _)) = selected {
+            (Target::Selection, Some(from))
+        } else if let Some(id) = point.and_then(|point| pdf.mark_at(point)) {
+            (Target::Highlight(id), pdf.mark_start(id).or(point))
+        } else {
+            let here = clicked.map(|clicked| match clicked {
+                Clicked::Text(point) | Clicked::Blank { below: point } => point,
+            });
+            (Target::Page, here)
+        };
+        let here = here.map(notes::TextPlace::Pdf);
+        self.open_popup(target, Some(notes::Menu { here }));
     }
 
     fn open_editor(&mut self, id: u64) -> Task<Message> {

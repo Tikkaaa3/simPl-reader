@@ -122,7 +122,7 @@ pub(super) struct BookCursor {
 struct Queued {
     stream: u32,
     unit: Unit,
-    /// UTF-16 offset of the spoken text within its paragraph, and the paragraph length.
+    /// UTF-16 offset of the spoken text within its paragraph or PDF page.
     start: u32,
 }
 
@@ -145,8 +145,11 @@ enum Next {
     Chapter(usize),
     /// Waiting for the next chapter to be laid out.
     Opening(usize),
+    /// Pages of the PDF from `page` on; the first may start at its `skip`th
+    /// character, counted as a `TextPoint` counts them.
     Pdf {
         page: usize,
+        skip: usize,
         text: Option<String>,
         fetching: bool,
     },
@@ -388,8 +391,10 @@ impl Reader {
             return Task::none();
         };
         if let Some(pdf) = &self.pdf {
-            let page = match start {
-                Start::Page | Start::Selection => pdf.page_index(),
+            let shown = pdf.page_index();
+            let (page, skip) = match start {
+                Start::Page | Start::Selection => (shown, 0),
+                Start::Place(TextPlace::Pdf(point)) => (point.page as usize, point.index),
                 // A row of a book is no place on a PDF's own pages.
                 Start::Place(TextPlace::Book { .. }) => return Task::none(),
             };
@@ -423,10 +428,13 @@ impl Reader {
                 false,
                 Next::Pdf {
                     page,
+                    skip,
                     text: None,
                     fetching: false,
                 },
-                Some(Place::Pdf(page)),
+                // The place may be on the page after the one that counts as
+                // shown; reading has not turned to it yet.
+                Some(Place::Pdf(shown)),
             );
             return self.read_aloud_tick();
         }
@@ -450,6 +458,8 @@ impl Reader {
                     .and_then(Item::text)
                     .map_or(0, |text| sentence_start(text, byte)),
             ),
+            // A character of a PDF's own page is no place in a book's rows.
+            Start::Place(TextPlace::Pdf(_)) => return Task::none(),
             Start::Page | Start::Selection => {
                 let Some(page) = self.active_page() else {
                     return Task::none();
@@ -618,6 +628,7 @@ impl Reader {
             page: wanted,
             text,
             fetching,
+            ..
         } = &mut session.next
             && *wanted == page
             && *fetching
@@ -781,6 +792,7 @@ impl Reader {
             }
             Next::Pdf {
                 page,
+                skip,
                 text,
                 fetching,
             } => {
@@ -801,6 +813,7 @@ impl Reader {
                         if let Some(session) = &mut self.read_aloud.session {
                             session.next = Next::Pdf {
                                 page,
+                                skip,
                                 text: None,
                                 fetching: true,
                             };
@@ -819,17 +832,28 @@ impl Reader {
                 };
                 let next = Next::Pdf {
                     page: page + 1,
+                    skip: 0,
                     text: None,
                     fetching: false,
                 };
-                if text.trim().is_empty() {
-                    // No text layer on this page: go on with the next.
+                let from = match text.char_indices().nth(skip) {
+                    Some((byte, _)) => sentence_start(&text, byte),
+                    // The place is after the page's last character.
+                    None => text.len(),
+                };
+                if text[from..].trim().is_empty() {
+                    // No text layer on this page, or none left: go on with the next.
                     if let Some(session) = &mut self.read_aloud.session {
                         session.next = next;
                     }
                     return true;
                 }
-                (text, Unit::PdfPage(page), 0, next)
+                (
+                    text[from..].to_owned(),
+                    Unit::PdfPage(page),
+                    text[..from].encode_utf16().count() as u32,
+                    next,
+                )
             }
             Next::Chapter(_) | Next::Opening(_) | Next::Nothing => return false,
         };
@@ -894,13 +918,13 @@ impl Reader {
             return Task::none();
         };
         match current {
-            (Unit::PdfPage(page), ..) => {
+            (Unit::PdfPage(page), start) => {
                 let Some(pdf) = self.pdf.as_mut() else {
                     return Task::none();
                 };
                 let document = pdf.document().id;
                 let task = pdf
-                    .follow_speech(page, status.word, status.word_len)
+                    .follow_speech(page, start.saturating_add(status.word), status.word_len)
                     .map(move |message| Message::Pdf { document, message });
                 // Following a word near the page's top may leave the viewport
                 // starting on the previous sheet. Record the actual viewport,
@@ -1794,6 +1818,7 @@ mod tests {
             false,
             Next::Pdf {
                 page: 0,
+                skip: 0,
                 text: None,
                 fetching: true,
             },
@@ -1815,6 +1840,88 @@ mod tests {
             matches!(&reader.read_aloud.session.as_ref().unwrap().next, Next::Pdf { fetching: false, text: Some(text), .. } if text == "Current page")
         );
         assert!(reader.read_aloud.session.as_ref().unwrap().notice.is_none());
+    }
+
+    #[test]
+    fn reading_from_a_character_of_a_pdf_page_goes_on_through_the_pages() {
+        use crate::notes::PopupItem;
+        use crate::pdf_reader::{Clicked, tests::complete};
+        use reader_pdf::TextPoint;
+        let Some(mut reader) = pdf_reader_from("from-here", speech_pdf()) else {
+            return;
+        };
+        reader.silence_speech();
+        let source = reader.pdf.as_ref().unwrap().document().clone();
+        let right_click = |clicked| Message::Pdf {
+            document: source.id,
+            message: pdf_reader::Message::Context(clicked),
+        };
+        let choose = || Message::Notes(notes::Action::Popup(PopupItem::ReadFromHere));
+        let first_page = complete(source.session.page_text(0)).unwrap();
+        // The word "these", in the second sentence of the first page.
+        let these = first_page[..first_page.find("these").unwrap()]
+            .chars()
+            .count();
+
+        let on_these = Clicked::Text(TextPoint {
+            page: 0,
+            index: these,
+        });
+        let _ = update(&mut reader, right_click(Some(on_these)));
+        let task = update(&mut reader, choose());
+        pump(&mut reader, task);
+        // The second page is blank.
+        assert_eq!(
+            reader.said(),
+            [
+                "Now these words are at the bottom.",
+                "The final page begins here and the book ends.",
+            ]
+        );
+        reader.engine_at(speech::Status {
+            stream: 1,
+            word: "Now ".len() as u32,
+            word_len: "these".len() as u32,
+            done: false,
+        });
+        let task = update(&mut reader, Message::ReadAloudTick);
+        pump(&mut reader, task);
+        assert_eq!(
+            reader.pdf.as_ref().unwrap().spoken_glyphs(),
+            Some((0, these, these + "these".len() - 1)),
+            "the spoken word is marked where it is on the page"
+        );
+
+        // Under all the text of the first page.
+        let under = Clicked::Blank {
+            below: TextPoint {
+                page: 0,
+                index: first_page.chars().count(),
+            },
+        };
+        let _ = update(&mut reader, right_click(Some(under)));
+        let task = update(&mut reader, choose());
+        pump(&mut reader, task);
+        assert_eq!(
+            reader.said(),
+            ["The final page begins here and the book ends."]
+        );
+        reader.engine_at(speech::Status {
+            stream: 1,
+            done: true,
+            ..Default::default()
+        });
+        let task = update(&mut reader, Message::ReadAloudTick);
+        pump(&mut reader, task);
+        assert!(!reader.read_aloud.active(), "the last page ends it");
+        assert_eq!(reader.error, None);
+
+        // A click on a page whose text is not loaded yet has no place.
+        let _ = update(&mut reader, right_click(None));
+        assert_eq!(
+            reader.notes.popup.as_ref().unwrap().entries(),
+            [PopupItem::ToggleBookmark]
+        );
     }
 
     #[test]
