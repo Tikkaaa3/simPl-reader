@@ -196,11 +196,12 @@ automatically.
 The spoken word has a temporary accent fill and outline in Book and PDF Document views. Pause keeps it visible; stopping clears it. It does not change selection or saved highlights.
 Select the same icon, now a stop sign, or press **Ctrl+Shift+U** to stop.
 Use **Read aloud** in the selection menu or on a saved highlight to read only
-that passage. Right-click a place in the text and choose **Start reading from
+that passage. Right-click a place in the text and choose **Read aloud from
 here** to listen from the sentence under the pointer to the end of the book. On a
 selection or a saved highlight it starts at the sentence where that passage
-begins. On a margin, a picture or the space between paragraphs it starts at the
-text that follows. It works in Book view and in PDF Document view.
+begins. In the margin beside a line it starts at the sentence that line begins
+in. On a picture or the space between paragraphs it starts at the text that
+follows. It works in Book view and in PDF Document view.
 Choose a voice and speed in Settings → Listen; both are saved. Speech uses
 Windows' installed voices
 offline. Automatic voice selection estimates the text's language and falls back

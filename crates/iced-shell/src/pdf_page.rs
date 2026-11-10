@@ -65,14 +65,15 @@ pub(super) fn hit(
     }
 }
 
-/// The first character that begins at or below `position`, or the position
-/// after the page's last character.
+/// The first character of the line beside `position` or, between lines, of
+/// the next line down. After the page's last line, the position after its
+/// last character.
 fn below(text: &TextLayer, page: u32, bounds: Rectangle, position: Point) -> TextPoint {
     let y = (position.y - bounds.y) / bounds.height;
     let index = text
         .glyphs
         .iter()
-        .position(|glyph| glyph.bounds.is_some_and(|rect| rect.top >= y))
+        .position(|glyph| glyph.bounds.is_some_and(|rect| rect.bottom >= y))
         .unwrap_or(text.glyphs.len());
     TextPoint { page, index }
 }
@@ -521,8 +522,8 @@ mod tests {
         );
         assert_eq!(
             right_click(Some(&text), Point::new(80.0, 23.0)),
-            Some(Clicked::Blank { below: at(2) }),
-            "far beside the first line: the line below is the first that begins there"
+            Some(Clicked::Blank { below: at(0) }),
+            "far beside the first line: that line"
         );
         assert_eq!(
             right_click(Some(&text), Point::new(15.0, 150.0)),

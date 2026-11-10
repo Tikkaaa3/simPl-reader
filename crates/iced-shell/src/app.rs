@@ -1344,6 +1344,8 @@ enum Message {
     SelectMove(Endpoint),
     /// Right click on text of a reflowed book.
     Context(Endpoint),
+    /// Right click beside a line of text; the endpoint is where the line starts.
+    ContextBeside(Endpoint),
     /// Right click on the page but not on text, with the first row that
     /// begins at or below the pointer when the page's rows could tell.
     ContextBlank(Option<usize>),
@@ -3431,6 +3433,13 @@ fn update(reader: &mut Reader, message: Message) -> Task<Message> {
     }
 }
 
+fn context_message(endpoint: Endpoint, press: selection::ContextPress) -> Message {
+    match press {
+        selection::ContextPress::Text => Message::Context(endpoint),
+        selection::ContextPress::BesideLine => Message::ContextBeside(endpoint),
+    }
+}
+
 fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
     if matches!(
         &message,
@@ -4467,6 +4476,10 @@ fn update_inner(reader: &mut Reader, message: Message) -> Task<Message> {
             reader.context_at(endpoint);
             Task::none()
         }
+        Message::ContextBeside(endpoint) => {
+            reader.context_beside(endpoint);
+            Task::none()
+        }
         Message::ContextBlank(below) => {
             if reader.book.is_some() {
                 let here = below.map(|row| reader.place_below(row));
@@ -5479,7 +5492,7 @@ fn render_item(
                     Message::SelectStart,
                     |endpoint, _| Message::SelectMove(endpoint),
                     Some(Message::FollowLink),
-                    Some(Message::Context),
+                    Some(context_message),
                 ),
                 Err(error) => text(format!("Cannot display this entry: {error}")).into(),
             }
@@ -5578,7 +5591,7 @@ fn render_item(
         Message::SelectStart,
         |endpoint, _| Message::SelectMove(endpoint),
         Some(Message::FollowLink),
-        Some(Message::Context),
+        Some(context_message),
     );
     let kind = semantics.map(|s| s.kind).unwrap_or_default();
     let quote = semantics.is_some_and(|s| s.quote_depth > 0);

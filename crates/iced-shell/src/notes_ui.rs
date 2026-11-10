@@ -584,6 +584,22 @@ impl Reader {
         self.open_popup(target, Some(notes::Menu { here }));
     }
 
+    /// A right click beside a line of text: the page's menu, with reading
+    /// aloud starting at the sentence that line begins in.
+    pub(super) fn context_beside(&mut self, line_start: Endpoint) {
+        self.word_translation.dismiss();
+        let Some(book) = &self.book else { return };
+        let here = book
+            .items
+            .iter()
+            .position(|item| item.id() == line_start.item_id)
+            .map(|row| notes::TextPlace::Book {
+                row,
+                byte: line_start.byte_offset,
+            });
+        self.open_popup(Target::Page, Some(notes::Menu { here }));
+    }
+
     /// A right click on a PDF page: on a highlight or the selection, or anywhere else.
     pub(super) fn context_pdf(&mut self, clicked: Option<pdf_reader::Clicked>) {
         use pdf_reader::Clicked;

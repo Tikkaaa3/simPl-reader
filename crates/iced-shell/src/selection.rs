@@ -252,6 +252,16 @@ pub struct TextMark {
     pub note: bool,
 }
 
+/// Where a right press landed on a paragraph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextPress {
+    /// On a character.
+    Text,
+    /// Beside one of its lines, in the margin or on the desk. The endpoint is
+    /// where that line starts.
+    BesideLine,
+}
+
 /// Builds a renderer-backed, selectable paragraph element from the same
 /// mapped text and font-role runs used by the existing reader adapter.
 pub fn selectable_text<Message: 'static>(
@@ -259,7 +269,7 @@ pub fn selectable_text<Message: 'static>(
     on_press: impl Fn(Endpoint) -> Message + 'static,
     on_move: impl Fn(Endpoint, iced::Point) -> Message + 'static,
     on_link: Option<fn(String) -> Message>,
-    on_context: Option<fn(Endpoint) -> Message>,
+    on_context: Option<fn(Endpoint, ContextPress) -> Message>,
 ) -> iced::Element<'static, Message> {
     let SelectableParagraphConfig {
         item_id,
@@ -618,7 +628,7 @@ struct SelectableParagraph<Message> {
     links: Vec<reader_document::Link>,
     focused_link: Option<usize>,
     on_link: Option<fn(String) -> Message>,
-    on_context: Option<fn(Endpoint) -> Message>,
+    on_context: Option<fn(Endpoint, ContextPress) -> Message>,
     /// Highlights in mapped (shaped) byte coordinates.
     marks: Vec<TextMark>,
 }
@@ -883,11 +893,49 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer>
                 }
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                if let Some(on_context) = self.on_context
-                    && let Some(endpoint) = hit(state)
-                {
-                    shell.publish(on_context(endpoint));
-                    shell.capture_event();
+                // Beside a line the press is not over the paragraph, so the
+                // line is found from the pointer's height alone.
+                let beside = |state: &ParagraphState| {
+                    let pointer = cursor.position()?;
+                    let bounds = layout.bounds();
+                    let level = |from: f32, size: f32| (from..from + size).contains(&pointer.y);
+                    if !level(bounds.y, bounds.height)
+                        || !level(viewport.y, viewport.height)
+                        || (bounds.x..bounds.x + bounds.width).contains(&pointer.x)
+                    {
+                        return None;
+                    }
+                    let line_start = if self.leading_rlm {
+                        bounds.width - 0.5
+                    } else {
+                        0.5
+                    };
+                    let position = iced::Point::new(line_start, pointer.y - bounds.y);
+                    let native_offset = state.paragraph.hit_test(position)?.cursor();
+                    project_native_hit(
+                        &self.item_id,
+                        &self.logical_text,
+                        &self.mapped_text,
+                        native_offset,
+                        self.leading_rlm,
+                    )
+                    .map(|mut endpoint| {
+                        endpoint.byte_offset += self.item_offset;
+                        endpoint
+                    })
+                };
+                if let Some(on_context) = self.on_context {
+                    let pressed = hit(state)
+                        .map(|endpoint| (endpoint, ContextPress::Text))
+                        .or_else(|| {
+                            beside(state)
+                                .filter(|_| !shell.is_event_captured())
+                                .map(|endpoint| (endpoint, ContextPress::BesideLine))
+                        });
+                    if let Some((endpoint, press)) = pressed {
+                        shell.publish(on_context(endpoint, press));
+                        shell.capture_event();
+                    }
                 }
             }
             iced::Event::Mouse(mouse::Event::CursorMoved { position })

@@ -2626,7 +2626,7 @@ fn between(reader: &Reader, above: usize, below: usize) -> f32 {
 }
 
 #[test]
-fn start_reading_from_here_off_the_text_starts_at_the_next_paragraph() {
+fn start_reading_from_here_off_the_text_starts_at_the_line_beside_it_or_the_next_paragraph() {
     let mut reader = sentence_book();
     let mut ui = Harness::new();
     let paper = paper_viewport(&reader).paper;
@@ -2637,20 +2637,21 @@ fn start_reading_from_here_off_the_text_starts_at_the_next_paragraph() {
     start_reading_from(&mut ui, &mut reader, gap);
     assert_eq!(reader.said(), from_the_fourth, "between two paragraphs");
 
+    let from_the_third = [three_sentences(3), three_sentences(4), three_sentences(5)];
     let margin = Point::new(paper.x + 12.0, third.center_y());
     start_reading_from(&mut ui, &mut reader, margin);
     assert_eq!(
         reader.said(),
-        from_the_fourth,
-        "in the page's margin beside the third paragraph"
+        from_the_third,
+        "in the page's margin beside the third paragraph's line"
     );
 
     let desk = Point::new(paper.x - 60.0, third.center_y());
     start_reading_from(&mut ui, &mut reader, desk);
     assert_eq!(
         reader.said(),
-        from_the_fourth,
-        "on the desk beside the third paragraph"
+        from_the_third,
+        "on the desk beside the third paragraph's line"
     );
 
     let second_page = reader.pages()[1].rows.start;
@@ -2723,6 +2724,43 @@ fn start_reading_from_here_under_a_paragraph_that_goes_on_reads_its_next_page() 
     assert!(
         !first.starts_with("Sentence 1 ") && first.len() < long.len(),
         "it starts where the next page does and does not read the first page again"
+    );
+    assert_eq!(said[1], three_sentences(2), "then the next paragraph");
+}
+
+#[test]
+fn start_reading_from_here_beside_a_line_starts_at_the_sentence_the_line_begins_in() {
+    let long: String = (1..=60)
+        .map(|number| format!("Sentence {number} of the long paragraph. "))
+        .collect();
+    let long = long.trim_end().to_owned();
+    let mut reader = sentence_book_with(|rows| {
+        rows[0] = Item::Paragraph {
+            id: "paragraph-1".into(),
+            text: long.clone(),
+            base_direction: BaseDirection::Ltr,
+            style_runs: Vec::new(),
+        }
+    });
+    let mut ui = Harness::new();
+    let paper = paper_viewport(&reader).paper;
+    // The line that holds the start of the paragraph's thirtieth sentence.
+    let thirtieth = long.find("Sentence 30 ").unwrap();
+    let line = glyph_bounds(&reader, "paragraph-1", thirtieth);
+    let margin = Point::new(paper.x + 12.0, line.center_y());
+    start_reading_from(&mut ui, &mut reader, margin);
+
+    let said = reader.said();
+    let first = &said[0];
+    assert!(
+        long.ends_with(first.as_str()),
+        "reading goes on to the end of the paragraph, got {first:?}"
+    );
+    assert!(
+        ["Sentence 28 ", "Sentence 29 ", "Sentence 30 "]
+            .iter()
+            .any(|start| first.starts_with(start)),
+        "it starts with the sentence that line begins in, got {first:?}"
     );
     assert_eq!(said[1], three_sentences(2), "then the next paragraph");
 }
