@@ -2718,6 +2718,56 @@ fn start_reading_from_here_in_the_space_over_a_heading_starts_at_the_heading() {
 }
 
 #[test]
+#[ignore = "Read from here review: writes the right-click menu on a page and on a selection to target/ui-ux-review"]
+fn render_read_from_here_menu() {
+    ui::load_test_fonts();
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-ux-review");
+    std::fs::create_dir_all(&output).unwrap();
+    let entry = Control::Notes(notes::Focus::Popup(notes::PopupItem::ReadFromHere));
+    let sentence = "A readable paragraph with enough words to wrap. ";
+
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let mut ui = Harness::new();
+    let place = text_point(
+        &reader,
+        "paragraph-1",
+        sentence.len() * 4 + "A readable ".len(),
+    );
+    right_click(&mut ui, &mut reader, place);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Page)
+    );
+    let hovered = bounds_of(&mut reader, entry).center();
+    render_with_cursor(
+        &mut reader,
+        &output.join("read-from-here-menu-page.png"),
+        hovered,
+    );
+
+    let mut reader = full_bar_book(1400.0, 900.0);
+    let mut ui = Harness::new();
+    let from = text_point(
+        &reader,
+        "paragraph-1",
+        sentence.len() * 4 + "A readable ".len(),
+    );
+    let to = text_point(&reader, "paragraph-1", sentence.len() * 9);
+    drag_select(&mut ui, &mut reader, from, to);
+    right_click(&mut ui, &mut reader, place);
+    assert_eq!(
+        reader.notes.popup.as_ref().map(|popup| popup.target),
+        Some(notes::Target::Selection)
+    );
+    let hovered = bounds_of(&mut reader, entry).center();
+    render_with_cursor(
+        &mut reader,
+        &output.join("read-from-here-menu-selection.png"),
+        hovered,
+    );
+}
+
+#[test]
 fn strips_reach_the_bottom_unless_the_page_scrolls_sideways() {
     let mut reader = strip_book(1000.0, 600.0);
     // Below the window's own resize border, which takes the last few pixels.
