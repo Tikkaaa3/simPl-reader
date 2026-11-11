@@ -1,6 +1,6 @@
 {
   "application": "simPl Reader",
-  "date": "2026-09-30",
+  "date": "2026-11-11",
   "capture": "Full production widget tree rendered by iced/tiny-skia at 2x; no OS desktop capture",
   "profile": "Isolated original demonstration library; no personal documents",
   "aliases": {
@@ -14,10 +14,10 @@
       "height": 1600,
       "png": "library-light.png",
       "webp": "web/library-light.webp",
-      "png_bytes": 366164,
-      "webp_bytes": 116518,
-      "png_sha256": "19a0303594189825a7330082cbdd516c0b3085da70e4d65fdfe263151fcb33a4",
-      "webp_sha256": "0c28efbaad1873cc524349c3fee2bb45a55b67b3d38c920aa450e0d94a68b319"
+      "png_bytes": 424023,
+      "webp_bytes": 135890,
+      "png_sha256": "304b508885ec51f5f4445538f21cc0d6be2280458b555c7c0f30c4d6ad2b9dca",
+      "webp_sha256": "69f8dca0a788e37323630dbda24043f2356442156aba882b564073545b90b29f"
     },
     {
       "name": "library-dark",
@@ -26,10 +26,10 @@
       "height": 1600,
       "png": "library-dark.png",
       "webp": "web/library-dark.webp",
-      "png_bytes": 367413,
-      "webp_bytes": 116528,
-      "png_sha256": "3a49743f42772ba39aebb17487391a78105eed51cd777787129a21411f54a54d",
-      "webp_sha256": "a4a82c037d91a036c1a86fd1d43a5941bd075d9d3cfca38b478478550cee757c"
+      "png_bytes": 424210,
+      "webp_bytes": 135724,
+      "png_sha256": "2b1135cf3b4a8cb784ffee208d9ce8ac5b7c302b35d34418d129291f7fff1a06",
+      "webp_sha256": "6f905ad14003a20c174d65e6e109008520287bd1db3f5ca2b5e1abd29d59efff"
     },
     {
       "name": "reading-default-light",
@@ -38,10 +38,10 @@
       "height": 1600,
       "png": "reading-default-light.png",
       "webp": "web/reading-default-light.webp",
-      "png_bytes": 587010,
-      "webp_bytes": 75584,
-      "png_sha256": "eff159be1fb104f37d42981e778518f5187ca206d2772e338ed16cdfa13871b4",
-      "webp_sha256": "affd05ad7c0379b00a0bbbd3c97bf7c0bcec2ad17c307b059dddd3d5d6f8dda0"
+      "png_bytes": 624888,
+      "webp_bytes": 75318,
+      "png_sha256": "bbcf6153d0eeb43ab5181e2f5732cbe9d570e0b3ffb0e81ec92328ea9e4b0df1",
+      "webp_sha256": "5b234c2564ce0bbd5731e630c37811c7f98b8a6c22ec26e568fb4b89ea554621"
     },
     {
       "name": "reading-default-dark",
@@ -50,10 +50,10 @@
       "height": 1600,
       "png": "reading-default-dark.png",
       "webp": "web/reading-default-dark.webp",
-      "png_bytes": 585427,
-      "webp_bytes": 75472,
-      "png_sha256": "e0563dbd2c945bc1e7d352d02de9e2409b1a2532539a741dc7f9dd877c26b7af",
-      "webp_sha256": "b22092987a79776a4425adc59c66099f069e23d8562ae8daa23a39bafd3d50d7"
+      "png_bytes": 621385,
+      "webp_bytes": 74964,
+      "png_sha256": "e79029e0c6aef82712a5fb0e131f8db659cf02af08622d3807a57a037f6c1bde",
+      "webp_sha256": "081580ada20da4b57c485c2ec8cf1c78b3b9c12a00745225bfba94cae766c7ec"
     },
     {
       "name": "reading-soft-light",
@@ -62,10 +62,10 @@
       "height": 1600,
       "png": "reading-soft-light.png",
       "webp": "web/reading-soft-light.webp",
-      "png_bytes": 497382,
-      "webp_bytes": 67558,
-      "png_sha256": "7cf445814e9f5b6d83ad45820858003cb1ab4b342ac59f2d6d853cfc32bda358",
-      "webp_sha256": "6ed4f3ec1cba98176b0dd43e1d781e3261e383b45e36472e4ee331b7f2f823b5"
+      "png_bytes": 510968,
+      "webp_bytes": 64474,
+      "png_sha256": "7cb24db91167b40ead1582ba45bdd3f7265adffe253e27bcd6341c15ffaab557",
+      "webp_sha256": "35c73efd8b22c983c74c1c11e9523bb3defbd3fa37cf382e3e4715bba97c4ba7"
     },
     {
       "name": "reading-soft-dark",
@@ -74,10 +74,10 @@
       "height": 1600,
       "png": "reading-soft-dark.png",
       "webp": "web/reading-soft-dark.webp",
-      "png_bytes": 494401,
-      "webp_bytes": 67522,
-      "png_sha256": "5486b5dcd6301e8031d0194cfe9bad768909bc62bf735f9482610bfb311c4f24",
-      "webp_sha256": "e8b51a6b5460bdc03dd816e25e42c73187b71b409710b30bb031fdc5cdf9961d"
+      "png_bytes": 507542,
+      "webp_bytes": 64372,
+      "png_sha256": "fdd6c2ab14091268b79cb29e55012062310109054f9a19fcc53f48e83e78632c",
+      "webp_sha256": "7504f3954b7781148be6aa4bc3f7a55f23d1523f2ca436b230282389f7f3cd2a"
     },
     {
       "name": "reading-clear-light",
@@ -86,10 +86,10 @@
       "height": 1600,
       "png": "reading-clear-light.png",
       "webp": "web/reading-clear-light.webp",
-      "png_bytes": 471749,
-      "webp_bytes": 64958,
-      "png_sha256": "e469ae772e44b36470c75a95bd31e6d833359aeaa47cd47a6af94823bb63c6ff",
-      "webp_sha256": "df2f4fe12802bd76a138b341a63f9955fcf475b16f9be8e903c1f29918f31c6a"
+      "png_bytes": 496911,
+      "webp_bytes": 62606,
+      "png_sha256": "57fb70b60fc820082d1b3c6de31056c143e3590b76de9d39b039799095498cf3",
+      "webp_sha256": "0e5910d108c1f86e1022cd7aa9b70aa480c85ce180a2bf6340810037b0189cdb"
     },
     {
       "name": "reading-clear-dark",
@@ -98,10 +98,10 @@
       "height": 1600,
       "png": "reading-clear-dark.png",
       "webp": "web/reading-clear-dark.webp",
-      "png_bytes": 471779,
-      "webp_bytes": 64570,
-      "png_sha256": "32873f925a99c183e80bd57975b80876b4fcfe2ea2870c635ed1bea7628d64bc",
-      "webp_sha256": "c6cfd639ae2ee2b3cc618be43ceabfcf78629026941282b74c3f355a6db73a3b"
+      "png_bytes": 495075,
+      "webp_bytes": 62324,
+      "png_sha256": "1929b397fc857dc0693d692512a98fcfebbe3f5663ccafb1f06dd8352461d33e",
+      "webp_sha256": "1ebd26bf6005aa26e74c5a6c4fa4f61b07f696e6f9c8b9250d7b67c766037938"
     },
     {
       "name": "reading-compact-light",
@@ -110,10 +110,10 @@
       "height": 1600,
       "png": "reading-compact-light.png",
       "webp": "web/reading-compact-light.webp",
-      "png_bytes": 646925,
-      "webp_bytes": 83168,
-      "png_sha256": "ba252b694b8cecb2f14f1149b5be9abc1f99bd7c4e2df6a3ec590e0d78f3e5a9",
-      "webp_sha256": "58d07eb742bfb718784c1b787877ba9c3d18ad1e0001c6a3c3e54dc12b00ecf1"
+      "png_bytes": 688529,
+      "webp_bytes": 82296,
+      "png_sha256": "cd85563209aa8fc2c53e0c51df4645219d63bc689ae086bc70f156894e9dd52f",
+      "webp_sha256": "2ea2c6b9e0abd1d2f6a920b3b46e60a2fa78780870252aeac935d439986de642"
     },
     {
       "name": "reading-compact-dark",
@@ -122,10 +122,58 @@
       "height": 1600,
       "png": "reading-compact-dark.png",
       "webp": "web/reading-compact-dark.webp",
-      "png_bytes": 640301,
-      "webp_bytes": 83436,
-      "png_sha256": "0db53956a28514f6cec81a674ff665a0ea0a277c1b3c3a4187aa29403eec3d89",
-      "webp_sha256": "2b6e6abbb7f50a7830b28cbad32651c11af067a7a1c2a1e9ec40b413e69f2f29"
+      "png_bytes": 680872,
+      "webp_bytes": 81972,
+      "png_sha256": "8cc8903bc06debdb3dace1bdee8b589db2e122b410717c1c24198b553964bf76",
+      "webp_sha256": "fcb036ea647e4aa64437151eaf01ebe61979b0f25741de0f7a514e87ea4fc4cb"
+    },
+    {
+      "name": "reading-tools",
+      "caption": "The title bar and the floating reading tools",
+      "width": 2560,
+      "height": 1600,
+      "png": "reading-tools.png",
+      "webp": "web/reading-tools.webp",
+      "png_bytes": 634525,
+      "webp_bytes": 78168,
+      "png_sha256": "dff4d260772ec093294eb995937bc9ad4c20d4b1c58c6bc12a01a2dc73b6bf91",
+      "webp_sha256": "cb8ecd86c8c4065835549b90c476a1836175fdb78c4751e0ebec2d7edca5630d"
+    },
+    {
+      "name": "aa-panel",
+      "caption": "Aa · theme, text and zoom for the open book",
+      "width": 2560,
+      "height": 1600,
+      "png": "aa-panel.png",
+      "webp": "web/aa-panel.webp",
+      "png_bytes": 495814,
+      "webp_bytes": 86844,
+      "png_sha256": "94f97fc5092d58effe66570adc564159024bcdc4ac91260991f4972be7bcb0fc",
+      "webp_sha256": "9e9c5c7694799e2fd8808ca7516a2e10364e9074775e00366496f7b24d21fcd7"
+    },
+    {
+      "name": "contents-drawer",
+      "caption": "Contents in a drawer beside the page",
+      "width": 2560,
+      "height": 1600,
+      "png": "contents-drawer.png",
+      "webp": "web/contents-drawer.webp",
+      "png_bytes": 691474,
+      "webp_bytes": 90168,
+      "png_sha256": "28e8632f2d7f509df79c575742a3c3fe80fee8fa602b729bc0de4ea405f2c5f9",
+      "webp_sha256": "21a3d5b2919298543924a7099fc039f2c7fb243556774fced6c86b14fb53c6f7"
+    },
+    {
+      "name": "progress-line",
+      "caption": "Progress line with chapters and a preview of the jump",
+      "width": 2560,
+      "height": 1600,
+      "png": "progress-line.png",
+      "webp": "web/progress-line.webp",
+      "png_bytes": 691778,
+      "webp_bytes": 87364,
+      "png_sha256": "6a270f76df5630397d0636500863ffa8d5a13ea65a4209e972e3dce5acc33579",
+      "webp_sha256": "5d46ac7e66e5f469a87f04ab585f2a4e26fa6bf396ba0bde7f0a773228160598"
     },
     {
       "name": "notes-highlights",
@@ -134,10 +182,10 @@
       "height": 1600,
       "png": "notes-highlights.png",
       "webp": "web/notes-highlights.webp",
-      "png_bytes": 659338,
-      "webp_bytes": 100244,
-      "png_sha256": "69f80fab1819fb55ca3e201fe6aa79a7e557e2c9b38f5cd52cb5de35dbaceb48",
-      "webp_sha256": "0c6557b5d7d4567ac01f277e90952a6335ada1e78ca82ebabafd577c31e0ba13"
+      "png_bytes": 696685,
+      "webp_bytes": 98728,
+      "png_sha256": "7a839605d5756f223bfa401e61ea317d4dc94d6c1a2e5b49c2b2d2e56be36f37",
+      "webp_sha256": "6c47b37bf13f7ef448f4a304024264025d4a301ec59ad5a2862d1cd870cc7643"
     },
     {
       "name": "word-translation",
@@ -146,10 +194,10 @@
       "height": 1600,
       "png": "word-translation.png",
       "webp": "web/word-translation.webp",
-      "png_bytes": 546843,
-      "webp_bytes": 82294,
-      "png_sha256": "4958755baf4028b056b525bbfc25a34acd042fd096567e78a590a18f15c3bedc",
-      "webp_sha256": "baa977dd2cbfe1a034763054aab08088758b4a18a55d86b36fb57e663842bb8a"
+      "png_bytes": 580833,
+      "webp_bytes": 81562,
+      "png_sha256": "247adde2f4aecf31fb3455d08da9f45dbded8784a2d7c719740316037dbce8d8",
+      "webp_sha256": "8d335528c5aca391cd1fef73a8d0ec4cf4956f232d3637693a7f36338e21e957"
     },
     {
       "name": "listen-word-highlight",
@@ -158,34 +206,46 @@
       "height": 1600,
       "png": "listen-word-highlight.png",
       "webp": "web/listen-word-highlight.webp",
-      "png_bytes": 548998,
-      "webp_bytes": 80884,
-      "png_sha256": "880de4f683d252c756f34fcfe56ef350423ca3d6195368c101f9a9dc3b1aa522",
-      "webp_sha256": "0a8ffbcdd4a35ce8b1066157292c5092030bd14383c3d95646987cd15c2d7842"
-    },
-    {
-      "name": "theme-settings",
-      "caption": "Four reading themes and window control preferences",
-      "width": 2560,
-      "height": 1600,
-      "png": "theme-settings.png",
-      "webp": "web/theme-settings.webp",
-      "png_bytes": 359418,
-      "webp_bytes": 63464,
-      "png_sha256": "29d03de610bd22965fe939d311a57822e9e1048e38ade933a157c08bc083fe22",
-      "webp_sha256": "cfb8ea1153e6e3f306adca2375bb3e8079e57716ec9585263d6d2ff07374a850"
+      "png_bytes": 609316,
+      "webp_bytes": 85478,
+      "png_sha256": "82c94d22f0ff997f2c43d895afca6504e5e878c86da3c1161bd91ee103dd5df3",
+      "webp_sha256": "4d2820b71bb19eacbe73f43200397176f584a57a06816fec30ea697e5283b63c"
     },
     {
       "name": "reading-settings",
-      "caption": "Per-book font, text size, line spacing and side margins",
+      "caption": "Settings · reading defaults for every book",
       "width": 2560,
       "height": 1600,
       "png": "reading-settings.png",
       "webp": "web/reading-settings.webp",
-      "png_bytes": 358214,
-      "webp_bytes": 61578,
-      "png_sha256": "8de181be3548ea8565dde02169503568b14983cdaefe9a298152c5e76e739c5c",
-      "webp_sha256": "a874112fd89459f123a2018c4afee04d18db01952ce8f4ac8414e9d009493cb4"
+      "png_bytes": 371074,
+      "webp_bytes": 57944,
+      "png_sha256": "5b4a5c78152443b1a7a3fc8c33463ee964c14abbea8e47508afe959d385ea304",
+      "webp_sha256": "465facc92103f98da1ee210ef52147797242d451e71108b4a6e3b60d4c1f54a5"
+    },
+    {
+      "name": "theme-settings",
+      "caption": "Settings · themes, light or dark and the progress line",
+      "width": 2560,
+      "height": 1600,
+      "png": "theme-settings.png",
+      "webp": "web/theme-settings.webp",
+      "png_bytes": 405268,
+      "webp_bytes": 71858,
+      "png_sha256": "0e6bbfcaf560c89b2fc756b2406485e7e493e2890481dcfdb1f8b91dd0d10424",
+      "webp_sha256": "84f34c1cf2119483cbda52221deeef2e1d6accb0a91d2adc97ddf19b50f5042e"
+    },
+    {
+      "name": "listen-settings",
+      "caption": "Settings · read-aloud voice and speed",
+      "width": 2560,
+      "height": 1600,
+      "png": "listen-settings.png",
+      "webp": "web/listen-settings.webp",
+      "png_bytes": 358555,
+      "webp_bytes": 52388,
+      "png_sha256": "c3f3af84e31eed880a1a3fb1e5837ec272bc7092696eda072eef2cf66af6b90a",
+      "webp_sha256": "76eac93db367d9fcea7c01f2d14d113a82f753f110c609f66ecd14a16d12c9ca"
     },
     {
       "name": "dictionary-downloads",
@@ -194,10 +254,10 @@
       "height": 1600,
       "png": "dictionary-downloads.png",
       "webp": "web/dictionary-downloads.webp",
-      "png_bytes": 443528,
-      "webp_bytes": 59490,
-      "png_sha256": "cb170cbcf0572fbada823cc41dc5f157360b41473b1823ee7700f8e08e7d6fe5",
-      "webp_sha256": "0b2ab7bc03da99a03c9b0b34fe478b35360f8f8f812b67d8585e6a66da56f663"
+      "png_bytes": 423727,
+      "webp_bytes": 60648,
+      "png_sha256": "94b0b1098f555acd2e9bf8f46738f22bd6a479c23118542a03788098ae0f0467",
+      "webp_sha256": "c36bc43c5704eaa81cfd55cd080eb8d4dc38d14d9886126324cee4d6a313ae31"
     },
     {
       "name": "dictionary-downloads-asian",
@@ -206,10 +266,10 @@
       "height": 1600,
       "png": "dictionary-downloads-asian.png",
       "webp": "web/dictionary-downloads-asian.webp",
-      "png_bytes": 375506,
-      "webp_bytes": 42766,
-      "png_sha256": "9ccf79212451cf83763caadbdf74bafaa93404ef936143cf2418d74fce8fd2b0",
-      "webp_sha256": "a33b854a95f548655b8f72a45fab043988a035b4fe6cffc46f1e2a372dc74160"
+      "png_bytes": 405502,
+      "webp_bytes": 50524,
+      "png_sha256": "0b39177d1392a8d638a3bc2ba064a6a26033350510e36190ca3570bca17b7aef",
+      "webp_sha256": "951c67ec84d4753d12ccf5fbca416b14b27bafd3f7440fda84136867c31fa1c5"
     },
     {
       "name": "backup-export",
@@ -218,22 +278,34 @@
       "height": 1600,
       "png": "backup-export.png",
       "webp": "web/backup-export.webp",
-      "png_bytes": 419792,
-      "webp_bytes": 64884,
-      "png_sha256": "cca24c5ad256a2df934bc452b3ace724e45663c79d4ae70954f6077483ca98f1",
-      "webp_sha256": "4acedb3f46cf7d9df74c339fc7e08b3067ca11a4ae9ac68a05eb511149853df9"
+      "png_bytes": 448122,
+      "webp_bytes": 68002,
+      "png_sha256": "5170a9d3481322929e37e067d63c4174e43d9576e151b228b2ab072bf637f01c",
+      "webp_sha256": "03f1975a1e5bf8ed9d9f9f6be04aa052ddfc7fbe253b86ab2459d58e4d38c2ce"
+    },
+    {
+      "name": "shortcuts",
+      "caption": "Settings · the shortcut list that F1 opens",
+      "width": 2560,
+      "height": 1600,
+      "png": "shortcuts.png",
+      "webp": "web/shortcuts.webp",
+      "png_bytes": 424209,
+      "webp_bytes": 63592,
+      "png_sha256": "e5862c5add59d6bcfb2a3580766b8b65f0659d3ba0264cce6d907191295cc5c6",
+      "webp_sha256": "8fc2115679dc5f89e202b97cae297f2d62e02f295bcf39b9e0ccd0d8a8d8bcb3"
     },
     {
       "name": "reading-fullscreen",
-      "caption": "Fullscreen reading with window chrome hidden",
+      "caption": "Fullscreen reading with everything hidden",
       "width": 2560,
       "height": 1600,
       "png": "reading-fullscreen.png",
       "webp": "web/reading-fullscreen.webp",
-      "png_bytes": 627713,
-      "webp_bytes": 82678,
-      "png_sha256": "fd28a789716742f20d8887b5980a59cf67bae2ba0827f338ab043497a1b5cc02",
-      "webp_sha256": "9d15dd2c8fcd76f66339ec05e55b40e1cbde269b9280c5074273a274d024fe19"
+      "png_bytes": 643237,
+      "webp_bytes": 82026,
+      "png_sha256": "4cb06fc427cdf6b164e2f2ae12f85e8b2e873bf7e86d0ea71721ae03502b6c7a",
+      "webp_sha256": "22fe920c4d3096ea55e92b9e58f66b4cf6876cc6d1ac9bef5e48dc084e89abfa"
     },
     {
       "name": "library-data",
@@ -242,10 +314,10 @@
       "height": 1600,
       "png": "library-data.png",
       "webp": "web/library-data.webp",
-      "png_bytes": 543581,
-      "webp_bytes": 135738,
-      "png_sha256": "26badc81c7e9645e80600baaaed68eceda0a762b17387831885ad0f0b305c445",
-      "webp_sha256": "85cac2c229b9c8dd0c21538da304a82cb2a6d69919b9e01951b26945e8b2f878"
+      "png_bytes": 480710,
+      "webp_bytes": 93216,
+      "png_sha256": "f4c7cc7ae4dab0de4022350dfca5dcfc8419d8985025e29de0c8d5ec82b01d4b",
+      "webp_sha256": "5581bc38c1c4036f99de852f2c1f28f0d3e481175bca0adc42803de72edc98c3"
     },
     {
       "name": "pdf-document",
@@ -254,10 +326,10 @@
       "height": 1600,
       "png": "pdf-document.png",
       "webp": "web/pdf-document.webp",
-      "png_bytes": 347086,
-      "webp_bytes": 114502,
-      "png_sha256": "f00ee913a54ea1e91fe3139798a61be47ed903f8782a52dcaa3d8af58afe1897",
-      "webp_sha256": "be3b59bf6f0980464b442aaad3aaf549fa09c880d76ad1d11fd199b90257fad2"
+      "png_bytes": 452176,
+      "webp_bytes": 158718,
+      "png_sha256": "c13633094de7ba2dee5c8ce0faaae524cf603808ed050590e45b25dfb72dbb3b",
+      "webp_sha256": "66eabe0ccf8a7ee3243d14849753c47c58561ce3ebcf018d10891948d52ef70c"
     },
     {
       "name": "pdf-book",
@@ -266,10 +338,10 @@
       "height": 1600,
       "png": "pdf-book.png",
       "webp": "web/pdf-book.webp",
-      "png_bytes": 447889,
-      "webp_bytes": 66630,
-      "png_sha256": "4ca1579afee0e00fa923333951b54deab2a879257e6bfae5648a607f4172b5e5",
-      "webp_sha256": "39ac741f9e5864732896cd49feb0f216e770b0226ed40a08dc6847b8a5a2e308"
+      "png_bytes": 483095,
+      "webp_bytes": 69856,
+      "png_sha256": "3b31ac102224a3daf5c737a84e76386566e2e6d646d839367dceb1f0fe5a510c",
+      "webp_sha256": "d5893580d3b7a95a81cba8cd04e5ec34f94de3be63f886b3e3ced357d0d084a9"
     }
   ],
   "dictionary_content": {

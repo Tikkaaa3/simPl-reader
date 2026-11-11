@@ -17,15 +17,21 @@ CAPTIONS = {
     "library-dark": "Local library · dark appearance",
     **{f"reading-{theme}-{tone}": f"{theme.title()} reading theme · {tone} appearance"
        for theme in ["default", "soft", "clear", "compact"] for tone in ["light", "dark"]},
+    "reading-tools": "The title bar and the floating reading tools",
+    "aa-panel": "Aa · theme, text and zoom for the open book",
+    "contents-drawer": "Contents in a drawer beside the page",
+    "progress-line": "Progress line with chapters and a preview of the jump",
     "notes-highlights": "Bookmark, saved highlight and note sidebar",
     "word-translation": "Offline English → Turkish lookup for book",
     "listen-word-highlight": "Listen paused with the current spoken word retained",
-    "theme-settings": "Four reading themes and window control preferences",
-    "reading-settings": "Per-book font, text size, line spacing and side margins",
+    "reading-settings": "Settings · reading defaults for every book",
+    "theme-settings": "Settings · themes, light or dark and the progress line",
+    "listen-settings": "Settings · read-aloud voice and speed",
     "dictionary-downloads": "Optional dictionaries · installed pack and European languages",
     "dictionary-downloads-asian": "Optional dictionaries · Japanese, Chinese and Korean",
     "backup-export": "Export bookmarks, highlighted quotes and notes",
-    "reading-fullscreen": "Fullscreen reading with window chrome hidden",
+    "shortcuts": "Settings · the shortcut list that F1 opens",
+    "reading-fullscreen": "Fullscreen reading with everything hidden",
     "library-data": "Create or restore a library backup",
     "pdf-document": "Original PDF page, typography and vector artwork",
     "pdf-book": "The same PDF reconstructed in Book view",
@@ -120,7 +126,8 @@ On Windows with the repo's Rust/MSVC tools and Python with Pillow installed:
 .\\scripts\\capture-promotion.ps1
 ```
 
-The script creates fresh fixtures and an isolated profile under `target/`, runs
+The script creates fresh fixtures under `target/` and an isolated demo profile in
+`C:\\simPl-demo`, which it removes afterwards. It runs
 the opt-in production render test, updates this media folder, verifies lossless
 exports and README image paths, and writes a ZIP under `target/promotion/`.
 It never changes the normal `%LOCALAPPDATA%\\simPl` profile. Test helpers are

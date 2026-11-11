@@ -9,38 +9,93 @@ and keep your highlights and notes with your books.
 
 ![The Quiet Hours in simPl's dark Book view](docs/screenshots/web/reading-dark.webp)
 
-[Get started](#get-started) · [Android](#android) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
+[Get started](#get-started) · [The reading screen](#the-reading-screen) · [Android](#android) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
 
 ## Made for reading
 
-- **Your library, on your machine.** Import documents, mark favourites, search by
-  title or author, and press Space to resume the book you were reading.
-- **Two ways to read PDFs.** Keep the original page in Document view or use Book
-  view for reconstructed prose and extracted illustrations, set in your reading theme
-  and text settings.
-- **One page at a time.** Visible paper boundaries, a click anywhere along the left
-  or right edge to turn the page, and a page field that can jump across the whole book.
-- **Stable pages.** Zoom changes the size of the page without changing its number
-  or the total. Switching PDF views keeps your current source page.
-- **Reading themes.** Pick Default, Soft, Clear or Compact in **Aa** or Settings → Appearance: each sets the
-  reading font, line and paragraph spacing, and its own light and dark colors. Page
-  numbers and page boundaries stay the same in every theme, and text size stays your
-  own. A PDF in Book view takes the theme like any other book. All fonts are bundled,
-  so nothing is downloaded.
-- **Reading comfort.** The **Aa** button in the reading tools opens a panel with the theme, text size, font, line spacing, side margins, zoom and **Fit width**. Changes there are remembered for the open book only, and **Use reading defaults** returns it to the defaults. Settings → Reading sets them for every book without its own. A PDF in Book view has all of them. In Document view, which shows the original page, **Aa** has zoom and **Fit width** only. Press F11 for fullscreen.
-- **Listen and follow along.** Windows' installed voices read continuously across pages and EPUB chapters. The viewport follows the spoken line, and a temporary word highlight shows your place. Pause, resume and adjust the speed; select the stop icon in the bar to stop.
-- **Offline word lookup.** Double-click a word or select → right-click → Translate. Choose your language pair and automatic lookup preference. Download only the dictionaries you need; the 13 optional directions cover English, Turkish, Spanish, German, French, Japanese, Korean and Chinese. Lookup works locally after installation.
-- **Make the book yours.** Bookmark pages, highlight passages in four colors, and add notes. Revisit them in the sidebar or export them for use elsewhere.
-- **Portable reading data.** Create and restore verified library backups, and export bookmarks, quotes and notes as Markdown, text or JSON from Settings → Library & data.
-- **Settings in sections.** The gear opens Settings on **Reading**, with its sections listed at the left: **Reading** for the defaults every book follows, **Appearance** for the theme, light or dark and fullscreen, **Listen** for the voice and speed, **Translation** for the languages and dictionaries, **Library & data** for the library folder, backup and export, and **Shortcuts** for the list of keys, which F1 opens from anywhere. Tab reaches the list, and the up and down arrows move between sections.
-- **Less chrome.** The title bar stays on screen, with standard Windows minimize,
-  maximize and close buttons. The reading tools are a small pill of quiet icons under
-  it that fades away when idle; point at the title bar to bring it back, or press F8 to
-  keep it. Every icon names its action and shortcut when you point at it. The page
-  never moves when the tools show or hide. Geist for the interface,
-  Literata (or the theme's font) for the book, and bundled fonts for offline reading.
-- **Keyboard access.** Navigate controls, switch books, turn pages and copy selected
-  text without reaching for the mouse.
+- **Your library, on your machine.** Open a file where it is or add it to your
+  library, mark favourites, sort books onto shelves, search by title or author,
+  and press Space to resume the book you were reading.
+- **A screen that gets out of the way.** The title bar stays, with the window
+  buttons where you expect them. The reading tools are a small pill that hides
+  as soon as you scroll. The page never moves when they show or hide.
+- **Always know where you are.** A thin line along the bottom shows your
+  progress, cut into the book's chapters. Point at it to see where a click would
+  take you before you click.
+- **One page at a time.** Visible paper boundaries, a click anywhere along the
+  left or right edge to turn the page, and a page field that jumps across the
+  whole book. Keep turning the wheel past the end of a page to go on to the next.
+- **Stable pages.** Zoom, themes and text settings change how a page looks, not
+  its number or the total. Switching PDF views keeps your current source page.
+- **A look for each book.** Four reading themes, each with light and dark colors.
+  **Aa** sets the theme, font, text size, spacing and margins of the open book
+  only; Settings sets what every other book follows. All fonts are bundled.
+- **Two ways to read PDFs.** Keep the original page in Document view, or use Book
+  view for reconstructed prose and extracted illustrations in your reading theme.
+- **Listen and follow along.** Windows' installed voices read continuously across
+  pages and EPUB chapters, with the spoken word marked. Right-click any place and
+  choose **Read aloud from here**.
+- **Offline word lookup.** Double-click a word for its meaning. Download only the
+  dictionaries you need; the 13 optional directions cover English, Turkish,
+  Spanish, German, French, Japanese, Korean and Chinese.
+- **Make the book yours.** Bookmark pages, highlight passages in four colors and
+  add notes. Revisit them in the sidebar or export them as Markdown, text or JSON.
+- **Portable reading data.** Create and restore verified library backups from
+  Settings → Library & data.
+- **Keyboard access.** Every control can be reached with Tab, and **F1** lists
+  the shortcuts.
+
+## The reading screen
+
+| The title bar and the reading tools | The progress line |
+| --- | --- |
+| ![The title bar with the reading tools shown under it](docs/screenshots/web/reading-tools.webp) | ![The progress line cut into chapters, with the page a click would jump to](docs/screenshots/web/progress-line.webp) |
+
+**The title bar stays.** While you read, it keeps the Library button, the book's
+title, the pin, search, Settings, fullscreen and the standard Windows minimize,
+maximize and close buttons on screen. The page starts under it.
+
+**The reading tools hide.** They are a small pill of icons under the title bar,
+in three groups:
+
+| Group | Tools |
+| --- | --- |
+| Finding a place | Contents, the page field, find |
+| Listening and notes | Listen, bookmarks and notes |
+| How the page looks | **Aa**, light or dark |
+
+A PDF adds a button at the start that switches between Document and Book view.
+Every icon names its action and shortcut when you point at it.
+
+- The tools show for two seconds when a book opens.
+- They hide as soon as you scroll or turn a page, and a moment after the pointer
+  leaves them.
+- Point at the title bar to bring them back.
+- The **pin** in the title bar, or **F8**, keeps them on screen. simPl remembers
+  that choice.
+- The page never moves when they show or hide.
+
+**The progress line** runs along the bottom, cut into the book's chapters. Point
+at it to see two places: the page you are on, and the chapter and page a click
+would jump to. The stretch between them shows the jump before you make it.
+**Settings → Appearance → Progress line** hides the line.
+
+**Fullscreen** (**F11**, or its button in the title bar) is the one mode that
+hides everything, the title bar too. Move the pointer to the top of the screen to
+bring the title bar and the tools back.
+
+| Aa: the look of this book | Contents |
+| --- | --- |
+| ![The Aa panel with themes, text settings and zoom](docs/screenshots/web/aa-panel.webp) | ![The contents drawer beside the page](docs/screenshots/web/contents-drawer.webp) |
+
+**Aa** opens a panel with the theme, text size, font, line spacing, side margins,
+zoom and **Fit width**. What you change there is remembered for the open book
+only, and **Use reading defaults** returns it to the defaults. In PDF Document
+view, which shows the original page, **Aa** has zoom and **Fit width** only.
+
+**Contents** opens in a drawer on the left, and **bookmarks and notes** in one on
+the right. A drawer sits beside the page while the whole page still fits beside
+it; otherwise it opens over the page.
 
 ## Your workspace
 
@@ -55,8 +110,14 @@ original demonstration books shown here are not included with the application.
 
 ## Find your reading style
 
-Four reading themes, each with light and dark colors. Typography preferences and
-zoom are independent, so you can make the page comfortable while keeping its place.
+Four reading themes, each with light and dark colors: **Default**, **Soft**,
+**Clear** and **Compact**. A theme sets the reading font, the line and paragraph
+spacing and the colors. Page numbers and page boundaries stay the same in every
+theme, and a PDF in Book view takes the theme like any other book.
+
+Each book can have its own theme, chosen from **Aa**. Every other book follows
+the theme in **Settings → Appearance**. Typography and zoom are independent of
+the theme, so you can make the page comfortable while keeping its place.
 
 | Soft · light | Clear · light |
 | --- | --- |
@@ -64,7 +125,7 @@ zoom are independent, so you can make the page comfortable while keeping its pla
 
 | Compact · dark | Fullscreen |
 | --- | --- |
-| ![Compact dark reading theme](docs/screenshots/web/reading-compact-dark.webp) | ![Fullscreen reading with the window chrome hidden](docs/screenshots/web/reading-fullscreen.webp) |
+| ![Compact dark reading theme](docs/screenshots/web/reading-compact-dark.webp) | ![Fullscreen reading with everything hidden](docs/screenshots/web/reading-fullscreen.webp) |
 
 ## Read, listen, remember
 
@@ -86,13 +147,30 @@ simPl normalizes and excerpts the data. [Full attribution and website reuse](doc
 | --- | --- |
 | ![Original PDF page with its layout and vector illustration](docs/screenshots/web/pdf-document.webp) | ![The same PDF reconstructed in Book view](docs/screenshots/web/pdf-book.webp) |
 
-| Reading settings | Back up your library |
+## Settings
+
+The gear in the title bar opens Settings, with six sections listed at the left.
+Tab reaches the list, and the up and down arrows move between sections.
+
+| Section | What it holds |
 | --- | --- |
-| ![Per-book font, size, spacing and margin settings](docs/screenshots/web/reading-settings.webp) | ![Library backup and restore options](docs/screenshots/web/library-data.webp) |
+| **Reading** | The text size, font, line spacing and side margins that every book without its own settings follows |
+| **Appearance** | The default theme, light or dark, the progress line, and fullscreen |
+| **Listen** | The read-aloud voice and speed |
+| **Translation** | The languages, automatic lookup, and the dictionaries to download |
+| **Library & data** | The library folder, backup and restore, and exporting notes |
+| **Shortcuts** | The list of keys, which **F1** opens from anywhere |
+
+| Appearance | Shortcuts |
+| --- | --- |
+| ![Settings on Appearance: themes, light or dark and the progress line](docs/screenshots/web/theme-settings.webp) | ![Settings on Shortcuts: the list of keys](docs/screenshots/web/shortcuts.webp) |
+
+| Reading defaults | Library & data |
+| --- | --- |
+| ![Settings on Reading: defaults for every book](docs/screenshots/web/reading-settings.webp) | ![Library folder, backup and restore options](docs/screenshots/web/library-data.webp) |
 
 [Full-resolution PNGs, lossless WebP copies and media details](docs/screenshots/README.md)
-are available for websites and promotion; [download the media kit with updated
-attribution](https://github.com/Tikkaaa3/simPl-reader/releases/download/v0.1.5/simPl-0.1.5-promotional-media-attributed.zip).
+are available for websites and promotion.
 These are full-window renders of the
 production interface at 2560 × 1600, using an isolated demo library; they are
 not OS desktop captures. No controls or features were composited into the images.
@@ -150,6 +228,8 @@ view on Android is still planned. See the [Android guide](android/README.md), th
 Older text imports may lack source-format metadata. Add the original TXT/Markdown
 file again to repair its library label while reusing the same managed document.
 
+### Pages, zoom and page turns
+
 When EPUB or HTML has no source page list, simPl creates a fixed page map on its
 first preparation. Zoom from **Aa** or with **Ctrl+plus / minus / 0** scales that map; it does not repaginate it. **Fit width** in **Aa**, or **Ctrl+Shift+F**, fits the page to the window. It follows the window and any drawer docked beside the page, and returns to the previous zoom when toggled off.
 Click anywhere along the left or right edge of the reading area, or press the arrow
@@ -166,19 +246,18 @@ before you make it. **Settings → Appearance → Progress line** hides the line
 While you read, the scrollbar hides; it appears when you scroll or point at the right
 edge, and fades about a second after you stop.
 
-The title bar stays on screen: the Library, the book's title, search, Settings and
-the window buttons never hide in a window. The reading tools (contents, the page
-field, find, listen, notes, **Aa** and light or dark) are a small pill under it that
-hides as soon as you scroll or turn a page. Point at the title bar to bring it back. The pin in the title
-bar, or **F8**, keeps the tools on screen, and simPl remembers that choice. Fullscreen
-(**F11**, or its button in the title bar) is the one mode that hides everything; move
-the pointer to the top of the screen to bring both back.
+The title bar, the reading tools and fullscreen are described under
+[The reading screen](#the-reading-screen).
+
+### PDF Book view
 
 PDF Book view uses the PDF's existing text layer; it does **not** perform OCR.
 Image-only or complex pages may be better read in Document view. Initial preparation
 of a large scanned PDF with an existing text layer can take time. Converted content
 and illustration regions are cached for subsequent view switches and reopenings.
 Blank source pages remain blank.
+
+### Highlights, notes and contents
 
 Select text to choose a highlight color or add a note. Right-click a saved
 highlight to change its color, edit its note or remove it. Same-color overlapping
@@ -193,6 +272,8 @@ page fits between them; otherwise opening one closes the other, and zooming in o
 narrowing the window closes the contents drawer.
 Bookmarks and highlights are stored per book under
 `%LOCALAPPDATA%\simPl\annotations\`, so they follow a moved or re-imported file.
+
+### Listen
 
 Select the **Listen** icon or press **Ctrl+Shift+U** to continue from the current page to the
 end of the book, even when text is selected. A small player above the progress line
@@ -216,6 +297,8 @@ Windows' installed voices
 offline. Automatic voice selection estimates the text's language and falls back
 to the Windows default. PDF reading needs a permitted text layer; image-only pages
 are skipped.
+
+### Word translation
 
 Double-click a word, or finish selecting a short phrase, to open its **offline
 translation card**. In Settings → Translation, choose the input/output

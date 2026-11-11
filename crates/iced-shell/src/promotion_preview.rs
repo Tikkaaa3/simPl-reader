@@ -15,6 +15,33 @@ fn capture(reader: &mut Reader, output: &Path, name: &str) {
     println!("Captured {name}: 2560 × 1600, production UI at 2×");
 }
 
+/// Shows the reading tools as a pointer on the title bar does, or hides them
+/// as a pointer resting on the page does.
+fn tools(reader: &mut Reader, shown: bool) {
+    let now = std::time::Instant::now();
+    let point = if shown {
+        iced::Point::new(300.0, 22.0)
+    } else {
+        iced::Point::new(640.0, 420.0)
+    };
+    reader.sync_bar(
+        now,
+        reading_chrome::Input {
+            pointer: Some(Some(point)),
+            ..Default::default()
+        },
+    );
+    if !shown {
+        reader.bar.tick(now + std::time::Duration::from_secs(3));
+        reader.bar.tick(now + std::time::Duration::from_secs(4));
+    }
+}
+
+fn section(reader: &mut Reader, section: settings::Section) {
+    send(reader, Message::SettingsSection(section));
+    reader.focused = None;
+}
+
 #[test]
 #[ignore = "Promotion media: isolated STORE=LOCALAPPDATA, FIXTURES and OUTPUT required"]
 fn render_promotion_gallery() {
@@ -97,9 +124,12 @@ fn render_promotion_gallery() {
     opened(&mut reader, fixtures.join(&books[0].source));
     send(&mut reader, Message::PageInput("1".into()));
     send(&mut reader, Message::PageSubmit);
+    // The page as it is while reading: the title bar stays, the tools are away.
+    tools(&mut reader, false);
     for (theme, name) in [(0, "default"), (1, "soft"), (2, "clear"), (3, "compact")] {
         send(&mut reader, Message::SetTheme(theme));
         settle_theme(&mut reader);
+        tools(&mut reader, false);
         for (appearance, tone) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
             reader.appearance = appearance;
             capture(&mut reader, &output, &format!("reading-{name}-{tone}"));
@@ -107,9 +137,34 @@ fn render_promotion_gallery() {
     }
     send(&mut reader, Message::SetTheme(0));
     settle_theme(&mut reader);
+    tools(&mut reader, false);
     reader.appearance = Appearance::Dark;
     capture(&mut reader, &output, "reading-dark");
     reader.appearance = Appearance::Light;
+
+    // The reading tools, and what opens from them.
+    tools(&mut reader, true);
+    capture(&mut reader, &output, "reading-tools");
+    send(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    capture(&mut reader, &output, "aa-panel");
+    send(&mut reader, Message::ToggleMenu(reading_chrome::Menu::Aa));
+    send(&mut reader, Message::ToggleContents);
+    reader.focused = None;
+    capture(&mut reader, &output, "contents-drawer");
+    send(&mut reader, Message::ToggleContents);
+
+    // The progress line under a pointer, part of the way through the book.
+    send(&mut reader, Message::ProgressJump(5));
+    tools(&mut reader, false);
+    book_preview::render_at_scale_with_cursor(
+        &mut reader,
+        &output.join("progress-line.png"),
+        2.0,
+        iced::Point::new(880.0, 797.0),
+    );
+    println!("Captured progress-line: 2560 × 1600, production UI at 2×");
+    send(&mut reader, Message::ProgressJump(1));
+    tools(&mut reader, false);
 
     let book = reader.book.as_ref().unwrap().clone();
     let (row, source) = book
@@ -162,6 +217,7 @@ fn render_promotion_gallery() {
     reader.refresh_marks();
     send(&mut reader, Message::Notes(notes::Action::ToggleBookmark));
     reader.notes.list = Some(notes::ListTab::Highlights);
+    tools(&mut reader, false);
     capture(&mut reader, &output, "notes-highlights");
     reader.notes.list = None;
 
@@ -207,17 +263,21 @@ fn render_promotion_gallery() {
         "real SAPI must report a spoken word"
     );
     send(&mut reader, Message::ReadAloud(read_aloud::Action::Pause));
+    // The player shows with the tools.
+    tools(&mut reader, true);
     capture(&mut reader, &output, "listen-word-highlight");
     send(&mut reader, Message::ReadAloud(read_aloud::Action::Toggle));
+    tools(&mut reader, false);
 
+    // Settings, one section at a time.
     send(&mut reader, Message::Chrome(chrome::Action::Settings));
     reader.focused = None;
-    capture(&mut reader, &output, "theme-settings");
-    reader.focused = Some(Control::Reading(
-        reading_ui::Target::Defaults,
-        reading_ui::Focus::Reset,
-    ));
     capture(&mut reader, &output, "reading-settings");
+    section(&mut reader, settings::Section::Appearance);
+    capture(&mut reader, &output, "theme-settings");
+    section(&mut reader, settings::Section::Listen);
+    capture(&mut reader, &output, "listen-settings");
+    section(&mut reader, settings::Section::Translation);
     send(
         &mut reader,
         Message::Dictionary(word_translation::Action::ManagePackages),
@@ -234,19 +294,25 @@ fn render_promotion_gallery() {
         &mut reader,
         Message::Dictionary(word_translation::Action::ManagePackages),
     );
+    section(&mut reader, settings::Section::Library);
     reader.focused = Some(Control::Profile(profile_ui::Focus::Export));
     capture(&mut reader, &output, "backup-export");
+    section(&mut reader, settings::Section::Shortcuts);
+    capture(&mut reader, &output, "shortcuts");
     send(&mut reader, Message::Chrome(chrome::Action::Settings));
     reader.focused = None;
+
     reader.window = Some(window::Id::unique());
     send(&mut reader, Message::ToggleFullscreen);
     assert!(reader.fullscreen);
+    tools(&mut reader, false);
     capture(&mut reader, &output, "reading-fullscreen");
     send(&mut reader, Message::ToggleFullscreen);
     let task = reader.close(CloseAction::Document);
     pump(&mut reader, task);
 
     send(&mut reader, Message::Chrome(chrome::Action::Settings));
+    section(&mut reader, settings::Section::Library);
     reader.focused = Some(Control::Profile(profile_ui::Focus::Restore));
     capture(&mut reader, &output, "library-data");
     send(&mut reader, Message::Chrome(chrome::Action::Settings));
@@ -264,11 +330,13 @@ fn render_promotion_gallery() {
         &mut reader,
         Message::Pdf {
             document,
-            message: pdf_reader::Message::ZoomBy(-5.0),
+            message: pdf_reader::Message::ZoomBy(-2.0),
         },
     );
     reader.focused = None;
+    tools(&mut reader, true);
     capture(&mut reader, &output, "pdf-document");
     send(&mut reader, Message::BookMode);
+    tools(&mut reader, true);
     capture(&mut reader, &output, "pdf-book");
 }

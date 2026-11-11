@@ -1,6 +1,6 @@
 # simPl promotional media
 
-22 full-window images, each **2560 × 1600** (16:10). PNG files preserve
+28 full-window images, each **2560 × 1600** (16:10). PNG files preserve
 the complete captured frame; `web/` contains pixel-identical, lossless WebP copies
 at the same resolution. `reading-dark` is a compatibility alias for Default dark.
 
@@ -48,15 +48,21 @@ Required Notice: Copyright 2026 Tikkaaa3 (https://github.com/Tikkaaa3/simPl-read
 | <img src="web/reading-clear-dark.webp" width="240" alt="Clear reading theme · dark appearance"> | Clear reading theme · dark appearance | [PNG](reading-clear-dark.png) | [WebP](web/reading-clear-dark.webp) |
 | <img src="web/reading-compact-light.webp" width="240" alt="Compact reading theme · light appearance"> | Compact reading theme · light appearance | [PNG](reading-compact-light.png) | [WebP](web/reading-compact-light.webp) |
 | <img src="web/reading-compact-dark.webp" width="240" alt="Compact reading theme · dark appearance"> | Compact reading theme · dark appearance | [PNG](reading-compact-dark.png) | [WebP](web/reading-compact-dark.webp) |
+| <img src="web/reading-tools.webp" width="240" alt="The title bar and the floating reading tools"> | The title bar and the floating reading tools | [PNG](reading-tools.png) | [WebP](web/reading-tools.webp) |
+| <img src="web/aa-panel.webp" width="240" alt="Aa · theme, text and zoom for the open book"> | Aa · theme, text and zoom for the open book | [PNG](aa-panel.png) | [WebP](web/aa-panel.webp) |
+| <img src="web/contents-drawer.webp" width="240" alt="Contents in a drawer beside the page"> | Contents in a drawer beside the page | [PNG](contents-drawer.png) | [WebP](web/contents-drawer.webp) |
+| <img src="web/progress-line.webp" width="240" alt="Progress line with chapters and a preview of the jump"> | Progress line with chapters and a preview of the jump | [PNG](progress-line.png) | [WebP](web/progress-line.webp) |
 | <img src="web/notes-highlights.webp" width="240" alt="Bookmark, saved highlight and note sidebar"> | Bookmark, saved highlight and note sidebar | [PNG](notes-highlights.png) | [WebP](web/notes-highlights.webp) |
 | <img src="web/word-translation.webp" width="240" alt="Offline English → Turkish lookup for book"> | Offline English → Turkish lookup for book | [PNG](word-translation.png) | [WebP](web/word-translation.webp) |
 | <img src="web/listen-word-highlight.webp" width="240" alt="Listen paused with the current spoken word retained"> | Listen paused with the current spoken word retained | [PNG](listen-word-highlight.png) | [WebP](web/listen-word-highlight.webp) |
-| <img src="web/theme-settings.webp" width="240" alt="Four reading themes and window control preferences"> | Four reading themes and window control preferences | [PNG](theme-settings.png) | [WebP](web/theme-settings.webp) |
-| <img src="web/reading-settings.webp" width="240" alt="Per-book font, text size, line spacing and side margins"> | Per-book font, text size, line spacing and side margins | [PNG](reading-settings.png) | [WebP](web/reading-settings.webp) |
+| <img src="web/reading-settings.webp" width="240" alt="Settings · reading defaults for every book"> | Settings · reading defaults for every book | [PNG](reading-settings.png) | [WebP](web/reading-settings.webp) |
+| <img src="web/theme-settings.webp" width="240" alt="Settings · themes, light or dark and the progress line"> | Settings · themes, light or dark and the progress line | [PNG](theme-settings.png) | [WebP](web/theme-settings.webp) |
+| <img src="web/listen-settings.webp" width="240" alt="Settings · read-aloud voice and speed"> | Settings · read-aloud voice and speed | [PNG](listen-settings.png) | [WebP](web/listen-settings.webp) |
 | <img src="web/dictionary-downloads.webp" width="240" alt="Optional dictionaries · installed pack and European languages"> | Optional dictionaries · installed pack and European languages | [PNG](dictionary-downloads.png) | [WebP](web/dictionary-downloads.webp) |
 | <img src="web/dictionary-downloads-asian.webp" width="240" alt="Optional dictionaries · Japanese, Chinese and Korean"> | Optional dictionaries · Japanese, Chinese and Korean | [PNG](dictionary-downloads-asian.png) | [WebP](web/dictionary-downloads-asian.webp) |
 | <img src="web/backup-export.webp" width="240" alt="Export bookmarks, highlighted quotes and notes"> | Export bookmarks, highlighted quotes and notes | [PNG](backup-export.png) | [WebP](web/backup-export.webp) |
-| <img src="web/reading-fullscreen.webp" width="240" alt="Fullscreen reading with window chrome hidden"> | Fullscreen reading with window chrome hidden | [PNG](reading-fullscreen.png) | [WebP](web/reading-fullscreen.webp) |
+| <img src="web/shortcuts.webp" width="240" alt="Settings · the shortcut list that F1 opens"> | Settings · the shortcut list that F1 opens | [PNG](shortcuts.png) | [WebP](web/shortcuts.webp) |
+| <img src="web/reading-fullscreen.webp" width="240" alt="Fullscreen reading with everything hidden"> | Fullscreen reading with everything hidden | [PNG](reading-fullscreen.png) | [WebP](web/reading-fullscreen.webp) |
 | <img src="web/library-data.webp" width="240" alt="Create or restore a library backup"> | Create or restore a library backup | [PNG](library-data.png) | [WebP](web/library-data.webp) |
 | <img src="web/pdf-document.webp" width="240" alt="Original PDF page, typography and vector artwork"> | Original PDF page, typography and vector artwork | [PNG](pdf-document.png) | [WebP](web/pdf-document.webp) |
 | <img src="web/pdf-book.webp" width="240" alt="The same PDF reconstructed in Book view"> | The same PDF reconstructed in Book view | [PNG](pdf-book.png) | [WebP](web/pdf-book.webp) |
@@ -69,7 +75,8 @@ On Windows with the repo's Rust/MSVC tools and Python with Pillow installed:
 .\scripts\capture-promotion.ps1
 ```
 
-The script creates fresh fixtures and an isolated profile under `target/`, runs
+The script creates fresh fixtures under `target/` and an isolated demo profile in
+`C:\simPl-demo`, which it removes afterwards. It runs
 the opt-in production render test, updates this media folder, verifies lossless
 exports and README image paths, and writes a ZIP under `target/promotion/`.
 It never changes the normal `%LOCALAPPDATA%\simPl` profile. Test helpers are

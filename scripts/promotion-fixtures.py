@@ -61,6 +61,26 @@ def cover(index, title, author, background, foreground):
     return path
 
 
+CHAPTERS = [
+    "A little room for the morning",
+    "The letter between the pages",
+    "What the garden kept",
+    "An afternoon of small errands",
+    "The blue gate",
+    "Evening, with the window open",
+]
+
+
+def chapter(title, number):
+    """One EPUB chapter. The first also carries the book's title and opens on the first paragraph."""
+    heading = f"<h1>{html.escape(title)}</h1>" if number == 0 else ""
+    start = (number * 3) % len(PARAGRAPHS)
+    paragraphs = [PARAGRAPHS[(start + i) % len(PARAGRAPHS)] for i in range(len(PARAGRAPHS) * 2)]
+    return heading + f"<h2>{number + 1} · {html.escape(CHAPTERS[number])}</h2>" + "".join(
+        f'<p id="p-{number}-{i}">{html.escape(p)}</p>' for i, p in enumerate(paragraphs)
+    )
+
+
 def body(title, rounds=10):
     return f"<h1>{html.escape(title)}</h1><h2>1 · A little room for the morning</h2>" + "".join(
         f'<p id="p-{r}-{i}">{html.escape(p)}</p>'
@@ -72,9 +92,10 @@ def epub(path, title, author, cover_path):
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         z.writestr("META-INF/container.xml", '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
-        z.writestr("OPS/book.opf", f'''<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-demo-{path.stem}</dc:identifier><dc:title>{title}</dc:title><dc:creator>{author}</dc:creator><dc:language>en</dc:language><meta property="dcterms:modified">2026-09-30T00:00:00Z</meta></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="cover" href="cover.png" media-type="image/png" properties="cover-image"/></manifest><spine><itemref idref="chapter"/></spine></package>''')
-        z.writestr("OPS/chapter.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head><body>{body(title)}</body></html>')
-        z.writestr("OPS/nav.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml">A little room for the morning</a></li></ol></nav></body></html>')
+        z.writestr("OPS/book.opf", f'''<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">simpl-demo-{path.stem}</dc:identifier><dc:title>{title}</dc:title><dc:creator>{author}</dc:creator><dc:language>en</dc:language><meta property="dcterms:modified">2026-09-30T00:00:00Z</meta></metadata><manifest>{"".join(f'<item id="chapter{n}" href="chapter{n}.xhtml" media-type="application/xhtml+xml"/>' for n in range(len(CHAPTERS)))}<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="cover" href="cover.png" media-type="image/png" properties="cover-image"/></manifest><spine>{"".join(f'<itemref idref="chapter{n}"/>' for n in range(len(CHAPTERS)))}</spine></package>''')
+        for n in range(len(CHAPTERS)):
+            z.writestr(f"OPS/chapter{n}.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head><body>{chapter(title, n)}</body></html>')
+        z.writestr("OPS/nav.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>{"".join(f'<li><a href="chapter{n}.xhtml">{html.escape(name)}</a></li>' for n, name in enumerate(CHAPTERS))}</ol></nav></body></html>')
         z.write(cover_path, "OPS/cover.png")
 
 
