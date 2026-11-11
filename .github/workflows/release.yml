@@ -124,6 +124,9 @@ jobs:
             "::notice::$tag is already published at $response. Skipping the upload, so the published files stay unchanged."
           } elseif ("$response" -match 'HTTP 404') {
             "published=false" >> $env:GITHUB_OUTPUT
+            # The step ends with gh's exit code, and a missing release is the
+            # expected answer for a new tag.
+            $global:LASTEXITCODE = 0
           } else {
             throw "Could not check for a published $tag release: $response"
           }
