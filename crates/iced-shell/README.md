@@ -218,10 +218,6 @@ to the same fresh disposable directory, and set `SIMPL_PREVIEW_OUTPUT` before
 running it with `cargo test --release -p iced-shell --locked --offline
 production_format_workflows -- --ignored --nocapture --test-threads=1`.
 Window/clipboard actions are excluded from this state-and-storage probe.
-The [2026-09-30 release audit](../../release-audit-2026-09-30.md) records the
-tested build, corrections, measurements and remaining qualification work.
-The [final local reader review](../../reader-release-review-2026-09-30.md) adds the
-latest renderer check, repeated native workflows and sourced reader comparisons.
 
 `--reader-poc` and `--reader-poc-large` load authored 1,000/10,000-paragraph workloads
 from `fixtures/reader-workload`. They are diagnostic modes, not the normal reader.
@@ -255,9 +251,8 @@ probe also compares incremental painting to full redraws and records CPU timings
 Keyboard navigation is implemented; screen-reader support is not validated.
 Independent clean-Windows packaging and cross-DPI/multi-monitor qualification remain
 open. Native previews and internal timing markers do not establish input-to-display
-latency, dropped frames or full memory reclamation. The [roadmap](../../roadmap.md)
-tracks these boundaries. `Cargo.toml` and `Cargo.lock` are the dependency authority;
-old measurement and license snapshots are not current release manifests.
+latency, dropped frames or full memory reclamation. `Cargo.toml` and `Cargo.lock`
+are the dependency authority.
 
 ## Downloadable dictionaries
 

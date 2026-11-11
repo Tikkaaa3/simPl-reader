@@ -46,5 +46,4 @@ The retained application probe checks incremental CPU painting against a full
 redraw at 100%, 150%, 200% DPI and in a small window with the language picker.
 See [the damage patch](../iced_graphics-0.14.0/SIMPL-PATCH.md) for the command and
 measurement boundaries. Replace this override only after those cases pass.
-The [reader comfort follow-up](../../reader-comfort-review-2026-09-30.md) records
-the latest measured improvement and the remaining 200% frame-time limitation.
+A frame-time limitation remains at 200% DPI.

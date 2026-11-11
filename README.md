@@ -7,7 +7,7 @@ Keep a local library, pick up where you stopped, and read in a minimal interface
 with light and dark themes. Listen with Windows voices, look up words offline,
 and keep your highlights and notes with your books.
 
-![The Quiet Hours in simPl's dark Book view](docs/screenshots/web/reading-dark.webp)
+![The Quiet Hours in simPl's dark Book view](docs/screenshots/reading-dark.webp)
 
 [Get started](#get-started) · [The reading screen](#the-reading-screen) · [Android](#android) · [Reading modes](#reading-modes) · [Shortcuts](#shortcuts) · [Build from source](#build-from-source) · [Development](#development) · [License](#license)
 
@@ -49,7 +49,7 @@ and keep your highlights and notes with your books.
 
 | The title bar and the reading tools | The progress line |
 | --- | --- |
-| ![The title bar with the reading tools shown under it](docs/screenshots/web/reading-tools.webp) | ![The progress line cut into chapters, with the page a click would jump to](docs/screenshots/web/progress-line.webp) |
+| ![The title bar with the reading tools shown under it](docs/screenshots/reading-tools.webp) | ![The progress line cut into chapters, with the page a click would jump to](docs/screenshots/progress-line.webp) |
 
 **The title bar stays.** While you read, it keeps the Library button, the book's
 title, the pin, search, Settings, fullscreen and the standard Windows minimize,
@@ -86,7 +86,7 @@ bring the title bar and the tools back.
 
 | Aa: the look of this book | Contents |
 | --- | --- |
-| ![The Aa panel with themes, text settings and zoom](docs/screenshots/web/aa-panel.webp) | ![The contents drawer beside the page](docs/screenshots/web/contents-drawer.webp) |
+| ![The Aa panel with themes, text settings and zoom](docs/screenshots/aa-panel.webp) | ![The contents drawer beside the page](docs/screenshots/contents-drawer.webp) |
 
 **Aa** opens a panel with the theme, text size, font, line spacing, side margins,
 zoom and **Fit width**. What you change there is remembered for the open book
@@ -101,7 +101,7 @@ it; otherwise it opens over the page.
 
 | Light | Dark |
 | --- | --- |
-| ![simPl library in the light theme](docs/screenshots/web/library-light.webp) | ![simPl library in the dark theme](docs/screenshots/web/library-dark.webp) |
+| ![simPl library in the light theme](docs/screenshots/library-light.webp) | ![simPl library in the dark theme](docs/screenshots/library-dark.webp) |
 
 Import EPUB, PDF, HTML, TXT and Markdown, search your library and organize shelves.
 Once the library holds more than three books, Continue Reading lists up to three
@@ -121,17 +121,17 @@ the theme, so you can make the page comfortable while keeping its place.
 
 | Soft · light | Clear · light |
 | --- | --- |
-| ![Warm paper and serif type in the Soft theme](docs/screenshots/web/reading-soft-light.webp) | ![Clear theme with generous spacing](docs/screenshots/web/reading-clear-light.webp) |
+| ![Warm paper and serif type in the Soft theme](docs/screenshots/reading-soft-light.webp) | ![Clear theme with generous spacing](docs/screenshots/reading-clear-light.webp) |
 
 | Compact · dark | Fullscreen |
 | --- | --- |
-| ![Compact dark reading theme](docs/screenshots/web/reading-compact-dark.webp) | ![Fullscreen reading with everything hidden](docs/screenshots/web/reading-fullscreen.webp) |
+| ![Compact dark reading theme](docs/screenshots/reading-compact-dark.webp) | ![Fullscreen reading with everything hidden](docs/screenshots/reading-fullscreen.webp) |
 
 ## Read, listen, remember
 
 | Highlights and notes | Offline word translation |
 | --- | --- |
-| ![A saved highlight and its note in the sidebar](docs/screenshots/web/notes-highlights.webp) | ![English to Turkish dictionary lookup for book](docs/screenshots/web/word-translation.webp) |
+| ![A saved highlight and its note in the sidebar](docs/screenshots/notes-highlights.webp) | ![English to Turkish dictionary lookup for book](docs/screenshots/word-translation.webp) |
 
 Dictionary content in the translation image: [WikDict](https://www.wikdict.com/page/about)
 by Karl Bartel, from [Wiktionary contributors](https://www.wiktionary.org/) via
@@ -141,11 +141,11 @@ simPl normalizes and excerpts the data. [Full attribution and website reuse](doc
 
 | Listen with word tracking | Download the dictionaries you need |
 | --- | --- |
-| ![Listen paused with the current spoken word outlined](docs/screenshots/web/listen-word-highlight.webp) | ![Optional dictionary packages with sizes and download controls](docs/screenshots/web/dictionary-downloads.webp) |
+| ![Listen paused with the current spoken word outlined](docs/screenshots/listen-word-highlight.webp) | ![Optional dictionary packages with sizes and download controls](docs/screenshots/dictionary-downloads.webp) |
 
 | PDF · Document | PDF · Book |
 | --- | --- |
-| ![Original PDF page with its layout and vector illustration](docs/screenshots/web/pdf-document.webp) | ![The same PDF reconstructed in Book view](docs/screenshots/web/pdf-book.webp) |
+| ![Original PDF page with its layout and vector illustration](docs/screenshots/pdf-document.webp) | ![The same PDF reconstructed in Book view](docs/screenshots/pdf-book.webp) |
 
 ## Settings
 
@@ -163,17 +163,16 @@ Tab reaches the list, and the up and down arrows move between sections.
 
 | Appearance | Shortcuts |
 | --- | --- |
-| ![Settings on Appearance: themes, light or dark and the progress line](docs/screenshots/web/theme-settings.webp) | ![Settings on Shortcuts: the list of keys](docs/screenshots/web/shortcuts.webp) |
+| ![Settings on Appearance: themes, light or dark and the progress line](docs/screenshots/theme-settings.webp) | ![Settings on Shortcuts: the list of keys](docs/screenshots/shortcuts.webp) |
 
 | Reading defaults | Library & data |
 | --- | --- |
-| ![Settings on Reading: defaults for every book](docs/screenshots/web/reading-settings.webp) | ![Library folder, backup and restore options](docs/screenshots/web/library-data.webp) |
+| ![Settings on Reading: defaults for every book](docs/screenshots/reading-settings.webp) | ![Library folder, backup and restore options](docs/screenshots/library-data.webp) |
 
-[Full-resolution PNGs, lossless WebP copies and media details](docs/screenshots/README.md)
-are available for websites and promotion.
-These are full-window renders of the
-production interface at 2560 × 1600, using an isolated demo library; they are
-not OS desktop captures. No controls or features were composited into the images.
+These are full-window renders of the production interface at 2560 × 1600, using
+an isolated demo library; they are not OS desktop captures. No controls or
+features were composited into the images. `scripts\capture-promotion.ps1` renders
+them again, with full-resolution PNGs, into `target\promotion\kit`.
 
 ## Get started
 
@@ -212,8 +211,8 @@ APK also supports x86_64 emulators. Allow installation from your browser or file
 manager when prompted, then open the APK. Updates use the same signing key.
 
 Read aloud, dictionaries and backup/export arrived in Android 0.1.1. PDF Book
-view on Android is still planned. See the [Android guide](android/README.md), the
-[0.1.2 notes](docs/releases/android-0.1.2.md) and the [roadmap](android-roadmap.md).
+view on Android is still planned. See the [Android guide](android/README.md)
+and the [0.1.2 notes](docs/releases/android-0.1.2.md).
 
 ## Reading modes
 
@@ -466,16 +465,14 @@ it does not embed a browser or WebView.
 | [`reader-profile`](crates/reader-profile) | Profile and cache roots shared by the core crates |
 | [`reader-ffi`](crates/reader-ffi), [`uniffi-bindgen`](crates/uniffi-bindgen) | Rust core API and binding generator for the Android app ([android/](android/README.md)) |
 
-See the [developer guide](crates/iced-shell/README.md), [project roadmap](roadmap.md),
-[Book parser roadmap](book-parser-roadmap.md), and [design reference](design/DESIGN.md).
-The [local reader review](reader-release-review-2026-09-30.md) records current
-release checks, performance limits and comparisons with other readers.
+See the [developer guide](crates/iced-shell/README.md). Planned work and known
+problems are tracked in [issues](https://github.com/Tikkaaa3/simPl-reader/issues).
 For changes, run the workspace check and the focused verification relevant to the
 affected reader path. For bug reports, include the format, view mode, page number,
 steps to reproduce, and a shareable sample if possible.
 
-Independent clean-Windows package qualification is still pending. The roadmaps
-record remaining work; this README describes the implemented reader.
+Independent clean-Windows package qualification is still pending. This README
+describes the implemented reader.
 
 ## Third-party notices
 

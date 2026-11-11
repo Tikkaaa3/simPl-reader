@@ -1,7 +1,8 @@
 # Dictionary content in promotional images
 
-This notice applies to `word-translation.png`, `web/word-translation.webp`,
-and the translation preview reproduced in `overview.webp`. It also applies to
+This notice applies to `word-translation.webp`, to its full-resolution PNG and
+to the contact sheet in the media kit that `scripts\capture-promotion.ps1`
+builds. It also applies to
 crops, resized copies and other reproductions of their dictionary content.
 
 ## Attribution
@@ -16,7 +17,7 @@ snapshot `2_2026-06`:
 [original source database](https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-tr.sqlite3).
 The [English Wiktionary book entry](https://en.wiktionary.org/wiki/book) links
 to the entry's contributors through its page history. Exact source and index
-checksums are in [dictionary-credits.md](dictionary-credits.md) and the
+checksums are in the [dictionary credits](https://github.com/Tikkaaa3/simPl-reader/blob/main/assets/dictionaries/README.md) and the
 [source manifest](https://github.com/Tikkaaa3/simPl-reader/blob/main/assets/dictionaries/manifest.json).
 
 Changes: WikDict processes and merges Wiktionary data extracted by DBnary;
@@ -24,14 +25,14 @@ simPl normalizes headwords and whitespace, combines records, removes duplicate
 meanings, limits index entries and displays an excerpt of the result.
 The contact sheet additionally resizes the screenshot. Dictionary data and
 simPl's adaptations of it remain **CC BY-SA 4.0**, including for commercial reuse.
-The complete [legal text](CC-BY-SA-4.0.txt) includes the warranty disclaimer.
+The complete [legal text](https://github.com/Tikkaaa3/simPl-reader/blob/main/assets/dictionaries/CC-BY-SA-4.0.txt) includes the warranty disclaimer.
 No endorsement by these projects or contributors is implied.
 
 ## Scope and website use
 
 The images reproduce an identifiable dictionary result alongside independent
 simPl interface and original demonstration content. The dictionary content
-retains its own license. The [project license](project-license.md) and official
+retains its own license. The [project license](https://github.com/Tikkaaa3/simPl-reader/blob/main/LICENSE.md) and official
 binary terms impose no additional restrictions on that content. This notice
 does not relicense application source code, independent interface elements or
 the simPl name/logo.

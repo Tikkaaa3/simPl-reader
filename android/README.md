@@ -1,8 +1,7 @@
 # simPl for Android
 
 The Android app is a Kotlin + Jetpack Compose interface over the shared Rust
-core. The plan, decisions and milestones are in
-[android-roadmap.md](../android-roadmap.md). The Windows reader is unaffected:
+core. The Windows reader is unaffected:
 its build, scripts and release workflow do not use anything in this folder.
 
 | Part | Responsibility |

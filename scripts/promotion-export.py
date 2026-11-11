@@ -1,4 +1,9 @@
-"""Validate full frames, make lossless website assets and package the media kit."""
+"""Validate full frames, make lossless website assets and package the media kit.
+
+The kit (every PNG and WebP, a gallery and the notices) is written outside the
+repository. Only the WebP images that README.md shows are copied into
+docs/screenshots.
+"""
 from datetime import date
 import hashlib
 import json
@@ -128,8 +133,9 @@ On Windows with the repo's Rust/MSVC tools and Python with Pillow installed:
 
 The script creates fresh fixtures under `target/` and an isolated demo profile in
 `C:\\simPl-demo`, which it removes afterwards. It runs
-the opt-in production render test, updates this media folder, verifies lossless
-exports and README image paths, and writes a ZIP under `target/promotion/`.
+the opt-in production render test, writes this kit to `target/promotion/kit`
+with a ZIP beside it, verifies the lossless exports, and copies the images the
+project README shows into `docs/screenshots`.
 It never changes the normal `%LOCALAPPDATA%\\simPl` profile. Test helpers are
 excluded from the shipped executable.
 '''
@@ -145,8 +151,15 @@ for n, item in enumerate(items):
         sheet.paste(im.convert("RGB"), (x + 8, y + 8))
     draw.text((x + 8, y + 201), item["name"], font=font, fill="#252525")
 sheet.save(OUTPUT / "overview.webp", "WEBP", lossless=True, method=6)
-for target in re.findall(r"!\[[^\]]*\]\((docs/screenshots/[^)]+)\)", (ROOT / "README.md").read_text(encoding="utf-8")):
-    assert (ROOT / target).is_file(), target
+# The repository keeps only what its README shows.
+DOCS = ROOT / "docs/screenshots"
+shown = sorted(set(re.findall(r"!\[[^\]]*\]\(docs/screenshots/([a-z-]+\.webp)\)", (ROOT / "README.md").read_text(encoding="utf-8"))))
+assert shown, "README.md shows no screenshots"
+for old in DOCS.glob("*.webp"):
+    old.unlink()
+for name in shown:
+    shutil.copy2(OUTPUT / "web" / name, DOCS / name)
+print(f"README images: {len(shown)} in {DOCS}")
 ARCHIVE.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(ARCHIVE, "w", compression=zipfile.ZIP_DEFLATED) as z:
     for path in sorted(OUTPUT.rglob("*")):

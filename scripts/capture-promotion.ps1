@@ -24,7 +24,7 @@ try {
     $env:SIMPL_PREVIEW_OUTPUT = $frames
     cargo test -p iced-shell --release --offline render_promotion_gallery -- --ignored --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Production gallery render failed.' }
-    python scripts/promotion-export.py $frames (Join-Path $root 'docs/screenshots') (Join-Path $root 'target/promotion/simPl-website-media.zip')
+    python scripts/promotion-export.py $frames (Join-Path $root 'target/promotion/kit') (Join-Path $root 'target/promotion/simPl-website-media.zip')
     if ($LASTEXITCODE -ne 0) { throw 'Media export validation failed.' }
 } finally {
     if (Test-Path -LiteralPath $demo) { Remove-Item -LiteralPath $demo -Recurse -Force }
