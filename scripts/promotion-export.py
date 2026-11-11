@@ -1,4 +1,9 @@
-"""Validate full frames, make lossless website assets and package the media kit."""
+"""Validate full frames, make lossless website assets and package the media kit.
+
+The kit (every PNG and WebP, a gallery and the notices) is written outside the
+repository. Only the WebP images that README.md shows are copied into
+docs/screenshots.
+"""
 from datetime import date
 import hashlib
 import json
@@ -17,15 +22,21 @@ CAPTIONS = {
     "library-dark": "Local library · dark appearance",
     **{f"reading-{theme}-{tone}": f"{theme.title()} reading theme · {tone} appearance"
        for theme in ["default", "soft", "clear", "compact"] for tone in ["light", "dark"]},
+    "reading-tools": "The title bar and the floating reading tools",
+    "aa-panel": "Aa · theme, text and zoom for the open book",
+    "contents-drawer": "Contents in a drawer beside the page",
+    "progress-line": "Progress line with chapters and a preview of the jump",
     "notes-highlights": "Bookmark, saved highlight and note sidebar",
     "word-translation": "Offline English → Turkish lookup for book",
     "listen-word-highlight": "Listen paused with the current spoken word retained",
-    "theme-settings": "Four reading themes and window control preferences",
-    "reading-settings": "Per-book font, text size, line spacing and side margins",
+    "reading-settings": "Settings · reading defaults for every book",
+    "theme-settings": "Settings · themes, light or dark and the progress line",
+    "listen-settings": "Settings · read-aloud voice and speed",
     "dictionary-downloads": "Optional dictionaries · installed pack and European languages",
     "dictionary-downloads-asian": "Optional dictionaries · Japanese, Chinese and Korean",
     "backup-export": "Export bookmarks, highlighted quotes and notes",
-    "reading-fullscreen": "Fullscreen reading with window chrome hidden",
+    "shortcuts": "Settings · the shortcut list that F1 opens",
+    "reading-fullscreen": "Fullscreen reading with everything hidden",
     "library-data": "Create or restore a library backup",
     "pdf-document": "Original PDF page, typography and vector artwork",
     "pdf-book": "The same PDF reconstructed in Book view",
@@ -120,9 +131,11 @@ On Windows with the repo's Rust/MSVC tools and Python with Pillow installed:
 .\\scripts\\capture-promotion.ps1
 ```
 
-The script creates fresh fixtures and an isolated profile under `target/`, runs
-the opt-in production render test, updates this media folder, verifies lossless
-exports and README image paths, and writes a ZIP under `target/promotion/`.
+The script creates fresh fixtures under `target/` and an isolated demo profile in
+`C:\\simPl-demo`, which it removes afterwards. It runs
+the opt-in production render test, writes this kit to `target/promotion/kit`
+with a ZIP beside it, verifies the lossless exports, and copies the images the
+project README shows into `docs/screenshots`.
 It never changes the normal `%LOCALAPPDATA%\\simPl` profile. Test helpers are
 excluded from the shipped executable.
 '''
@@ -138,8 +151,15 @@ for n, item in enumerate(items):
         sheet.paste(im.convert("RGB"), (x + 8, y + 8))
     draw.text((x + 8, y + 201), item["name"], font=font, fill="#252525")
 sheet.save(OUTPUT / "overview.webp", "WEBP", lossless=True, method=6)
-for target in re.findall(r"!\[[^\]]*\]\((docs/screenshots/[^)]+)\)", (ROOT / "README.md").read_text(encoding="utf-8")):
-    assert (ROOT / target).is_file(), target
+# The repository keeps only what its README shows.
+DOCS = ROOT / "docs/screenshots"
+shown = sorted(set(re.findall(r"!\[[^\]]*\]\(docs/screenshots/([a-z-]+\.webp)\)", (ROOT / "README.md").read_text(encoding="utf-8"))))
+assert shown, "README.md shows no screenshots"
+for old in DOCS.glob("*.webp"):
+    old.unlink()
+for name in shown:
+    shutil.copy2(OUTPUT / "web" / name, DOCS / name)
+print(f"README images: {len(shown)} in {DOCS}")
 ARCHIVE.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(ARCHIVE, "w", compression=zipfile.ZIP_DEFLATED) as z:
     for path in sorted(OUTPUT.rglob("*")):

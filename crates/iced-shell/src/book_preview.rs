@@ -410,6 +410,16 @@ pub(super) fn render_at_scale(reader: &mut Reader, output: &Path, scale: f32) {
     render_frame(reader, output, scale, mouse::Cursor::Unavailable);
 }
 
+/// A scaled render with the pointer at `point`, for media that shows hover.
+pub(super) fn render_at_scale_with_cursor(
+    reader: &mut Reader,
+    output: &Path,
+    scale: f32,
+    point: Point,
+) {
+    render_frame(reader, output, scale, mouse::Cursor::Available(point));
+}
+
 /// Renders hover as the runtime does, applying `mouse_area` enter messages
 /// before drawing and settling the page strips' fade.
 pub(super) fn render_with_cursor(reader: &mut Reader, output: &Path, point: Point) {
