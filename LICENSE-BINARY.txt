@@ -3,7 +3,7 @@ simPl Reader - Terms of Use for Official Releases
 Copyright 2026 Tikkaaa3. All rights reserved except as granted below.
 
 These terms apply to the official, unmodified builds of simPl Reader published
-by Tikkaaa3 on the simPl website or at
+by Tikkaaa3 on the simPl website, through the Microsoft Store, or at
 https://github.com/Tikkaaa3/simPl-reader/releases ("Official Releases").
 The simPl source code is licensed separately under the PolyForm Noncommercial
 License 1.0.0 (see LICENSE.md in the source repository). Builds made by anyone
